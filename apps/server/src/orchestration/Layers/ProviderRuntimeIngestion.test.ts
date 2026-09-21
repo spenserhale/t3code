@@ -499,6 +499,23 @@ describe("ProviderRuntimeIngestion", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
       turnId: asTurnId("turn-usage"),
     };
+    // The shell goes out again when the session settles. Usage must already be
+    // counted by then, or the sidebar would show the old total until the next event.
+    const usageWhenSettled: unknown[] = [];
+    const subscriptionScope = await Effect.runPromise(Scope.make("sequential"));
+    const events = await Effect.runPromise(
+      harness.engine.subscribeDomainEvents.pipe(Scope.provide(subscriptionScope)),
+    );
+    const watcher = Effect.runFork(
+      Stream.runForEach(events, (event) =>
+        event.type === "thread.session-set" && event.payload.session.activeTurnId === null
+          ? Effect.promise(async () => {
+              usageWhenSettled.push((await harness.readThreadShell()).usage ?? null);
+            })
+          : Effect.void,
+      ),
+    );
+
     await harness.emitAndDrain([
       { ...base, type: "turn.started", eventId: asEventId("evt-usage-started") },
       {
@@ -520,12 +537,11 @@ describe("ProviderRuntimeIngestion", () => {
       },
     ]);
 
-    expect((await harness.readThreadShell()).usage).toEqual({
-      totalTokens: 1_000,
-      costUsd: 0.5,
-      turns: 1,
-      unpricedTurns: 0,
-    });
+    const expected = { totalTokens: 1_000, costUsd: 0.5, turns: 1, unpricedTurns: 0 };
+    expect((await harness.readThreadShell()).usage).toEqual(expected);
+    await Effect.runPromise(Scope.close(subscriptionScope, Exit.void));
+    await Effect.runPromise(Fiber.await(watcher));
+    expect(usageWhenSettled.at(-1)).toEqual(expected);
   });
 
   it.each([

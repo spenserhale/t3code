@@ -1919,6 +1919,33 @@ const make = Effect.gen(function* () {
                 ? null
                 : (thread.session?.lastError ?? null);
 
+        // Recorded before the session update below, so the one shell refresh that
+        // marks the thread idle already carries the turn's usage. Totals never
+        // change mid-turn, which keeps sidebar updates to one per turn.
+        if (
+          isTerminalTurn &&
+          shouldApplyThreadLifecycle &&
+          eventTurnId !== undefined &&
+          Option.isSome(threadUsage)
+        ) {
+          const tokenUsage = event.payload.tokenUsage;
+          const shell =
+            tokenUsage === undefined
+              ? Option.none()
+              : yield* projectionSnapshotQuery.getThreadShellById(thread.id);
+          if (tokenUsage !== undefined && Option.isSome(shell)) {
+            yield* threadUsage.value.recordTurn({
+              threadId: thread.id,
+              turnId: eventTurnId,
+              completedAt: now,
+              model: shell.value.modelSelection.model,
+              usage: tokenUsage,
+              reportedCostUsd:
+                event.type === "turn.completed" ? (event.payload.totalCostUsd ?? null) : null,
+            });
+          }
+        }
+
         if (shouldApplyThreadLifecycle) {
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
             yield* markSourceProposedPlanImplemented(
@@ -2493,25 +2520,6 @@ const make = Effect.gen(function* () {
           threadPlanProgress.recordPlanProgress(thread.id, event.payload.plan);
         } else if (isTerminalTurn && shouldApplyThreadLifecycle) {
           threadPlanProgress.clearThreadPlanProgress(thread.id);
-        }
-      }
-
-      if (isTerminalTurn && eventTurnId !== undefined && Option.isSome(threadUsage)) {
-        const tokenUsage = event.payload.tokenUsage;
-        const shell =
-          tokenUsage === undefined
-            ? Option.none()
-            : yield* projectionSnapshotQuery.getThreadShellById(thread.id);
-        if (tokenUsage !== undefined && Option.isSome(shell)) {
-          yield* threadUsage.value.recordTurn({
-            threadId: thread.id,
-            turnId: eventTurnId,
-            completedAt: now,
-            model: shell.value.modelSelection.model,
-            usage: tokenUsage,
-            reportedCostUsd:
-              event.type === "turn.completed" ? (event.payload.totalCostUsd ?? null) : null,
-          });
         }
       }
 

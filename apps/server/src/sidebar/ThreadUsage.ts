@@ -27,7 +27,7 @@ import * as Layer from "effect/Layer";
 
 import { makeDayFormatter } from "../usage/usageAggregation.ts";
 import { UsageService } from "../usage/UsageService.ts";
-import { totalTokens } from "../usage/usageTranscripts.ts";
+import { EMPTY_TOTALS, totalTokens } from "../usage/usageTranscripts.ts";
 import { SidebarStore } from "./SidebarStore.ts";
 
 export interface TurnUsageReport {
@@ -108,6 +108,10 @@ export const layer = Layer.effect(
         unpricedTurns: integer(row["unpricedTurns"]),
       });
     }
+
+    // A cold rate table costs a network fetch. Load it now so the first turn
+    // to finish is priced from memory instead of holding up its own settle.
+    yield* Effect.forkScoped(usageService.priceUsage("", EMPTY_TOTALS, null));
 
     const insert = database.prepare(
       `INSERT OR IGNORE INTO thread_turn_usage (
