@@ -179,4 +179,19 @@ describe("usage pricing", () => {
     expect(lookupRate(table, "provider-b/example-model")?.inputCostPerToken).toBe(3);
     expect(lookupRate(table, "example-model")).toBeNull();
   });
+
+  it("prices an ambiguous bare GLM name at the publisher's rate", () => {
+    const table = parseRateTable({
+      "zai/glm-5.3": rate(1.4),
+      "reseller/glm-5.3": rate(0.75),
+      "reseller-a/glm-9": rate(2),
+      "reseller-b/glm-9": rate(3),
+    });
+
+    expect(lookupRate(table, "glm-5.3")?.inputCostPerToken).toBe(1.4);
+    // A named reseller keeps its own rate, and a missing publisher entry stays unpriced.
+    expect(lookupRate(table, "reseller/glm-5.3")?.inputCostPerToken).toBe(0.75);
+    expect(lookupRate(table, "other/glm-5.3")).toBeNull();
+    expect(lookupRate(table, "glm-9")).toBeNull();
+  });
 });
