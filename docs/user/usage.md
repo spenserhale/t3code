@@ -100,7 +100,10 @@ closes when you dismiss it or send your next message. It uses the same snapshot 
 anything. The command is offered only for providers that appear under **Usage → Limits**.
 
 OpenCode Go reports its session, weekly, and monthly allowance when OpenCode runs locally in
-the environment. T3 cannot report limits for external OpenCode servers because their credentials
+the environment. A Z.ai Coding Plan signed in through OpenCode reports its 5-hour and weekly
+quota and its monthly tool allowance, along with any banked quota resets. **Use reset** spends the
+5-hour reset unless the weekly quota is the fuller of the two, because a weekly reset also clears
+the 5-hour quota. T3 cannot report limits for external OpenCode servers because their credentials
 belong to the remote server. Cursor reports
 its monthly allowance, including separate Auto and API usage, using the CLI login or
 `CURSOR_AUTH_TOKEN`. On macOS, this includes the default Keychain login after you enable Cursor
