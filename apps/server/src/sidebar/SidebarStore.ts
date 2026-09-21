@@ -43,6 +43,12 @@ const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (thread_id, turn_id)
   ) WITHOUT ROWID;
   CREATE INDEX thread_turn_usage_completed_at ON thread_turn_usage (completed_at);`,
+  // Turns a backfill already looked for, so an empty result is not searched again.
+  `CREATE TABLE thread_turn_checked (
+    thread_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    PRIMARY KEY (thread_id, turn_id)
+  ) WITHOUT ROWID;`,
 ];
 
 export class SidebarStore extends Context.Service<

@@ -16,6 +16,7 @@ import {
   ThreadId,
   type ThreadUsageTotals,
   type TurnTokenUsage,
+  type UsageCostSource,
   type UsageSummaryInput,
   type UsageThreadTotals,
   type UsageTokenTotals,
@@ -40,12 +41,31 @@ export interface TurnUsageReport {
   readonly reportedCostUsd: number | null;
 }
 
+export interface PricedTurn {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly completedAt: string;
+  readonly model: string;
+  readonly totals: UsageTokenTotals;
+  readonly costUsd: number;
+  readonly costSource: UsageCostSource;
+}
+
 export class ThreadUsageService extends Context.Service<
   ThreadUsageService,
   {
     /** Counts a finished turn once; a repeated report for the same turn is ignored. */
     readonly recordTurn: (report: TurnUsageReport) => Effect.Effect<void>;
     readonly getThreadUsage: (threadId: string) => ThreadUsageTotals | null;
+    /**
+     * Adds turns that were already priced elsewhere (history backfill). Turns the
+     * store already holds are left alone. Returns how many were new.
+     */
+    readonly importTurns: (turns: readonly PricedTurn[]) => number;
+    /** Turn ids a backfill can skip: already recorded, or already searched for. */
+    readonly settledTurnIds: (threadId: string) => ReadonlySet<string>;
+    /** Remembers that these turns were searched for, whatever was found. */
+    readonly markTurnsChecked: (threadId: string, turnIds: readonly string[]) => void;
     /** Per-thread totals for a usage window, bounded the way usage buckets are. */
     readonly listThreadUsage: (window: UsageSummaryInput) => readonly UsageThreadTotals[];
   }
@@ -86,6 +106,9 @@ export const layer = Layer.effect(
       return {
         recordTurn: () => Effect.void,
         getThreadUsage: () => null,
+        importTurns: () => 0,
+        settledTurnIds: () => new Set(),
+        markTurnsChecked: () => undefined,
         listThreadUsage: () => [],
       };
     }
@@ -120,36 +143,56 @@ export const layer = Layer.effect(
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
+    const store = (turn: PricedTurn): boolean => {
+      const { changes } = insert.run(
+        turn.threadId,
+        turn.turnId,
+        turn.completedAt,
+        turn.model,
+        turn.totals.uncachedInputTokens,
+        turn.totals.cachedInputTokens,
+        turn.totals.cacheCreationTokens,
+        turn.totals.outputTokens,
+        turn.totals.reasoningTokens,
+        turn.costUsd,
+        turn.costSource,
+      );
+      if (changes === 0) return false;
+      const previous = totalsByThreadId.get(turn.threadId);
+      totalsByThreadId.set(turn.threadId, {
+        totalTokens: (previous?.totalTokens ?? 0) + totalTokens(turn.totals),
+        costUsd: (previous?.costUsd ?? 0) + turn.costUsd,
+        turns: (previous?.turns ?? 0) + 1,
+        unpricedTurns: (previous?.unpricedTurns ?? 0) + (turn.costSource === "unpriced" ? 1 : 0),
+      });
+      return true;
+    };
+
     const recordTurn = Effect.fn("ThreadUsageService.recordTurn")(
       function* (report: TurnUsageReport) {
         const totals = turnUsageToTotals(report.usage);
         if (totals === null) return;
         const priced = yield* usageService.priceUsage(report.model, totals, report.reportedCostUsd);
-        const { changes } = insert.run(
-          report.threadId,
-          report.turnId,
-          report.completedAt,
-          report.model,
-          totals.uncachedInputTokens,
-          totals.cachedInputTokens,
-          totals.cacheCreationTokens,
-          totals.outputTokens,
-          totals.reasoningTokens,
-          priced.costUsd,
-          priced.costSource,
-        );
-        if (changes === 0) return;
-        const previous = totalsByThreadId.get(report.threadId);
-        totalsByThreadId.set(report.threadId, {
-          totalTokens: (previous?.totalTokens ?? 0) + totalTokens(totals),
-          costUsd: (previous?.costUsd ?? 0) + priced.costUsd,
-          turns: (previous?.turns ?? 0) + 1,
-          unpricedTurns:
-            (previous?.unpricedTurns ?? 0) + (priced.costSource === "unpriced" ? 1 : 0),
+        store({
+          threadId: report.threadId,
+          turnId: report.turnId,
+          completedAt: report.completedAt,
+          model: report.model,
+          totals,
+          costUsd: priced.costUsd,
+          costSource: priced.costSource,
         });
       },
       // Usage is an annotation: a full disk or a locked file must not fail the turn.
       Effect.catchCause((cause) => Effect.logWarning("thread usage was not recorded", cause)),
+    );
+
+    const selectTurnIds = database.prepare(
+      `SELECT turn_id AS turnId FROM thread_turn_usage WHERE thread_id = ?
+       UNION SELECT turn_id FROM thread_turn_checked WHERE thread_id = ?`,
+    );
+    const insertChecked = database.prepare(
+      "INSERT OR IGNORE INTO thread_turn_checked (thread_id, turn_id) VALUES (?, ?)",
     );
 
     const DAY_MS = 24 * 60 * 60 * 1000;
@@ -202,6 +245,12 @@ export const layer = Layer.effect(
     return {
       recordTurn,
       getThreadUsage: (threadId) => totalsByThreadId.get(threadId) ?? null,
+      importTurns: (turns) => turns.filter(store).length,
+      settledTurnIds: (threadId) =>
+        new Set(selectTurnIds.all(threadId, threadId).map((row) => String(row["turnId"]))),
+      markTurnsChecked: (threadId, turnIds) => {
+        for (const turnId of turnIds) insertChecked.run(threadId, turnId);
+      },
       listThreadUsage,
     };
   }),

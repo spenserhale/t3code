@@ -24,6 +24,7 @@ import {
   type UsageProviderKind,
   type UsageSource,
   type UsagePricing,
+  type UsageDay,
   type UsageSummary,
   type UsageSummaryInput,
   type UsageTokenTotals,
@@ -120,12 +121,29 @@ const decodeCachedSources = Schema.decodeUnknownOption(
   Schema.Struct({ sources: Schema.Record(Schema.String, CachedSource) }),
 );
 
+export interface PricedSessionRecord {
+  readonly sessionId: string;
+  readonly timestampMs: number;
+  readonly model: string;
+  readonly totals: UsageTokenTotals;
+  readonly priced: PricedUsage;
+}
+
 export class UsageService extends Context.Service<
   UsageService,
   {
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    /**
+     * Priced transcript records of the given provider sessions since `sinceDay`
+     * (UTC), deduplicated exactly as a summary would.
+     */
+    readonly readSessionRecords: (input: {
+      readonly sessionIds: ReadonlySet<string>;
+      readonly sinceDay: UsageDay;
+      readonly untilDay: UsageDay;
+    }) => Effect.Effect<readonly PricedSessionRecord[], UsageReadError>;
     /** Prices one block of tokens the way a summary would, custom prices included. */
     readonly priceUsage: (
       model: string,
@@ -159,6 +177,7 @@ export const layerTest = Layer.succeed(
         scanDurationMs: 0,
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
+    readSessionRecords: () => Effect.succeed([]),
     priceUsage: (_model, _totals, reportedCostUsd) =>
       Effect.succeed(
         reportedCostUsd === null
@@ -694,6 +713,7 @@ export const make = Effect.gen(function* () {
   const scanSummary = Effect.fn("UsageService.scanSummary")(function* (
     input: UsageSummaryInput,
     settings: ServerSettingsValue,
+    onRecord?: (record: UsageRecord, priced: PricedUsage) => void,
   ) {
     if (input.sinceDay > input.untilDay) {
       return yield* new UsageReadError({
@@ -758,6 +778,7 @@ export const make = Effect.gen(function* () {
       ...hourlyWindow,
       rates,
       priceOverrides: createOverrideRateTable(settings.usagePriceOverrides),
+      ...(onRecord ? { onRecord } : {}),
     });
 
     const sources: UsageSource[] = [];
@@ -924,7 +945,30 @@ export const make = Effect.gen(function* () {
     return priceUsageAtRates(rates, model, totals, reportedCostUsd, overrides);
   });
 
-  return { readSummary, refreshRates, priceUsage } as const;
+  const readSessionRecords = Effect.fn("UsageService.readSessionRecords")(function* (input: {
+    readonly sessionIds: ReadonlySet<string>;
+    readonly sinceDay: UsageDay;
+    readonly untilDay: UsageDay;
+  }) {
+    const records: PricedSessionRecord[] = [];
+    yield* scanSummary(
+      { timeZone: "UTC", sinceDay: input.sinceDay, untilDay: input.untilDay },
+      yield* readSettings,
+      (record, priced) => {
+        if (!input.sessionIds.has(record.sessionId)) return;
+        records.push({
+          sessionId: record.sessionId,
+          timestampMs: record.timestampMs,
+          model: record.model,
+          totals: record.totals,
+          priced,
+        });
+      },
+    );
+    return records;
+  });
+
+  return { readSummary, refreshRates, priceUsage, readSessionRecords } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);
