@@ -620,7 +620,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         armAgentAwarenessLiveActivityForLocalWork({
           environmentId: props.environmentId,
           threadTitle: props.selectedThread.title,
-          projectTitle: props.environmentLabel ?? "T3 Code",
+          projectTitle: props.environmentLabel ?? "SECode",
         });
       } finally {
         inFlightThreadIdsRef.current.delete(threadKey);

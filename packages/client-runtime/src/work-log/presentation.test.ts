@@ -882,7 +882,7 @@ describe("pull request tool presentation", () => {
       tone: "tool",
       itemType: "dynamic_tool",
       toolLifecycleStatus: "completed",
-      toolSource: { key: "t3-code", name: "T3 Code", kind: "integration" },
+      toolSource: { key: "t3-code", name: "SECode", kind: "integration" },
     };
     const list: WorkLogPresentationEntry = {
       ...link,

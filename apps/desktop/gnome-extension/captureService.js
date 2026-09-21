@@ -1,5 +1,7 @@
 // This policy is independent of Shell so lifecycle and authorization can be tested without a desktop.
 export const CLIENT_NAMES = [
+  "com.spenser.SECode.SnapShot",
+  "com.spenser.SECode.Development.SnapShot",
   "com.t3tools.T3Code.SnapShot",
   "com.t3tools.T3Code.Development.SnapShot",
 ];
@@ -43,7 +45,7 @@ export class CaptureService {
           break;
         }
       }
-      if (!allowed) throw new Error("Only T3 Code may request a snapshot.");
+      if (!allowed) throw new Error("Only SECode may request a snapshot.");
       const pid = options ? await this._getProcessId(sender) : undefined;
       this._checkSession();
       const snapshot = await this._takeSnapshot(options?.animate ?? false);

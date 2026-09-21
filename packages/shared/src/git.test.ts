@@ -166,6 +166,15 @@ describe("parseGitHubRepositoryNameWithOwnerFromRemoteUrl", () => {
 });
 
 describe("isTemporaryWorktreeBranch", () => {
+  it("creates personal-edition branches while recognizing existing T3 temporary branches", () => {
+    expect(buildTemporaryWorktreeBranchName(() => "DEADBEEF")).toBe("secode/deadbeef");
+    expect(isTemporaryWorktreeBranch("secode/deadbeef")).toBe(true);
+    expect(isTemporaryWorktreeBranch("t3code/deadbeef")).toBe(true);
+    expect(isTemporaryWorktreeBranch("t3code/f4ae4e0e-f971-4d48-b4f2-9cf0aa54ab12")).toBe(true);
+    expect(isTemporaryWorktreeBranch("t3code/feature-demo")).toBe(false);
+    expect(isTemporaryWorktreeBranch("secode/feature-demo")).toBe(false);
+  });
+
   it("matches the generated temporary worktree refName format", () => {
     expect(
       isTemporaryWorktreeBranch(
