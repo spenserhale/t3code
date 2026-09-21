@@ -212,6 +212,8 @@ const exportAndroidIcons = Effect.gen(function* () {
   const repositoryRoot = path.resolve(import.meta.dirname, "..");
   const outputs = [
     ["android-icon-foreground.png", yield* renderForeground(repositoryRoot, ADAPTIVE_CANVAS)],
+    ["android-icon-mark.png", yield* renderForeground(repositoryRoot, ADAPTIVE_CANVAS)],
+    ["android-notification-icon.png", yield* renderForeground(repositoryRoot, 96)],
     [
       "android-icon-background-dev.png",
       yield* renderDevelopmentBackground(repositoryRoot, ADAPTIVE_CANVAS),
