@@ -12,11 +12,20 @@
  *
  * @module ThreadUsageService
  */
-import type { ThreadUsageTotals, TurnTokenUsage, UsageTokenTotals } from "@t3tools/contracts";
+import {
+  ThreadId,
+  type ThreadUsageTotals,
+  type TurnTokenUsage,
+  type UsageSummaryInput,
+  type UsageThreadTotals,
+  type UsageTokenTotals,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import { makeDayFormatter } from "../usage/usageAggregation.ts";
 import { UsageService } from "../usage/UsageService.ts";
 import { totalTokens } from "../usage/usageTranscripts.ts";
 import { SidebarStore } from "./SidebarStore.ts";
@@ -37,6 +46,8 @@ export class ThreadUsageService extends Context.Service<
     /** Counts a finished turn once; a repeated report for the same turn is ignored. */
     readonly recordTurn: (report: TurnUsageReport) => Effect.Effect<void>;
     readonly getThreadUsage: (threadId: string) => ThreadUsageTotals | null;
+    /** Per-thread totals for a usage window, bounded the way usage buckets are. */
+    readonly listThreadUsage: (window: UsageSummaryInput) => readonly UsageThreadTotals[];
   }
 >()("t3/sidebar/ThreadUsage/ThreadUsageService") {}
 
@@ -72,7 +83,11 @@ export const layer = Layer.effect(
     const totalsByThreadId = new Map<string, ThreadUsageTotals>();
 
     if (database === null) {
-      return { recordTurn: () => Effect.void, getThreadUsage: () => null };
+      return {
+        recordTurn: () => Effect.void,
+        getThreadUsage: () => null,
+        listThreadUsage: () => [],
+      };
     }
 
     const rows = database
@@ -133,9 +148,57 @@ export const layer = Layer.effect(
       Effect.catchCause((cause) => Effect.logWarning("thread usage was not recorded", cause)),
     );
 
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    // A zone is at most 14 hours from UTC, so a day either side covers every
+    // turn the day comparison below can admit.
+    const selectWindow = database.prepare(
+      `SELECT thread_id AS threadId, completed_at AS completedAt, model,
+              uncached_input_tokens + cached_input_tokens + cache_creation_tokens + output_tokens AS tokens,
+              cost_usd AS costUsd, cost_source AS costSource
+       FROM thread_turn_usage WHERE completed_at >= ? AND completed_at < ? ORDER BY completed_at`,
+    );
+
+    const listThreadUsage = (window: UsageSummaryInput): readonly UsageThreadTotals[] => {
+      const sinceMs = Date.parse(window.sinceTime ?? `${window.sinceDay}T00:00:00Z`);
+      const untilMs = Date.parse(window.untilTime ?? `${window.untilDay}T00:00:00Z`);
+      if (Number.isNaN(sinceMs) || Number.isNaN(untilMs)) return [];
+      const hourly = window.sinceTime !== undefined && window.untilTime !== undefined;
+      const toDay = makeDayFormatter(window.timeZone);
+      const threads = new Map<ThreadId, UsageThreadTotals>();
+      const rows = selectWindow.all(
+        DateTime.formatIso(DateTime.makeUnsafe(hourly ? sinceMs : sinceMs - DAY_MS)),
+        DateTime.formatIso(DateTime.makeUnsafe(hourly ? untilMs : untilMs + 2 * DAY_MS)),
+      );
+      for (const row of rows) {
+        const completedAt = String(row["completedAt"]);
+        if (!hourly) {
+          const day = toDay(Date.parse(completedAt));
+          if (day < window.sinceDay || day > window.untilDay) continue;
+        }
+        const threadId = ThreadId.make(String(row["threadId"]));
+        const model = String(row["model"]);
+        const previous = threads.get(threadId);
+        threads.set(threadId, {
+          threadId,
+          totalTokens: (previous?.totalTokens ?? 0) + integer(row["tokens"]),
+          costUsd:
+            (previous?.costUsd ?? 0) + (typeof row["costUsd"] === "number" ? row["costUsd"] : 0),
+          turns: (previous?.turns ?? 0) + 1,
+          unpricedTurns:
+            (previous?.unpricedTurns ?? 0) + (row["costSource"] === "unpriced" ? 1 : 0),
+          lastTurnAt: completedAt,
+          models: previous?.models.includes(model)
+            ? previous.models
+            : [...(previous?.models ?? []), model],
+        });
+      }
+      return [...threads.values()];
+    };
+
     return {
       recordTurn,
       getThreadUsage: (threadId) => totalsByThreadId.get(threadId) ?? null,
+      listThreadUsage,
     };
   }),
 );

@@ -41,6 +41,12 @@ results appear as each one responds.
 If recent work is missing or a new model shows no cost, refresh to rescan session history and
 update model pricing.
 
+Switch the breakdown to **Thread** to see which threads used the most, and select a column heading
+to sort by it. Thread figures count the turns you ran through T3 Code, starting from when the
+server began tracking them, so they are lower than the model breakdown, which also includes work
+done directly in the provider's own tools. The same tokens and estimated cost appear when you
+hover a thread in the sidebar. Providers that do not report usage per turn show no thread figures.
+
 ## Set custom model prices
 
 On web or desktop, open the environment dropdown on **Usage**, then choose **Model prices** to add,

@@ -9,6 +9,7 @@
 import {
   USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
+  type ThreadId,
   type UsageBucket,
   type UsageProviderKind,
   type UsageSource,
@@ -52,6 +53,23 @@ export interface ModelTotals {
  */
 export function isModelCostUnknown(model: ModelTotals): boolean {
   return model.records > 0 && model.unpricedRecords >= model.records;
+}
+
+/** One thread's usage, scoped by environment because thread ids are only unique within one. */
+export interface ThreadTotals {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly costUsd: number;
+  readonly totalTokens: number;
+  readonly turns: number;
+  readonly unpricedTurns: number;
+  readonly lastTurnAt: string;
+  readonly models: readonly string[];
+}
+
+/** See {@link isModelCostUnknown}: every turn lacked rates, so the cost is unknown. */
+export function isThreadCostUnknown(thread: ThreadTotals): boolean {
+  return thread.turns > 0 && thread.unpricedTurns >= thread.turns;
 }
 
 export interface DailyTotals {
@@ -101,6 +119,10 @@ export interface MergedUsage {
   readonly duplicateSources: readonly string[];
   readonly contributingEnvironments: readonly EnvironmentId[];
   readonly contractMismatches: readonly UsageContractMismatch[];
+  /** Unsorted; callers order it by the column they show. */
+  readonly threads: readonly ThreadTotals[];
+  /** Environments that reported thread usage; others cannot, or were not asked. */
+  readonly threadEnvironments: readonly EnvironmentId[];
 }
 
 /**
@@ -310,6 +332,8 @@ const EMPTY_MERGED: MergedUsage = {
   duplicateSources: [],
   contributingEnvironments: [],
   contractMismatches: [],
+  threads: [],
+  threadEnvironments: [],
 };
 
 /**
@@ -398,8 +422,18 @@ export function mergeUsage(
     }
   >();
   const contributingEnvironments: EnvironmentId[] = [];
+  const threads: ThreadTotals[] = [];
+  const threadEnvironments: EnvironmentId[] = [];
 
   for (const environment of current) {
+    // Thread totals come from each server's own turns, never from transcripts
+    // two servers might share, so they need no source-ownership filter.
+    if (environment.summary.threads !== undefined) {
+      threadEnvironments.push(environment.environmentId);
+      for (const thread of environment.summary.threads) {
+        threads.push({ environmentId: environment.environmentId, ...thread });
+      }
+    }
     const { buckets, sessionsByProvider } = ownedContribution(
       environment,
       ownerByFingerprint,
@@ -558,5 +592,7 @@ export function mergeUsage(
     duplicateSources: duplicates,
     contributingEnvironments,
     contractMismatches,
+    threads,
+    threadEnvironments,
   };
 }

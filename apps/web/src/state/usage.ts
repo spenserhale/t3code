@@ -92,6 +92,7 @@ export function useUsage(
         resolution: input.resolution,
         sinceTime: input.sinceTime,
         untilTime: input.untilTime,
+        includeThreads: input.includeThreads,
       }),
     [
       input.sinceDay,
@@ -100,6 +101,7 @@ export function useUsage(
       input.resolution,
       input.sinceTime,
       input.untilTime,
+      input.includeThreads,
     ],
   );
   const atom = usageByWindowAtom(windowKey);

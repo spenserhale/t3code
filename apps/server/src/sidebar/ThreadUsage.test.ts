@@ -3,7 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { assert, describe, it } from "@effect/vitest";
-import type { TurnTokenUsage } from "@t3tools/contracts";
+import { ThreadId, UsageDay, type TurnTokenUsage } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -88,6 +88,47 @@ describe("ThreadUsageService", () => {
         turns: 2,
         unpricedTurns: 1,
       });
+    }).pipe(Effect.provide(serviceWith(SidebarStore.layerMemory))),
+  );
+
+  it.effect("lists threads whose turns fall on the window's days in its time zone", () =>
+    Effect.gen(function* () {
+      const threadUsage = yield* ThreadUsageService;
+      // 06:30Z on the 21st is still the 20th in Los Angeles.
+      yield* threadUsage.recordTurn({
+        ...report("turn-1"),
+        completedAt: "2026-09-21T06:30:00.000Z",
+      });
+      yield* threadUsage.recordTurn({
+        ...report("turn-2", null),
+        completedAt: "2026-09-21T20:00:00.000Z",
+        model: "other-model",
+      });
+      yield* threadUsage.recordTurn({
+        ...report("turn-3"),
+        threadId: "thread-2",
+        completedAt: "2026-09-25T12:00:00.000Z",
+      });
+      const window = (sinceDay: string, untilDay: string) =>
+        threadUsage.listThreadUsage({
+          timeZone: "America/Los_Angeles",
+          sinceDay: UsageDay.make(sinceDay),
+          untilDay: UsageDay.make(untilDay),
+        });
+
+      assert.deepStrictEqual(window("2026-09-20", "2026-09-21"), [
+        {
+          threadId: ThreadId.make("thread-1"),
+          totalTokens: 2_100,
+          costUsd: 0.25,
+          turns: 2,
+          unpricedTurns: 1,
+          lastTurnAt: "2026-09-21T20:00:00.000Z",
+          models: ["example-model", "other-model"],
+        },
+      ]);
+      assert.strictEqual(window("2026-09-21", "2026-09-21")[0]?.turns, 1);
+      assert.deepStrictEqual(window("2026-09-22", "2026-09-24"), []);
     }).pipe(Effect.provide(serviceWith(SidebarStore.layerMemory))),
   );
 
