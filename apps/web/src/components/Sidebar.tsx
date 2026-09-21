@@ -47,6 +47,7 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
   AlarmClockIcon,
   AlarmClockOffIcon,
+  ChartNoAxesColumnIcon,
   CheckIcon,
   ChevronDownIcon,
   CircleAlertIcon,
@@ -186,6 +187,7 @@ import {
   sortLogicalProjectsForSidebar,
   sortPinnedThreadsForSidebar,
   sortThreadsForSidebar,
+  threadUsageLabel,
   useRetainedValue,
   useSidebarRowSubscriptionLease,
   useThreadJumpHintVisibility,
@@ -348,6 +350,7 @@ function SidebarThreadTooltip({
 }) {
   const driverKind = providerEntry?.driverKind ?? null;
   const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
+  const usageLabel = threadUsageLabel(thread.usage);
   return (
     <TooltipPopup side="right" align="start" sideOffset={4} variant="glass">
       {/* The viewport's own inset (py-1 px-2) plus this one make the floating inset. */}
@@ -404,6 +407,15 @@ function SidebarThreadTooltip({
                   ? `${modelLabel} · ${providerEntry.displayName}`
                   : modelLabel}
               </div>
+            </div>
+          ) : null}
+          {usageLabel ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <ChartNoAxesColumnIcon
+                aria-hidden
+                className="size-3 shrink-0 stroke-muted-foreground"
+              />
+              <div className="min-w-0 truncate text-foreground/75 tabular-nums">{usageLabel}</div>
             </div>
           ) : null}
           {terminalStatus ? (

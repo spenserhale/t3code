@@ -881,6 +881,15 @@ export const OrchestrationProjectShell = Schema.Struct({
 });
 export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 
+/** Per-thread usage; `unpricedTurns` of `turns` contribute tokens but no cost. */
+export const ThreadUsageTotals = Schema.Struct({
+  totalTokens: NonNegativeInt,
+  costUsd: Schema.Finite,
+  turns: NonNegativeInt,
+  unpricedTurns: NonNegativeInt,
+});
+export type ThreadUsageTotals = typeof ThreadUsageTotals.Type;
+
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -940,6 +949,12 @@ export const OrchestrationThreadShell = Schema.Struct({
       }),
     ),
   ),
+  /**
+   * Tokens and estimated API-equivalent cost of the turns driven through this
+   * server. Absent on servers that do not track it and on threads with no
+   * reported usage yet.
+   */
+  usage: Schema.optional(Schema.NullOr(ThreadUsageTotals)),
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 

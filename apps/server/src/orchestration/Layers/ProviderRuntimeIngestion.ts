@@ -46,6 +46,7 @@ import { ProjectionThreadProposedPlanRepositoryLive } from "../../persistence/La
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ThreadBackgroundLivenessService } from "../ThreadBackgroundLiveness.ts";
 import { ThreadPlanProgressService } from "../ThreadPlanProgress.ts";
+import { ThreadUsageService } from "../../sidebar/ThreadUsage.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
   ProviderRuntimeIngestionService,
@@ -1043,6 +1044,8 @@ export function runtimeEventToActivities(
 const make = Effect.gen(function* () {
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
   const threadPlanProgress = yield* ThreadPlanProgressService;
+  // Optional so suites that do not track usage need not provide it.
+  const threadUsage = yield* Effect.serviceOption(ThreadUsageService);
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -2490,6 +2493,25 @@ const make = Effect.gen(function* () {
           threadPlanProgress.recordPlanProgress(thread.id, event.payload.plan);
         } else if (isTerminalTurn && shouldApplyThreadLifecycle) {
           threadPlanProgress.clearThreadPlanProgress(thread.id);
+        }
+      }
+
+      if (isTerminalTurn && eventTurnId !== undefined && Option.isSome(threadUsage)) {
+        const tokenUsage = event.payload.tokenUsage;
+        const shell =
+          tokenUsage === undefined
+            ? Option.none()
+            : yield* projectionSnapshotQuery.getThreadShellById(thread.id);
+        if (tokenUsage !== undefined && Option.isSome(shell)) {
+          yield* threadUsage.value.recordTurn({
+            threadId: thread.id,
+            turnId: eventTurnId,
+            completedAt: now,
+            model: shell.value.modelSelection.model,
+            usage: tokenUsage,
+            reportedCostUsd:
+              event.type === "turn.completed" ? (event.payload.totalCostUsd ?? null) : null,
+          });
         }
       }
 

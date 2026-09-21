@@ -58,6 +58,9 @@ import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
+import * as SidebarStore from "../../sidebar/SidebarStore.ts";
+import * as ThreadUsage from "../../sidebar/ThreadUsage.ts";
+import * as UsageService from "../../usage/UsageService.ts";
 import {
   ProviderRuntimeIngestionLive,
   splitBufferedAssistantText,
@@ -328,6 +331,12 @@ describe("ProviderRuntimeIngestion", () => {
       // engine, and the snapshot query (reader).
       Layer.provideMerge(ThreadBackgroundLiveness.layer),
       Layer.provideMerge(ThreadPlanProgress.layer),
+      Layer.provideMerge(
+        ThreadUsage.layer.pipe(
+          Layer.provide(SidebarStore.layerMemory),
+          Layer.provide(UsageService.layerTest),
+        ),
+      ),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
@@ -480,6 +489,43 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
+  });
+
+  it("adds a finished turn's reported usage to the thread shell", async () => {
+    const harness = await createHarness();
+    const base = {
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      turnId: asTurnId("turn-usage"),
+    };
+    await harness.emitAndDrain([
+      { ...base, type: "turn.started", eventId: asEventId("evt-usage-started") },
+      {
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId("evt-usage-completed"),
+        payload: {
+          state: "completed",
+          totalCostUsd: 0.5,
+          tokenUsage: {
+            usageStatus: "complete",
+            usageScope: "main_agent",
+            hasSubagents: false,
+            inputTokens: 900,
+            cachedInputTokens: 600,
+            outputTokens: 100,
+          },
+        },
+      },
+    ]);
+
+    expect((await harness.readThreadShell()).usage).toEqual({
+      totalTokens: 1_000,
+      costUsd: 0.5,
+      turns: 1,
+      unpricedTurns: 0,
+    });
   });
 
   it.each([

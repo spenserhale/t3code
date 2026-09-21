@@ -6,7 +6,13 @@ import {
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
-import type { ContextMenuItem, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type {
+  ContextMenuItem,
+  EnvironmentId,
+  ThreadId,
+  ThreadUsageTotals,
+} from "@t3tools/contracts";
+import { formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/unstable/reactivity";
 import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
@@ -1246,4 +1252,15 @@ export function sortScopedProjectsForSidebar<
       left.environmentId.localeCompare(right.environmentId) ||
       left.id.localeCompare(right.id),
   );
+}
+
+/**
+ * `1.2M tokens · $3.40` for the thread hover card. The cost is an
+ * API-equivalent estimate; a thread whose turns all lack known rates reads
+ * "unpriced" instead of a misleading $0.00.
+ */
+export function threadUsageLabel(usage: ThreadUsageTotals | null | undefined): string | null {
+  if (!usage || usage.totalTokens === 0) return null;
+  const cost = usage.unpricedTurns === usage.turns ? "unpriced" : formatUsd(usage.costUsd);
+  return `${formatTokens(usage.totalTokens)} tokens · ${cost}`;
 }

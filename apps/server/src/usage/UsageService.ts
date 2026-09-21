@@ -26,6 +26,7 @@ import {
   type UsagePricing,
   type UsageSummary,
   type UsageSummaryInput,
+  type UsageTokenTotals,
   UsageReadError,
 } from "@t3tools/contracts";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -54,7 +55,13 @@ import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
 import { readAntigravityUsage } from "./antigravityUsageReader.ts";
 import { readCursorAccountUsage } from "./cursorUsageReader.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
-import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
+import {
+  createOverrideRateTable,
+  parseRateTable,
+  priceUsage as priceUsageAtRates,
+  type PricedUsage,
+  type RateTable,
+} from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -119,6 +126,12 @@ export class UsageService extends Context.Service<
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    /** Prices one block of tokens the way a summary would, custom prices included. */
+    readonly priceUsage: (
+      model: string,
+      totals: UsageTokenTotals,
+      reportedCostUsd: number | null,
+    ) => Effect.Effect<PricedUsage>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -146,6 +159,12 @@ export const layerTest = Layer.succeed(
         scanDurationMs: 0,
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
+    priceUsage: (_model, _totals, reportedCostUsd) =>
+      Effect.succeed(
+        reportedCostUsd === null
+          ? { costUsd: 0, costSource: "unpriced" }
+          : { costUsd: reportedCostUsd, costSource: "providerReported" },
+      ),
   }),
 );
 
@@ -892,7 +911,20 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  return { readSummary, refreshRates } as const;
+  const priceUsage = Effect.fn("UsageService.priceUsage")(function* (
+    model: string,
+    totals: UsageTokenTotals,
+    reportedCostUsd: number | null,
+  ) {
+    yield* ensureRates(false);
+    const overrides = yield* readSettings.pipe(
+      Effect.map((settings) => createOverrideRateTable(settings.usagePriceOverrides)),
+      Effect.orElseSucceed(() => undefined),
+    );
+    return priceUsageAtRates(rates, model, totals, reportedCostUsd, overrides);
+  });
+
+  return { readSummary, refreshRates, priceUsage } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

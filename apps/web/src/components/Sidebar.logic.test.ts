@@ -49,6 +49,7 @@ import {
   type SidebarListMarker,
   type SidebarSection,
   resolveSidebarDropVerb,
+  threadUsageLabel,
 } from "./Sidebar.logic";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
@@ -2558,4 +2559,23 @@ describe("navigation after parking a thread", () => {
       ).toBe(expected);
     },
   );
+});
+
+describe("threadUsageLabel", () => {
+  it("shows tokens and the estimated cost", () => {
+    expect(
+      threadUsageLabel({ totalTokens: 1_234_000, costUsd: 3.4, turns: 4, unpricedTurns: 1 }),
+    ).toBe("1.23M tokens · $3.40");
+  });
+
+  it("says unpriced rather than $0.00 when no turn had known rates", () => {
+    expect(threadUsageLabel({ totalTokens: 900, costUsd: 0, turns: 2, unpricedTurns: 2 })).toBe(
+      "900 tokens · unpriced",
+    );
+  });
+
+  it("stays hidden for threads with no reported usage", () => {
+    expect(threadUsageLabel(null)).toBeNull();
+    expect(threadUsageLabel(undefined)).toBeNull();
+  });
 });
