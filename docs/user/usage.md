@@ -108,7 +108,10 @@ OpenCode Go reports its session, weekly, and monthly allowance when OpenCode run
 the environment. T3 cannot report limits for external OpenCode servers because their credentials
 belong to the remote server. Limits need an OpenCode Go API key. A Console sign-in alone
 does not report them. Add your Go API key as `OPENCODE_API_KEY` in the OpenCode instance's
-**Environment variables**, then refresh provider status. Cursor reports
+**Environment variables**, then refresh provider status. A Z.ai Coding Plan signed in through
+OpenCode reports its 5-hour and weekly quota and its monthly tool allowance, along with any banked
+quota resets. **Use reset** spends the 5-hour reset unless the weekly quota is the fuller of the
+two, because a weekly reset also clears the 5-hour quota. Cursor reports
 its monthly allowance, including separate Auto and API usage, using the CLI login or
 `CURSOR_AUTH_TOKEN`. On macOS, this includes the default Keychain login after you enable Cursor
 usage. Keychain login is used for limits only with Cursor's default API endpoint. If you configure
