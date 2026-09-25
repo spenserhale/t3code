@@ -15,7 +15,7 @@
 import type { UsageBucket, UsageDay, UsageResolution, UsageTokenTotals } from "@t3tools/contracts";
 
 import { addTotals, EMPTY_TOTALS, type UsageRecord } from "./usageTranscripts.ts";
-import { cacheSavingsUsd, priceUsage, type PricedUsage, type RateTable } from "./usagePricing.ts";
+import { cacheSavingsUsd, priceUsage, type RateTable } from "./usagePricing.ts";
 
 /**
  * Formats an instant as a `YYYY-MM-DD` day in `timeZone`.
@@ -65,8 +65,8 @@ export interface AggregateOptions {
   readonly resolution?: UsageResolution;
   readonly sinceTimeMs?: number;
   readonly untilTimeMs?: number;
-  /** Sees every record that contributed, after dedupe and windowing, with its price. */
-  readonly onRecord?: (record: UsageRecord, priced: PricedUsage) => void;
+  /** Sees every record that contributed, after dedupe and windowing. */
+  readonly onRecord?: (record: UsageRecord) => void;
 }
 
 export interface AggregateResult {
@@ -176,7 +176,7 @@ export class UsageAggregator {
     if (priced.costSource === "unpriced") bucket.unpricedRecords += 1;
     if (priced.costSource === "providerReported") bucket.providerReportedRecords += 1;
     if (record.sessionId.length > 0) bucket.sessions.add(record.sessionId);
-    this.#options.onRecord?.(record, priced);
+    this.#options.onRecord?.(record);
     return true;
   }
 

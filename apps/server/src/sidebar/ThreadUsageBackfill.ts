@@ -11,21 +11,22 @@
  * start: a turn that is already recorded or was already searched for is
  * skipped, so a start with nothing new costs no transcript scan.
  *
- * Transcript usage includes subagents, so a backfilled turn can read higher
- * than one recorded live from the provider's main-agent report.
+ * Transcript usage includes subagents. Live Claude turns do too; live Codex
+ * and OpenCode turns count the main agent only, so a backfilled turn of theirs
+ * can read higher than a live one.
  *
  * @module ThreadUsageBackfill
  */
-import { UsageDay, type UsageCostSource, type UsageTokenTotals } from "@t3tools/contracts";
+import { UsageDay } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import { ProviderSessionDirectory } from "../provider/Services/ProviderSessionDirectory.ts";
-import { UsageService, type PricedSessionRecord } from "../usage/UsageService.ts";
-import { addTotals, EMPTY_TOTALS, totalTokens } from "../usage/usageTranscripts.ts";
-import { ThreadUsageService, type PricedTurn } from "./ThreadUsage.ts";
+import { UsageService, type SessionRecord } from "../usage/UsageService.ts";
+import { ThreadUsageService } from "./ThreadUsage.ts";
+import { mergeModelRows, type RecordedTurn } from "./turnUsage.ts";
 
 /** Matches how long the usage scan keeps transcript history. */
 const BACKFILL_DAYS = 90;
@@ -48,7 +49,10 @@ export interface TurnWindow {
   readonly turnId: string;
   readonly startedAtMs: number;
   readonly completedAt: string;
-  /** Already recorded or searched for; it still claims its records, but is not rebuilt. */
+  /**
+   * Already recorded or searched for, or not finished; it still claims its
+   * records, so they are not credited to the turn before it, but is not rebuilt.
+   */
   readonly settled: boolean;
 }
 
@@ -61,42 +65,28 @@ export interface TurnWindow {
 export function rebuildTurns(
   threadId: string,
   turns: readonly TurnWindow[],
-  records: readonly PricedSessionRecord[],
-): readonly PricedTurn[] {
+  records: readonly SessionRecord[],
+): readonly RecordedTurn[] {
   const ordered = turns.toSorted((left, right) => left.startedAtMs - right.startedAtMs);
-  const recordsByTurn = new Map<TurnWindow, PricedSessionRecord[]>();
+  const recordsByTurn = new Map<TurnWindow, SessionRecord[]>();
   for (const record of records) {
     const owner = ordered.findLast((turn) => turn.startedAtMs <= record.timestampMs);
     if (owner === undefined || owner.settled) continue;
     recordsByTurn.set(owner, [...(recordsByTurn.get(owner) ?? []), record]);
   }
 
-  return [...recordsByTurn].map(([turn, owned]): PricedTurn => {
-    let totals: UsageTokenTotals = EMPTY_TOTALS;
-    const tokensByModel = new Map<string, number>();
-    for (const record of owned) {
-      totals = addTotals(totals, record.totals);
-      tokensByModel.set(
-        record.model,
-        (tokensByModel.get(record.model) ?? 0) + totalTokens(record.totals),
-      );
-    }
-    const [model = ""] = [...tokensByModel].toSorted((left, right) => right[1] - left[1])[0] ?? [];
-    const costSource: UsageCostSource = owned.every(
-      (record) => record.priced.costSource === "unpriced",
-    )
-      ? "unpriced"
-      : "modelPriced";
-    return {
-      threadId,
-      turnId: turn.turnId,
-      completedAt: turn.completedAt,
-      model,
-      totals,
-      costUsd: owned.reduce((sum, record) => sum + record.priced.costUsd, 0),
-      costSource,
-    };
-  });
+  return [...recordsByTurn].map(([turn, owned]): RecordedTurn => ({
+    threadId,
+    turnId: turn.turnId,
+    completedAt: turn.completedAt,
+    models: mergeModelRows(
+      owned.map((record) => ({
+        model: record.model,
+        totals: record.totals,
+        reportedCostUsd: record.reportedCostUsd,
+      })),
+    ),
+  }));
 }
 
 const backfill = Effect.gen(function* () {
@@ -110,17 +100,18 @@ const backfill = Effect.gen(function* () {
     const sessionId = providerSessionId(binding.provider, binding.resumeCursor);
     if (sessionId === null) continue;
     const settled = threadUsage.settledTurnIds(binding.threadId);
-    // Running turns are left for live recording.
+    // Running turns are left for live recording, but still bound the turn before them.
     const turns = (yield* turnRepository.listByThreadId({ threadId: binding.threadId })).flatMap(
       (turn): TurnWindow[] =>
-        turn.turnId === null || turn.startedAt === null || turn.completedAt === null
+        turn.startedAt === null
           ? []
           : [
               {
-                turnId: turn.turnId,
+                turnId: turn.turnId ?? "",
                 startedAtMs: Date.parse(turn.startedAt),
-                completedAt: turn.completedAt,
-                settled: settled.has(turn.turnId),
+                completedAt: turn.completedAt ?? "",
+                settled:
+                  turn.turnId === null || turn.completedAt === null || settled.has(turn.turnId),
               },
             ],
     );

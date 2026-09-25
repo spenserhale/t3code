@@ -1938,10 +1938,10 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               turnId: eventTurnId,
               completedAt: now,
+              driver: event.provider,
               model: shell.value.modelSelection.model,
               usage: tokenUsage,
-              reportedCostUsd:
-                event.type === "turn.completed" ? (event.payload.totalCostUsd ?? null) : null,
+              modelUsage: event.type === "turn.completed" ? event.payload.modelUsage : undefined,
             });
           }
         }
@@ -2457,6 +2457,14 @@ const make = Effect.gen(function* () {
 
       if (event.type === "session.exited") {
         yield* clearTurnStateForSession(thread.id);
+      }
+
+      // A new provider session restarts Claude's running usage totals.
+      if (
+        (event.type === "session.started" || event.type === "session.exited") &&
+        Option.isSome(threadUsage)
+      ) {
+        threadUsage.value.forgetSession(thread.id);
       }
 
       if (event.type === "runtime.error") {

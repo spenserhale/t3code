@@ -2691,10 +2691,12 @@ const makeWsRpcLayer = (
             usage
               .readSummary(input)
               .pipe(
-                Effect.map((summary) =>
+                Effect.flatMap((summary) =>
                   input.includeThreads === true && Option.isSome(threadUsage)
-                    ? { ...summary, threads: threadUsage.value.listThreadUsage(input) }
-                    : summary,
+                    ? threadUsage.value
+                        .listThreadUsage(input)
+                        .pipe(Effect.map((threads) => ({ ...summary, threads })))
+                    : Effect.succeed(summary),
                 ),
               ),
             { "rpc.aggregate": "server" },

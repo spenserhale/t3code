@@ -524,7 +524,6 @@ describe("ProviderRuntimeIngestion", () => {
         eventId: asEventId("evt-usage-completed"),
         payload: {
           state: "completed",
-          totalCostUsd: 0.5,
           tokenUsage: {
             usageStatus: "complete",
             usageScope: "main_agent",
@@ -537,7 +536,8 @@ describe("ProviderRuntimeIngestion", () => {
       },
     ]);
 
-    const expected = { totalTokens: 1_000, costUsd: 0.5, turns: 1, unpricedTurns: 0 };
+    // The test rate table knows no models, so the turn counts tokens but no cost.
+    const expected = { totalTokens: 1_000, costUsd: 0, turns: 1, unpricedTurns: 1 };
     expect((await harness.readThreadShell()).usage).toEqual(expected);
     await Effect.runPromise(Scope.close(subscriptionScope, Exit.void));
     await Effect.runPromise(Fiber.await(watcher));

@@ -49,6 +49,29 @@ const MIGRATIONS: readonly string[] = [
     turn_id TEXT NOT NULL,
     PRIMARY KEY (thread_id, turn_id)
   ) WITHOUT ROWID;`,
+  // Tokens per turn and model, priced when read so custom prices and new rates
+  // reach past turns. Replaces thread_turn_usage, which is left in place for
+  // older builds. Its provider-reported costs are not carried over: Claude's
+  // were running session totals, not the turn's own cost.
+  `CREATE TABLE turn_model_usage (
+    thread_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    uncached_input_tokens INTEGER NOT NULL,
+    cached_input_tokens INTEGER NOT NULL,
+    cache_creation_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    reasoning_tokens INTEGER NOT NULL,
+    reported_cost_usd REAL,
+    PRIMARY KEY (thread_id, turn_id, model)
+  ) WITHOUT ROWID;
+  INSERT INTO turn_model_usage
+    SELECT thread_id, turn_id,
+           CASE WHEN instr(model, '[') > 0 THEN substr(model, 1, instr(model, '[') - 1) ELSE model END,
+           completed_at, uncached_input_tokens, cached_input_tokens,
+           cache_creation_tokens, output_tokens, reasoning_tokens, NULL
+    FROM thread_turn_usage;`,
 ];
 
 export class SidebarStore extends Context.Service<

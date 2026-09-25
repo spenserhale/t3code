@@ -1,54 +1,60 @@
 /**
- * ThreadUsageService - tokens and estimated cost per thread.
+ * ThreadUsageService - tokens and estimated cost per thread and per turn.
  *
- * Providers report main-agent usage when a turn ends. Ingestion hands each
- * report here; it is priced once, at the rates in effect when the turn ended,
- * and stored in the sidebar store. Per-thread totals are kept in memory so the
- * shell query can read them synchronously at mapping time, the same way it
- * reads plan progress.
+ * Ingestion hands each finished turn here. Its tokens are stored per model in
+ * the sidebar store, never its price: turns are priced when read, with the
+ * same rate table and custom prices as the usage breakdown, so a custom price
+ * or a rate refresh reaches every past turn too. Everything is also held in
+ * memory, so the shell query can read a thread's totals synchronously at
+ * mapping time, the way it reads plan progress.
  *
- * Only turns driven through T3 Code after this service existed are counted.
- * Providers that report no turn usage never appear.
+ * Only turns driven through T3 Code are counted. Providers that report no turn
+ * usage never appear.
  *
  * @module ThreadUsageService
  */
 import {
   ThreadId,
+  type ProviderDriverKind,
+  type ThreadUsageDetail,
   type ThreadUsageTotals,
   type TurnTokenUsage,
-  type UsageCostSource,
   type UsageSummaryInput,
   type UsageThreadTotals,
-  type UsageTokenTotals,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 
+import { ServerSettingsService } from "../serverSettings.ts";
 import { makeDayFormatter } from "../usage/usageAggregation.ts";
-import { UsageService } from "../usage/UsageService.ts";
-import { EMPTY_TOTALS, totalTokens } from "../usage/usageTranscripts.ts";
+import { UsageService, type UsageRates } from "../usage/UsageService.ts";
 import { SidebarStore } from "./SidebarStore.ts";
+import {
+  EMPTY_RATES,
+  claudeTurnRows,
+  mergeModelRows,
+  priceTurn,
+  readClaudeSessionTotals,
+  sumTurns,
+  turnUsageToTotals,
+  usageModelId,
+  type ClaudeSessionTotals,
+  type ModelUsageRow,
+  type RecordedTurn,
+} from "./turnUsage.ts";
 
 export interface TurnUsageReport {
   readonly threadId: string;
   readonly turnId: string;
   readonly completedAt: string;
+  readonly driver: ProviderDriverKind;
+  /** The thread's selected model, as the picker names it. */
   readonly model: string;
   readonly usage: TurnTokenUsage;
-  /** The provider's own figure for the turn, when it gives one. */
-  readonly reportedCostUsd: number | null;
-}
-
-export interface PricedTurn {
-  readonly threadId: string;
-  readonly turnId: string;
-  readonly completedAt: string;
-  readonly model: string;
-  readonly totals: UsageTokenTotals;
-  readonly costUsd: number;
-  readonly costSource: UsageCostSource;
+  /** Claude's running per-model session totals, when the provider sends them. */
+  readonly modelUsage?: unknown;
 }
 
 export class ThreadUsageService extends Context.Service<
@@ -56,42 +62,27 @@ export class ThreadUsageService extends Context.Service<
   {
     /** Counts a finished turn once; a repeated report for the same turn is ignored. */
     readonly recordTurn: (report: TurnUsageReport) => Effect.Effect<void>;
+    /** The thread's provider session ended or began, so running totals start over. */
+    readonly forgetSession: (threadId: string) => void;
+    /** Totals at the last rates seen. Synchronous, for the shell query. */
     readonly getThreadUsage: (threadId: string) => ThreadUsageTotals | null;
+    /** Every recorded turn of a thread, priced at the current rates. */
+    readonly readThreadUsage: (threadId: ThreadId) => Effect.Effect<ThreadUsageDetail>;
+    /** Per-thread totals for a usage window, bounded the way usage buckets are. */
+    readonly listThreadUsage: (
+      window: UsageSummaryInput,
+    ) => Effect.Effect<readonly UsageThreadTotals[]>;
     /**
-     * Adds turns that were already priced elsewhere (history backfill). Turns the
-     * store already holds are left alone. Returns how many were new.
+     * Adds turns rebuilt elsewhere (history backfill). Turns the store already
+     * holds are left alone. Returns how many were new.
      */
-    readonly importTurns: (turns: readonly PricedTurn[]) => number;
+    readonly importTurns: (turns: readonly RecordedTurn[]) => number;
     /** Turn ids a backfill can skip: already recorded, or already searched for. */
     readonly settledTurnIds: (threadId: string) => ReadonlySet<string>;
     /** Remembers that these turns were searched for, whatever was found. */
     readonly markTurnsChecked: (threadId: string, turnIds: readonly string[]) => void;
-    /** Per-thread totals for a usage window, bounded the way usage buckets are. */
-    readonly listThreadUsage: (window: UsageSummaryInput) => readonly UsageThreadTotals[];
   }
 >()("t3/sidebar/ThreadUsage/ThreadUsageService") {}
-
-/**
- * Turn usage counts cache reads and writes inside `inputTokens`; usage totals
- * keep them apart, because each is priced at its own rate.
- */
-export function turnUsageToTotals(usage: TurnTokenUsage): UsageTokenTotals | null {
-  if (usage.usageStatus === "unavailable") return null;
-  const cachedInputTokens = usage.cachedInputTokens ?? 0;
-  const cacheCreationTokens = usage.cacheCreationTokens ?? 0;
-  const outputTokens = usage.outputTokens ?? 0;
-  const totals = {
-    uncachedInputTokens: Math.max(
-      0,
-      (usage.inputTokens ?? 0) - cachedInputTokens - cacheCreationTokens,
-    ),
-    cachedInputTokens,
-    cacheCreationTokens,
-    outputTokens,
-    reasoningTokens: Math.min(outputTokens, usage.reasoningTokens ?? 0),
-  };
-  return totalTokens(totals) === 0 ? null : totals;
-}
 
 const integer = (value: unknown) => (typeof value === "number" ? Math.trunc(value) : 0);
 
@@ -100,158 +91,236 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const { database } = yield* SidebarStore;
     const usageService = yield* UsageService;
-    const totalsByThreadId = new Map<string, ThreadUsageTotals>();
+    const settings = yield* Effect.serviceOption(ServerSettingsService);
 
     if (database === null) {
       return {
         recordTurn: () => Effect.void,
+        forgetSession: () => undefined,
         getThreadUsage: () => null,
+        readThreadUsage: (threadId) => Effect.succeed({ threadId, turns: [] }),
+        listThreadUsage: () => Effect.succeed([]),
         importTurns: () => 0,
         settledTurnIds: () => new Set(),
         markTurnsChecked: () => undefined,
-        listThreadUsage: () => [],
       };
     }
 
-    const rows = database
-      .prepare(
-        `SELECT thread_id AS threadId,
-                SUM(uncached_input_tokens + cached_input_tokens + cache_creation_tokens + output_tokens) AS totalTokens,
-                SUM(cost_usd) AS costUsd,
-                COUNT(*) AS turns,
-                SUM(cost_source = 'unpriced') AS unpricedTurns
-         FROM thread_turn_usage GROUP BY thread_id`,
-      )
-      .all();
-    for (const row of rows) {
-      totalsByThreadId.set(String(row["threadId"]), {
-        totalTokens: integer(row["totalTokens"]),
-        costUsd: typeof row["costUsd"] === "number" ? row["costUsd"] : 0,
-        turns: integer(row["turns"]),
-        unpricedTurns: integer(row["unpricedTurns"]),
+    const turnsByThread = new Map<string, Map<string, RecordedTurn>>();
+    const remember = (turn: RecordedTurn) => {
+      const turns = turnsByThread.get(turn.threadId) ?? new Map<string, RecordedTurn>();
+      turns.set(turn.turnId, turn);
+      turnsByThread.set(turn.threadId, turns);
+    };
+
+    const loaded = new Map<string, RecordedTurn & { models: ModelUsageRow[] }>();
+    for (const row of database
+      .prepare(`SELECT * FROM turn_model_usage ORDER BY completed_at, thread_id, turn_id`)
+      .all()) {
+      const key = `${String(row["thread_id"])}\u0000${String(row["turn_id"])}`;
+      const turn = loaded.get(key) ?? {
+        threadId: String(row["thread_id"]),
+        turnId: String(row["turn_id"]),
+        completedAt: String(row["completed_at"]),
+        models: [],
+      };
+      turn.models.push({
+        model: String(row["model"]),
+        totals: {
+          uncachedInputTokens: integer(row["uncached_input_tokens"]),
+          cachedInputTokens: integer(row["cached_input_tokens"]),
+          cacheCreationTokens: integer(row["cache_creation_tokens"]),
+          outputTokens: integer(row["output_tokens"]),
+          reasoningTokens: integer(row["reasoning_tokens"]),
+        },
+        reportedCostUsd:
+          typeof row["reported_cost_usd"] === "number" ? row["reported_cost_usd"] : null,
       });
+      loaded.set(key, turn);
+    }
+    loaded.forEach(remember);
+
+    // Totals are cached per thread and dropped whenever the rates change.
+    let rates: UsageRates = EMPTY_RATES;
+    const totalsByThread = new Map<string, ThreadUsageTotals>();
+    const syncRates = usageService.currentRates.pipe(
+      Effect.tap((next) =>
+        Effect.sync(() => {
+          if (next.version === rates.version) return;
+          rates = next;
+          totalsByThread.clear();
+        }),
+      ),
+    );
+    // Shells built before the rates arrive would go out unpriced, so wait
+    // briefly for them: from disk this is instant. A cold table costs a network
+    // fetch, which finishes in the background instead of holding up the server.
+    yield* syncRates.pipe(Effect.timeout("2 seconds"), Effect.ignore);
+    if (rates === EMPTY_RATES) yield* Effect.forkScoped(syncRates);
+    // Custom prices apply as soon as they are saved.
+    if (settings._tag === "Some") {
+      yield* Stream.runForEach(settings.value.streamChanges, () => syncRates).pipe(
+        Effect.forkScoped,
+      );
     }
 
-    // A cold rate table costs a network fetch. Load it now so the first turn
-    // to finish is priced from memory instead of holding up its own settle.
-    yield* Effect.forkScoped(usageService.priceUsage("", EMPTY_TOTALS, null));
+    const getThreadUsage = (threadId: string): ThreadUsageTotals | null => {
+      const cached = totalsByThread.get(threadId);
+      if (cached) return cached;
+      const turns = turnsByThread.get(threadId);
+      if (turns === undefined || turns.size === 0) return null;
+      const totals = sumTurns([...turns.values()].map((turn) => priceTurn(turn, rates)));
+      if (rates !== EMPTY_RATES) totalsByThread.set(threadId, totals);
+      return totals;
+    };
 
     const insert = database.prepare(
-      `INSERT OR IGNORE INTO thread_turn_usage (
-         thread_id, turn_id, completed_at, model, uncached_input_tokens, cached_input_tokens,
-         cache_creation_tokens, output_tokens, reasoning_tokens, cost_usd, cost_source
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO turn_model_usage (
+         thread_id, turn_id, model, completed_at, uncached_input_tokens, cached_input_tokens,
+         cache_creation_tokens, output_tokens, reasoning_tokens, reported_cost_usd
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
 
-    const store = (turn: PricedTurn): boolean => {
-      const { changes } = insert.run(
-        turn.threadId,
-        turn.turnId,
-        turn.completedAt,
-        turn.model,
-        turn.totals.uncachedInputTokens,
-        turn.totals.cachedInputTokens,
-        turn.totals.cacheCreationTokens,
-        turn.totals.outputTokens,
-        turn.totals.reasoningTokens,
-        turn.costUsd,
-        turn.costSource,
-      );
-      if (changes === 0) return false;
-      const previous = totalsByThreadId.get(turn.threadId);
-      totalsByThreadId.set(turn.threadId, {
-        totalTokens: (previous?.totalTokens ?? 0) + totalTokens(turn.totals),
-        costUsd: (previous?.costUsd ?? 0) + turn.costUsd,
-        turns: (previous?.turns ?? 0) + 1,
-        unpricedTurns: (previous?.unpricedTurns ?? 0) + (turn.costSource === "unpriced" ? 1 : 0),
-      });
+    const store = (turn: RecordedTurn): boolean => {
+      if (turn.models.length === 0 || turnsByThread.get(turn.threadId)?.has(turn.turnId)) {
+        return false;
+      }
+      database.exec("BEGIN");
+      try {
+        for (const row of turn.models) {
+          insert.run(
+            turn.threadId,
+            turn.turnId,
+            row.model,
+            turn.completedAt,
+            row.totals.uncachedInputTokens,
+            row.totals.cachedInputTokens,
+            row.totals.cacheCreationTokens,
+            row.totals.outputTokens,
+            row.totals.reasoningTokens,
+            row.reportedCostUsd,
+          );
+        }
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+      remember(turn);
+      totalsByThread.delete(turn.threadId);
       return true;
     };
 
+    // Claude reports running totals for its session; each turn is the difference.
+    // They live as long as the provider session, which never outlives the server.
+    // A turn that is not recorded (interrupted without a result) is carried into
+    // the next recorded turn rather than lost.
+    const claudeSessions = new Map<string, ClaudeSessionTotals>();
+
     const recordTurn = Effect.fn("ThreadUsageService.recordTurn")(
       function* (report: TurnUsageReport) {
-        const totals = turnUsageToTotals(report.usage);
-        if (totals === null) return;
-        const priced = yield* usageService.priceUsage(report.model, totals, report.reportedCostUsd);
+        const session =
+          report.driver === "claudeAgent" ? readClaudeSessionTotals(report.modelUsage) : null;
+        let models: readonly ModelUsageRow[] = [];
+        if (session !== null) {
+          models = claudeTurnRows(session, claudeSessions.get(report.threadId));
+          claudeSessions.set(report.threadId, session);
+        }
+        if (models.length === 0) {
+          const totals = turnUsageToTotals(report.usage);
+          if (totals === null) return;
+          models = [
+            {
+              model: usageModelId(report.driver, report.model),
+              totals,
+              reportedCostUsd: null,
+            },
+          ];
+        }
         store({
           threadId: report.threadId,
           turnId: report.turnId,
           completedAt: report.completedAt,
-          model: report.model,
-          totals,
-          costUsd: priced.costUsd,
-          costSource: priced.costSource,
+          models: mergeModelRows(models),
         });
       },
       // Usage is an annotation: a full disk or a locked file must not fail the turn.
       Effect.catchCause((cause) => Effect.logWarning("thread usage was not recorded", cause)),
     );
 
-    const selectTurnIds = database.prepare(
-      `SELECT turn_id AS turnId FROM thread_turn_usage WHERE thread_id = ?
-       UNION SELECT turn_id FROM thread_turn_checked WHERE thread_id = ?`,
+    const readThreadUsage = (threadId: ThreadId) =>
+      syncRates.pipe(
+        Effect.map((current): ThreadUsageDetail => ({
+          threadId,
+          turns: [...(turnsByThread.get(threadId)?.values() ?? [])]
+            .map((turn) => priceTurn(turn, current))
+            .toSorted((left, right) => left.completedAt.localeCompare(right.completedAt)),
+        })),
+      );
+
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    const listThreadUsage = (window: UsageSummaryInput) =>
+      syncRates.pipe(
+        Effect.map((current): readonly UsageThreadTotals[] => {
+          const sinceMs = Date.parse(window.sinceTime ?? `${window.sinceDay}T00:00:00Z`);
+          const untilMs = Date.parse(window.untilTime ?? `${window.untilDay}T00:00:00Z`);
+          if (Number.isNaN(sinceMs) || Number.isNaN(untilMs)) return [];
+          const hourly = window.sinceTime !== undefined && window.untilTime !== undefined;
+          const toDay = makeDayFormatter(window.timeZone);
+          // A zone is at most 14 hours from UTC, so a day either side covers every
+          // turn the day comparison below can admit.
+          const lowerMs = hourly ? sinceMs : sinceMs - DAY_MS;
+          const upperMs = hourly ? untilMs : untilMs + 2 * DAY_MS;
+          const threads: UsageThreadTotals[] = [];
+          for (const [threadId, turns] of turnsByThread) {
+            const inWindow = [...turns.values()].filter((turn) => {
+              const completedMs = Date.parse(turn.completedAt);
+              if (!(completedMs >= lowerMs && completedMs < upperMs)) return false;
+              if (hourly) return true;
+              const day = toDay(completedMs);
+              return day >= window.sinceDay && day <= window.untilDay;
+            });
+            if (inWindow.length === 0) continue;
+            const priced = inWindow.map((turn) => priceTurn(turn, current));
+            threads.push({
+              threadId: ThreadId.make(threadId),
+              ...sumTurns(priced),
+              lastTurnAt: inWindow.reduce(
+                (latest, turn) => (turn.completedAt > latest ? turn.completedAt : latest),
+                "",
+              ),
+              models: [...new Set(inWindow.flatMap((turn) => turn.models.map((row) => row.model)))],
+            });
+          }
+          return threads;
+        }),
+      );
+
+    const selectChecked = database.prepare(
+      "SELECT turn_id AS turnId FROM thread_turn_checked WHERE thread_id = ?",
     );
     const insertChecked = database.prepare(
       "INSERT OR IGNORE INTO thread_turn_checked (thread_id, turn_id) VALUES (?, ?)",
     );
 
-    const DAY_MS = 24 * 60 * 60 * 1000;
-    // A zone is at most 14 hours from UTC, so a day either side covers every
-    // turn the day comparison below can admit.
-    const selectWindow = database.prepare(
-      `SELECT thread_id AS threadId, completed_at AS completedAt, model,
-              uncached_input_tokens + cached_input_tokens + cache_creation_tokens + output_tokens AS tokens,
-              cost_usd AS costUsd, cost_source AS costSource
-       FROM thread_turn_usage WHERE completed_at >= ? AND completed_at < ? ORDER BY completed_at`,
-    );
-
-    const listThreadUsage = (window: UsageSummaryInput): readonly UsageThreadTotals[] => {
-      const sinceMs = Date.parse(window.sinceTime ?? `${window.sinceDay}T00:00:00Z`);
-      const untilMs = Date.parse(window.untilTime ?? `${window.untilDay}T00:00:00Z`);
-      if (Number.isNaN(sinceMs) || Number.isNaN(untilMs)) return [];
-      const hourly = window.sinceTime !== undefined && window.untilTime !== undefined;
-      const toDay = makeDayFormatter(window.timeZone);
-      const threads = new Map<ThreadId, UsageThreadTotals>();
-      const rows = selectWindow.all(
-        DateTime.formatIso(DateTime.makeUnsafe(hourly ? sinceMs : sinceMs - DAY_MS)),
-        DateTime.formatIso(DateTime.makeUnsafe(hourly ? untilMs : untilMs + 2 * DAY_MS)),
-      );
-      for (const row of rows) {
-        const completedAt = String(row["completedAt"]);
-        if (!hourly) {
-          const day = toDay(Date.parse(completedAt));
-          if (day < window.sinceDay || day > window.untilDay) continue;
-        }
-        const threadId = ThreadId.make(String(row["threadId"]));
-        const model = String(row["model"]);
-        const previous = threads.get(threadId);
-        threads.set(threadId, {
-          threadId,
-          totalTokens: (previous?.totalTokens ?? 0) + integer(row["tokens"]),
-          costUsd:
-            (previous?.costUsd ?? 0) + (typeof row["costUsd"] === "number" ? row["costUsd"] : 0),
-          turns: (previous?.turns ?? 0) + 1,
-          unpricedTurns:
-            (previous?.unpricedTurns ?? 0) + (row["costSource"] === "unpriced" ? 1 : 0),
-          lastTurnAt: completedAt,
-          models: previous?.models.includes(model)
-            ? previous.models
-            : [...(previous?.models ?? []), model],
-        });
-      }
-      return [...threads.values()];
-    };
-
     return {
       recordTurn,
-      getThreadUsage: (threadId) => totalsByThreadId.get(threadId) ?? null,
+      forgetSession: (threadId) => {
+        claudeSessions.delete(threadId);
+      },
+      getThreadUsage,
+      readThreadUsage,
+      listThreadUsage,
       importTurns: (turns) => turns.filter(store).length,
       settledTurnIds: (threadId) =>
-        new Set(selectTurnIds.all(threadId, threadId).map((row) => String(row["turnId"]))),
+        new Set([
+          ...(turnsByThread.get(threadId)?.keys() ?? []),
+          ...selectChecked.all(threadId).map((row) => String(row["turnId"])),
+        ]),
       markTurnsChecked: (threadId, turnIds) => {
         for (const turnId of turnIds) insertChecked.run(threadId, turnId);
       },
-      listThreadUsage,
     };
   }),
 );

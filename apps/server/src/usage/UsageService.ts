@@ -56,13 +56,7 @@ import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
 import { readAntigravityUsage } from "./antigravityUsageReader.ts";
 import { readCursorAccountUsage } from "./cursorUsageReader.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
-import {
-  createOverrideRateTable,
-  parseRateTable,
-  priceUsage as priceUsageAtRates,
-  type PricedUsage,
-  type RateTable,
-} from "./usagePricing.ts";
+import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -121,12 +115,19 @@ const decodeCachedSources = Schema.decodeUnknownOption(
   Schema.Struct({ sources: Schema.Record(Schema.String, CachedSource) }),
 );
 
-export interface PricedSessionRecord {
+export interface SessionRecord {
   readonly sessionId: string;
   readonly timestampMs: number;
   readonly model: string;
   readonly totals: UsageTokenTotals;
-  readonly priced: PricedUsage;
+  readonly reportedCostUsd: number | null;
+}
+
+/** Rates to price with `usagePricing.priceUsage`; `version` changes whenever either table does. */
+export interface UsageRates {
+  readonly table: RateTable;
+  readonly overrides: RateTable;
+  readonly version: string;
 }
 
 export class UsageService extends Context.Service<
@@ -136,20 +137,16 @@ export class UsageService extends Context.Service<
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
     /**
-     * Priced transcript records of the given provider sessions since `sinceDay`
+     * Transcript records of the given provider sessions since `sinceDay`
      * (UTC), deduplicated exactly as a summary would.
      */
     readonly readSessionRecords: (input: {
       readonly sessionIds: ReadonlySet<string>;
       readonly sinceDay: UsageDay;
       readonly untilDay: UsageDay;
-    }) => Effect.Effect<readonly PricedSessionRecord[], UsageReadError>;
-    /** Prices one block of tokens the way a summary would, custom prices included. */
-    readonly priceUsage: (
-      model: string,
-      totals: UsageTokenTotals,
-      reportedCostUsd: number | null,
-    ) => Effect.Effect<PricedUsage>;
+    }) => Effect.Effect<readonly SessionRecord[], UsageReadError>;
+    /** The rates a summary would price with right now, custom prices included. */
+    readonly currentRates: Effect.Effect<UsageRates>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -178,12 +175,7 @@ export const layerTest = Layer.succeed(
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
     readSessionRecords: () => Effect.succeed([]),
-    priceUsage: (_model, _totals, reportedCostUsd) =>
-      Effect.succeed(
-        reportedCostUsd === null
-          ? { costUsd: 0, costSource: "unpriced" }
-          : { costUsd: reportedCostUsd, costSource: "providerReported" },
-      ),
+    currentRates: Effect.succeed({ table: new Map(), overrides: new Map(), version: "test" }),
   }),
 );
 
@@ -713,7 +705,7 @@ export const make = Effect.gen(function* () {
   const scanSummary = Effect.fn("UsageService.scanSummary")(function* (
     input: UsageSummaryInput,
     settings: ServerSettingsValue,
-    onRecord?: (record: UsageRecord, priced: PricedUsage) => void,
+    onRecord?: (record: UsageRecord) => void,
   ) {
     if (input.sinceDay > input.untilDay) {
       return yield* new UsageReadError({
@@ -932,43 +924,54 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  const priceUsage = Effect.fn("UsageService.priceUsage")(function* (
-    model: string,
-    totals: UsageTokenTotals,
-    reportedCostUsd: number | null,
-  ) {
+  const currentRates = Effect.gen(function* () {
     yield* ensureRates(false);
     const overrides = yield* readSettings.pipe(
-      Effect.map((settings) => createOverrideRateTable(settings.usagePriceOverrides)),
-      Effect.orElseSucceed(() => undefined),
+      Effect.map((settings) => settings.usagePriceOverrides),
+      Effect.orElseSucceed(() => ({})),
     );
-    return priceUsageAtRates(rates, model, totals, reportedCostUsd, overrides);
-  });
+    return {
+      table: rates,
+      overrides: createOverrideRateTable(overrides),
+      version: [
+        ratesFetchedAtMs ?? "none",
+        ...Object.entries(overrides).map(([model, price]) =>
+          [
+            model,
+            price.inputCostPerMillionTokens,
+            price.outputCostPerMillionTokens,
+            price.cacheReadCostPerMillionTokens,
+            price.cacheWriteCostPerMillionTokens,
+          ].join(":"),
+        ),
+      ].join("|"),
+    };
+  }).pipe(Effect.withSpan("UsageService.currentRates"));
 
   const readSessionRecords = Effect.fn("UsageService.readSessionRecords")(function* (input: {
     readonly sessionIds: ReadonlySet<string>;
     readonly sinceDay: UsageDay;
     readonly untilDay: UsageDay;
   }) {
-    const records: PricedSessionRecord[] = [];
+    const records: SessionRecord[] = [];
     yield* scanSummary(
       { timeZone: "UTC", sinceDay: input.sinceDay, untilDay: input.untilDay },
       yield* readSettings,
-      (record, priced) => {
+      (record) => {
         if (!input.sessionIds.has(record.sessionId)) return;
         records.push({
           sessionId: record.sessionId,
           timestampMs: record.timestampMs,
           model: record.model,
           totals: record.totals,
-          priced,
+          reportedCostUsd: record.reportedCostUsd,
         });
       },
     );
     return records;
   });
 
-  return { readSummary, refreshRates, priceUsage, readSessionRecords } as const;
+  return { readSummary, refreshRates, currentRates, readSessionRecords } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

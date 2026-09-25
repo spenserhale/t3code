@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import type { PricedSessionRecord } from "../usage/UsageService.ts";
+import type { SessionRecord } from "../usage/UsageService.ts";
 import { providerSessionId, rebuildTurns, type TurnWindow } from "./ThreadUsageBackfill.ts";
 
 const at = (time: string) => Date.parse(`2026-09-01T${time}Z`);
@@ -16,8 +16,8 @@ const record = (
   time: string,
   model: string,
   outputTokens: number,
-  costUsd: number | null,
-): PricedSessionRecord => ({
+  reportedCostUsd: number | null = null,
+): SessionRecord => ({
   sessionId: "session-1",
   timestampMs: at(time),
   model,
@@ -28,11 +28,15 @@ const record = (
     outputTokens,
     reasoningTokens: 0,
   },
-  priced:
-    costUsd === null
-      ? { costUsd: 0, costSource: "unpriced" }
-      : { costUsd, costSource: "modelPriced" },
+  reportedCostUsd,
 });
+
+const summary = (turns: ReturnType<typeof rebuildTurns>) =>
+  turns.map((entry) => [
+    entry.turnId,
+    entry.completedAt,
+    entry.models.map((model) => [model.model, model.totals.outputTokens, model.reportedCostUsd]),
+  ]);
 
 describe("rebuildTurns", () => {
   it("gives each record to the turn running or last finished at that time", () => {
@@ -41,41 +45,38 @@ describe("rebuildTurns", () => {
       [turn("turn-2", "11:00:00", "11:01:00"), turn("turn-1", "10:00:00", "10:05:00")],
       [
         // Before the thread's first turn: not driven through T3 Code.
-        record("09:00:00", "big-model", 900, 9),
-        record("10:01:00", "big-model", 100, 1),
+        record("09:00:00", "big-model", 900),
+        record("10:01:00", "big-model", 100),
         // A subagent still working after turn-1 finished.
         record("10:30:00", "small-model", 5, 0.25),
-        record("11:00:30", "big-model", 20, null),
+        record("10:40:00", "big-model", 7),
+        record("11:00:30", "big-model", 20),
       ],
     );
 
-    assert.deepStrictEqual(
-      rebuilt.map((entry) => [
-        entry.turnId,
-        entry.model,
-        entry.totals.outputTokens,
-        entry.costUsd,
-        entry.costSource,
-        entry.completedAt,
-      ]),
+    assert.deepStrictEqual(summary(rebuilt), [
       [
-        ["turn-1", "big-model", 105, 1.25, "modelPriced", "2026-09-01T10:05:00Z"],
-        ["turn-2", "big-model", 20, 0, "unpriced", "2026-09-01T11:01:00Z"],
+        "turn-1",
+        "2026-09-01T10:05:00Z",
+        [
+          ["big-model", 107, null],
+          ["small-model", 5, 0.25],
+        ],
       ],
-    );
+      ["turn-2", "2026-09-01T11:01:00Z", [["big-model", 20, null]]],
+    ]);
   });
 
   it("leaves a settled turn's records with it instead of handing them to a neighbour", () => {
     const rebuilt = rebuildTurns(
       "thread-1",
       [turn("turn-1", "10:00:00", "10:05:00", true), turn("turn-2", "11:00:00", "11:01:00")],
-      [record("10:30:00", "big-model", 100, 1), record("11:00:30", "big-model", 20, 2)],
+      [record("10:30:00", "big-model", 100), record("11:00:30", "big-model", 20)],
     );
 
-    assert.deepStrictEqual(
-      rebuilt.map((entry) => [entry.turnId, entry.costUsd]),
-      [["turn-2", 2]],
-    );
+    assert.deepStrictEqual(summary(rebuilt), [
+      ["turn-2", "2026-09-01T11:01:00Z", [["big-model", 20, null]]],
+    ]);
   });
 
   it("produces nothing for a turn the transcripts do not cover", () => {

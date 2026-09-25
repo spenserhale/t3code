@@ -11,7 +11,7 @@
  */
 import * as Schema from "effect/Schema";
 
-import { ForwardCompatibleArray, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ForwardCompatibleArray, NonNegativeInt, ThreadId, TrimmedNonEmptyString, TurnId } from "./baseSchemas.ts";
 
 /**
  * Bumped whenever the shape of {@link UsageSummary} changes incompatibly. The
@@ -215,6 +215,39 @@ export const UsageThreadTotals = Schema.Struct({
   models: Schema.Array(Schema.String),
 });
 export type UsageThreadTotals = typeof UsageThreadTotals.Type;
+
+export const ThreadUsageInput = Schema.Struct({ threadId: ThreadId });
+export type ThreadUsageInput = typeof ThreadUsageInput.Type;
+
+/**
+ * One model's share of a turn. `model` is the id the usage breakdown and custom
+ * prices use, so a custom price for it applies here too; `customPrice` says it did.
+ */
+export const ThreadUsageModel = Schema.Struct({
+  model: Schema.String,
+  totalTokens: NonNegativeInt,
+  costUsd: Schema.Finite,
+  costSource: UsageCostSource,
+  customPrice: Schema.Boolean,
+});
+export type ThreadUsageModel = typeof ThreadUsageModel.Type;
+
+/** A finished turn. Priced when read, so later price changes apply to it. */
+export const ThreadTurnUsage = Schema.Struct({
+  turnId: TurnId,
+  completedAt: Schema.String,
+  totalTokens: NonNegativeInt,
+  costUsd: Schema.Finite,
+  models: Schema.Array(ThreadUsageModel),
+});
+export type ThreadTurnUsage = typeof ThreadTurnUsage.Type;
+
+export const ThreadUsageDetail = Schema.Struct({
+  threadId: ThreadId,
+  /** Oldest first. Turns with no reported usage are absent. */
+  turns: Schema.Array(ThreadTurnUsage),
+});
+export type ThreadUsageDetail = typeof ThreadUsageDetail.Type;
 
 export const UsageSummary = Schema.Struct({
   contractVersion: Schema.Number,
