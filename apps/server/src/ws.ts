@@ -2701,6 +2701,14 @@ const makeWsRpcLayer = (
               ),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverGetThreadUsage]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetThreadUsage,
+            Option.isSome(threadUsage)
+              ? threadUsage.value.readThreadUsage(input.threadId)
+              : Effect.succeed({ threadId: input.threadId, turns: [] }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.serverRefreshUsageRates]: (_input) =>
           observeRpcEffect(WS_METHODS.serverRefreshUsageRates, usage.refreshRates, {
             "rpc.aggregate": "server",

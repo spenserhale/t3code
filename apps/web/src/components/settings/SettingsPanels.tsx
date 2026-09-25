@@ -598,6 +598,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.contextWindowMeterEnabled !== DEFAULT_UNIFIED_SETTINGS.contextWindowMeterEnabled
         ? ["Context window indicator"]
         : []),
+      ...(settings.usageCostAnalysisEnabled !== DEFAULT_UNIFIED_SETTINGS.usageCostAnalysisEnabled
+        ? ["Usage and cost"]
+        : []),
       ...(settings.responseStreamingMode !== DEFAULT_UNIFIED_SETTINGS.responseStreamingMode
         ? ["Response streaming"]
         : []),
@@ -668,6 +671,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.proactivePanelsEnabled,
       settings.environmentIdentificationMode,
       settings.contextWindowMeterEnabled,
+      settings.usageCostAnalysisEnabled,
       settings.fontFamilyCode,
       settings.fontFamilyComposer,
       settings.fontFamilySans,
@@ -776,6 +780,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sendShortcut: DEFAULT_UNIFIED_SETTINGS.sendShortcut,
       followUpBehavior: DEFAULT_UNIFIED_SETTINGS.followUpBehavior,
       contextWindowMeterEnabled: DEFAULT_UNIFIED_SETTINGS.contextWindowMeterEnabled,
+      usageCostAnalysisEnabled: DEFAULT_UNIFIED_SETTINGS.usageCostAnalysisEnabled,
       environmentIdentificationMode: DEFAULT_UNIFIED_SETTINGS.environmentIdentificationMode,
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
       panelAnimationDurationMs: DEFAULT_UNIFIED_SETTINGS.panelAnimationDurationMs,
@@ -2599,6 +2604,33 @@ export function GeneralSettingsPanel() {
                 updateSettings({ proactivePanelsEnabled: Boolean(checked) })
               }
               aria-label="Proactive panels"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("usage-and-cost")}
+          description="Show tokens and estimated cost after each turn's “Worked for” summary, in thread hover cards, and as a Thread breakdown on Usage. Costs follow your custom model prices."
+          resetAction={
+            settings.usageCostAnalysisEnabled !==
+            DEFAULT_UNIFIED_SETTINGS.usageCostAnalysisEnabled ? (
+              <SettingResetButton
+                label="usage and cost"
+                onClick={() =>
+                  updateSettings({
+                    usageCostAnalysisEnabled: DEFAULT_UNIFIED_SETTINGS.usageCostAnalysisEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.usageCostAnalysisEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ usageCostAnalysisEnabled: Boolean(checked) })
+              }
+              aria-label="Usage and cost"
             />
           }
         />

@@ -5,6 +5,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   ProviderDriverKind,
   USAGE_CONTRACT_VERSION,
+  type UnifiedSettings,
   type EnvironmentId,
   type UsageProviderKind,
 } from "@t3tools/contracts";
@@ -87,12 +88,16 @@ import {
 } from "./usageShortcuts";
 import { useEscapeToGoBack } from "../../hooks/useNavigateBack";
 import { UsageThreadTable } from "./UsageThreadTable";
+import { usePrimarySettings } from "../../hooks/useSettings";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
 import {
   readUsagePagePreferences,
   saveUsagePagePreferences,
   type UsagePagePreferences,
 } from "./usagePagePreferences";
+
+const selectUsageCostAnalysisEnabled = (settings: UnifiedSettings) =>
+  settings.usageCostAnalysisEnabled;
 
 function isUsageMetric(value: string | null | undefined): value is UsageMetric {
   return METRIC_OPTIONS.some((option) => option.value === value);
@@ -127,7 +132,11 @@ export function UsagePage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
   const refreshingRef = useRef(false);
-  const [breakdown, setBreakdown] = useState<"model" | "thread" | "time">("model");
+  const [selectedBreakdown, setBreakdown] = useState<"model" | "thread" | "time">("model");
+  // Thread totals are part of the Usage & cost setting; without it the toggle has no Thread.
+  const threadBreakdown = usePrimarySettings(selectUsageCostAnalysisEnabled) === true;
+  const breakdown =
+    selectedBreakdown === "thread" && !threadBreakdown ? "model" : selectedBreakdown;
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const { days: windowDays, window } = windowSelection;
@@ -653,11 +662,13 @@ export function UsagePage() {
                           { value: "thread", label: "Thread" },
                           { value: "time", label: isPast24Hours ? "Hour" : "Day" },
                         ] as const
-                      ).map((option) => (
-                        <Toggle key={option.value} value={option.value}>
-                          {option.label}
-                        </Toggle>
-                      ))}
+                      )
+                        .filter((option) => option.value !== "thread" || threadBreakdown)
+                        .map((option) => (
+                          <Toggle key={option.value} value={option.value}>
+                            {option.label}
+                          </Toggle>
+                        ))}
                     </ToggleGroup>
                   </div>
 

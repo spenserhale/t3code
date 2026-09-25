@@ -41,11 +41,27 @@ results appear as each one responds.
 If recent work is missing or a new model shows no cost, refresh to rescan session history and
 update model pricing.
 
-Switch the breakdown to **Thread** to see which threads used the most, and select a column heading
-to sort by it. Thread figures count the turns you ran through T3 Code, starting from when the
-server began tracking them, so they are lower than the model breakdown, which also includes work
-done directly in the provider's own tools. The same tokens and estimated cost appear when you
-hover a thread in the sidebar. Providers that do not report usage per turn show no thread figures.
+## See usage per thread and turn
+
+Turn on **Settings → General → Usage and cost** to see tokens and estimated cost where you work.
+It is off by default. The token count is marked with a hexagon, the way `$` marks dollars:
+
+- A turn's "Worked for" summary adds what it used, for example `Worked for 5m 33s using ⬡ 264K,
+$0.14*`. Hover it to see each model's share and where its price came from. Short answers that
+  show no "Worked for" summary show no usage either.
+- Hovering a thread in the sidebar shows its total.
+- **Usage** gains a **Thread** breakdown. Select a column heading to sort by it.
+
+The asterisk marks an estimate at API prices. If you use a subscription, your bill is different.
+
+Thread figures count the turns you ran through T3 Code, so they are lower than the model breakdown,
+which also includes work done directly in the provider's own tools. Grok turns appear after the
+server next restarts, when they are read from Grok's session history. Cursor and Antigravity
+threads show none.
+
+Turns are priced with the same rates as the rest of Usage, including your custom model prices. A
+price you add later applies to past turns too. A model with no known price shows its tokens but
+no cost until you add one.
 
 ## Set custom model prices
 

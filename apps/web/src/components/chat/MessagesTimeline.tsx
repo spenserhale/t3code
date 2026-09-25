@@ -209,6 +209,7 @@ import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Spinner } from "../ui/spinner";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { TurnUsageSummary } from "../usage/ThreadUsageDisplay";
 import { WorktreeSetupCard } from "./WorktreeSetupCard";
 import {
   ContextChipPopover as UserMessageContextPopover,
@@ -2367,6 +2368,7 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
         className="flex cursor-pointer select-none items-center gap-1 rounded-md px-1 text-sm leading-relaxed text-muted-foreground tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
       >
         <span>{row.label}</span>
+        <TurnUsageSummary threadRef={ctx.threadRef} turnId={row.turnId} />
         <Icon className="size-3.5" />
       </button>
       <TimelineRowTimestamp

@@ -348,6 +348,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["automatically open diff pull request pr right panel agent completion"],
   },
   {
+    id: "usage-and-cost",
+    title: "Usage and cost",
+    to: "/settings/general",
+    searchTerms: ["tokens cost price estimate spend worked for thread turn billing"],
+  },
+  {
     id: "skills-in-slash-menu",
     title: "Show skills in slash menu",
     to: "/settings/general",

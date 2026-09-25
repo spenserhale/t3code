@@ -47,7 +47,6 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
   AlarmClockIcon,
   AlarmClockOffIcon,
-  ChartNoAxesColumnIcon,
   CheckIcon,
   ChevronDownIcon,
   CircleAlertIcon,
@@ -156,6 +155,7 @@ import { cn } from "~/lib/utils";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
 import { buildThreadActionMenuItems } from "./threadActionMenu.logic";
+import { ThreadUsageHoverRow } from "./usage/ThreadUsageDisplay";
 import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
@@ -187,7 +187,6 @@ import {
   sortLogicalProjectsForSidebar,
   sortPinnedThreadsForSidebar,
   sortThreadsForSidebar,
-  threadUsageLabel,
   useRetainedValue,
   useSidebarRowSubscriptionLease,
   useThreadJumpHintVisibility,
@@ -350,7 +349,6 @@ function SidebarThreadTooltip({
 }) {
   const driverKind = providerEntry?.driverKind ?? null;
   const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
-  const usageLabel = threadUsageLabel(thread.usage);
   return (
     <TooltipPopup side="right" align="start" sideOffset={4} variant="glass">
       {/* The viewport's own inset (py-1 px-2) plus this one make the floating inset. */}
@@ -409,15 +407,9 @@ function SidebarThreadTooltip({
               </div>
             </div>
           ) : null}
-          {usageLabel ? (
-            <div className="flex min-w-0 items-center gap-2">
-              <ChartNoAxesColumnIcon
-                aria-hidden
-                className="size-3 shrink-0 stroke-muted-foreground"
-              />
-              <div className="min-w-0 truncate text-foreground/75 tabular-nums">{usageLabel}</div>
-            </div>
-          ) : null}
+          <ThreadUsageHoverRow
+            threadRef={{ environmentId: thread.environmentId, threadId: thread.id }}
+          />
           {terminalStatus ? (
             <div className="flex min-w-0 items-center gap-2">
               <TerminalIcon
