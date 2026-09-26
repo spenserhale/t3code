@@ -19,8 +19,8 @@
 # the GitHub https URL), SECODE_BRANCH (default secode), SECODE_APPLICATIONS_DIR
 # (default /Applications).
 #
-# This file lives on `fork-infra` and is merged into `secode`. It is fork-only
-# and never goes upstream.
+# Windows uses install.ps1 instead. This file lives on `fork-infra` and is
+# merged into `secode`. It is fork-only and never goes upstream.
 set -euo pipefail
 
 SECODE_HOME="${SECODE_HOME:-$HOME/.secode}"
@@ -86,6 +86,9 @@ corepack prepare "$(node -p 'require("./package.json").packageManager')" --activ
 # --- dependencies ---------------------------------------------------------
 step "installing dependencies"
 pnpm install
+# The build script shells out to repo-local bins such as `vp`. pnpm scripts put
+# node_modules/.bin on PATH themselves; plain `node` does not.
+PATH="$SRC/node_modules/.bin:$PATH"
 
 if [ "$build" = 0 ]; then
   echo; echo "Dependencies installed in $SRC. Skipped the desktop build (--no-build)."
@@ -94,7 +97,8 @@ fi
 
 if [ "$(uname -s)" != "Darwin" ]; then
   echo
-  echo "Desktop build and install are only automated on macOS. From $SRC run"
+  echo "Desktop build and install are automated on macOS here and on Windows by"
+  echo "install.ps1. From $SRC run"
   echo "  pnpm dist:desktop:linux    or    pnpm dev:desktop"
   exit 0
 fi
