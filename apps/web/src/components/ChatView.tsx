@@ -244,6 +244,8 @@ import {
 } from "lucide-react";
 import { cn, randomHex, randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { ContinueInProviderPicker } from "./chat/ContinueInProvider";
+import { shouldOfferContinueInProvider } from "./chat/ContinueInProvider.logic";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
 import { type NewProjectScriptInput } from "./ProjectScriptsControl";
 import {
@@ -2612,6 +2614,43 @@ export default function ChatView(props: ChatViewProps) {
   });
   const pullRequestsCapabilityKnown = serverConfig !== null;
   const supportsPullRequests = serverConfig?.environment.capabilities.pullRequests === true;
+  const continueInProviderInstanceId =
+    activeServerThread?.session?.providerInstanceId ??
+    activeServerThread?.modelSelection.instanceId;
+  const continueInProviderEnvironmentId = activeServerThread?.environmentId;
+  const continueInProviderThreadId = activeServerThread?.id;
+  const offerContinueInProvider =
+    serverConfig?.environment.capabilities.threadContinueInProvider === true &&
+    shouldOfferContinueInProvider({
+      error: visibleThreadError,
+      usageLimits: providerStatuses.find(
+        (provider) => provider.instanceId === continueInProviderInstanceId,
+      )?.usageLimits,
+    });
+  // Memoized so the banner does not re-render on every streamed token.
+  const continueInProviderAction = useMemo(
+    () =>
+      offerContinueInProvider &&
+      continueInProviderEnvironmentId &&
+      continueInProviderThreadId &&
+      continueInProviderInstanceId ? (
+        <ContinueInProviderPicker
+          environmentId={continueInProviderEnvironmentId}
+          threadId={continueInProviderThreadId}
+          currentInstanceId={continueInProviderInstanceId}
+          providers={providerStatuses}
+          settings={settings}
+        />
+      ) : undefined,
+    [
+      continueInProviderEnvironmentId,
+      continueInProviderInstanceId,
+      continueInProviderThreadId,
+      offerContinueInProvider,
+      providerStatuses,
+      settings,
+    ],
+  );
   const attachmentEnvironmentConfig = environmentById.get(environmentId)?.serverConfig ?? null;
   const attachmentUploadsCapabilityKnown = attachmentEnvironmentConfig !== null;
   const supportsQuestionAttachments =
@@ -9811,6 +9850,7 @@ export default function ChatView(props: ChatViewProps) {
               <ThreadErrorBanner
                 error={visibleThreadError}
                 chatGptUsageLimit={isChatGptUsageLimitError(threadActivities, visibleThreadError)}
+                action={continueInProviderAction}
                 onDismiss={() => {
                   setThreadError(activeThread.id, null);
                   dismissThreadErrorBannerForSession(threadErrorBannerKey);
