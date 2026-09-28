@@ -3899,6 +3899,10 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
   const stagePackageJson: StagePackageJson = {
+    // Must stay "t3code": Electron keeps Chromium's Local State (which holds
+    // the safeStorage key) under %APPDATA%\<name>, and SECode shares encrypted
+    // state in ~/.t3 with the official build. The Windows install folder is
+    // moved off the official build's by apps/desktop/resources/installer.nsh instead.
     name: "t3code",
     version: appVersion,
     buildVersion: appVersion,
