@@ -20,6 +20,7 @@ describe("isUsageLimitError", () => {
     "Claude CLI is not logged in",
     "ENOENT: no such file or directory",
     "Context window exceeded",
+    "ENOENT: no such file or directory, open '/tmp/429.tmp'",
   ])("ignores %s", (error) => {
     expect(isUsageLimitError(error)).toBe(false);
   });

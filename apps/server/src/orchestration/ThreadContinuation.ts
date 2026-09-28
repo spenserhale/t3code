@@ -210,9 +210,6 @@ export const continueThreadInProvider = Effect.fn("continueThreadInProvider")(fu
 
   let threadCreated = false;
   const program = Effect.gen(function* () {
-    yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true });
-    yield* fileSystem.writeFile(attachmentPath, transcriptBytes);
-
     const now = DateTime.formatIso(yield* DateTime.now);
     yield* engine.dispatch({
       type: "thread.create",
@@ -229,6 +226,10 @@ export const continueThreadInProvider = Effect.fn("continueThreadInProvider")(fu
       historyImport: true,
     });
     threadCreated = true;
+    // Written only once the thread exists: the file is named for it, so deleting the thread
+    // removes the file too, even if the server dies before the cleanup below runs.
+    yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true });
+    yield* fileSystem.writeFile(attachmentPath, transcriptBytes);
 
     // History import takes only user and assistant turns; system notices live in the transcript.
     const visibleMessages = sourceMessages.filter(
