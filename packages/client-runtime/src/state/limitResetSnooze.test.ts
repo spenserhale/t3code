@@ -102,6 +102,12 @@ describe("resolveLimitResetWake", () => {
     expect(resolveLimitResetWake(limits([past, unknown]), now)).toBeNull();
   });
 
+  it("breaks ties between windows of unknown length by the earlier reset", () => {
+    const later = window({ id: "a", kind: "other", resetsAt: at(9) });
+    const sooner = window({ id: "b", kind: "other", resetsAt: at(3) });
+    expect(resolveLimitResetWake(limits([later, sooner]), now)?.window).toBe(sooner);
+  });
+
   it("falls back to the window kind when a duration is missing", () => {
     const monthly = window({ id: "monthly", kind: "monthly", resetsAt: at(300) });
     const weeklyNoDuration = window({ id: "weekly", kind: "weekly", resetsAt: at(400) });
@@ -143,6 +149,22 @@ describe("resolveLimitHitSnooze", () => {
         now,
       })?.snoozedUntil,
     ).toBe(at(2));
+  });
+
+  it("offers the shortest reset when the hit falls in the current window", () => {
+    // Windows not yet reported as spent: the hit, 30 minutes ago, is after the
+    // current 5-hour window opened 3 hours ago.
+    expect(
+      resolveLimitHitSnooze({
+        shell: shell({
+          status: "error",
+          lastError: "Claude stopped: a usage limit blocked the request.",
+        }),
+        activities: [],
+        usageLimits: limits([session, weekly]),
+        now,
+      }),
+    ).toEqual({ window: session, snoozedUntil: at(2), exhausted: false });
   });
 
   it("offers the reset while Claude parks the running turn", () => {

@@ -43,7 +43,9 @@ export function useLimitResetSnoozeBannerItem(input: {
   const enabled = useClientSettings((settings) => settings.limitResetSnoozeEnabled);
   const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   const { snoozeThread } = useThreadActions();
-  const [snoozing, setSnoozing] = useState(false);
+  // Keyed like the banner, so a snooze still in flight on one thread never
+  // disables the button on the next.
+  const [snoozingKey, setSnoozingKey] = useState<string | null>(null);
   // Session-scoped, one key per (thread, wake time): a later limit offers again.
   const [dismissedKeys, setDismissedKeys] = useState<ReadonlySet<string>>(new Set());
 
@@ -64,10 +66,11 @@ export function useLimitResetSnoozeBannerItem(input: {
     const key = `${threadRef.threadId}:${wake.snoozedUntil}`;
     if (dismissedKeys.has(key)) return null;
     const when = snoozeWakeDescription(wake.snoozedUntil, new Date(), timestampFormat);
+    const snoozing = snoozingKey === key;
     const snooze = async () => {
-      setSnoozing(true);
+      setSnoozingKey(key);
       const result = await snoozeThread(threadRef, wake.snoozedUntil);
-      setSnoozing(false);
+      setSnoozingKey((current) => (current === key ? null : current));
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
         toastManager.add(
@@ -93,5 +96,5 @@ export function useLimitResetSnoozeBannerItem(input: {
       dismissLabel: "Not now",
       onDismiss: () => setDismissedKeys((keys) => new Set(keys).add(key)),
     };
-  }, [dismissedKeys, snoozeThread, snoozing, threadRef, timestampFormat, wake]);
+  }, [dismissedKeys, snoozeThread, snoozingKey, threadRef, timestampFormat, wake]);
 }

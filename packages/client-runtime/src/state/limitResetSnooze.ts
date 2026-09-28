@@ -55,8 +55,14 @@ export function resolveLimitResetWake(
     } else if (exhausted.length > 0) {
       if (candidate.resetsAtMs > pick.resetsAtMs) pick = candidate;
     } else {
-      const lengthDelta = windowMinutes(candidate.window) - windowMinutes(pick.window);
-      if (lengthDelta < 0 || (lengthDelta === 0 && candidate.resetsAtMs < pick.resetsAtMs)) {
+      // Compared directly, not by difference: two windows of unknown length
+      // are both Infinity, and Infinity - Infinity is NaN.
+      const length = windowMinutes(candidate.window);
+      const pickLength = windowMinutes(pick.window);
+      if (
+        length < pickLength ||
+        (length === pickLength && candidate.resetsAtMs < pick.resetsAtMs)
+      ) {
         pick = candidate;
       }
     }
@@ -116,9 +122,10 @@ export function findThreadProvider(
   return providers?.find((provider) => provider.instanceId === instanceId);
 }
 
-// Every driver words its limit stop this way: "Claude usage limit reached.",
-// "Codex usage limit reached.", "Grok usage limit reached.".
-const USAGE_LIMIT_MESSAGE = /usage limit reached/i;
+// How the drivers word a limit stop: "Claude usage limit reached.", "Codex
+// usage limit reached.", "Grok usage limit reached.", and Claude's
+// `blocking_limit` result, "Claude stopped: a usage limit blocked the request.".
+const USAGE_LIMIT_MESSAGE = /usage limit (?:reached|blocked)/i;
 
 function activityMessage(payload: unknown): string {
   if (typeof payload !== "object" || payload === null || !("message" in payload)) return "";
