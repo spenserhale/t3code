@@ -268,6 +268,7 @@ import {
   useEnvironmentSettings,
 } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
+import { useLimitResetSnoozeBannerItem } from "./chat/LimitResetSnoozeBanner";
 import { usePanelAnimationSettings, usePanelPresence } from "../panelAnimations";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useRemoveClonedProject } from "../hooks/useRemoveClonedProject";
@@ -6383,6 +6384,15 @@ export default function ChatView(props: ChatViewProps) {
     isUnsnoozing,
     isUnsettling,
   ]);
+  const limitResetSnoozeBannerItem = useLimitResetSnoozeBannerItem({
+    threadRef: activeThreadRef,
+    thread: activeThreadShell,
+    activities: threadActivities,
+    providers: providerStatuses,
+    supportsSnooze,
+    snoozed: activeThreadSnoozed,
+    nowMinute,
+  });
   // Session-scoped dismissals, one key per (thread, snapshot). A set rather
   // than a single slot so dismissing the banner on one thread does not
   // resurface it on another thread dismissed earlier.
@@ -6513,6 +6523,8 @@ export default function ChatView(props: ChatViewProps) {
       backgroundLivenessBannerItem === null ? [] : [backgroundLivenessBannerItem];
     const resumeCompactionItems =
       resumeCompactionBannerItem === null ? [] : [resumeCompactionBannerItem];
+    const limitResetSnoozeItems =
+      limitResetSnoozeBannerItem === null ? [] : [limitResetSnoozeBannerItem];
     const wokeThreadItems = wokeThreadBannerItem === null ? [] : [wokeThreadBannerItem];
     const parkedThreadItems = parkedThreadBannerItem === null ? [] : [parkedThreadBannerItem];
     // The user asked for this one, so it leads the notice tier instead of trailing it.
@@ -6525,6 +6537,7 @@ export default function ChatView(props: ChatViewProps) {
         ...projectCloneItems,
         ...systemComposerBannerItems,
         ...backgroundLivenessItems,
+        ...limitResetSnoozeItems,
         ...resumeCompactionItems,
         ...wokeThreadItems,
         ...parkedThreadItems,
@@ -6536,6 +6549,7 @@ export default function ChatView(props: ChatViewProps) {
       ...projectCloneItems,
       ...systemComposerBannerItems,
       ...backgroundLivenessItems,
+      ...limitResetSnoozeItems,
       ...resumeCompactionItems,
       ...wokeThreadItems,
       {
@@ -6584,6 +6598,7 @@ export default function ChatView(props: ChatViewProps) {
     feedbackBannerItems,
     handleRestoreThreadBranch,
     isRestoringThreadBranch,
+    limitResetSnoozeBannerItem,
     localCheckoutBranchMismatch,
     parkedThreadBannerItem,
     projectCloneBannerItem,

@@ -570,6 +570,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.sidebarAutoSettleOnMerge !== DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge
         ? ["Auto-settle merged threads"]
         : []),
+      ...(settings.limitResetSnoozeEnabled !== DEFAULT_UNIFIED_SETTINGS.limitResetSnoozeEnabled
+        ? ["Snooze until limit resets"]
+        : []),
       ...(settings.wordWrap !== DEFAULT_UNIFIED_SETTINGS.wordWrap ? ["Word wrap"] : []),
       ...getChangedTypographySettingLabels(settings),
       ...(settings.diffFilesCollapsed !== DEFAULT_UNIFIED_SETTINGS.diffFilesCollapsed
@@ -683,6 +686,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.continueThreadsAfterServerUpdate,
       settings.sidebarAutoSettleAfterDays,
       settings.sidebarAutoSettleOnMerge,
+      settings.limitResetSnoozeEnabled,
       settings.sidebarProjectGroupingMode,
       settings.sidebarThreadPreviewCount,
       settings.showSkillsInSlashMenu,
@@ -783,6 +787,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
+      limitResetSnoozeEnabled: DEFAULT_UNIFIED_SETTINGS.limitResetSnoozeEnabled,
       responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
       continueThreadsAfterServerUpdate: DEFAULT_UNIFIED_SETTINGS.continueThreadsAfterServerUpdate,
@@ -2349,6 +2354,33 @@ export function GeneralSettingsPanel() {
             ) : null}
           </>
         ) : null}
+
+        <SettingsRow
+          {...searchableSetting("limit-reset-snooze")}
+          description="Offer to snooze a thread until its provider's subscription limit resets, at the top of the snooze menu and when a turn stops on the limit."
+          resetAction={
+            settings.limitResetSnoozeEnabled !==
+            DEFAULT_UNIFIED_SETTINGS.limitResetSnoozeEnabled ? (
+              <SettingResetButton
+                label="snooze until limit resets"
+                onClick={() =>
+                  updateSettings({
+                    limitResetSnoozeEnabled: DEFAULT_UNIFIED_SETTINGS.limitResetSnoozeEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.limitResetSnoozeEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ limitResetSnoozeEnabled: Boolean(checked) })
+              }
+              aria-label="Snooze until limit resets"
+            />
+          }
+        />
       </SettingsSection>
 
       <SettingsSection id="behavior" title="Behavior">

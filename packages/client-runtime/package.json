@@ -231,6 +231,10 @@
       "types": "./src/state/threadSort.ts",
       "default": "./src/state/threadSort.ts"
     },
+    "./state/limit-reset-snooze": {
+      "types": "./src/state/limitResetSnooze.ts",
+      "default": "./src/state/limitResetSnooze.ts"
+    },
     "./state/thread-settled": {
       "types": "./src/state/threadSettled.ts",
       "default": "./src/state/threadSettled.ts"

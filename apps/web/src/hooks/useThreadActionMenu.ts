@@ -11,7 +11,7 @@ import type { ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 
-import { resolveSnoozePresets } from "../components/Sidebar.snooze";
+import { resolveThreadSnoozePresets } from "../components/Sidebar.limitResetSnooze";
 import {
   buildThreadActionMenuItems,
   type ThreadActionMenuId,
@@ -140,7 +140,7 @@ export function useThreadActionMenu(input: {
           titleRegeneration: readEnvironmentSupportsTitleRegeneration(threadRef.environmentId),
         };
         const isRegeneratingTitle = thread.titleRegeneration != null;
-        const snoozePresets = resolveSnoozePresets(now, timestampFormat);
+        const snoozePresets = resolveThreadSnoozePresets([thread], now, timestampFormat);
         const items = buildThreadActionMenuItems({
           branch: thread.branch ?? null,
           // The chat header has no project-scoped thread list behind the
