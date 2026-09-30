@@ -179,9 +179,8 @@ export function priceTurn(turn: RecordedTurn, rates: UsageRates): ThreadTurnUsag
   const models = turn.models.map((row): ThreadUsageModel => {
     const priced = priceUsage(
       rates.table,
-      row.model,
-      row.totals,
-      row.reportedCostUsd,
+      // Stored turns predate fast-mode attribution; retain their standard-rate estimate.
+      { ...row, fast: false },
       rates.overrides,
     );
     return {
