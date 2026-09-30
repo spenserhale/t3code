@@ -116,7 +116,6 @@ export const ContinueInProviderPicker = memo(function ContinueInProviderPicker(p
       instanceEntries={instanceEntries}
       modelOptionsByInstance={modelOptionsByInstance}
       size="sm"
-      triggerVariant="outline"
       triggerLabel={pending ? "Starting…" : "Continue in…"}
       triggerAriaLabel="Continue this thread in another provider"
       disabled={pending}
