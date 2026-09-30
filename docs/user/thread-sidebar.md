@@ -150,3 +150,9 @@ Choose **Snooze → Custom…** from a thread's menu to pick a date and time in 
 local time zone, or a duration in minutes, hours, or days. Durations start when
 you confirm; one day means 24 hours. On web and desktop, you can also snooze
 several selected threads together. Choose **Wake thread** to bring a thread back early.
+
+On web and desktop, when a thread's provider reports subscription limits (a 5-hour, weekly, or
+monthly window), the snooze menu starts with a choice that wakes the thread when the limit resets.
+It uses the shortest window, or the used-up one if a longer window is already spent. When a turn
+stops on a usage limit, the composer offers the same snooze. Turn both off in **Settings → General
+→ Snooze until limit resets**.
