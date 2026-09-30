@@ -105,6 +105,20 @@ or endpoint configurations do not report subscription limits.
 API-key accounts may not report subscription limits. This also applies to Claude connections
 using a proxy through `ANTHROPIC_AUTH_TOKEN`.
 
+## Continue in another provider
+
+When a thread stops because its provider hit a usage limit, the error banner offers
+**Continue in…** on web and desktop. It also appears on other errors while the thread's provider
+reports a limit window at 100%. Pick another provider and model, or another account of the same
+provider, and T3 starts a new thread in the same project, branch, and workspace. The new thread shows
+the earlier conversation, then sends the new agent the full transcript as an attachment and asks it
+to read it and carry on. The original thread stays as it was.
+
+The new agent sees the messages, not the earlier agent's tool calls or reasoning, so it checks the
+files in the workspace rather than assuming unfinished edits landed. Images and files from the
+earlier conversation are passed by their saved location, so keep the original thread until the new
+one no longer needs them: deleting it removes those files.
+
 ## Connect a CLIProxyAPI hub
 
 To see pooled accounts, open **Settings → Providers → Usage providers → Add hub**. Choose the

@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
 import { CircleAlertIcon, XIcon } from "lucide-react";
@@ -37,10 +37,13 @@ export function isThreadErrorBannerDismissedForSession(bannerKey: string | null)
 
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
+  action,
   onDismiss,
   chatGptUsageLimit = false,
 }: {
   error: string | null;
+  /** A way forward from the error, shown before the dismiss button. */
+  action?: ReactNode;
   onDismiss?: () => void;
   chatGptUsageLimit?: boolean;
 }) {
@@ -68,8 +71,9 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
             </Tooltip>
           )}
         </AlertDescription>
-        {(chatGptUsageLimit || onDismiss) && (
+        {(chatGptUsageLimit || action || onDismiss) && (
           <AlertAction>
+            {action}
             {chatGptUsageLimit ? <ChatGptUsageButton variant="default" size="sm" /> : null}
             {onDismiss ? (
               <Button variant="ghost" size="icon-xs" aria-label="Dismiss error" onClick={onDismiss}>
