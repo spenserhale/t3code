@@ -5,6 +5,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   ProviderDriverKind,
   USAGE_CONTRACT_VERSION,
+  type UnifiedSettings,
   type EnvironmentId,
   type UsageProviderKind,
 } from "@t3tools/contracts";
@@ -86,12 +87,17 @@ import {
   type UsageMetric,
 } from "./usageShortcuts";
 import { useEscapeToGoBack } from "../../hooks/useNavigateBack";
+import { UsageThreadTable } from "./UsageThreadTable";
+import { usePrimarySettings } from "../../hooks/useSettings";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
 import {
   readUsagePagePreferences,
   saveUsagePagePreferences,
   type UsagePagePreferences,
 } from "./usagePagePreferences";
+
+const selectUsageCostAnalysisEnabled = (settings: UnifiedSettings) =>
+  settings.usageCostAnalysisEnabled;
 
 function isUsageMetric(value: string | null | undefined): value is UsageMetric {
   return METRIC_OPTIONS.some((option) => option.value === value);
@@ -126,13 +132,22 @@ export function UsagePage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
   const refreshingRef = useRef(false);
-  const [breakdown, setBreakdown] = useState<"model" | "time">("model");
+  const [selectedBreakdown, setBreakdown] = useState<"model" | "thread" | "time">("model");
+  // Thread totals are part of the Usage & cost setting; without it the toggle has no Thread.
+  const threadBreakdown = usePrimarySettings(selectUsageCostAnalysisEnabled) === true;
+  const breakdown =
+    selectedBreakdown === "thread" && !threadBreakdown ? "model" : selectedBreakdown;
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
+  // Thread totals ride along only while their table is open.
+  const usageInput = useMemo(
+    () => (breakdown === "thread" ? { ...window, includeThreads: true } : window),
+    [breakdown, window],
+  );
   const { merged, environments, selectedEnvironments, isPending, isPartial, refresh } = useUsage(
-    window,
+    usageInput,
     selectedEnvironmentIds,
   );
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
@@ -279,7 +294,9 @@ export function UsagePage() {
     }
     refreshingRef.current = true;
     setIsRefreshing(true);
-    void refresh(nextWindow).finally(() => {
+    void refresh(
+      breakdown === "thread" ? { ...nextWindow, includeThreads: true } : nextWindow,
+    ).finally(() => {
       refreshingRef.current = false;
       setIsRefreshing(false);
     });
@@ -634,23 +651,40 @@ export function UsagePage() {
                       value={[breakdown]}
                       onValueChange={(next) => {
                         const value = next[0];
-                        if (value === "model" || value === "time") setBreakdown(value);
+                        if (value === "model" || value === "thread" || value === "time") {
+                          setBreakdown(value);
+                        }
                       }}
                     >
                       {(
                         [
                           { value: "model", label: "Model" },
+                          { value: "thread", label: "Thread" },
                           { value: "time", label: isPast24Hours ? "Hour" : "Day" },
                         ] as const
-                      ).map((option) => (
-                        <Toggle key={option.value} value={option.value}>
-                          {option.label}
-                        </Toggle>
-                      ))}
+                      )
+                        .filter((option) => option.value !== "thread" || threadBreakdown)
+                        .map((option) => (
+                          <Toggle key={option.value} value={option.value}>
+                            {option.label}
+                          </Toggle>
+                        ))}
                     </ToggleGroup>
                   </div>
 
-                  {breakdown === "model" ? (
+                  {breakdown === "thread" ? (
+                    <UsageThreadTable
+                      threads={merged.threads}
+                      metric={metric === "tokens" ? "tokens" : "cost"}
+                      unsupportedEnvironments={selectedEnvironments
+                        .filter(
+                          (environment) =>
+                            environment.summary !== null &&
+                            !merged.threadEnvironments.includes(environment.environmentId),
+                        )
+                        .map((environment) => environment.label)}
+                    />
+                  ) : breakdown === "model" ? (
                     <table className="w-full table-fixed text-sm">
                       <colgroup>
                         <col className="w-2/5" />

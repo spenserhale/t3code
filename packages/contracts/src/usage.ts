@@ -11,7 +11,7 @@
  */
 import * as Schema from "effect/Schema";
 
-import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ForwardCompatibleArray, NonNegativeInt, ThreadId, TrimmedNonEmptyString, TurnId } from "./baseSchemas.ts";
 
 /**
  * Bumped whenever the shape of {@link UsageSummary} changes incompatibly. The
@@ -194,8 +194,60 @@ export const UsageSummaryInput = Schema.Struct({
   sinceTime: Schema.optional(TrimmedNonEmptyString),
   /** Exclusive UTC instant for an hourly rolling window. */
   untilTime: Schema.optional(TrimmedNonEmptyString),
+  /** Also report {@link UsageSummary.threads}. Servers that cannot simply omit it. */
+  includeThreads: Schema.optional(Schema.Boolean),
 });
 export type UsageSummaryInput = typeof UsageSummaryInput.Type;
+
+/**
+ * One thread's usage inside the window, from the turns this server drove.
+ * Unlike buckets it is not read from provider transcripts, so it excludes work
+ * done outside T3 Code and does not sum to the bucket totals.
+ */
+export const UsageThreadTotals = Schema.Struct({
+  threadId: ThreadId,
+  totalTokens: NonNegativeInt,
+  costUsd: Schema.Finite,
+  turns: NonNegativeInt,
+  /** Turns counted in `totalTokens` that added nothing to `costUsd`. */
+  unpricedTurns: NonNegativeInt,
+  lastTurnAt: Schema.String,
+  models: Schema.Array(Schema.String),
+});
+export type UsageThreadTotals = typeof UsageThreadTotals.Type;
+
+export const ThreadUsageInput = Schema.Struct({ threadId: ThreadId });
+export type ThreadUsageInput = typeof ThreadUsageInput.Type;
+
+/**
+ * One model's share of a turn. `model` is the id the usage breakdown and custom
+ * prices use, so a custom price for it applies here too; `customPrice` says it did.
+ */
+export const ThreadUsageModel = Schema.Struct({
+  model: Schema.String,
+  totalTokens: NonNegativeInt,
+  costUsd: Schema.Finite,
+  costSource: UsageCostSource,
+  customPrice: Schema.Boolean,
+});
+export type ThreadUsageModel = typeof ThreadUsageModel.Type;
+
+/** A finished turn. Priced when read, so later price changes apply to it. */
+export const ThreadTurnUsage = Schema.Struct({
+  turnId: TurnId,
+  completedAt: Schema.String,
+  totalTokens: NonNegativeInt,
+  costUsd: Schema.Finite,
+  models: Schema.Array(ThreadUsageModel),
+});
+export type ThreadTurnUsage = typeof ThreadTurnUsage.Type;
+
+export const ThreadUsageDetail = Schema.Struct({
+  threadId: ThreadId,
+  /** Oldest first. Turns with no reported usage are absent. */
+  turns: Schema.Array(ThreadTurnUsage),
+});
+export type ThreadUsageDetail = typeof ThreadUsageDetail.Type;
 
 export const UsageSummary = Schema.Struct({
   contractVersion: Schema.Number,
@@ -208,6 +260,8 @@ export const UsageSummary = Schema.Struct({
   pricing: UsagePricing,
   /** Wall-clock cost of the scan, surfaced in diagnostics. */
   scanDurationMs: NonNegativeInt,
+  /** Present only when asked for and supported; see {@link UsageSummaryInput.includeThreads}. */
+  threads: Schema.optional(Schema.Array(UsageThreadTotals)),
 });
 export type UsageSummary = typeof UsageSummary.Type;
 

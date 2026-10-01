@@ -46,6 +46,7 @@ import { ProjectionThreadProposedPlanRepositoryLive } from "../../persistence/La
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ThreadBackgroundLivenessService } from "../ThreadBackgroundLiveness.ts";
 import { ThreadPlanProgressService } from "../ThreadPlanProgress.ts";
+import { ThreadUsageService } from "../../sidebar/ThreadUsage.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
   ProviderRuntimeIngestionService,
@@ -1043,6 +1044,8 @@ export function runtimeEventToActivities(
 const make = Effect.gen(function* () {
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
   const threadPlanProgress = yield* ThreadPlanProgressService;
+  // Optional so suites that do not track usage need not provide it.
+  const threadUsage = yield* Effect.serviceOption(ThreadUsageService);
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -1916,6 +1919,33 @@ const make = Effect.gen(function* () {
                 ? null
                 : (thread.session?.lastError ?? null);
 
+        // Recorded before the session update below, so the one shell refresh that
+        // marks the thread idle already carries the turn's usage. Totals never
+        // change mid-turn, which keeps sidebar updates to one per turn.
+        if (
+          isTerminalTurn &&
+          shouldApplyThreadLifecycle &&
+          eventTurnId !== undefined &&
+          Option.isSome(threadUsage)
+        ) {
+          const tokenUsage = event.payload.tokenUsage;
+          const shell =
+            tokenUsage === undefined
+              ? Option.none()
+              : yield* projectionSnapshotQuery.getThreadShellById(thread.id);
+          if (tokenUsage !== undefined && Option.isSome(shell)) {
+            yield* threadUsage.value.recordTurn({
+              threadId: thread.id,
+              turnId: eventTurnId,
+              completedAt: now,
+              driver: event.provider,
+              model: shell.value.modelSelection.model,
+              usage: tokenUsage,
+              modelUsage: event.type === "turn.completed" ? event.payload.modelUsage : undefined,
+            });
+          }
+        }
+
         if (shouldApplyThreadLifecycle) {
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
             yield* markSourceProposedPlanImplemented(
@@ -2427,6 +2457,14 @@ const make = Effect.gen(function* () {
 
       if (event.type === "session.exited") {
         yield* clearTurnStateForSession(thread.id);
+      }
+
+      // A new provider session restarts Claude's running usage totals.
+      if (
+        (event.type === "session.started" || event.type === "session.exited") &&
+        Option.isSome(threadUsage)
+      ) {
+        threadUsage.value.forgetSession(thread.id);
       }
 
       if (event.type === "runtime.error") {

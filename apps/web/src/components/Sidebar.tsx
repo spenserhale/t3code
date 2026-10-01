@@ -155,6 +155,7 @@ import { cn } from "~/lib/utils";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
 import { buildThreadActionMenuItems } from "./threadActionMenu.logic";
+import { ThreadUsageHoverRow } from "./usage/ThreadUsageDisplay";
 import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
@@ -406,6 +407,9 @@ function SidebarThreadTooltip({
               </div>
             </div>
           ) : null}
+          <ThreadUsageHoverRow
+            threadRef={{ environmentId: thread.environmentId, threadId: thread.id }}
+          />
           {terminalStatus ? (
             <div className="flex min-w-0 items-center gap-2">
               <TerminalIcon

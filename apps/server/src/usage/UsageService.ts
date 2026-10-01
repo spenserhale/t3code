@@ -24,8 +24,10 @@ import {
   type UsageProviderKind,
   type UsageSource,
   type UsagePricing,
+  type UsageDay,
   type UsageSummary,
   type UsageSummaryInput,
+  type UsageTokenTotals,
   UsageReadError,
 } from "@t3tools/contracts";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -113,12 +115,38 @@ const decodeCachedSources = Schema.decodeUnknownOption(
   Schema.Struct({ sources: Schema.Record(Schema.String, CachedSource) }),
 );
 
+export interface SessionRecord {
+  readonly sessionId: string;
+  readonly timestampMs: number;
+  readonly model: string;
+  readonly totals: UsageTokenTotals;
+  readonly reportedCostUsd: number | null;
+}
+
+/** Rates to price with `usagePricing.priceUsage`; `version` changes whenever either table does. */
+export interface UsageRates {
+  readonly table: RateTable;
+  readonly overrides: RateTable;
+  readonly version: string;
+}
+
 export class UsageService extends Context.Service<
   UsageService,
   {
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    /**
+     * Transcript records of the given provider sessions since `sinceDay`
+     * (UTC), deduplicated exactly as a summary would.
+     */
+    readonly readSessionRecords: (input: {
+      readonly sessionIds: ReadonlySet<string>;
+      readonly sinceDay: UsageDay;
+      readonly untilDay: UsageDay;
+    }) => Effect.Effect<readonly SessionRecord[], UsageReadError>;
+    /** The rates a summary would price with right now, custom prices included. */
+    readonly currentRates: Effect.Effect<UsageRates>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -146,6 +174,8 @@ export const layerTest = Layer.succeed(
         scanDurationMs: 0,
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
+    readSessionRecords: () => Effect.succeed([]),
+    currentRates: Effect.succeed({ table: new Map(), overrides: new Map(), version: "test" }),
   }),
 );
 
@@ -675,6 +705,7 @@ export const make = Effect.gen(function* () {
   const scanSummary = Effect.fn("UsageService.scanSummary")(function* (
     input: UsageSummaryInput,
     settings: ServerSettingsValue,
+    onRecord?: (record: UsageRecord) => void,
   ) {
     if (input.sinceDay > input.untilDay) {
       return yield* new UsageReadError({
@@ -739,6 +770,7 @@ export const make = Effect.gen(function* () {
       ...hourlyWindow,
       rates,
       priceOverrides: createOverrideRateTable(settings.usagePriceOverrides),
+      ...(onRecord ? { onRecord } : {}),
     });
 
     const sources: UsageSource[] = [];
@@ -892,7 +924,54 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  return { readSummary, refreshRates } as const;
+  const currentRates = Effect.gen(function* () {
+    yield* ensureRates(false);
+    const overrides = yield* readSettings.pipe(
+      Effect.map((settings) => settings.usagePriceOverrides),
+      Effect.orElseSucceed(() => ({})),
+    );
+    return {
+      table: rates,
+      overrides: createOverrideRateTable(overrides),
+      version: [
+        ratesFetchedAtMs ?? "none",
+        ...Object.entries(overrides).map(([model, price]) =>
+          [
+            model,
+            price.inputCostPerMillionTokens,
+            price.outputCostPerMillionTokens,
+            price.cacheReadCostPerMillionTokens,
+            price.cacheWriteCostPerMillionTokens,
+          ].join(":"),
+        ),
+      ].join("|"),
+    };
+  }).pipe(Effect.withSpan("UsageService.currentRates"));
+
+  const readSessionRecords = Effect.fn("UsageService.readSessionRecords")(function* (input: {
+    readonly sessionIds: ReadonlySet<string>;
+    readonly sinceDay: UsageDay;
+    readonly untilDay: UsageDay;
+  }) {
+    const records: SessionRecord[] = [];
+    yield* scanSummary(
+      { timeZone: "UTC", sinceDay: input.sinceDay, untilDay: input.untilDay },
+      yield* readSettings,
+      (record) => {
+        if (!input.sessionIds.has(record.sessionId)) return;
+        records.push({
+          sessionId: record.sessionId,
+          timestampMs: record.timestampMs,
+          model: record.model,
+          totals: record.totals,
+          reportedCostUsd: record.reportedCostUsd,
+        });
+      },
+    );
+    return records;
+  });
+
+  return { readSummary, refreshRates, currentRates, readSessionRecords } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

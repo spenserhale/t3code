@@ -2,6 +2,7 @@ import {
   USAGE_CONTRACT_VERSION,
   USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
+  type ThreadId,
   type UsageBucket,
   type UsageDay,
   type UsageProviderKind,
@@ -685,5 +686,27 @@ describe("mergeUsage", () => {
     ]);
     expect(merged.daily).toHaveLength(1);
     expect(merged.daily[0]?.costUsd).toBe(10);
+  });
+  it("keeps the same thread id apart per environment and notes which environments reported threads", () => {
+    const thread = {
+      threadId: "thread-1" as ThreadId,
+      totalTokens: 100,
+      costUsd: 1,
+      turns: 1,
+      unpricedTurns: 0,
+      lastTurnAt: "2026-08-02T00:00:00.000Z",
+      models: ["example-model"],
+    };
+    const merged = mergeUsage(
+      [
+        environment("env-a", { ...summary([], []), threads: [thread] }),
+        environment("env-b", { ...summary([], []), threads: [thread] }),
+        environment("env-old", summary([], [])),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.threads.map((entry) => entry.environmentId)).toEqual(["env-a", "env-b"]);
+    expect(merged.threadEnvironments).toEqual(["env-a", "env-b"]);
   });
 });
