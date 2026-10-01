@@ -29,6 +29,11 @@ import { ProviderDriverError } from "../Errors.ts";
 import { makeOpenCodeAdapter } from "../Layers/OpenCodeAdapter.ts";
 import { readOpenCodeGoUsageLimits } from "../Layers/openCodeUsageLimits.ts";
 import {
+  combineUsageLimits,
+  consumeZaiResetCredit,
+  readZaiCodingPlanUsageLimits,
+} from "../Layers/zaiUsageLimits.ts";
+import {
   checkOpenCodeProviderStatus,
   makePendingOpenCodeProvider,
   openCodeSkillsToServerProviderSkills,
@@ -106,6 +111,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
       const openCodeRuntime = yield* OpenCodeRuntime;
       const serverConfig = yield* ServerConfig;
       const httpClient = yield* HttpClient.HttpClient;
+      const crypto = yield* Crypto.Crypto;
       const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment);
@@ -149,18 +155,23 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
       );
 
+      const subscriptionAccount = {
+        enabled: effectiveConfig.enabled,
+        serverUrl: effectiveConfig.serverUrl,
+        environment: processEnv,
+      };
       const checkProvider = Effect.all(
         {
           provider: checkOpenCodeProviderStatus(effectiveConfig, serverConfig.cwd, processEnv),
-          usageLimits: readOpenCodeGoUsageLimits({
-            enabled: effectiveConfig.enabled,
-            serverUrl: effectiveConfig.serverUrl,
-            environment: processEnv,
-          }),
+          goLimits: readOpenCodeGoUsageLimits(subscriptionAccount),
+          zaiLimits: readZaiCodingPlanUsageLimits(subscriptionAccount),
         },
         { concurrency: "unbounded" },
       ).pipe(
-        Effect.map(({ provider, usageLimits }) => ({ ...provider, usageLimits })),
+        Effect.map(({ provider, goLimits, zaiLimits }) => ({
+          ...provider,
+          usageLimits: combineUsageLimits([goLimits, zaiLimits]),
+        })),
         Effect.map(stampIdentity),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, pathService),
@@ -257,6 +268,29 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         ),
       );
 
+      // Z.ai is the only OpenCode subscription that banks quota resets.
+      const consumeResetCredit: NonNullable<ProviderInstance["consumeResetCredit"]> = () =>
+        consumeZaiResetCredit(subscriptionAccount).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, pathService),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.mapError(
+            (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail:
+                  cause._tag === "ZaiResetRejected"
+                    ? cause.message
+                    : "Z.ai could not redeem the quota reset.",
+                cause,
+              }),
+          ),
+          // The windows just changed; re-probe so the snapshot says so.
+          Effect.tap((outcome) => (outcome === "reset" ? snapshot.refresh : Effect.void)),
+        );
+
       return {
         instanceId,
         driverKind: DRIVER_KIND,
@@ -265,6 +299,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         accentColor,
         enabled,
         snapshot,
+        consumeResetCredit,
         snapshotForCwd: (cwd) =>
           !effectiveConfig.enabled
             ? snapshot.getSnapshot
