@@ -299,6 +299,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "project-defaults",
   },
   {
+    id: "limit-reset-snooze",
+    title: "Snooze until limit resets",
+    to: "/settings/general",
+    searchTerms: ["usage limit subscription session weekly monthly reset rate limit snooze"],
+  },
+  {
     id: "thread-notifications",
     title: "Thread notifications",
     to: "/settings/general",
