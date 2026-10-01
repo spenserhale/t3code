@@ -49,6 +49,11 @@ import {
   AgentSessionScanError,
 } from "./agentSessions.ts";
 import {
+  ThreadContinueInProviderError,
+  ThreadContinueInProviderInput,
+  ThreadContinueInProviderResult,
+} from "./threadContinuation.ts";
+import {
   AssetAccessError,
   AssetCreateUrlInput,
   AssetCreateUrlResult,
@@ -308,6 +313,7 @@ export const WS_METHODS = {
   filesystemBrowse: "filesystem.browse",
   agentSessionsScan: "agentSessions.scan",
   agentSessionsImport: "agentSessions.import",
+  threadContinueInProvider: "thread.continueInProvider",
   assetsCreateUrl: "assets.createUrl",
   attachmentsCreateUploadUrl: "attachments.createUploadUrl",
   attachmentsDelete: "attachments.delete",
@@ -1034,6 +1040,12 @@ const WsAgentSessionsImportRpc = Rpc.make(WS_METHODS.agentSessionsImport, {
   ]),
 });
 
+const WsThreadContinueInProviderRpc = Rpc.make(WS_METHODS.threadContinueInProvider, {
+  payload: ThreadContinueInProviderInput,
+  success: ThreadContinueInProviderResult,
+  error: Schema.Union([ThreadContinueInProviderError, EnvironmentAuthorizationError]),
+});
+
 const WsAssetsCreateUrlRpc = Rpc.make(WS_METHODS.assetsCreateUrl, {
   payload: AssetCreateUrlInput,
   success: AssetCreateUrlResult,
@@ -1529,6 +1541,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsFilesystemBrowseRpc,
   WsAgentSessionsScanRpc,
   WsAgentSessionsImportRpc,
+  WsThreadContinueInProviderRpc,
   WsAssetsCreateUrlRpc,
   WsAttachmentsCreateUploadUrlRpc,
   WsAttachmentsDeleteRpc,
