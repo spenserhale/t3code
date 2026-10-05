@@ -149,6 +149,7 @@ import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClien
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
+import * as ThreadUsage from "./usage/ThreadUsage.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import {
   OrchestrationEventInfrastructureLayerLive,
@@ -227,6 +228,13 @@ const BackgroundLayerLive = BackgroundPolicy.layer.pipe(
 );
 
 const UsageLayerLive = UsageService.layer.pipe(Layer.provide(ServerSettingsLayerLive));
+
+// Prices the provider turns orchestration projects with the usage service's rates.
+const ThreadUsageLayerLive = ThreadUsage.layer.pipe(
+  Layer.provide(UsageLayerLive),
+  Layer.provide(ProjectionStoreV2.layer),
+  Layer.provide(SqlitePersistence.layerConfig),
+);
 
 const ResourceDiagnosticsLayerLive = Layer.mergeAll(
   HostResources.layer,
@@ -615,6 +623,7 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   // Misc.
   Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
+  Layer.provideMerge(ThreadUsageLayerLive),
   Layer.provideMerge(UsageLayerLive),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layer),
