@@ -818,6 +818,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
+    id: "usage-and-cost",
+    title: "Usage and cost",
+    to: "/settings/general",
+    searchTerms: ["tokens cost price estimate spend worked for thread turn billing"],
+  },
+  {
     id: "skills-in-slash-menu",
     title: msg("Show skills in slash menu"),
     to: "/settings/chat",
