@@ -492,6 +492,9 @@ if ! t3_runtime_ready; then
   case "$(uname -s)" in
     Darwin) T3_PLATFORM="darwin" ;;
     Linux) T3_PLATFORM="linux" ;;
+    # A Windows host whose SSH shell is Git Bash or MSYS2. Either converts
+    # path arguments for native programs, so t3.exe is driven like any t3.
+    MINGW* | MSYS*) T3_PLATFORM="win32" ;;
     *) printf 'Remote host %s has no t3 release archive.\\n' "$(uname -s)" >&2; exit 1 ;;
   esac
   case "$(uname -m)" in
@@ -500,6 +503,9 @@ if ! t3_runtime_ready; then
     *) printf 'Remote host %s has no t3 release archive.\\n' "$(uname -m)" >&2; exit 1 ;;
   esac
   T3_ARCHIVE="t3-$T3_ARCHIVE_VERSION-$T3_PLATFORM-$T3_ARCH.tar.gz"
+  if [ "$T3_PLATFORM" = "win32" ]; then
+    T3_ARCHIVE="t3-$T3_ARCHIVE_VERSION-$T3_PLATFORM-$T3_ARCH.zip"
+  fi
   T3_STAGING="$(mktemp -d "$HOME/.t3/runtime/versions/.staging-XXXXXX")"
   trap 'rm -rf "$T3_STAGING" "$T3_LOCK"' EXIT
   t3_fetch() {
@@ -519,7 +525,13 @@ if ! t3_runtime_ready; then
   if [ -z "$T3_EXPECTED" ] || [ "$T3_ACTUAL" != "$T3_EXPECTED" ]; then
     printf 'Checksum mismatch for %s.\\n' "$T3_ARCHIVE" >&2; exit 1
   fi
-  tar -xzf "$T3_STAGING/$T3_ARCHIVE" -C "$T3_STAGING" --strip-components=1
+  if [ "$T3_PLATFORM" = "win32" ]; then
+    # The shell's GNU tar cannot open a zip; the bsdtar Windows ships in
+    # System32 can, and it takes Windows paths.
+    "$(cygpath -S)/tar.exe" -xf "$(cygpath -w "$T3_STAGING/$T3_ARCHIVE")" -C "$(cygpath -w "$T3_STAGING")" --strip-components=1
+  else
+    tar -xzf "$T3_STAGING/$T3_ARCHIVE" -C "$T3_STAGING" --strip-components=1
+  fi
   rm -f "$T3_STAGING/$T3_ARCHIVE" "$T3_STAGING/SHA256SUMS"
   # Prove the binary runs here (libc, arch) before marking it ready, or every
   # later launch would exec a broken install instead of retrying.
