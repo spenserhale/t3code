@@ -91,6 +91,7 @@ import {
 import { type ThreadFindMatch } from "./threadFind";
 import { useThreadFindNavigation } from "./useThreadFindNavigation";
 import { TooltipScrollDismissArea } from "../ui/tooltip";
+import { TurnUsageSummary } from "../usage/ThreadUsageDisplay";
 import { WorktreeSetupCard } from "./WorktreeSetupCard";
 import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
@@ -1670,6 +1671,7 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
             {row.label}
             {error ? ` · ${error}` : ""}
           </span>
+          <TurnUsageSummary threadRef={ctx.threadRef} runId={row.runId} />
           {row.expanded ? (
             <ChevronDownIcon className="size-3.5" />
           ) : (
