@@ -225,6 +225,7 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
+import * as ThreadUsage from "./usage/ThreadUsage.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
@@ -1264,6 +1265,8 @@ const layerWsRpc = (
               Effect.orElseSucceed(() => null),
             );
       const usage = yield* UsageService.UsageService;
+      // Optional so suites that do not read thread usage need not provide it.
+      const threadUsage = yield* Effect.serviceOption(ThreadUsage.ThreadUsage);
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
@@ -2442,6 +2445,16 @@ const layerWsRpc = (
         [WS_METHODS.serverGetResourceTelemetryHistory]: (input) =>
           resourceTelemetry.readHistory(input),
         [WS_METHODS.serverGetUsageSummary]: (input) => usage.readSummary(input),
+        [WS_METHODS.serverGetThreadUsage]: (input) =>
+          Option.match(threadUsage, {
+            onNone: () => Effect.succeed({ threadId: input.threadId, turns: [] }),
+            onSome: (service) => service.readThreadUsage(input),
+          }),
+        [WS_METHODS.serverListThreadUsage]: (input) =>
+          Option.match(threadUsage, {
+            onNone: () => Effect.succeed({ threads: [] }),
+            onSome: (service) => service.listThreadUsage(input),
+          }),
         [WS_METHODS.serverRefreshUsageRates]: (_input) => usage.refreshRates,
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) => resourceTelemetry.retry,
         [WS_METHODS.serverCheckOtlpEndpoint]: (input) => otlpEndpointCheck.check(input),
