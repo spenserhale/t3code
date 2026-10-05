@@ -147,12 +147,25 @@ const decodeCachedSources = Schema.decodeUnknownOption(
   Schema.Struct({ sources: Schema.Record(Schema.String, CachedSource) }),
 );
 
+/** What a summary prices with: `usagePricing.priceUsage` takes `table` and `overrides`. */
+export interface UsageRates {
+  readonly table: RateTable;
+  readonly overrides: RateTable;
+  /** From `resolveModelAliases`. A mapped model prices and reports as its target. */
+  readonly aliases: ReadonlyMap<string, string>;
+}
+
 export class UsageService extends Context.Service<
   UsageService,
   {
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    /**
+     * The rates a summary would price with, custom prices and mappings included.
+     * Cheap enough to call per request: see the note at its definition.
+     */
+    readonly currentRates: Effect.Effect<UsageRates>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -180,6 +193,7 @@ const layerTest = Layer.succeed(
         scanDurationMs: 0,
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
+    currentRates: Effect.succeed({ table: new Map(), overrides: new Map(), aliases: new Map() }),
   }),
 );
 
@@ -975,7 +989,38 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  return { readSummary, refreshRates } as const;
+  // Thread usage asks for rates far more often than a summary is read. While the
+  // table is fresh it is served as is, and while the source cannot be reached
+  // only one read per floor interval waits on it; the rest price with what is
+  // loaded.
+  let currentRatesLoadedAtMs: number | null = null;
+  const currentRates = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    const fresh = ratesFetchedAtMs !== null && now - ratesFetchedAtMs < RATES_TTL_MS;
+    if (
+      !fresh &&
+      (currentRatesLoadedAtMs === null || now - currentRatesLoadedAtMs >= RATES_REFRESH_FLOOR_MS)
+    ) {
+      currentRatesLoadedAtMs = now;
+      yield* ensureRates(false);
+    }
+    // Unreadable settings still leave the published table to price with.
+    const settings = yield* readSettings.pipe(Effect.option);
+    return {
+      table: rates,
+      overrides: createOverrideRateTable(
+        Option.match(settings, {
+          onNone: () => ({}),
+          onSome: (value) => value.usagePriceOverrides,
+        }),
+      ),
+      aliases: resolveModelAliases(
+        Option.match(settings, { onNone: () => ({}), onSome: (value) => value.usageModelAliases }),
+      ),
+    };
+  }).pipe(Effect.withSpan("UsageService.currentRates"));
+
+  return { readSummary, refreshRates, currentRates } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

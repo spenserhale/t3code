@@ -301,7 +301,15 @@ import {
   ProviderConsumeResetCreditInput,
   ProviderConsumeResetCreditResult,
 } from "./providerUsageLimits.ts";
-import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
+import {
+  ThreadUsageDetail,
+  ThreadUsageInput,
+  ThreadUsageList,
+  UsagePricing,
+  UsageReadError,
+  UsageSummary,
+  UsageSummaryInput,
+} from "./usage.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
   ScheduledTaskDeleteInput,
@@ -466,6 +474,8 @@ export const WS_METHODS = {
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
+  serverGetThreadUsage: "server.getThreadUsage",
+  serverListThreadUsage: "server.listThreadUsage",
 
   // Scheduled tasks
   scheduledTasksList: "scheduledTasks.list",
@@ -844,6 +854,20 @@ const WsServerRefreshUsageRatesRpc = Rpc.make(WS_METHODS.serverRefreshUsageRates
   payload: Schema.Struct({}),
   success: UsagePricing,
   error: EnvironmentAuthorizationError,
+});
+
+/** Tokens and cost per run of one thread, priced at the current rates. */
+const WsServerGetThreadUsageRpc = Rpc.make(WS_METHODS.serverGetThreadUsage, {
+  payload: ThreadUsageInput,
+  success: ThreadUsageDetail,
+  error: EnvironmentAuthorizationError,
+});
+
+/** Tokens and cost per thread for the window a usage summary would take. */
+const WsServerListThreadUsageRpc = Rpc.make(WS_METHODS.serverListThreadUsage, {
+  payload: UsageSummaryInput,
+  success: ThreadUsageList,
+  error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
 });
 
 const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess, {
@@ -1746,6 +1770,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRetryResourceTelemetryRpc,
   WsServerGetUsageSummaryRpc,
   WsServerRefreshUsageRatesRpc,
+  WsServerGetThreadUsageRpc,
+  WsServerListThreadUsageRpc,
   WsServerSignalProcessRpc,
   WsScheduledTasksListRpc,
   WsScheduledTasksSubscribeRpc,
