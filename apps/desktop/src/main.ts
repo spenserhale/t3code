@@ -58,6 +58,7 @@ import * as DesktopPreReadyFileSystem from "./app/DesktopPreReadyFileSystem.ts";
 import * as DesktopPreReadyPlatform from "./app/DesktopPreReadyPlatform.ts";
 import * as DesktopShellEnvironment from "./shell/DesktopShellEnvironment.ts";
 import * as DesktopSshEnvironment from "./ssh/DesktopSshEnvironment.ts";
+import { SECODE_REMOTE_RUNTIME_VERSION } from "./ssh/secodeRemoteRuntime.ts";
 import * as DesktopSshPasswordPrompts from "./ssh/DesktopSshPasswordPrompts.ts";
 import * as DesktopState from "./app/DesktopState.ts";
 import * as DesktopTelemetryPublisher from "./telemetry/DesktopTelemetryPublisher.ts";
@@ -110,7 +111,7 @@ const resolveDesktopSshCliRunner = (
       nodeEngineRange: serverPackageJson.engines.node,
     };
   }
-  return { archiveVersion: environment.appVersion };
+  return { archiveVersion: SECODE_REMOTE_RUNTIME_VERSION };
 };
 
 const desktopSshEnvironmentLayer = Layer.unwrap(
