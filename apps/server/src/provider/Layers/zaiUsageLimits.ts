@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 
 import type {
@@ -219,33 +220,47 @@ export const readZaiCodingPlanUsageLimits = Effect.fn("readZaiCodingPlanUsageLim
   const unsupported = makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" });
   if (!input.enabled || input.serverUrl.trim()) return unsupported;
 
+  const probeFailed = (credentialFingerprint?: string) => ({
+    ...makeUnavailableUsageLimits({
+      checkedAt,
+      reason: "probeFailed",
+      message: "Z.ai could not read Coding Plan usage.",
+    }),
+    ...(credentialFingerprint ? { credentialFingerprint } : {}),
+  });
+
   return yield* Effect.gen(function* () {
     const apiKey = yield* readApiKey(input.environment);
     if (!apiKey) return unsupported;
 
-    const windows = yield* readWindows(apiKey);
-    // A reset-list outage must not hide the quota bars.
-    const credits = yield* readResetCredits(apiKey).pipe(Effect.option);
-    const limits = makeUsageLimits({ checkedAt, windows });
-    if (Option.isNone(credits)) return limits;
+    // Z.ai's quota response has no account ID. An unkeyed hash matches across
+    // environments without a shared secret. It permits offline guesses, but
+    // Z.ai keys are randomly generated. Published even when the probe fails,
+    // so the account keeps its place on the Limits page.
+    const credentialFingerprint = NodeCrypto.createHash("sha256")
+      .update("zai-coding-plan\0")
+      .update(apiKey)
+      .digest("hex");
 
-    const next = nextResetCredit(credits.value, limits.windows);
-    const resetCredits: ServerProviderResetCredits = {
-      availableCount: credits.value.fiveHour.length + credits.value.week.length,
-      ...(next ? { nextCreditId: `${next.resetType}:${next.recordId}` } : {}),
-      ...(next?.expiresAt ? { nextExpiresAt: next.expiresAt } : {}),
-    };
-    return { ...limits, resetCredits };
-  }).pipe(
-    Effect.timeout("5 seconds"),
-    Effect.orElseSucceed(() =>
-      makeUnavailableUsageLimits({
-        checkedAt,
-        reason: "probeFailed",
-        message: "Z.ai could not read Coding Plan usage.",
-      }),
-    ),
-  );
+    return yield* Effect.gen(function* () {
+      const windows = yield* readWindows(apiKey);
+      // A reset-list outage must not hide the quota bars.
+      const credits = yield* readResetCredits(apiKey).pipe(Effect.option);
+      const limits = { ...makeUsageLimits({ checkedAt, windows }), credentialFingerprint };
+      if (Option.isNone(credits)) return limits;
+
+      const next = nextResetCredit(credits.value, limits.windows);
+      const resetCredits: ServerProviderResetCredits = {
+        availableCount: credits.value.fiveHour.length + credits.value.week.length,
+        ...(next ? { nextCreditId: `${next.resetType}:${next.recordId}` } : {}),
+        ...(next?.expiresAt ? { nextExpiresAt: next.expiresAt } : {}),
+      };
+      return { ...limits, resetCredits };
+    }).pipe(
+      Effect.timeout("5 seconds"),
+      Effect.orElseSucceed(() => probeFailed(credentialFingerprint)),
+    );
+  }).pipe(Effect.orElseSucceed(() => probeFailed()));
 });
 
 /**
@@ -295,7 +310,9 @@ export const consumeZaiResetCredit = Effect.fn("consumeZaiResetCredit")(function
 /**
  * One OpenCode account can hold several subscriptions. Windows from each
  * available probe are shown together; when none is available the first
- * failure explains why.
+ * failure explains why. An account has a single identity slot, so the set of
+ * credentials names it: one fingerprint passes through unchanged (matching
+ * what a server without Z.ai publishes), several are hashed together.
  */
 export function combineUsageLimits(
   limits: readonly [ServerProviderUsageLimits, ...ServerProviderUsageLimits[]],
@@ -305,11 +322,19 @@ export function combineUsageLimits(
     return limits.find((entry) => entry.unavailable?.reason === "probeFailed") ?? limits[0];
   }
   const resetCredits = available.find((entry) => entry.resetCredits !== undefined)?.resetCredits;
+  const fingerprints = [
+    ...new Set(limits.flatMap((entry) => entry.credentialFingerprint ?? [])),
+  ].toSorted();
+  const credentialFingerprint =
+    fingerprints.length > 1
+      ? NodeCrypto.createHash("sha256").update(fingerprints.join("\0")).digest("hex")
+      : fingerprints[0];
   return {
     ...makeUsageLimits({
       checkedAt: limits[0].checkedAt,
       windows: available.flatMap((entry) => entry.windows),
     }),
+    ...(credentialFingerprint ? { credentialFingerprint } : {}),
     ...(resetCredits ? { resetCredits } : {}),
   };
 }
