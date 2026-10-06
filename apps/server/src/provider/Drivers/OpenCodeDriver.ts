@@ -405,7 +405,11 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
       ).pipe(
         Effect.map(({ provider, goLimits, zaiLimits, ollamaLimits }) => ({
           ...provider,
-          usageLimits: combineUsageLimits([goLimits, zaiLimits, ollamaLimits]),
+          usageLimits: combineUsageLimits([
+            { id: "opencode-go", label: "OpenCode Go", limits: goLimits },
+            { id: "zai-coding-plan", label: "Z.ai", limits: zaiLimits },
+            { id: "ollama-cloud", label: "Ollama Cloud", limits: ollamaLimits },
+          ]),
         })),
         Effect.map(stampIdentity),
         Effect.provideService(FileSystem.FileSystem, fileSystem),

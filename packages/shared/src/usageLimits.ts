@@ -138,6 +138,8 @@ export interface LimitAccount {
   readonly displayName: string | null;
   readonly email: string | undefined;
   readonly plan: string | undefined;
+  /** The plan this is (`zai-coding-plan`) when its provider account holds several subscriptions. */
+  readonly subscription?: string | undefined;
   readonly accentColor: string | undefined;
   /** Environments the account is signed in on; empty when only a hub reports it. */
   readonly environments: ReadonlyArray<{
@@ -152,6 +154,84 @@ export interface LimitAccount {
     readonly input: ProviderConsumeResetCreditInput;
   } | null;
   readonly limits: ServerProviderUsageLimits;
+}
+
+/**
+ * A provider account that holds several subscriptions, as one account per
+ * subscription with its merge key. Each is matched by its own credential, so
+ * it counts once across environments whatever else each of them is signed in
+ * to. Windows no subscription claims stay on an account for the instance.
+ *
+ * A window id is unique within a provider's windows, so it names one window.
+ * The first entry to claim an id owns the window, and the first entry for a
+ * credential stands for it.
+ */
+function subscriptionAccounts(
+  environment: LimitAccount["environments"][number],
+  provider: ServerProvider,
+  limits: ServerProviderUsageLimits,
+): ReadonlyArray<readonly [string, LimitAccount]> {
+  const instanceKey = `${environment.environmentId}:${provider.instanceId}`;
+  const instanceName = provider.displayName?.trim() || null;
+  const instance = {
+    driver: provider.driver,
+    email: provider.auth.email,
+    plan: provider.auth.label,
+    accentColor: provider.accentColor,
+    environments: [environment],
+    sourceLabel: null,
+  };
+  const native = {
+    environmentId: environment.environmentId,
+    input: { instanceId: provider.instanceId },
+  };
+  const claimed = new Set<string>();
+  const credentials = new Set<string>();
+  const accounts: Array<readonly [string, LimitAccount]> = [];
+  const subscriptions = limits.subscriptions ?? [];
+  for (const subscription of subscriptions) {
+    if (credentials.has(subscription.credentialFingerprint)) continue;
+    credentials.add(subscription.credentialFingerprint);
+    const windows = limits.windows.filter(
+      (window) => !claimed.has(window.id) && subscription.windowIds.includes(window.id),
+    );
+    for (const window of windows) claimed.add(window.id);
+    accounts.push([
+      `${provider.driver}:credential:${subscription.credentialFingerprint}`,
+      {
+        ...instance,
+        key: `${instanceKey}:${subscription.credentialFingerprint}`,
+        displayName: instanceName ? `${instanceName} · ${subscription.label}` : subscription.label,
+        subscription: subscription.id,
+        redeem: subscription.resetCredits ? native : null,
+        limits: {
+          checkedAt: subscription.checkedAt,
+          windows,
+          credentialFingerprint: subscription.credentialFingerprint,
+          ...(subscription.resetCredits ? { resetCredits: subscription.resetCredits } : {}),
+        },
+      },
+    ]);
+  }
+  // Credits no listed subscription carries, skipped repeats included, belong to the account as a whole.
+  const unownedCredits = subscriptions.some((subscription) => subscription.resetCredits)
+    ? undefined
+    : limits.resetCredits;
+  accounts.push([
+    accountKey(provider.driver, provider.auth.email) ?? instanceKey,
+    {
+      ...instance,
+      key: instanceKey,
+      displayName: instanceName,
+      redeem: unownedCredits ? native : null,
+      limits: {
+        checkedAt: limits.checkedAt,
+        windows: limits.windows.filter((window) => !claimed.has(window.id)),
+        ...(unownedCredits ? { resetCredits: unownedCredits } : {}),
+      },
+    },
+  ]);
+  return accounts.filter(([, account]) => account.limits.windows.length > 0);
 }
 
 /**
@@ -207,6 +287,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       ...previous,
       displayName: previous.displayName ?? next.displayName,
       plan: previous.plan ?? next.plan,
+      subscription: previous.subscription ?? next.subscription,
       accentColor: previous.accentColor ?? next.accentColor,
       environments,
       // A hub only names the account when no environment has it natively.
@@ -226,6 +307,16 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
     const label = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
       if (!provider.usageLimits || limitsNotice(provider.usageLimits) !== null) continue;
+      if (provider.usageLimits.subscriptions?.length) {
+        for (const [key, account] of subscriptionAccounts(
+          { environmentId, label },
+          provider,
+          provider.usageLimits,
+        )) {
+          merge(key, account);
+        }
+        continue;
+      }
       merge(
         accountKey(provider.driver, provider.auth.email, provider.usageLimits) ??
           `${environmentId}:${provider.instanceId}`,
@@ -431,6 +522,9 @@ function poolWindows(accounts: readonly LimitAccount[], now: number): readonly L
   }
   const pools = [...byKey.values()].map((members): LimitPoolWindow => {
     const memberByAccount = new Map(members.map((member) => [member.account.key, member]));
+    // Subscriptions of different plans never share a window, so a column for
+    // an account on another plan would be a permanent gap.
+    const plans = new Set(members.map((member) => member.account.subscription));
     const first = members[0]!.window;
     const usedPercent = members.reduce((sum, m) => sum + m.window.usedPercent, 0) / members.length;
     // Pace compares spend against the clock, so it is judged only over the
@@ -462,9 +556,9 @@ function poolWindows(accounts: readonly LimitAccount[], now: number): readonly L
       kind: first.kind,
       label: first.label,
       members,
-      columns: accounts.map(
-        (account) => memberByAccount.get(account.key) ?? { account, window: null },
-      ),
+      columns: accounts
+        .filter((account) => plans.has(account.subscription))
+        .map((account) => memberByAccount.get(account.key) ?? { account, window: null }),
       usedPercent: Math.round(usedPercent),
       remainingPercent: Math.round(100 - usedPercent),
       pace: meanElapsed === null ? null : paceOfShares(timedUsed, meanElapsed),
@@ -593,6 +687,23 @@ export function sameUsageLimitCommandCoverage(
   const before = coverage(previous);
   const after = coverage(next);
   return before.size === after.size && [...before].every((driver) => after.has(driver));
+}
+
+/**
+ * Drop each provider's `usageLimits.subscriptions`, which only a client that
+ * asked for them is sent. Returns the same array when there was nothing to drop.
+ */
+export function withoutUsageLimitSubscriptions(
+  providers: readonly ServerProvider[],
+): readonly ServerProvider[] {
+  if (!providers.some((provider) => provider.usageLimits?.subscriptions !== undefined)) {
+    return providers;
+  }
+  return providers.map((provider) => {
+    if (provider.usageLimits?.subscriptions === undefined) return provider;
+    const { subscriptions: _subscriptions, ...usageLimits } = provider.usageLimits;
+    return { ...provider, usageLimits };
+  });
 }
 
 /** Advertise on workspace catalogs too, which replace the global command list. */

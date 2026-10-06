@@ -41,6 +41,27 @@ export const ServerProviderResetCredits = Schema.Struct({
 export type ServerProviderResetCredits = typeof ServerProviderResetCredits.Type;
 
 /**
+ * One of the subscriptions a provider account holds, e.g. a Z.ai plan beside
+ * OpenCode Go on one OpenCode account.
+ *
+ * `id` names the plan and is the same for every account on it. `windowIds`
+ * says which of the account's `windows` are this subscription's; the windows
+ * themselves stay in that one list; an id is unique within it, and a window
+ * belongs to at most one subscription. `checkedAt` is its own, because a read
+ * that failed keeps the last good result while its siblings move on.
+ */
+export const ServerProviderUsageSubscription = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  /** Opaque identity of this subscription's own credential. */
+  credentialFingerprint: TrimmedNonEmptyString,
+  checkedAt: IsoDateTime,
+  windowIds: Schema.Array(TrimmedNonEmptyString),
+  resetCredits: Schema.optional(ServerProviderResetCredits),
+});
+export type ServerProviderUsageSubscription = typeof ServerProviderUsageSubscription.Type;
+
+/**
  * Subscription usage the provider knows about the signed-in account.
  *
  * `unavailable` distinguishes an account that can never report windows (API
@@ -53,6 +74,12 @@ export const ServerProviderUsageLimits = Schema.Struct({
   /** Opaque credential identity when the provider does not report an account. */
   credentialFingerprint: Schema.optional(TrimmedNonEmptyString),
   resetCredits: Schema.optional(ServerProviderResetCredits),
+  /**
+   * Whose windows these are when one provider account can hold several
+   * subscriptions. Absent means the account is undivided. Sent only to a
+   * client that asks for it with `usageLimitSubscriptions`.
+   */
+  subscriptions: Schema.optional(ForwardCompatibleArray(ServerProviderUsageSubscription)),
   /** Provider-owned usage settings when quota windows are not available to the client. */
   externalUsage: Schema.optional(
     Schema.Struct({
