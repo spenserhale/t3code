@@ -39,6 +39,7 @@ const providedClientConnectionLayer = snapshotLoaderLayer.pipe(
     Connection.layerWithOptions({
       environmentThemes: true,
       usageLimitSources: true,
+      usageLimitSubscriptions: true,
       usageLimitsCommand: true,
     }),
   ),

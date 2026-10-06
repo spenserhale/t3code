@@ -88,8 +88,9 @@ Keychain. On narrow screens, numbered rows below
 the bar show each account's quota, countdown, and credits. Tap a row to open its details.
 
 The same account signed in on more than one environment, or reported by a hub as well, counts once.
-OpenCode environments signed in to the same OpenCode subscriptions count as one account; an
-environment signed in to a different set shows its own column.
+Each subscription signed in through OpenCode is its own account and counts once across your
+environments, whatever else each environment is signed in to, once every environment's server is
+up to date.
 Filter with the environment dropdown to see what a single machine has.
 
 Opening Limits checks the selected connected environments automatically. Each client waits at
