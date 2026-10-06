@@ -33,6 +33,7 @@ Usage aggregates history across Codex, Claude Code, Grok Build, OpenCode, Antigr
 
 - **In chat**: Run `/usage-limits` in the composer to view the current model's snapshot without running the agent, or enable **Settings → Appearance → Thread details → Usage limits** (web/desktop).
 - **Reset credits**: Click an account segment/row to inspect plan details and redeem banked Codex/Claude reset credits via **Use reset** (Claude resets unavailable on macOS Keychain logins).
+- **Groups** (web/desktop): Choose **Groups** on Limits and turn on **Group accounts on Limits** to keep subscriptions that are not interchangeable apart, such as personal and work accounts. Each group gets its own section and pools only its own accounts. Accounts that share an email are grouped together across providers; type a name next to an account to put it in a group of your own, or clear it to return the account to its email. Naming a group turns grouping on. Groups are saved on the device where you set them.
 - **Provider notes**:
   - **OpenCode**: OpenCode 2 servers with usage reporting show Go allowances and Console budgets for the connected workspace. Local servers can also report Go usage from a Go API key (`OPENCODE_API_KEY`).
   - **Cursor**: Reports monthly Auto + API quotas via `CURSOR_AUTH_TOKEN` or default-endpoint sign-in/`CURSOR_API_KEY`.

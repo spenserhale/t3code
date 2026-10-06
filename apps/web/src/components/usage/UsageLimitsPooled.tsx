@@ -2,7 +2,6 @@ import {
   CHATGPT_USAGE_URL,
   collectHttpQuotaSources,
   collectLimitAccounts,
-  collectLimitPools,
   displayLimitWindows,
   type LimitAccount,
   type LimitPool,
@@ -47,6 +46,7 @@ import {
   formatResetsIn,
   resetCreditChoices,
 } from "@t3tools/shared/usageLimitsCopy";
+import { LimitGroupSections, useLimitPools } from "./UsageLimitGroupSections";
 
 function accountInitials(email: string): string {
   const [local = "", domain = ""] = email.split("@");
@@ -61,7 +61,7 @@ function accountHue(email: string): number {
   return Math.abs(hash) % 360;
 }
 
-function AccountChip({ email }: { readonly email: string }) {
+export function AccountChip({ email }: { readonly email: string }) {
   const hue = accountHue(email);
   const gt = useGT();
   return (
@@ -76,7 +76,7 @@ function AccountChip({ email }: { readonly email: string }) {
   );
 }
 
-function AccountAvatar({
+export function AccountAvatar({
   account,
   className,
 }: {
@@ -644,14 +644,22 @@ function PoolWindowCard({
   );
 }
 
-function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: number }) {
+export function PoolSection({
+  pool,
+  now,
+  heading: Heading = "h2",
+}: {
+  readonly pool: LimitPool;
+  readonly now: number;
+  readonly heading?: "h2" | "h3";
+}) {
   const color = barColor(pool.driver);
   const label = providerClients.get(pool.driver)?.label ?? String(pool.driver);
   const windows = displayLimitWindows(pool);
   const m = useMessages();
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
+      <Heading className="flex items-center gap-2 text-sm font-medium text-foreground">
         <ProviderInstanceIcon
           driverKind={pool.driver}
           displayName={label}
@@ -660,7 +668,7 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
           iconClassName="size-4 text-foreground/80"
         />
         {label}
-      </h2>
+      </Heading>
       {windows.map((window) => {
         const details =
           pool.driver === "cursor" ? cursorUsageWindowDetails(window.id, pool, m) : undefined;
@@ -690,7 +698,8 @@ export function UsageLimitsPooled({
   const m = useMessages();
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
-  const pools = collectLimitPools(collectLimitAccounts(presentations), now);
+  const accounts = collectLimitAccounts(presentations);
+  const { pools, ungroupedPools, groupSections } = useLimitPools(accounts, now);
   const quotaSources = collectHttpQuotaSources(presentations);
   const notices = collectLimitNotices(presentations, m);
   const externalLinks = collectExternalUsageLinks(presentations, m);
@@ -705,7 +714,8 @@ export function UsageLimitsPooled({
         </p>
       ) : null}
       <SegmentPopoverContext value={segmentPopover}>
-        {pools.map((pool) => (
+        {groupSections ? <LimitGroupSections sections={groupSections} now={now} /> : null}
+        {ungroupedPools.map((pool) => (
           <Fragment key={pool.driver}>
             <PoolSection pool={pool} now={now} />
           </Fragment>
