@@ -38,6 +38,7 @@ import { readOpenCodeGoUsageLimits } from "../Layers/openCodeUsageLimits.ts";
 import {
   combineUsageLimits,
   consumeZaiResetCredit,
+  keepLastGoodUsageLimits,
   readZaiCodingPlanUsageLimits,
 } from "../Layers/zaiUsageLimits.ts";
 import {
@@ -378,6 +379,12 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         serverUrl: effectiveConfig.serverUrl,
         environment: processEnv,
       };
+      const readGoLimits = yield* keepLastGoodUsageLimits(
+        readOpenCodeGoUsageLimits(subscriptionAccount),
+      );
+      const readZaiLimits = yield* keepLastGoodUsageLimits(
+        readZaiCodingPlanUsageLimits(subscriptionAccount),
+      );
       const checkProvider = Effect.all(
         {
           provider: checkOpenCodeProviderStatus(
@@ -386,8 +393,8 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
             runtimeProbe.refresh,
             loadOpenCode2Models,
           ),
-          goLimits: readOpenCodeGoUsageLimits(subscriptionAccount),
-          zaiLimits: readZaiCodingPlanUsageLimits(subscriptionAccount),
+          goLimits: readGoLimits,
+          zaiLimits: readZaiLimits,
         },
         { concurrency: "unbounded" },
       ).pipe(

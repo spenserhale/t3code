@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 
@@ -20,6 +21,7 @@ import {
   clampPercent,
   makeUnavailableUsageLimits,
   makeUsageLimits,
+  resolveUsageLimitsAfterProbe,
 } from "../providerUsageLimits.ts";
 
 const API_ORIGIN = "https://api.z.ai";
@@ -230,7 +232,7 @@ export const readZaiCodingPlanUsageLimits = Effect.fn("readZaiCodingPlanUsageLim
   });
 
   return yield* Effect.gen(function* () {
-    const apiKey = yield* readApiKey(input.environment);
+    const apiKey = yield* readApiKey(input.environment).pipe(Effect.timeout("5 seconds"));
     if (!apiKey) return unsupported;
 
     // Z.ai's quota response has no account ID. An unkeyed hash matches across
@@ -312,7 +314,9 @@ export const consumeZaiResetCredit = Effect.fn("consumeZaiResetCredit")(function
  * available probe are shown together; when none is available the first
  * failure explains why. An account has a single identity slot, so the set of
  * credentials names it: one fingerprint passes through unchanged (matching
- * what a server without Z.ai publishes), several are hashed together.
+ * what a server without Z.ai publishes), several are hashed together. Inputs
+ * may be remembered results of different ages, so the combined result is
+ * stamped with the oldest `checkedAt` among those it was built from.
  */
 export function combineUsageLimits(
   limits: readonly [ServerProviderUsageLimits, ...ServerProviderUsageLimits[]],
@@ -329,12 +333,43 @@ export function combineUsageLimits(
     fingerprints.length > 1
       ? NodeCrypto.createHash("sha256").update(fingerprints.join("\0")).digest("hex")
       : fingerprints[0];
+  // Every producer formats `checkedAt` with `DateTime.formatIso`, so the
+  // strings order the same way as the instants.
+  const checkedAt = available.reduce((oldest, entry) =>
+    entry.checkedAt < oldest.checkedAt ? entry : oldest,
+  ).checkedAt;
   return {
     ...makeUsageLimits({
-      checkedAt: limits[0].checkedAt,
+      checkedAt,
       windows: available.flatMap((entry) => entry.windows),
     }),
     ...(credentialFingerprint ? { credentialFingerprint } : {}),
     ...(resetCredits ? { resetCredits } : {}),
   };
 }
+
+/**
+ * Gives one subscription probe a memory. Create the wrapped probe once, where
+ * the provider is built, and run it on every refresh: a read that failed this
+ * time returns that subscription's last good result instead, so a brief
+ * outage keeps its bars and fingerprint in the combined result.
+ * `unsupported` replaces the memory, as it does for the provider as a whole,
+ * and so does a failure that names a different credential, which is a
+ * different account.
+ */
+export const keepLastGoodUsageLimits = <E, R>(
+  probe: Effect.Effect<ServerProviderUsageLimits, E, R>,
+) =>
+  Effect.map(Ref.make<ServerProviderUsageLimits | undefined>(undefined), (published) =>
+    Effect.flatMap(probe, (probed) =>
+      Ref.modify(published, (last) => {
+        const otherAccount =
+          probed.credentialFingerprint !== undefined &&
+          probed.credentialFingerprint !== last?.credentialFingerprint;
+        const next = otherAccount
+          ? probed
+          : (resolveUsageLimitsAfterProbe({ published: last, probed }) ?? probed);
+        return [next, next] as const;
+      }),
+    ),
+  );

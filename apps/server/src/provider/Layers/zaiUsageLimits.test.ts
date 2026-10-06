@@ -1,17 +1,22 @@
 import * as NodeCrypto from "node:crypto";
 
+import type { ServerProviderUsageLimits } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, type HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 
 import { makeUnavailableUsageLimits, makeUsageLimits } from "../providerUsageLimits.ts";
 import {
   combineUsageLimits,
   consumeZaiResetCredit,
+  keepLastGoodUsageLimits,
   readZaiCodingPlanUsageLimits,
 } from "./zaiUsageLimits.ts";
 
@@ -181,6 +186,30 @@ describe("readZaiCodingPlanUsageLimits identity", () => {
     });
   });
 
+  it.effect("gives up on a stalled key read, without a fingerprint", () =>
+    Effect.gen(function* () {
+      const fiber = yield* readZaiCodingPlanUsageLimits({
+        enabled: true,
+        serverUrl: "",
+        environment: { HOME: "/home/nobody" },
+      }).pipe(Effect.forkChild);
+      yield* TestClock.adjust("5 seconds");
+      const limits = yield* Fiber.join(fiber);
+      assert.strictEqual(limits.unavailable?.reason, "probeFailed");
+      assert.strictEqual(limits.credentialFingerprint, undefined);
+    }).pipe(
+      Effect.provideService(
+        FileSystem.FileSystem,
+        FileSystem.makeNoop({ readFileString: () => Effect.never }),
+      ),
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make(() => Effect.die("must not reach Z.ai")),
+      ),
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
   it.effect("publishes no fingerprint without a key", () => {
     const api = zaiApi({});
     return Effect.gen(function* () {
@@ -259,6 +288,18 @@ describe("combineUsageLimits", () => {
     assert.deepStrictEqual(combineUsageLimits([failed, zai]), zai);
   });
 
+  it("is as old as the oldest result it was built from", () => {
+    const older = "2026-09-19T23:00:00.000Z";
+    const remembered = { ...zai, checkedAt: older };
+    const live = makeUsageLimits({
+      checkedAt,
+      windows: [{ id: "go_weekly", kind: "weekly", label: "Go · Weekly", usedPercent: 2 }],
+    });
+    assert.strictEqual(combineUsageLimits([live, remembered]).checkedAt, older);
+    assert.strictEqual(combineUsageLimits([remembered, live]).checkedAt, older);
+    assert.strictEqual(combineUsageLimits([live, failed]).checkedAt, checkedAt);
+  });
+
   it("reports a failure over unsupported when nothing answered", () => {
     assert.strictEqual(combineUsageLimits([unsupported, failed]), failed);
     assert.strictEqual(combineUsageLimits([unsupported, unsupported]), unsupported);
@@ -311,5 +352,95 @@ describe("combineUsageLimits", () => {
     it("publishes no fingerprint when no credential has one", () => {
       assert.strictEqual(combineUsageLimits([zai, unsupported]).credentialFingerprint, undefined);
     });
+
+    it.effect(
+      "keeps a subscription's bars and the account's identity through one failed check",
+      () =>
+        Effect.gen(function* () {
+          const goFailed = makeUnavailableUsageLimits({
+            checkedAt,
+            reason: "probeFailed",
+            message: "down",
+          });
+          const goReads = [go, goFailed];
+          const readGo = yield* keepLastGoodUsageLimits(Effect.sync(() => goReads.shift() ?? go));
+          const readZai = yield* keepLastGoodUsageLimits(Effect.succeed(zaiIdentified));
+          const refresh = () =>
+            Effect.all([readGo, readZai]).pipe(Effect.map(([a, b]) => combineUsageLimits([a, b])));
+
+          const healthy = yield* refresh();
+          const afterFailure = yield* refresh();
+          assert.deepStrictEqual(
+            afterFailure.windows.map((window) => window.id),
+            ["go_weekly", "zai_weekly"],
+          );
+          assert.isDefined(healthy.credentialFingerprint);
+          assert.strictEqual(afterFailure.credentialFingerprint, healthy.credentialFingerprint);
+        }),
+    );
   });
+});
+
+describe("keepLastGoodUsageLimits", () => {
+  const checkedAt = "2026-09-20T00:00:00.000Z";
+  const good = makeUsageLimits({
+    checkedAt,
+    windows: [{ id: "zai_weekly", kind: "weekly", label: "Z.ai · Weekly", usedPercent: 6 }],
+  });
+  const failed = makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed", message: "down" });
+  const unsupported = makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" });
+
+  const withFingerprint = (limits: ServerProviderUsageLimits, credentialFingerprint: string) => ({
+    ...limits,
+    credentialFingerprint,
+  });
+
+  const run = (reads: readonly ServerProviderUsageLimits[]) =>
+    Effect.gen(function* () {
+      const remaining = [...reads];
+      const probe = yield* keepLastGoodUsageLimits(
+        Effect.sync(() => remaining.shift() as ServerProviderUsageLimits),
+      );
+      return yield* Effect.all(reads.map(() => probe));
+    });
+
+  it.effect("returns the last good result when a later read fails", () =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(yield* run([good, failed, failed]), [good, good, good]);
+    }),
+  );
+
+  it.effect("lets unsupported replace what it remembered", () =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(yield* run([good, unsupported]), [good, unsupported]);
+    }),
+  );
+
+  it.effect("reports a failure when nothing good was remembered", () =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(yield* run([failed]), [failed]);
+    }),
+  );
+
+  it.effect("publishes a failure that names a different credential", () =>
+    Effect.gen(function* () {
+      const goodA = withFingerprint(good, "key-a");
+      const failedB = withFingerprint(failed, "key-b");
+      assert.deepStrictEqual(yield* run([goodA, failedB, failedB]), [goodA, failedB, failedB]);
+    }),
+  );
+
+  it.effect("keeps the last good result when the failure names the same credential", () =>
+    Effect.gen(function* () {
+      const goodA = withFingerprint(good, "key-a");
+      assert.deepStrictEqual(yield* run([goodA, withFingerprint(failed, "key-a")]), [goodA, goodA]);
+    }),
+  );
+
+  it.effect("keeps the last good result when the failure names no credential", () =>
+    Effect.gen(function* () {
+      const goodA = withFingerprint(good, "key-a");
+      assert.deepStrictEqual(yield* run([goodA, failed]), [goodA, goodA]);
+    }),
+  );
 });
