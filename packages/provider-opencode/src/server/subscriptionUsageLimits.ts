@@ -47,7 +47,12 @@ export const makeSubscriptionUsageLimits = Effect.fn("makeSubscriptionUsageLimit
       { concurrency: "unbounded" },
     ).pipe(
       Effect.flatMap(({ openCodeLimits, zaiLimits, ollamaLimits }) =>
-        combineUsageLimits([openCodeLimits, zaiLimits, ollamaLimits]),
+        combineUsageLimits([
+          // Only the Go key reader names its credential, so a listed OpenCode subscription is Go.
+          { id: "opencode-go", label: "OpenCode Go", limits: openCodeLimits },
+          { id: "zai-coding-plan", label: "Z.ai", limits: zaiLimits },
+          { id: "ollama-cloud", label: "Ollama Cloud", limits: ollamaLimits },
+        ]),
       ),
       Effect.provide(services),
     );
