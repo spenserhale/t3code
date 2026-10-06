@@ -19,6 +19,8 @@ import {
 
 import * as DateTime from "effect/DateTime";
 
+import { accountsOnPlansOf, mergeSubscriptions } from "./usageLimitSubscriptions.ts";
+
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -242,6 +244,8 @@ export interface LimitAccount {
   readonly displayName: string | null;
   readonly email: string | undefined;
   readonly plan: string | undefined;
+  /** The plan this is (`zai-coding-plan`) when its provider account holds several subscriptions. */
+  readonly subscription?: string | undefined;
   readonly accentColor: string | undefined;
   readonly environments: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -314,6 +318,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
           ? null
           : displayName,
       plan: planSources.get(key)?.plan ?? previous.plan ?? next.plan,
+      subscription: previous.subscription ?? next.subscription,
       accentColor: previous.accentColor ?? next.accentColor,
       environments,
       sourceLabel: environments.length > 0 ? null : (previous.sourceLabel ?? next.sourceLabel),
@@ -340,6 +345,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
     const label = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
       if (!provider.usageLimits || limitsNotice(provider.usageLimits) !== null) continue;
+      if (mergeSubscriptions(merge, { environmentId, label }, provider, accountKey)) continue;
       merge(resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`, {
         key: `${environmentId}:${provider.instanceId}`,
         driver: provider.driver,
@@ -603,7 +609,7 @@ function poolWindows(accounts: readonly LimitAccount[], now: number): readonly L
       kind: first.kind,
       label: first.label,
       members,
-      columns: accounts.map(
+      columns: accountsOnPlansOf(accounts, members).map(
         (account) => memberByAccount.get(account.key) ?? { account, window: null },
       ),
       usedPercent: Math.round(usedPercent),
