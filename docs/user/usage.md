@@ -164,7 +164,9 @@ your Go API key as `OPENCODE_API_KEY` in the OpenCode instance's **Environment v
 refresh provider status. A Z.ai Coding Plan signed in through OpenCode reports its 5-hour and weekly
 quota and its monthly tool allowance, along with any banked quota resets. **Use reset** spends the
 5-hour reset, or the weekly one when that is the only kind banked or the weekly quota is the fuller
-of the two, because a weekly reset also clears the 5-hour quota. Cursor reports
+of the two, because a weekly reset also clears the 5-hour quota. An Ollama Cloud subscription signed
+in through OpenCode reports its monthly usage, or its session and weekly usage on older plans;
+Ollama reports no reset time, so these bars show none. Cursor reports
 its monthly allowance, including separate Auto and API usage, for `CURSOR_AUTH_TOKEN` when it is set,
 otherwise for the account you signed in with in T3 or set as `CURSOR_API_KEY`, otherwise for the CLI
 login. On macOS, this includes the default Keychain login after you enable Cursor usage. Sign-in, API key,
