@@ -247,6 +247,7 @@ import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http
 import * as RelayClient from "@t3tools/shared/relayClient";
 import {
   sameUsageLimitCommandCoverage,
+  withoutUsageLimitSubscriptions,
   withUsageLimitsCommands,
 } from "@t3tools/shared/usageLimits";
 import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
@@ -1695,10 +1696,16 @@ const layerWsRpc = (
           ),
         );
 
-      const loadServerConfig = (options: { readonly usageLimitsCommand: boolean }) =>
+      const loadServerConfig = (options: {
+        readonly usageLimitsCommand: boolean;
+        readonly usageLimitSubscriptions?: boolean;
+      }) =>
         Effect.gen(function* () {
           const keybindingsConfig = yield* keybindings.loadConfigState;
-          const currentProviders = yield* providerRegistry.getProviders;
+          const registeredProviders = yield* providerRegistry.getProviders;
+          const currentProviders = options.usageLimitSubscriptions
+            ? registeredProviders
+            : withoutUsageLimitSubscriptions(registeredProviders);
           const providers = options.usageLimitsCommand
             ? withUsageLimitsCommands(currentProviders, yield* usageLimitSources.current)
             : currentProviders;
@@ -2267,7 +2274,7 @@ const layerWsRpc = (
                 providers = yield* providerRegistry.refreshInstance(instance.instanceId);
               }
             }
-            return { providers };
+            return { providers: withoutUsageLimitSubscriptions(providers) };
           }),
         [WS_METHODS.mcpAppsCallTool]: (input) => mcpAppRequests.callTool(input),
         [WS_METHODS.mcpAppsToolInfo]: (input) => mcpAppRequests.toolInfo(input),
@@ -2323,7 +2330,12 @@ const layerWsRpc = (
             ),
           ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
-          providerMaintenanceRunner.updateProvider(input),
+          providerMaintenanceRunner.updateProvider(input).pipe(
+            Effect.map((result) => ({
+              ...result,
+              providers: withoutUsageLimitSubscriptions(result.providers),
+            })),
+          ),
         [WS_METHODS.providerConsumeResetCredit]: (input) =>
           Effect.gen(function* () {
             if ("sourceId" in input) return yield* usageLimitSources.consumeResetCredit(input);
@@ -2986,7 +2998,11 @@ const layerWsRpc = (
           Stream.unwrap(
             Effect.gen(function* () {
               const usageLimitsCommand = input.usageLimitsCommand === true;
-              const config = yield* loadServerConfig({ usageLimitsCommand });
+              const usageLimitSubscriptions = input.usageLimitSubscriptions === true;
+              const config = yield* loadServerConfig({
+                usageLimitsCommand,
+                usageLimitSubscriptions,
+              });
               const keybindingsUpdates = keybindings.streamChanges.pipe(
                 Stream.map((event) => ({
                   version: 1 as const,
@@ -3012,8 +3028,14 @@ const layerWsRpc = (
                     usageLimitsCommand ? sameUsageLimitCommandCoverage : () => true,
                   ),
                 ),
-                (providers, sources) =>
-                  usageLimitsCommand ? withUsageLimitsCommands(providers, sources) : providers,
+                (registered, sources) => {
+                  const providers = usageLimitSubscriptions
+                    ? registered
+                    : withoutUsageLimitSubscriptions(registered);
+                  return usageLimitsCommand
+                    ? withUsageLimitsCommands(providers, sources)
+                    : providers;
+                },
               ).pipe(
                 // Both sides replay their current value, so the first pairing normally
                 // repeats the snapshot the client already holds. Compare against that
