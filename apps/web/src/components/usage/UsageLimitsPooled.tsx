@@ -575,28 +575,42 @@ function PoolSection({
 }
 
 /**
+ * A group's name for a heading. A group named by its email keeps the address
+ * behind the chip until asked, as the account popovers do; `className` sizes
+ * that address.
+ */
+export function LimitGroupName({
+  group,
+  className,
+}: {
+  readonly group: LimitGroup;
+  readonly className?: string;
+}) {
+  return group.kind === "email" ? (
+    <>
+      <AccountChip email={group.name} />
+      <RedactedSensitiveText
+        value={group.name}
+        ariaLabel="Toggle group email visibility"
+        revealTooltip="Click to reveal email"
+        hideTooltip="Click to hide email"
+        className={cn("truncate font-sans", className)}
+      />
+    </>
+  ) : (
+    <span className="min-w-0 wrap-anywhere">{group.name}</span>
+  );
+}
+
+/**
  * One group of accounts with its own provider pools, so quota that is not
- * interchangeable is never added up. A group named by its email keeps the
- * address behind the chip until asked, as the account popovers do.
+ * interchangeable is never added up.
  */
 function LimitGroupSection({ group, now }: { readonly group: LimitGroup; readonly now: number }) {
   return (
     <section className="flex flex-col gap-5">
       <h2 className="flex min-w-0 items-center gap-2 border-b border-border/60 pb-2 text-base font-semibold text-foreground">
-        {group.kind === "email" ? (
-          <>
-            <AccountChip email={group.name} />
-            <RedactedSensitiveText
-              value={group.name}
-              ariaLabel="Toggle group email visibility"
-              revealTooltip="Click to reveal email"
-              hideTooltip="Click to hide email"
-              className="truncate font-sans text-sm"
-            />
-          </>
-        ) : (
-          <span className="min-w-0 wrap-anywhere">{group.name}</span>
-        )}
+        <LimitGroupName group={group} className="text-sm" />
       </h2>
       {collectLimitPools(group.accounts, now).map((pool) => (
         <PoolSection key={pool.driver} pool={pool} now={now} heading="h3" />

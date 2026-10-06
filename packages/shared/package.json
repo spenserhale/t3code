@@ -331,6 +331,10 @@
       "types": "./src/usageLimitGroups.ts",
       "import": "./src/usageLimitGroups.ts"
     },
+    "./usageLimitsGlance": {
+      "types": "./src/usageLimitsGlance.ts",
+      "import": "./src/usageLimitsGlance.ts"
+    },
     "./desktopAppControl": {
       "types": "./src/desktopAppControl.ts",
       "import": "./src/desktopAppControl.ts"
