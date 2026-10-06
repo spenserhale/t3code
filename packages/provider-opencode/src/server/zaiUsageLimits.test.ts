@@ -1,6 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -86,13 +85,6 @@ function zaiApi(routes: Readonly<Record<string, unknown>>) {
         );
       }),
     ),
-    Layer.succeed(
-      Crypto.Crypto,
-      Crypto.make({
-        randomBytes: (size) => new Uint8Array(size).fill(7),
-        digest: (_algorithm, data) => Effect.succeed(data),
-      }),
-    ),
   );
   return { layer, requests };
 }
@@ -148,6 +140,49 @@ describe("readZaiCodingPlanUsageLimits", () => {
       const limits = yield* readZaiCodingPlanUsageLimits(account());
       assert.strictEqual(limits.windows.length, 3);
       assert.strictEqual(limits.resetCredits, undefined);
+    }).pipe(Effect.provide(api.layer));
+  });
+});
+
+describe("readZaiCodingPlanUsageLimits identity", () => {
+  // sha256("zai-coding-plan\0zai-key") as node:crypto computed it; the bytes must never change,
+  // or every Z.ai account changes identity.
+  const zaiKeyFingerprint = "a32e8a52b9185d9fa126a6f6b12d3c33e1333ee5c874e4503207d01bcb8e9096";
+
+  it.effect("publishes a per-key fingerprint and never the key itself", () => {
+    const api = zaiApi({ [QUOTA]: quota(3, 6), [RESET_LIST]: resets([], []) });
+    return Effect.gen(function* () {
+      const first = yield* readZaiCodingPlanUsageLimits(account("zai-key"));
+      const again = yield* readZaiCodingPlanUsageLimits(account("zai-key"));
+      const other = yield* readZaiCodingPlanUsageLimits(account("another-key"));
+      assert.strictEqual(first.credentialFingerprint, zaiKeyFingerprint);
+      assert.strictEqual(again.credentialFingerprint, first.credentialFingerprint);
+      assert.notStrictEqual(other.credentialFingerprint, first.credentialFingerprint);
+      assert.notInclude(encodeJson(first), "zai-key");
+    }).pipe(Effect.provide(api.layer));
+  });
+
+  it.effect("keeps the fingerprint when the quota call fails", () => {
+    const ok = zaiApi({ [QUOTA]: quota(3, 6), [RESET_LIST]: resets([], []) });
+    const down = zaiApi({});
+    return Effect.gen(function* () {
+      const healthy = yield* readZaiCodingPlanUsageLimits(account()).pipe(Effect.provide(ok.layer));
+      const failed = yield* readZaiCodingPlanUsageLimits(account()).pipe(
+        Effect.provide(down.layer),
+      );
+      assert.strictEqual(failed.unavailable?.reason, "probeFailed");
+      assert.strictEqual(failed.unavailable?.message, "Z.ai could not read Coding Plan usage.");
+      assert.isDefined(failed.credentialFingerprint);
+      assert.strictEqual(failed.credentialFingerprint, healthy.credentialFingerprint);
+    });
+  });
+
+  it.effect("publishes no fingerprint without a key", () => {
+    const api = zaiApi({});
+    return Effect.gen(function* () {
+      const limits = yield* readZaiCodingPlanUsageLimits(account(null));
+      assert.strictEqual(limits.unavailable?.reason, "unsupported");
+      assert.strictEqual(limits.credentialFingerprint, undefined);
     }).pipe(Effect.provide(api.layer));
   });
 });
@@ -216,12 +251,78 @@ describe("combineUsageLimits", () => {
     resetCredits: { availableCount: 1, nextCreditId: "WEEK:22" },
   };
 
-  it("shows the subscriptions that answered and keeps their reset credits", () => {
-    assert.deepStrictEqual(combineUsageLimits([failed, zai]), zai);
-  });
+  it.effect("shows the subscriptions that answered and keeps their reset credits", () =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(yield* combineUsageLimits([failed, zai]), zai);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 
-  it("reports a failure over unsupported when nothing answered", () => {
-    assert.strictEqual(combineUsageLimits([unsupported, failed]), failed);
-    assert.strictEqual(combineUsageLimits([unsupported, unsupported]), unsupported);
+  it.effect("reports a failure over unsupported when nothing answered", () =>
+    Effect.gen(function* () {
+      assert.strictEqual(yield* combineUsageLimits([unsupported, failed]), failed);
+      assert.strictEqual(yield* combineUsageLimits([unsupported, unsupported]), unsupported);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  describe("account identity", () => {
+    const withFingerprint = (
+      limits: ReturnType<typeof makeUsageLimits>,
+      credentialFingerprint: string,
+    ) => ({ ...limits, credentialFingerprint });
+    const go = withFingerprint(
+      makeUsageLimits({
+        checkedAt,
+        windows: [{ id: "go_weekly", kind: "weekly", label: "Go · Weekly", usedPercent: 2 }],
+      }),
+      "go-fingerprint",
+    );
+    const zaiIdentified = withFingerprint(zai, "zai-fingerprint");
+    const zaiFailed = {
+      ...makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed", message: "down" }),
+      credentialFingerprint: "zai-fingerprint",
+    };
+
+    const fingerprintOf = (limits: Parameters<typeof combineUsageLimits>[0]) =>
+      combineUsageLimits(limits).pipe(
+        Effect.map((combined) => combined.credentialFingerprint),
+        Effect.provide(NodeServices.layer),
+      );
+
+    it.effect("keeps a single subscription's fingerprint unchanged", () =>
+      Effect.gen(function* () {
+        assert.strictEqual(yield* fingerprintOf([unsupported, zaiIdentified]), "zai-fingerprint");
+        assert.strictEqual(yield* fingerprintOf([go, unsupported]), "go-fingerprint");
+      }),
+    );
+
+    it.effect("names the account by both credentials, whatever the order", () =>
+      Effect.gen(function* () {
+        const both = yield* fingerprintOf([go, zaiIdentified]);
+        assert.isDefined(both);
+        assert.strictEqual(yield* fingerprintOf([zaiIdentified, go]), both);
+        assert.notStrictEqual(both, "go-fingerprint");
+        assert.notStrictEqual(both, "zai-fingerprint");
+        // sha256("go-fingerprint\0zai-fingerprint") as node:crypto computed it.
+        assert.strictEqual(
+          both,
+          "6f1d688032076bf006eaa4f3148e4ffb57c179cb47635e8cb6f138dc10cc05ae",
+        );
+      }),
+    );
+
+    it.effect("does not lose the account when one probe fails", () =>
+      Effect.gen(function* () {
+        assert.strictEqual(
+          yield* fingerprintOf([go, zaiFailed]),
+          yield* fingerprintOf([go, zaiIdentified]),
+        );
+      }),
+    );
+
+    it.effect("publishes no fingerprint when no credential has one", () =>
+      Effect.gen(function* () {
+        assert.strictEqual(yield* fingerprintOf([zai, unsupported]), undefined);
+      }),
+    );
   });
 });

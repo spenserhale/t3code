@@ -392,10 +392,11 @@ export const OpenCodeDriver: ProviderDriver<
         },
         { concurrency: "unbounded" },
       ).pipe(
-        Effect.map(({ provider, goLimits, zaiLimits }) => ({
-          ...provider,
-          usageLimits: combineUsageLimits([goLimits, zaiLimits]),
-        })),
+        Effect.flatMap(({ provider, goLimits, zaiLimits }) =>
+          combineUsageLimits([goLimits, zaiLimits]).pipe(
+            Effect.map((usageLimits) => ({ ...provider, usageLimits })),
+          ),
+        ),
         Effect.map(stampIdentity),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, pathService),
