@@ -13,6 +13,7 @@ import { createThreadListEnvironmentsAtom } from "./thread-list-environments";
 export const serverEnvironment = createServerEnvironmentAtoms(connectionAtomRuntime, {
   initialConfigValueAtom: environmentSession.initialConfigValueAtom,
   usageLimitSources: true,
+  usageLimitSubscriptions: true,
   usageLimitsCommand: true,
 });
 export const describeOutdatedServer = createOutdatedServerDescriptionCommand(connectionAtomRuntime);
