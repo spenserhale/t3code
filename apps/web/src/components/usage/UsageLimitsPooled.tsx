@@ -13,6 +13,11 @@ import {
   type LimitPoolWindow,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
+import {
+  groupLimitAccounts,
+  type LimitGroup,
+  type LimitGroupState,
+} from "@t3tools/shared/usageLimitGroups";
 import { AlertTriangleIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
 
@@ -69,7 +74,7 @@ function AccountChip({ email }: { readonly email: string }) {
  * The same mark the model picker uses for a native instance (provider glyph,
  * initials badge, accent); hub accounts have no instance, so they get the chip.
  */
-function AccountAvatar({
+export function AccountAvatar({
   account,
   className,
 }: {
@@ -528,13 +533,21 @@ function PoolWindowCard({
   );
 }
 
-function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: number }) {
+function PoolSection({
+  pool,
+  now,
+  heading: Heading = "h2",
+}: {
+  readonly pool: LimitPool;
+  readonly now: number;
+  readonly heading?: "h2" | "h3";
+}) {
   const color = barColor(pool.driver);
   const label = getDriverOption(pool.driver)?.label ?? String(pool.driver);
   const windows = displayLimitWindows(pool);
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
+      <Heading className="flex items-center gap-2 text-sm font-medium text-foreground">
         <ProviderInstanceIcon
           driverKind={pool.driver}
           displayName={label}
@@ -543,7 +556,7 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
           iconClassName="size-4 text-foreground/80"
         />
         {label}
-      </h2>
+      </Heading>
       {windows.map((window) => {
         const details = pool.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
         return (
@@ -562,20 +575,55 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
 }
 
 /**
+ * One group of accounts with its own provider pools, so quota that is not
+ * interchangeable is never added up. A group named by its email keeps the
+ * address behind the chip until asked, as the account popovers do.
+ */
+function LimitGroupSection({ group, now }: { readonly group: LimitGroup; readonly now: number }) {
+  return (
+    <section className="flex flex-col gap-5">
+      <h2 className="flex min-w-0 items-center gap-2 border-b border-border/60 pb-2 text-base font-semibold text-foreground">
+        {group.kind === "email" ? (
+          <>
+            <AccountChip email={group.name} />
+            <RedactedSensitiveText
+              value={group.name}
+              ariaLabel="Toggle group email visibility"
+              revealTooltip="Click to reveal email"
+              hideTooltip="Click to hide email"
+              className="truncate font-sans text-sm"
+            />
+          </>
+        ) : (
+          <span className="min-w-0 wrap-anywhere">{group.name}</span>
+        )}
+      </h2>
+      {collectLimitPools(group.accounts, now).map((pool) => (
+        <PoolSection key={pool.driver} pool={pool} now={now} heading="h3" />
+      ))}
+    </section>
+  );
+}
+
+/**
  * Accounts pooled per provider: what is open across all of them, who resets
  * next, and how much of the pool that hands back. Answers "can I keep going"
- * before "on which account".
+ * before "on which account". With groups on, each group pools separately.
  */
 export function UsageLimitsPooled({
   presentations,
   now,
   cursorPrompt,
+  groups,
 }: {
   readonly presentations: Parameters<typeof collectLimitAccounts>[0];
   readonly now: number;
   readonly cursorPrompt?: ReactNode;
+  readonly groups: LimitGroupState;
 }) {
-  const pools = collectLimitPools(collectLimitAccounts(presentations), now);
+  const accounts = collectLimitAccounts(presentations);
+  const pools = collectLimitPools(accounts, now);
+  const grouped = groups.enabled ? groupLimitAccounts(accounts, groups.assignments) : null;
   const notices = collectLimitNotices(presentations);
   const externalLinks = collectExternalUsageLinks(presentations);
   const cursorPromptAt =
@@ -590,13 +638,15 @@ export function UsageLimitsPooled({
           No provider on the selected environments reports subscription limits.
         </p>
       ) : null}
-      {pools.map((pool, index) => (
-        <Fragment key={pool.driver}>
-          {index === cursorPromptAt ? cursorPrompt : null}
-          <PoolSection pool={pool} now={now} />
-        </Fragment>
-      ))}
-      {cursorPromptAt === pools.length ? cursorPrompt : null}
+      {grouped
+        ? grouped.map((group) => <LimitGroupSection key={group.key} group={group} now={now} />)
+        : pools.map((pool, index) => (
+            <Fragment key={pool.driver}>
+              {index === cursorPromptAt ? cursorPrompt : null}
+              <PoolSection pool={pool} now={now} />
+            </Fragment>
+          ))}
+      {grouped || cursorPromptAt === pools.length ? cursorPrompt : null}
       {externalLinks.map((link) => (
         <section
           key={link.url}

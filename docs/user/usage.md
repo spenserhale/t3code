@@ -120,6 +120,13 @@ environments, whatever else each environment is signed in to, once every environ
 up to date.
 Filter with the environment dropdown to see what a single machine has.
 
+To keep subscriptions that are not interchangeable apart, such as personal and work accounts, choose
+**Groups** on Limits on web or desktop and turn on **Group accounts on Limits**. Each group gets its
+own section and pools only its own accounts. Accounts that share an email are grouped together
+across providers. Type a name next to an account to put it in a group of your own, or clear the name
+to return it to its email. Naming a group turns grouping on. Groups are saved on the device where
+you set them.
+
 Opening Limits checks the selected connected environments automatically. Each client waits at
 least five minutes between automatic checks of an environment, including after a failed check.
 If a window still looks stale, refresh Limits to re-check every provider and hub.
