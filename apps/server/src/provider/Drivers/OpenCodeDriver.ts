@@ -34,6 +34,7 @@ import type { ProviderAdapterV2Shape } from "../../orchestration-v2/ProviderAdap
 import * as ServerSettings from "../../serverSettings.ts";
 import type { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
+import { readOllamaCloudUsageLimits } from "../Layers/ollamaCloudUsageLimits.ts";
 import { readOpenCodeGoUsageLimits } from "../Layers/openCodeUsageLimits.ts";
 import {
   combineUsageLimits,
@@ -385,6 +386,9 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
       const readZaiLimits = yield* keepLastGoodUsageLimits(
         readZaiCodingPlanUsageLimits(subscriptionAccount),
       );
+      const readOllamaLimits = yield* keepLastGoodUsageLimits(
+        readOllamaCloudUsageLimits(subscriptionAccount),
+      );
       const checkProvider = Effect.all(
         {
           provider: checkOpenCodeProviderStatus(
@@ -395,12 +399,13 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
           ),
           goLimits: readGoLimits,
           zaiLimits: readZaiLimits,
+          ollamaLimits: readOllamaLimits,
         },
         { concurrency: "unbounded" },
       ).pipe(
-        Effect.map(({ provider, goLimits, zaiLimits }) => ({
+        Effect.map(({ provider, goLimits, zaiLimits, ollamaLimits }) => ({
           ...provider,
-          usageLimits: combineUsageLimits([goLimits, zaiLimits]),
+          usageLimits: combineUsageLimits([goLimits, zaiLimits, ollamaLimits]),
         })),
         Effect.map(stampIdentity),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
