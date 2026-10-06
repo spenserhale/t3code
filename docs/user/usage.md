@@ -88,6 +88,8 @@ Keychain. On narrow screens, numbered rows below
 the bar show each account's quota, countdown, and credits. Tap a row to open its details.
 
 The same account signed in on more than one environment, or reported by a hub as well, counts once.
+OpenCode environments signed in to the same OpenCode subscriptions count as one account; an
+environment signed in to a different set shows its own column.
 Filter with the environment dropdown to see what a single machine has.
 
 Opening Limits checks the selected connected environments automatically. Each client waits at
@@ -100,7 +102,10 @@ closes when you dismiss it or send your next message. It uses the same snapshot 
 anything. The command is offered only for providers that appear under **Usage → Limits**.
 
 OpenCode Go reports its session, weekly, and monthly allowance when OpenCode runs locally in
-the environment. T3 cannot report limits for external OpenCode servers because their credentials
+the environment. A Z.ai Coding Plan signed in through OpenCode reports its 5-hour and weekly
+quota and its monthly tool allowance, along with any banked quota resets. **Use reset** spends the
+5-hour reset, or the weekly one when that is the only kind banked or the weekly quota is the
+fuller of the two, because a weekly reset also clears the 5-hour quota. T3 cannot report limits for external OpenCode servers because their credentials
 belong to the remote server. Cursor reports
 its monthly allowance, including separate Auto and API usage, using the CLI login or
 `CURSOR_AUTH_TOKEN`. On macOS, this includes the default Keychain login after you enable Cursor
