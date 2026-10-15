@@ -236,6 +236,17 @@ const UNPRICEABLE_MODELS = new Set([
 ]);
 
 /**
+ * Model families whose publisher files its own entries under a prefix.
+ *
+ * Resellers list the same bare name at their own rates, which leaves it
+ * ambiguous and unpriced. A transcript that names only the model was almost
+ * always served by the publisher, so its rate is the honest estimate.
+ */
+const PUBLISHER_PREFIXES: ReadonlyArray<readonly [family: string, prefix: string]> = [
+  ["glm-", "zai/"],
+];
+
+/**
  * Lookups per table, by raw model name. A scan prices every record twice
  * against a few dozen models, and tables are never mutated once built.
  */
@@ -259,7 +270,10 @@ function resolveRate(table: RateTable, model: string): ModelRate | null {
   const key = stripVariantSuffix(normalizeRateKey(model));
   const bareName = bareModelName(key);
   if (bareName.length === 0 || UNPRICEABLE_MODELS.has(bareName)) return null;
-  return table.get(key) ?? null;
+  const rate = table.get(key);
+  if (rate !== undefined || key !== bareName) return rate ?? null;
+  const publisher = PUBLISHER_PREFIXES.find(([family]) => key.startsWith(family));
+  return (publisher && table.get(publisher[1] + key)) ?? null;
 }
 
 /** The parts of a transcript record that decide its price. */
