@@ -76,6 +76,7 @@ import {
 } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
+import { UsageLimitGroupsDialog } from "./UsageLimitGroupsDialog";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart } from "./UsageProviderChart";
@@ -103,6 +104,7 @@ import {
   saveUsagePagePreferences,
   type UsagePagePreferences,
 } from "./usagePagePreferences";
+import { useUsageLimitGroups } from "./usageLimitGroupPreferences";
 
 const selectUsageCostAnalysisEnabled = (settings: UnifiedSettings) =>
   settings.usageCostAnalysisEnabled;
@@ -141,6 +143,8 @@ export function UsagePage() {
   const showingLimits = metric === "limits";
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
+  const [limitGroups, updateLimitGroups] = useUsageLimitGroups();
+  const [limitGroupsOpen, setLimitGroupsOpen] = useState(false);
   const refreshingRef = useRef(false);
   const [selectedBreakdown, setBreakdown] = useState<"model" | "thread" | "time">("model");
   // Thread totals are part of the Usage and cost setting; without it the toggle has no Thread.
@@ -394,6 +398,12 @@ export function UsagePage() {
     shownHourly && shownWindow.sinceTime !== undefined && shownWindow.untilTime !== undefined
       ? `${formatDateTimeShort(shownWindow.sinceTime, shownWindow.timeZone)} to ${formatDateTimeShort(shownWindow.untilTime, shownWindow.timeZone)}`
       : `${formatDayShort(shownWindow.sinceDay)} to ${formatDayShort(shownWindow.untilDay)}`;
+  // First in its row, so the controls after it stay put when Limits opens.
+  const limitGroupsButton = showingLimits ? (
+    <Button size="compact" variant="ghost" onClick={() => setLimitGroupsOpen(true)}>
+      Groups
+    </Button>
+  ) : null;
   const topbarContent = (
     <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 xl:flex">
       <WorkspaceBreadcrumb ariaLabel="Usage breadcrumb" className="min-w-0">
@@ -429,6 +439,7 @@ export function UsagePage() {
         </span>
       ) : null}
       <div className="ms-auto hidden min-w-0 items-center justify-end gap-2 xl:flex">
+        {limitGroupsButton}
         <ToggleGroup
           aria-label="Usage metric"
           variant="segmented"
@@ -474,6 +485,7 @@ export function UsagePage() {
         </Button>
       </div>
       <div className="ms-auto flex min-w-0 items-center justify-end gap-1 xl:hidden">
+        {limitGroupsButton}
         <Select
           value={metric}
           onValueChange={(value) => {
@@ -557,6 +569,7 @@ export function UsagePage() {
                 selectedEnvironmentIds={selectedEnvironmentIds}
                 hiddenProviders={hiddenProviders}
                 now={limitsNow}
+                groups={limitGroups}
                 cursorPrompt={
                   cursorAccessEnvironments.length > 0 ? (
                     <CursorEnableLimits
@@ -1030,6 +1043,16 @@ export function UsagePage() {
           onOpenChange={(open) => {
             if (!open) setPriceDialog(null);
           }}
+        />
+      ) : null}
+      {limitGroupsOpen ? (
+        <UsageLimitGroupsDialog
+          selectedEnvironmentIds={selectedEnvironmentIds}
+          hiddenProviders={hiddenProviders}
+          now={limitsNow}
+          groups={limitGroups}
+          onChange={updateLimitGroups}
+          onOpenChange={setLimitGroupsOpen}
         />
       ) : null}
     </SidebarInset>

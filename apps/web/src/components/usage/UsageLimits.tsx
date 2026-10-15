@@ -17,6 +17,7 @@ import {
   paceOf,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
+import type { LimitGroupState } from "@t3tools/shared/usageLimitGroups";
 import { GaugeIcon, TrendingDownIcon, TrendingUpIcon } from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
 
@@ -349,11 +350,13 @@ export function UsageLimitsSection({
   hiddenProviders,
   now,
   cursorPrompt,
+  groups,
 }: {
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
   readonly now: number;
   readonly cursorPrompt?: ReactNode;
+  readonly groups: LimitGroupState;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
   const hiddenDrivers = new Set<ServerProvider["driver"]>(
@@ -388,5 +391,12 @@ export function UsageLimitsSection({
       ];
     }),
   );
-  return <UsageLimitsPooled presentations={selected} now={now} cursorPrompt={cursorPrompt} />;
+  return (
+    <UsageLimitsPooled
+      presentations={selected}
+      now={now}
+      cursorPrompt={cursorPrompt}
+      groups={groups}
+    />
+  );
 }
