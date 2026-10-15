@@ -35,6 +35,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import { openCodeUsageReader, type OpenCodeUsageReaderEnv } from "./usage.ts";
+import { readOllamaCloudUsageLimits } from "./ollamaCloudUsageLimits.ts";
 import { readOpenCodeGoUsageLimits } from "./usageLimits.ts";
 import { loadOpenCode2Catalog } from "./openCode2Catalog.ts";
 import {
@@ -386,6 +387,9 @@ export const OpenCodeDriver: ProviderDriver<
       const readZaiLimits = yield* keepLastGoodUsageLimits(
         readZaiCodingPlanUsageLimits(subscriptionAccount),
       );
+      const readOllamaLimits = yield* keepLastGoodUsageLimits(
+        readOllamaCloudUsageLimits(subscriptionAccount),
+      );
       const checkProvider = Effect.all(
         {
           provider: checkOpenCodeProviderStatus(
@@ -396,11 +400,12 @@ export const OpenCodeDriver: ProviderDriver<
           ),
           goLimits: readGoLimits,
           zaiLimits: readZaiLimits,
+          ollamaLimits: readOllamaLimits,
         },
         { concurrency: "unbounded" },
       ).pipe(
-        Effect.flatMap(({ provider, goLimits, zaiLimits }) =>
-          combineUsageLimits([goLimits, zaiLimits]).pipe(
+        Effect.flatMap(({ provider, goLimits, zaiLimits, ollamaLimits }) =>
+          combineUsageLimits([goLimits, zaiLimits, ollamaLimits]).pipe(
             Effect.map((usageLimits) => ({ ...provider, usageLimits })),
           ),
         ),
