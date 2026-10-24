@@ -2738,16 +2738,12 @@ export function resolveDesktopRuntimeDependencies(
 export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig")(function* (
   updateChannel: "latest" | "nightly",
 ) {
-  const env = yield* Config.all({
-    updateRepository: Config.String("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(Config.option),
-    githubRepository: Config.String("GITHUB_REPOSITORY").pipe(Config.option),
-  });
-  const rawRepo = (
-    Option.getOrUndefined(env.updateRepository)?.trim() ||
-    Option.getOrUndefined(env.githubRepository)?.trim() ||
-    ""
-  ).trim();
-  if (!rawRepo) return undefined;
+  const updateRepository = yield* Config.String("T3CODE_DESKTOP_UPDATE_REPOSITORY").pipe(
+    Config.option,
+  );
+  const rawRepo = Option.getOrUndefined(updateRepository)?.trim() ?? "";
+  // Personal builds must explicitly opt into their own feed, never the upstream app's releases.
+  if (!rawRepo || rawRepo.toLowerCase() === "pingdotgg/t3code") return undefined;
 
   const [owner, repo, ...rest] = rawRepo.split("/");
   if (!owner || !repo || rest.length > 0) return undefined;

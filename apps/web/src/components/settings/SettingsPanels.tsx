@@ -1908,6 +1908,7 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection id="about" title="About">
+        <p className="text-sm text-muted-foreground">Software Engineering · Spenser’s Edition</p>
         {isElectron || HOSTED_APP_CHANNEL ? (
           <AboutVersionSection />
         ) : (
