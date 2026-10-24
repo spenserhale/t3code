@@ -21,7 +21,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import { openCodeUsageReader, type OpenCodeUsageReaderEnv } from "./usage.ts";
-import { readOpenCodeGoUsageLimits } from "./usageLimits.ts";
+import { makeSubscriptionUsageLimits } from "./subscriptionUsageLimits.ts";
 import { loadOpenCode2Catalog } from "./openCode2Catalog.ts";
 import {
   checkOpenCodeProviderStatus,
@@ -343,6 +343,13 @@ export const OpenCodeDriver: ProviderDriver<
       ),
     );
 
+    const subscriptionLimits = yield* makeSubscriptionUsageLimits({
+      driver: DRIVER_KIND,
+      instanceId,
+      enabled: effectiveConfig.enabled,
+      serverUrl: effectiveConfig.serverUrl,
+      environment: processEnv,
+    });
     const checkProvider = Effect.all(
       {
         provider: checkOpenCodeProviderStatus(
@@ -351,11 +358,7 @@ export const OpenCodeDriver: ProviderDriver<
           runtimeProbe.refresh,
           loadOpenCode2Models,
         ),
-        usageLimits: readOpenCodeGoUsageLimits({
-          enabled: effectiveConfig.enabled,
-          serverUrl: effectiveConfig.serverUrl,
-          environment: processEnv,
-        }),
+        usageLimits: subscriptionLimits.usageLimits,
       },
       { concurrency: "unbounded" },
     ).pipe(
@@ -475,6 +478,7 @@ export const OpenCodeDriver: ProviderDriver<
       accentColor,
       enabled,
       snapshot,
+      consumeResetCredit: subscriptionLimits.consumeResetCredit(snapshot.refresh),
       snapshotForCwd: (cwd) =>
         !effectiveConfig.enabled
           ? snapshot.getSnapshot
