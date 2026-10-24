@@ -83,9 +83,9 @@ import { isMacPlatform } from "~/lib/utils";
 import { readLocalApi } from "../localApi";
 import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
 import { selectProjectGroupingSettings } from "../logicalProject";
+import { buildSidebarEnvironmentScopes, resolveSidebarScopeKey } from "../sidebarEnvironmentScope";
 import {
   projectGroupsSpanEnvironments,
-  resolveSidebarProjectScopeKey,
   getSidebarProjectSettingsKey,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
@@ -129,6 +129,7 @@ import { buildThreadRouteParams, resolveActiveThreadRouteRef } from "../threadRo
 import type { SidebarThreadSummary } from "../types";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { cn } from "~/lib/utils";
+import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
 import {
   buildDraftActionMenuItems,
@@ -694,8 +695,13 @@ function useSidebarLookups() {
   const projectGroupByScopeKey = new Map(
     projectGroups.map((project) => [project.projectKey, project] as const),
   );
+  const environmentScopes = buildSidebarEnvironmentScopes({ groups: projectGroups, environments });
+  const environmentScopeByKey = new Map(
+    environmentScopes.map((scope) => [scope.key, scope] as const),
+  );
   const projectScopeItems = [
     { value: "all", label: "All projects" },
+    ...environmentScopes.map((scope) => ({ value: scope.key, label: scope.label })),
     ...projectGroups.map((project) => ({ value: project.projectKey, label: project.displayName })),
   ];
   return {
@@ -707,6 +713,8 @@ function useSidebarLookups() {
     projectByKey,
     projectDisplayNameByKey,
     projectGroupByScopeKey,
+    environmentScopes,
+    environmentScopeByKey,
     projectScopeItems,
   };
 }
@@ -756,6 +764,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     projectByKey,
     projectDisplayNameByKey,
     projectGroupByScopeKey,
+    environmentScopes,
+    environmentScopeByKey,
     projectScopeItems,
   } = useSidebarLookups();
   const router = useRouter();
@@ -911,11 +921,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     clearSelection();
     setPersistedProjectScopeKey(key);
   };
-  const projectScopeKey = resolveSidebarProjectScopeKey({
+  const projectScopeKey = resolveSidebarScopeKey({
     groups: projectGroups,
+    environmentScopes,
     key: persistedProjectScopeKey,
     settings: projectGroupingSettings,
   });
+  const hasEnvironmentScopes = environmentScopes.length > 0;
   const showProjectEnvironments = projectGroupsSpanEnvironments(projectGroups);
   const scratchMachineLabelFor = (
     thread: Pick<SidebarThreadSummary, "environmentId" | "projectId">,
@@ -943,7 +955,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     projectScopeKey === null
       ? null
       : (projectGroups.find((project) => project.projectKey === projectScopeKey) ?? null);
-  const scopedProjectKeys =
+  const scopedEnvironment =
+    projectScopeKey === null ? null : (environmentScopeByKey.get(projectScopeKey) ?? null);
+  const scopedGroupProjectKeys =
     scopedProjectGroup === null
       ? null
       : new Set(
@@ -951,9 +965,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             (projectRef) => `${projectRef.environmentId}:${projectRef.projectId}`,
           ),
         );
+  const scopedProjectKeys = scopedEnvironment?.projectKeys ?? scopedGroupProjectKeys;
   useEffect(() => {
-    const nextKey = resolveSidebarProjectScopeKey({
+    const nextKey = resolveSidebarScopeKey({
       groups: projectGroups,
+      environmentScopes,
       key: persistedProjectScopeKey,
       settings: projectGroupingSettings,
       canClearMissingScope: allProjectSnapshotsReady && allProjectConfigsReady,
@@ -966,6 +982,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     allProjectConfigsReady,
     allProjectSnapshotsReady,
     clearSelection,
+    environmentScopes,
     persistedProjectScopeKey,
     projectGroups,
     projectGroupingSettings,
@@ -2668,7 +2685,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         label={
                           scopedProjectGroup
                             ? `Filter threads by project: ${scopedProjectGroup.displayName}`
-                            : "Filter threads by project"
+                            : scopedEnvironment
+                              ? `Filter threads by environment: ${scopedEnvironment.label}`
+                              : hasEnvironmentScopes
+                                ? "Filter threads by project or environment"
+                                : "Filter threads by project"
                         }
                       />
                     }
@@ -2676,6 +2697,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     {scopedProjectGroup ? (
                       <span className="flex shrink-0">
                         <ProjectFavicon project={scopedProjectGroup} className="size-4" />
+                      </span>
+                    ) : scopedEnvironment ? (
+                      <span className="flex shrink-0">
+                        <EnvironmentMachineIcon
+                          aria-hidden
+                          kind={
+                            environmentMachineById.get(scopedEnvironment.environmentId) ?? "server"
+                          }
+                          className="size-4"
+                        />
                       </span>
                     ) : (
                       <ListFilterIcon className="size-4" />
@@ -2687,8 +2718,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     className="max-w-[min(18rem,var(--available-width))] overflow-hidden"
                   >
                     <ComboboxSearchInput
-                      aria-label="Search projects"
-                      placeholder="Search projects..."
+                      aria-label={
+                        hasEnvironmentScopes
+                          ? "Search projects and environments"
+                          : "Search projects"
+                      }
+                      placeholder={
+                        hasEnvironmentScopes
+                          ? "Search projects and environments..."
+                          : "Search projects..."
+                      }
                       value={projectScopeMenuState.query}
                       onKeyDown={(event) => {
                         if (
@@ -2712,10 +2751,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         })
                       }
                     />
-                    <ComboboxEmpty>No matching projects.</ComboboxEmpty>
+                    <ComboboxEmpty>
+                      {hasEnvironmentScopes
+                        ? "No matching projects or environments."
+                        : "No matching projects."}
+                    </ComboboxEmpty>
                     <ComboboxList>
                       {(item: (typeof projectScopeItems)[number]) => {
                         const project = projectGroupByScopeKey.get(item.value) ?? null;
+                        const environmentScope = environmentScopeByKey.get(item.value) ?? null;
                         return (
                           <ComboboxItem
                             key={item.value}
@@ -2727,6 +2771,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           >
                             {project ? (
                               <ProjectFavicon project={project} className="size-4 shrink-0" />
+                            ) : environmentScope ? (
+                              <EnvironmentMachineIcon
+                                aria-hidden
+                                kind={
+                                  environmentMachineById.get(environmentScope.environmentId) ??
+                                  "server"
+                                }
+                                className="size-4 shrink-0"
+                              />
                             ) : (
                               <FolderIcon className="size-4 shrink-0" />
                             )}
@@ -3170,6 +3223,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 </>
               ) : scopedProjectGroup ? (
                 `No threads in ${scopedProjectGroup.displayName} yet`
+              ) : scopedEnvironment ? (
+                `No threads on ${scopedEnvironment.label} yet`
               ) : (
                 "No threads yet"
               )}
