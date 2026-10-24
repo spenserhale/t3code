@@ -39,6 +39,7 @@ import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textG
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import { openCodeUsageReader, type OpenCodeUsageReaderEnv } from "./usage.ts";
 import { readOpenCodeGoUsageLimits } from "./usageLimits.ts";
+import { makeSubscriptionUsageLimits } from "./subscriptionUsageLimits.ts";
 import { loadOpenCode2Catalog, loadOpenCode2DirectoryCatalog } from "./openCode2Catalog.ts";
 import {
   checkOpenCodeProviderStatus,
@@ -598,6 +599,14 @@ export const OpenCodeDriver: ProviderDriver<
         })),
       ),
     );
+    const subscriptionLimits = yield* makeSubscriptionUsageLimits({
+      driver: DRIVER_KIND,
+      instanceId,
+      enabled: effectiveConfig.enabled,
+      serverUrl: effectiveConfig.serverUrl,
+      environment: processEnv,
+      openCodeLimits: checkUsageLimits,
+    });
     const checkProvider = Effect.all(
       {
         // A configured loopback server reports its running version. Probe the local
@@ -624,7 +633,7 @@ export const OpenCodeDriver: ProviderDriver<
           Effect.annotateLogs({ providerInstanceId: instanceId }),
           Effect.annotateSpans({ providerInstanceId: instanceId }),
         ),
-        usageLimits: checkUsageLimits,
+        usageLimits: subscriptionLimits.usageLimits,
       },
       { concurrency: "unbounded" },
     ).pipe(
@@ -755,7 +764,7 @@ export const OpenCodeDriver: ProviderDriver<
       initialSnapshot: (settings) =>
         makePendingOpenCodeProvider(settings.provider).pipe(Effect.map(stampIdentity)),
       checkProvider,
-      checkUsageLimits,
+      checkUsageLimits: subscriptionLimits.usageLimits,
       enrichSnapshot: ({ settings, snapshot, publishSnapshot }) => {
         let enriched = snapshot;
         let catalog: ReadonlyArray<OpenCode2Model> | undefined;
@@ -813,6 +822,7 @@ export const OpenCodeDriver: ProviderDriver<
       accentColor,
       enabled,
       snapshot,
+      consumeResetCredit: subscriptionLimits.consumeResetCredit(snapshot.refresh),
       // A scan never installs OpenCode: without an offline probe result it fails and keeps the
       // last inventory rather than guessing 1.x.
       snapshotForCwd: (cwd) =>
