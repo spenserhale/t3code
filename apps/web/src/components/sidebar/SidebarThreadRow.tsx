@@ -109,6 +109,7 @@ import { InlineButton } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuShortcut, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MiddleTruncate } from "../ui/middle-truncate";
+import { ThreadUsageHoverRow } from "../usage/ThreadUsageDisplay";
 import { useThreadHasUnsentDraft } from "../../composerDraftStore";
 
 // The fields thread rows show. Provider status pushes refresh `checkedAt`,
@@ -331,6 +332,7 @@ function SidebarThreadTooltip({
             </div>
           </div>
         ) : null}
+        <ThreadUsageHoverRow threadRef={scopeThreadRef(thread.environmentId, thread.id)} />
         {terminalStatus ? (
           <div className="flex min-w-0 items-center gap-2">
             <TerminalIcon
