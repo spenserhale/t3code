@@ -41,6 +41,7 @@ import {
   resolveMacPasskeySigningConfiguration,
   resolveMergedStageDependencies,
   resolveBuildOptions,
+  resolveGitHubPublishConfig,
   stageWslRuntimeArchive,
   ancestorNodeModulesPaths,
   copyDirectoryPreservingSymlinks,
@@ -509,18 +510,36 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.deepStrictEqual(release.publish, [
         {
           provider: "github",
-          owner: "pingdotgg",
-          repo: "t3code",
+          owner: "spenserhale",
+          repo: "secode",
           releaseType: "release",
         },
       ]);
     }).pipe(
       Effect.provide(
         ConfigProvider.layer(
-          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "pingdotgg/t3code" } }),
+          ConfigProvider.fromEnv({
+            env: { T3CODE_DESKTOP_UPDATE_REPOSITORY: "spenserhale/secode" },
+          }),
         ),
       ),
     ),
+  );
+
+  it.effect("does not configure upstream or implicit update feeds for the personal edition", () =>
+    Effect.gen(function* () {
+      for (const env of [
+        { GITHUB_REPOSITORY: "pingdotgg/t3code" },
+        { GITHUB_REPOSITORY: "spenserhale/secode" },
+        { T3CODE_DESKTOP_UPDATE_REPOSITORY: "pingdotgg/t3code" },
+        { T3CODE_DESKTOP_UPDATE_REPOSITORY: "PingDotGG/T3Code" },
+      ]) {
+        const config = yield* resolveGitHubPublishConfig("latest").pipe(
+          Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+        );
+        assert.isUndefined(config);
+      }
+    }),
   );
 
   // pnpm writes "set this to true or false" placeholders into allowBuilds when a

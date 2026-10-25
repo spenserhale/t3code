@@ -1,4 +1,6 @@
 export const CLIENT_NAMES = [
+  "com.spenser.SECode.SnapShot",
+  "com.spenser.SECode.Development.SnapShot",
   "com.t3tools.T3Code.SnapShot",
   "com.t3tools.T3Code.Development.SnapShot",
 ];
