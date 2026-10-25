@@ -39,7 +39,11 @@ export const makeSubscriptionUsageLimits = Effect.fn("makeSubscriptionUsageLimit
       { concurrency: "unbounded" },
     ).pipe(
       Effect.flatMap(({ goLimits, zaiLimits, ollamaLimits }) =>
-        combineUsageLimits([goLimits, zaiLimits, ollamaLimits]),
+        combineUsageLimits([
+          { id: "opencode-go", label: "OpenCode Go", limits: goLimits },
+          { id: "zai-coding-plan", label: "Z.ai", limits: zaiLimits },
+          { id: "ollama-cloud", label: "Ollama Cloud", limits: ollamaLimits },
+        ]),
       ),
       Effect.provide(services),
     );

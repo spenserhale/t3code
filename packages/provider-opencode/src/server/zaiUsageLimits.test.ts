@@ -279,10 +279,20 @@ describe("combineUsageLimits", () => {
     }),
     resetCredits: { availableCount: 1, nextCreditId: "WEEK:22" },
   };
+  const asGo = (limits: ServerProviderUsageLimits) => ({
+    id: "opencode-go",
+    label: "OpenCode Go",
+    limits,
+  });
+  const asZai = (limits: ServerProviderUsageLimits) => ({
+    id: "zai-coding-plan",
+    label: "Z.ai",
+    limits,
+  });
 
   it.effect("shows the subscriptions that answered and keeps their reset credits", () =>
     Effect.gen(function* () {
-      assert.deepStrictEqual(yield* combineUsageLimits([failed, zai]), zai);
+      assert.deepStrictEqual(yield* combineUsageLimits([asGo(failed), asZai(zai)]), zai);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -294,16 +304,28 @@ describe("combineUsageLimits", () => {
         checkedAt,
         windows: [{ id: "go_weekly", kind: "weekly", label: "Go · Weekly", usedPercent: 2 }],
       });
-      assert.strictEqual((yield* combineUsageLimits([live, remembered])).checkedAt, older);
-      assert.strictEqual((yield* combineUsageLimits([remembered, live])).checkedAt, older);
-      assert.strictEqual((yield* combineUsageLimits([live, failed])).checkedAt, checkedAt);
+      assert.strictEqual(
+        (yield* combineUsageLimits([asGo(live), asZai(remembered)])).checkedAt,
+        older,
+      );
+      assert.strictEqual(
+        (yield* combineUsageLimits([asZai(remembered), asGo(live)])).checkedAt,
+        older,
+      );
+      assert.strictEqual(
+        (yield* combineUsageLimits([asGo(live), asZai(failed)])).checkedAt,
+        checkedAt,
+      );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("reports a failure over unsupported when nothing answered", () =>
     Effect.gen(function* () {
-      assert.strictEqual(yield* combineUsageLimits([unsupported, failed]), failed);
-      assert.strictEqual(yield* combineUsageLimits([unsupported, unsupported]), unsupported);
+      assert.strictEqual(yield* combineUsageLimits([asGo(unsupported), asZai(failed)]), failed);
+      assert.strictEqual(
+        yield* combineUsageLimits([asGo(unsupported), asZai(unsupported)]),
+        unsupported,
+      );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -333,16 +355,19 @@ describe("combineUsageLimits", () => {
 
     it.effect("keeps a single subscription's fingerprint unchanged", () =>
       Effect.gen(function* () {
-        assert.strictEqual(yield* fingerprintOf([unsupported, zaiIdentified]), "zai-fingerprint");
-        assert.strictEqual(yield* fingerprintOf([go, unsupported]), "go-fingerprint");
+        assert.strictEqual(
+          yield* fingerprintOf([asGo(unsupported), asZai(zaiIdentified)]),
+          "zai-fingerprint",
+        );
+        assert.strictEqual(yield* fingerprintOf([asGo(go), asZai(unsupported)]), "go-fingerprint");
       }),
     );
 
     it.effect("names the account by both credentials, whatever the order", () =>
       Effect.gen(function* () {
-        const both = yield* fingerprintOf([go, zaiIdentified]);
+        const both = yield* fingerprintOf([asGo(go), asZai(zaiIdentified)]);
         assert.isDefined(both);
-        assert.strictEqual(yield* fingerprintOf([zaiIdentified, go]), both);
+        assert.strictEqual(yield* fingerprintOf([asZai(zaiIdentified), asGo(go)]), both);
         assert.notStrictEqual(both, "go-fingerprint");
         assert.notStrictEqual(both, "zai-fingerprint");
         // sha256("go-fingerprint\0zai-fingerprint") as node:crypto computed it.
@@ -356,15 +381,15 @@ describe("combineUsageLimits", () => {
     it.effect("does not lose the account when one probe fails", () =>
       Effect.gen(function* () {
         assert.strictEqual(
-          yield* fingerprintOf([go, zaiFailed]),
-          yield* fingerprintOf([go, zaiIdentified]),
+          yield* fingerprintOf([asGo(go), asZai(zaiFailed)]),
+          yield* fingerprintOf([asGo(go), asZai(zaiIdentified)]),
         );
       }),
     );
 
     it.effect("publishes no fingerprint when no credential has one", () =>
       Effect.gen(function* () {
-        assert.strictEqual(yield* fingerprintOf([zai, unsupported]), undefined);
+        assert.strictEqual(yield* fingerprintOf([asZai(zai), asGo(unsupported)]), undefined);
       }),
     );
 
@@ -382,7 +407,7 @@ describe("combineUsageLimits", () => {
           const readZai = yield* keepLastGoodUsageLimits(Effect.succeed(zaiIdentified));
           const refresh = () =>
             Effect.all([readGo, readZai]).pipe(
-              Effect.flatMap(([a, b]) => combineUsageLimits([a, b])),
+              Effect.flatMap(([a, b]) => combineUsageLimits([asGo(a), asZai(b)])),
             );
 
           const healthy = yield* refresh();
@@ -394,6 +419,105 @@ describe("combineUsageLimits", () => {
           assert.isDefined(healthy.credentialFingerprint);
           assert.strictEqual(afterFailure.credentialFingerprint, healthy.credentialFingerprint);
         }).pipe(Effect.provide(NodeServices.layer)),
+    );
+  });
+
+  describe("subscriptions", () => {
+    const older = "2026-09-19T23:00:00.000Z";
+    const go = {
+      ...makeUsageLimits({
+        checkedAt,
+        windows: [
+          { id: "go_rolling", kind: "session", label: "Go · Session", usedPercent: 1 },
+          { id: "go_weekly", kind: "weekly", label: "Go · Weekly", usedPercent: 2 },
+        ],
+      }),
+      credentialFingerprint: "go-fingerprint",
+    };
+    const zaiIdentified = { ...zai, credentialFingerprint: "zai-fingerprint" };
+
+    it.effect("lists each subscription with its own identity, age, windows and credits", () =>
+      Effect.gen(function* () {
+        const combined = yield* combineUsageLimits([
+          asGo(go),
+          asZai({ ...zaiIdentified, checkedAt: older }),
+        ]);
+        assert.deepStrictEqual(combined.subscriptions, [
+          {
+            id: "opencode-go",
+            label: "OpenCode Go",
+            credentialFingerprint: "go-fingerprint",
+            checkedAt,
+            windowIds: ["go_rolling", "go_weekly"],
+          },
+          {
+            id: "zai-coding-plan",
+            label: "Z.ai",
+            credentialFingerprint: "zai-fingerprint",
+            checkedAt: older,
+            windowIds: ["zai_weekly"],
+            resetCredits: zai.resetCredits,
+          },
+        ]);
+        // Every window of the flat list belongs to exactly one of them.
+        assert.sameMembers(
+          combined.windows.map((window) => window.id),
+          combined.subscriptions!.flatMap((subscription) => subscription.windowIds),
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect("leaves everything a client already reads as it was", () =>
+      Effect.gen(function* () {
+        const { subscriptions: _, ...combined } = yield* combineUsageLimits([
+          asGo(go),
+          asZai(zaiIdentified),
+        ]);
+        assert.deepStrictEqual(combined, {
+          ...makeUsageLimits({ checkedAt, windows: [...go.windows, ...zai.windows] }),
+          // sha256("go-fingerprint\0zai-fingerprint") as node:crypto computed it.
+          credentialFingerprint: "6f1d688032076bf006eaa4f3148e4ffb57c179cb47635e8cb6f138dc10cc05ae",
+          resetCredits: zai.resetCredits,
+        });
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect("still names a subscription that is the only one", () =>
+      Effect.gen(function* () {
+        const combined = yield* combineUsageLimits([asGo(unsupported), asZai(zaiIdentified)]);
+        assert.deepStrictEqual(
+          combined.subscriptions?.map((subscription) => subscription.id),
+          ["zai-coding-plan"],
+        );
+        assert.strictEqual(combined.credentialFingerprint, "zai-fingerprint");
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    it.effect("lists only subscriptions that answered and name their credential", () =>
+      Effect.gen(function* () {
+        const zaiFailed = { ...failed, credentialFingerprint: "zai-fingerprint" };
+        assert.deepStrictEqual(
+          (yield* combineUsageLimits([asGo(go), asZai(zaiFailed)])).subscriptions?.map(
+            (subscription) => subscription.id,
+          ),
+          ["opencode-go"],
+        );
+
+        // `zai` names no credential: its windows still show, under no subscription.
+        const combined = yield* combineUsageLimits([asGo(go), asZai(zai)]);
+        assert.deepStrictEqual(
+          combined.subscriptions?.map((subscription) => subscription.id),
+          ["opencode-go"],
+        );
+        assert.include(
+          combined.windows.map((window) => window.id),
+          "zai_weekly",
+        );
+        assert.notProperty(
+          yield* combineUsageLimits([asGo(unsupported), asZai(zai)]),
+          "subscriptions",
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
     );
   });
 });

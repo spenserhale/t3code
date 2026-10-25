@@ -318,6 +318,13 @@ export const consumeZaiResetCredit = Effect.fn("consumeZaiResetCredit")(function
   return "reset" as const satisfies ProviderConsumeResetCreditOutcome;
 }, Effect.timeout("20 seconds"));
 
+/** What one subscription probe returned, with the plan it reads. */
+interface SubscriptionProbe {
+  readonly id: string;
+  readonly label: string;
+  readonly limits: ServerProviderUsageLimits;
+}
+
 /**
  * One OpenCode account can hold several subscriptions. Windows from each
  * available probe are shown together; when none is available the first
@@ -326,13 +333,19 @@ export const consumeZaiResetCredit = Effect.fn("consumeZaiResetCredit")(function
  * what a server without Z.ai publishes), several are hashed together. Inputs
  * may be remembered results of different ages, so the combined result is
  * stamped with the oldest `checkedAt` among those it was built from.
+ *
+ * Each available probe that names its credential is also listed under
+ * `subscriptions` with its own fingerprint, age, windows and credits, so a
+ * client can match one subscription across environments whatever else each
+ * of them is signed in to.
  */
 export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
-  limits: readonly [ServerProviderUsageLimits, ...ServerProviderUsageLimits[]],
+  probes: readonly [SubscriptionProbe, ...SubscriptionProbe[]],
 ) {
+  const limits = probes.map((probe) => probe.limits);
   const available = limits.filter((entry) => entry.unavailable === undefined);
   if (available.length === 0) {
-    return limits.find((entry) => entry.unavailable?.reason === "probeFailed") ?? limits[0];
+    return limits.find((entry) => entry.unavailable?.reason === "probeFailed") ?? probes[0].limits;
   }
   const resetCredits = available.find((entry) => entry.resetCredits !== undefined)?.resetCredits;
   const fingerprints = [
@@ -345,6 +358,20 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
   const checkedAt = available.reduce((oldest, entry) =>
     entry.checkedAt < oldest.checkedAt ? entry : oldest,
   ).checkedAt;
+  const subscriptions = probes.flatMap(({ id, label, limits: entry }) =>
+    entry.unavailable === undefined && entry.credentialFingerprint
+      ? [
+          {
+            id,
+            label,
+            credentialFingerprint: entry.credentialFingerprint,
+            checkedAt: entry.checkedAt,
+            windowIds: entry.windows.map((window) => window.id),
+            ...(entry.resetCredits ? { resetCredits: entry.resetCredits } : {}),
+          },
+        ]
+      : [],
+  );
   return {
     ...makeUsageLimits({
       checkedAt,
@@ -352,6 +379,7 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
     }),
     ...(credentialFingerprint ? { credentialFingerprint } : {}),
     ...(resetCredits ? { resetCredits } : {}),
+    ...(subscriptions.length > 0 ? { subscriptions } : {}),
   };
 });
 
