@@ -142,7 +142,7 @@ const fakeExpo = (
                             node: {
                               id: "someone-else",
                               status: "IN_PROGRESS",
-                              name: "T3 Code · EAS Simulator · 000000",
+                              name: "SECode · EAS Simulator · 000000",
                             },
                           },
                           ...(options.active ?? []).map((node) => ({ node })),

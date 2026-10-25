@@ -5,7 +5,7 @@
  * asked, with the usage service's rates. It stores nothing and keeps no cache,
  * so a new price or model mapping reaches every past run at once.
  *
- * Only work driven through T3 Code is counted, and only for providers whose
+ * Only work driven through SECode is counted, and only for providers whose
  * adapters report turn usage.
  *
  * @module ThreadUsage

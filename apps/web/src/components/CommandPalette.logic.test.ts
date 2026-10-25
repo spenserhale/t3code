@@ -172,7 +172,7 @@ describe("buildThreadActionItems", () => {
     ];
     const items = buildThreadActionItems({
       threads,
-      projectTitleById: new Map([[PROJECT_ID, "T3 Code"]]),
+      projectTitleById: new Map([[PROJECT_ID, "SECode"]]),
       sortOrder: "created_at",
       icon: null,
       getContentMatch: (thread) =>
@@ -280,7 +280,7 @@ describe("buildThreadActionItems", () => {
     });
     const items = buildThreadActionItems({
       threads: [idThread, titleThread],
-      projectTitleById: new Map([[PROJECT_ID, "T3 Code"]]),
+      projectTitleById: new Map([[PROJECT_ID, "SECode"]]),
       sortOrder: "updated_at",
       icon: null,
       runThread: async (_thread) => undefined,

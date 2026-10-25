@@ -772,7 +772,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "pull-request-links-open-in-app",
-    title: "Open pull requests in T3 Code",
+    title: "Open pull requests in SECode",
     to: "/settings/integrations",
     searchTerms: ["pr links github browser external click default pull request view panel"],
   },

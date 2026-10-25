@@ -6,7 +6,7 @@ import { UsageCostSource } from "./usage.ts";
 /**
  * One thread's usage inside a window, from the turns this server drove.
  * Unlike buckets it is not read from provider transcripts, so it excludes work
- * done outside T3 Code and does not sum to the bucket totals.
+ * done outside SECode and does not sum to the bucket totals.
  */
 export const UsageThreadTotals = Schema.Struct({
   threadId: ThreadId,

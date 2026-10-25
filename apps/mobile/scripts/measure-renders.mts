@@ -1,4 +1,4 @@
-// Measures React renders in a running T3 Code Dev client. See
+// Measures React renders in a running SECode Dev client. See
 // docs/internals/mobile-development.md#measuring-renders.
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -88,7 +88,7 @@ const connectInspector = Effect.fn("measure.connectInspector")(function* (metro:
     .pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(InspectorTargets)));
   const target = targets.find((entry) => entry.appId.startsWith("com.t3tools.t3code"));
   if (!target)
-    return yield* new MeasureError({ message: `No T3 Code app is attached to Metro at ${metro}.` });
+    return yield* new MeasureError({ message: `No SECode app is attached to Metro at ${metro}.` });
   // Expo terminates inspector sockets whose Origin differs from the URL Metro
   // advertises (the LAN address with `--lan`), so pass that URL as `--metro`.
   const socket = yield* Socket.makeWebSocket(target.webSocketDebuggerUrl, {

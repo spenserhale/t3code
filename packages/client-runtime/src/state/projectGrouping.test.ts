@@ -87,7 +87,7 @@ const repositoryIdentity = {
   provider: "github",
   owner: "t3tools",
   name: "t3code",
-  displayName: "T3 Code",
+  displayName: "SECode",
 };
 
 function makeProject(

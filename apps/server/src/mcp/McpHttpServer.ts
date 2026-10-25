@@ -79,7 +79,7 @@ const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
   );
 
 /**
- * Agents T3 Code launched carry a registry token and must never be sent into an
+ * Agents SECode launched carry a registry token and must never be sent into an
  * OAuth flow when it dies: they cannot open a browser, and a sign-in would mint
  * a credential that outlives their session.
  */
@@ -103,7 +103,7 @@ const unauthorized = (input: {
   return HttpServerResponse.jsonUnsafe(
     {
       error: "invalid_mcp_credential",
-      message: "A valid T3 Code MCP credential is required.",
+      message: "A valid SECode MCP credential is required.",
     },
     {
       status: 401,
