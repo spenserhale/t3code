@@ -1,9 +1,13 @@
 import {
   buildHandoffNote,
   handoffCommitMessage,
-  resolveHandoffDraftBase,
+  isSameHandoffCode,
+  resolveHandoffComparisonBase,
+  resolveHandoffPushed,
+  type HandoffPushed,
   type HandoffReady,
   type HandoffStep,
+  type ThreadMachineHandoffPlan,
 } from "@t3tools/client-runtime/thread-machine-handoff";
 import type { ModelSelection } from "@t3tools/contracts";
 
@@ -15,19 +19,28 @@ export type HandoffStepState = "running" | "done";
 export interface HandoffDraftRequest {
   readonly note: string;
   readonly conversation: File | null;
-  /** The ref the new worktree starts from, or null to leave the draft on its defaults. */
-  readonly baseRef: string | null;
+  /** The worktree the draft continues in, or null to leave the draft on its defaults. */
+  readonly worktree: { readonly path: string; readonly branch: string } | null;
   readonly modelSelection: ModelSelection | null;
 }
 
 /** Every call throws an `Error` with a message the user can read when it fails. */
 export interface ThreadMachineHandoffIo {
   readonly readConversation: () => Promise<File>;
+  /** The plan as the checkout stands now, to see that the one shown still holds. */
+  readonly replan: () => Promise<ThreadMachineHandoffPlan>;
   readonly createBranch: (name: string) => Promise<void>;
   readonly commitAndPush: (input: {
     readonly commitMessage: string;
     readonly onPhase: (phase: "commit" | "push") => void;
   }) => Promise<{ readonly upstreamBranch: string | undefined }>;
+  /** Puts the pushed branch on a worktree of the target machine, once it can see the branch. */
+  readonly prepareTarget: (input: {
+    readonly pushed: Extract<HandoffPushed, { ok: true }>;
+    readonly comparisonBase: string | null;
+    readonly onPhase: (phase: "fetch" | "worktree") => void;
+  }) => Promise<{ readonly worktreePath: string; readonly branch: string }>;
+  readonly removeTargetWorktree: (path: string) => Promise<void>;
   readonly openDraft: (request: HandoffDraftRequest) => Promise<DraftId>;
 }
 
@@ -43,8 +56,8 @@ export type ThreadMachineHandoffResult =
 
 /**
  * Hands a thread to another machine in the order that leaves the least behind when a step fails:
- * the read-only conversation first, then the source's git, then the draft that nothing yet
- * depends on.
+ * the read-only conversation first, then the source's git, then the target's, then the draft that
+ * nothing yet depends on.
  */
 export async function runThreadMachineHandoff(input: {
   readonly plan: HandoffReady;
@@ -80,9 +93,19 @@ export async function runThreadMachineHandoff(input: {
         );
       }
     }
-    let baseRef: string | null = null;
+    let remoteRef: string | null = null;
+    let worktree: HandoffDraftRequest["worktree"] = null;
     const { code } = plan;
     if (code.kind === "carry") {
+      start(code.createBranch ? "branch" : code.commit === null ? "push" : "commit");
+      // The dialog read the checkout earlier; it commits whatever is there now.
+      const fresh = await io.replan();
+      if (fresh.kind === "blocked") throw new Error(fresh.message);
+      if (!isSameHandoffCode(code, fresh.code)) {
+        throw new Error(
+          "The checkout changed since this was planned. Nothing was done; the steps shown now are updated.",
+        );
+      }
       if (code.createBranch) {
         start("branch");
         await io.createBranch(code.branch);
@@ -91,7 +114,7 @@ export async function runThreadMachineHandoff(input: {
       // The server starts the commit phase only when it has something to commit, so this also
       // knows of changes that appeared after the plan was made.
       let committed = false;
-      const pushed = await io.commitAndPush({
+      const pushedTo = await io.commitAndPush({
         commitMessage: code.commit?.message ?? handoffCommitMessage(plan.target.label),
         onPhase: (phase) => {
           start(phase);
@@ -100,24 +123,40 @@ export async function runThreadMachineHandoff(input: {
         },
       });
       leftLocalCommit = false;
-      baseRef = resolveHandoffDraftBase(plan, pushed.upstreamBranch);
+      // A push the remote already had reports no phase of its own.
+      start("push");
+      const pushed = resolveHandoffPushed(plan, pushedTo.upstreamBranch);
+      if (!pushed.ok) throw new Error(pushed.message);
+      remoteRef = pushed.remoteRef;
+      const prepared = await io.prepareTarget({
+        pushed,
+        comparisonBase: resolveHandoffComparisonBase(code.comparisonBase, pushed),
+        onPhase: start,
+      });
+      worktree = { path: prepared.worktreePath, branch: prepared.branch };
     }
     start("draft");
-    const draftId = await io.openDraft({
-      note: buildHandoffNote({
-        title: input.title,
-        sourceLabel: input.sourceLabel,
-        code,
-        pushedBase: baseRef,
-        threadLink: input.threadLink,
-        transcriptAttached: conversation !== null,
-      }),
-      conversation,
-      baseRef,
-      modelSelection: plan.modelSelection,
-    });
-    finish();
-    return { ok: true, draftId };
+    try {
+      const draftId = await io.openDraft({
+        note: buildHandoffNote({
+          title: input.title,
+          sourceLabel: input.sourceLabel,
+          code,
+          remoteRef,
+          threadLink: input.threadLink,
+          transcriptAttached: conversation !== null,
+        }),
+        conversation,
+        worktree,
+        modelSelection: plan.modelSelection,
+      });
+      finish();
+      return { ok: true, draftId };
+    } catch (error) {
+      // Nothing uses the worktree yet, and a retry makes a fresh one.
+      if (worktree !== null) await io.removeTargetWorktree(worktree.path).catch(() => undefined);
+      throw error;
+    }
   } catch (error) {
     return {
       ok: false,

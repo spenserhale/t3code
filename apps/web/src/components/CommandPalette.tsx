@@ -253,7 +253,7 @@ import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
 import { openUseInAnotherApp } from "./mcp/UseInAnotherAppDialog";
 import { openContinueOnMachine } from "./continueOnMachineState";
-import { readContinueOnChoices } from "../lib/handoffMachines";
+import { canOfferContinueOn } from "../lib/handoffMachines";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
 import { settingsForThisPlatform, SETTINGS_SECTION_LABELS } from "./settings/settingsSearch";
 import { primaryServerKeybindingsAtom } from "../state/server";
@@ -1456,7 +1456,7 @@ function OpenCommandPaletteDialog(props: {
 
   if (activeThread !== null) {
     const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
-    if (readContinueOnChoices(threadRef).length > 0) {
+    if (canOfferContinueOn(threadRef)) {
       actionItems.push({
         kind: "action",
         value: "action:continue-on-machine",

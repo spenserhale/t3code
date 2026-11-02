@@ -1,6 +1,7 @@
 import {
   explainHandoffGitFailure,
   type HandoffReady,
+  type ThreadMachineHandoffPlan,
 } from "@t3tools/client-runtime/thread-machine-handoff";
 import type {
   EnvironmentProject,
@@ -27,6 +28,8 @@ import { environmentServerConfigsAtom } from "../state/server";
 import { threadEnvironment } from "../state/threads";
 import { vcsActionManager, vcsEnvironment } from "../state/vcs";
 import { openHandoffDraft } from "./handoffDraft";
+import { readAllRefPages } from "./handoffRefs";
+import { prepareHandoffTargetWorktree, type HandoffTargetGitIo } from "./handoffTargetBranch";
 import { threadContextAttachment } from "./threadContextAttachment";
 import type { ThreadMachineHandoffIo } from "./threadMachineHandoff";
 import { randomUUID } from "./utils";
@@ -39,6 +42,90 @@ function failureMessage(result: AtomCommandResult<unknown, unknown>, fallback: s
   return error instanceof Error && error.message.length > 0 ? error.message : fallback;
 }
 
+/** Requests to the target machine's checkout of the project, which is where git runs. */
+function createTargetGitIo(environmentId: EnvironmentId, cwd: string): HandoffTargetGitIo {
+  const run = async <A>(
+    description: string,
+    command: () => Promise<AtomCommandResult<A, unknown>>,
+  ): Promise<A> => {
+    const result = await command();
+    if (result._tag === "Success") return result.value;
+    throw new Error(failureMessage(result, `${description} failed.`));
+  };
+  return {
+    refresh: async () => {
+      await runAtomCommand(
+        appAtomRegistry,
+        vcsEnvironment.refreshStatus,
+        { environmentId, input: { cwd } },
+        { reportFailure: false },
+      );
+    },
+    listRefs: async (query) =>
+      readAllRefPages((cursor) =>
+        run("Reading the branches", () =>
+          runAtomCommand(
+            appAtomRegistry,
+            vcsEnvironment.readRefs,
+            {
+              environmentId,
+              input: {
+                cwd,
+                query,
+                includeMatchingRemoteRefs: true,
+                limit: 200,
+                ...(cursor === undefined ? {} : { cursor }),
+              },
+            },
+            { reportFailure: false },
+          ),
+        ),
+      ),
+    createWorktree: async (request) => {
+      const created = await run("Creating the worktree", () =>
+        runAtomCommand(
+          appAtomRegistry,
+          vcsEnvironment.createWorktree,
+          { environmentId, input: { cwd, path: null, ...request } },
+          { reportFailure: false },
+        ),
+      );
+      return { path: created.worktree.path };
+    },
+    pull: async (worktreeCwd) => {
+      const pulled = await run("Updating the branch", () =>
+        runAtomCommand(
+          appAtomRegistry,
+          vcsEnvironment.pull,
+          { environmentId, input: { cwd: worktreeCwd } },
+          { reportFailure: false },
+        ),
+      );
+      return { upstreamRef: pulled.upstreamRef };
+    },
+    status: async (worktreeCwd) =>
+      run("Reading the branch", () =>
+        runAtomCommand(
+          appAtomRegistry,
+          vcsEnvironment.refreshStatus,
+          { environmentId, input: { cwd: worktreeCwd } },
+          { reportFailure: false },
+        ),
+      ),
+    removeWorktree: async (path) => {
+      await run("Removing the worktree", () =>
+        runAtomCommand(
+          appAtomRegistry,
+          vcsEnvironment.removeWorktree,
+          { environmentId, input: { cwd, path, force: true } },
+          { reportFailure: false },
+        ),
+      );
+    },
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  };
+}
+
 /** The server-side wiring of a handoff: each call is one request to one machine. */
 export function createThreadMachineHandoffIo(input: {
   readonly plan: HandoffReady;
@@ -48,10 +135,13 @@ export function createThreadMachineHandoffIo(input: {
   readonly sourceLabel: string;
   readonly newThread: NewThreadHandler;
   readonly openScratchProject: (environmentId: EnvironmentId) => Promise<EnvironmentProject | null>;
+  /** The plan from a fresh read of the checkout. */
+  readonly replan: () => Promise<ThreadMachineHandoffPlan>;
 }): ThreadMachineHandoffIo {
   const { plan, thread, cwd } = input;
   const source = { environmentId: thread.environmentId, cwd };
   return {
+    replan: input.replan,
     readConversation: async () => {
       const result = await runAtomCommand(
         appAtomRegistry,
@@ -119,6 +209,23 @@ export function createThreadMachineHandoffIo(input: {
         );
       }
       return { upstreamBranch: result.value.push.upstreamBranch };
+    },
+    prepareTarget: async ({ pushed, comparisonBase, onPhase }) => {
+      if (plan.target.cwd === null) {
+        throw new Error(`${plan.target.label} has no folder for this project.`);
+      }
+      return prepareHandoffTargetWorktree({
+        io: createTargetGitIo(plan.target.environmentId, plan.target.cwd),
+        targetLabel: plan.target.label,
+        branch: pushed.branch,
+        remote: pushed.remote,
+        comparisonBase,
+        onPhase,
+      });
+    },
+    removeTargetWorktree: async (path) => {
+      if (plan.target.cwd === null) return;
+      await createTargetGitIo(plan.target.environmentId, plan.target.cwd).removeWorktree(path);
     },
     openDraft: async (request) => {
       const project: ScopedProjectRef | null =
