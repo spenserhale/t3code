@@ -9,8 +9,8 @@ function formatPlanUsd(value: number): string {
 }
 
 /**
- * One line about a subscription's credit pool, as parts to join with a separator:
- * what the period has used, when it renews, what that use would cost at OpenRouter's
+ * One line about a subscription's credit pool, as parts to join with a separator: what the period
+ * has used, what is left and when it expires, what that use would cost at OpenRouter's
  * zero-data-retention rates, what the plan costs, and any bought credit left.
  */
 export function creditSummary(
@@ -19,15 +19,16 @@ export function creditSummary(
 ): ReadonlyArray<string> {
   const spentUsd = Math.max(0, credit.allowanceUsd - credit.balanceUsd);
   const periodEnd = new Date(credit.periodEnd);
-  const parts = [`${formatUsd(spentUsd)} of ${formatPlanUsd(credit.allowanceUsd)} used`];
-  if (!Number.isNaN(periodEnd.getTime())) {
-    const day = new Intl.DateTimeFormat("en-US", {
-      month: "short",
-      day: "numeric",
-      ...(options.timeZone === undefined ? {} : { timeZone: options.timeZone }),
-    });
-    parts.push(`resets ${day.format(periodEnd)}`);
-  }
+  const left = `${formatUsd(credit.balanceUsd)} left`;
+  const day = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    ...(options.timeZone === undefined ? {} : { timeZone: options.timeZone }),
+  });
+  const parts = [
+    `${formatUsd(spentUsd)} of ${formatPlanUsd(credit.allowanceUsd)} used`,
+    Number.isNaN(periodEnd.getTime()) ? left : `${left}, expires ${day.format(periodEnd)}`,
+  ];
   if (credit.openRouterValueUsd !== undefined) {
     parts.push(`≈ ${formatUsd(credit.openRouterValueUsd)} at OpenRouter private rates`);
   }
