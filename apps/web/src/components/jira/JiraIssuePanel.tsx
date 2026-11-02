@@ -12,6 +12,8 @@ import {
   CopyIcon,
   ExternalLinkIcon,
   LinkIcon,
+  ListChecksIcon,
+  MessageCircleQuestionIcon,
   PlayIcon,
   XIcon,
 } from "lucide-react";
@@ -33,7 +35,7 @@ import { toastManager } from "../ui/toast";
 import { JiraCommentForm } from "./JiraCommentForm";
 import { JiraLinkedThreads } from "./JiraLinkedThreads";
 import { JiraLinkThreadDialog } from "./JiraLinkThreadDialog";
-import { JiraStartThreadDialog } from "./JiraStartThreadDialog";
+import { JiraStartThreadDialog, type JiraThreadMode } from "./JiraStartThreadDialog";
 import { JiraIssueTypeIcon, JiraStatusBadge } from "./jiraPresentation";
 
 function JiraTransitionMenu({
@@ -159,6 +161,18 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+/** Fields that share a name read as one section. */
+function sectionsByName(
+  fields: ReadonlyArray<{ readonly name: string; readonly markdown: string }>,
+): ReadonlyArray<readonly [string, string]> {
+  const merged = new Map<string, string>();
+  for (const { name, markdown } of fields) {
+    const earlier = merged.get(name);
+    merged.set(name, earlier === undefined ? markdown : `${earlier}\n\n${markdown}`);
+  }
+  return [...merged];
+}
+
 function IssueBody({
   environmentId,
   issue,
@@ -169,16 +183,29 @@ function IssueBody({
   linked: ReadonlyArray<ScopedThreadRef>;
 }) {
   const [starting, setStarting] = useState(false);
+  const [mode, setMode] = useState<JiraThreadMode>("work");
   const [linking, setLinking] = useState(false);
+  const startThread = (next: JiraThreadMode) => {
+    setMode(next);
+    setStarting(true);
+  };
   return (
     <div className="flex flex-col gap-6 p-4">
       <div className="flex flex-col gap-3">
         <h2 className="text-balance font-medium text-lg leading-snug">{issue.summary}</h2>
         <div className="flex flex-wrap items-center gap-2">
           <JiraTransitionMenu environmentId={environmentId} issue={issue} />
-          <Button size="sm" onClick={() => setStarting(true)}>
+          <Button size="sm" onClick={() => startThread("work")}>
             <PlayIcon aria-hidden />
-            Start thread
+            Work on issue
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => startThread("ask")}>
+            <MessageCircleQuestionIcon aria-hidden />
+            Ask about issue
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => startThread("plan")}>
+            <ListChecksIcon aria-hidden />
+            Plan issue
           </Button>
           <Button size="sm" variant="outline" onClick={() => setLinking(true)}>
             <LinkIcon aria-hidden />
@@ -199,6 +226,13 @@ function IssueBody({
           </div>
         )}
       </Section>
+      {sectionsByName(issue.acceptanceCriteria ?? []).map(([name, markdown]) => (
+        <Section key={name} title={name}>
+          <div className="text-sm">
+            <ChatMarkdown text={markdown} cwd={undefined} />
+          </div>
+        </Section>
+      ))}
       <Section title={`Comments (${issue.commentCount})`}>
         {issue.commentCount > issue.comments.length ? (
           <p className="text-muted-foreground text-xs">
@@ -231,11 +265,13 @@ function IssueBody({
         onOpenChange={setStarting}
         issue={issue}
         jiraEnvironmentId={environmentId}
+        mode={mode}
       />
       <JiraLinkThreadDialog
         open={linking}
         onOpenChange={setLinking}
         issueKey={issue.key}
+        jiraEnvironmentId={environmentId}
         linked={linked}
       />
     </div>

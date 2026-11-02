@@ -3,6 +3,7 @@ import {
   type EnvironmentId,
   type JiraSearchInput,
   type JiraSearchPreset,
+  type JiraSearchSort,
   type JiraStatusCategoryFilter,
 } from "@t3tools/contracts";
 
@@ -14,6 +15,11 @@ export interface JiraSearch {
   readonly projects?: ReadonlyArray<string>;
   readonly status?: ReadonlyArray<JiraStatusCategoryFilter>;
   readonly q?: string;
+  /**
+   * Left out for the view's own order. Named apart from `sort` because the router types the
+   * address as one record for every page, and the pull requests page has a `sort` of its own.
+   */
+  readonly order?: JiraSearchSort;
   readonly issue?: string;
   readonly environmentId?: EnvironmentId;
 }
@@ -25,6 +31,7 @@ const PRESETS: ReadonlyArray<JiraSearchPreset> = [
   "recent",
   "custom",
 ];
+const SORTS: ReadonlyArray<JiraSearchSort> = ["updated", "created", "priority", "key"];
 const DEFAULT_PRESET = "assigned" satisfies JiraSearchPreset;
 const STATUS_CATEGORIES: ReadonlyArray<JiraStatusCategoryFilter> = ["todo", "in-progress", "done"];
 const PROJECT_KEY = /^[A-Za-z][A-Za-z0-9_]{0,24}$/u;
@@ -49,12 +56,14 @@ export function parseJiraSearch(raw: Record<string, unknown>): JiraSearch {
   const jql = typeof raw.jql === "string" ? raw.jql.trim().slice(0, MAX_JQL_LENGTH) : "";
   const q = typeof raw.q === "string" ? raw.q.trim().slice(0, MAX_TEXT_LENGTH) : "";
   const issue = typeof raw.issue === "string" ? raw.issue.trim().toUpperCase() : "";
+  const order = SORTS.find((candidate) => candidate === raw.order);
   return {
     ...(preset === DEFAULT_PRESET ? {} : { preset }),
     ...(preset === "custom" && jql.length > 0 ? { jql } : {}),
     ...(projects.length > 0 ? { projects } : {}),
     ...(status.length > 0 ? { status } : {}),
     ...(q.length > 0 ? { q } : {}),
+    ...(order === undefined ? {} : { order }),
     ...(JIRA_ISSUE_KEY_PATTERN.test(issue) ? { issue } : {}),
     ...(typeof raw.environmentId === "string" && raw.environmentId.length > 0
       ? { environmentId: raw.environmentId.slice(0, 200) as EnvironmentId }
@@ -73,6 +82,7 @@ export function jiraSearchInput(search: JiraSearch): JiraSearchInput {
     ...(search.projects === undefined ? {} : { projectKeys: search.projects }),
     ...(search.status === undefined ? {} : { statusCategories: search.status }),
     ...(search.q === undefined ? {} : { text: search.q }),
+    ...(search.order === undefined ? {} : { sort: search.order }),
     pageSize: JIRA_PAGE_SIZE,
   };
 }
