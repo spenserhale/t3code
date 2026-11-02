@@ -90,6 +90,17 @@ describe("run rate", () => {
       note: "noReset",
     });
     expect(run(10, reset + HOUR)).toEqual({ forecast: null, note: "ended" });
+    // A window the schedule leaves out altogether has no time to spend in.
+    const saturdays: LimitSchedule = { days: [6], timeZone: "UTC" };
+    const shortWindow = { ...weekly(10), kind: "session", windowDurationMins: 300 } as const;
+    expect(
+      forecastWindow({
+        window: { ...shortWindow, resetsAt: new Date(monday + 17 * HOUR).toISOString() },
+        now: monday + 15 * HOUR,
+        algorithm: "runRate",
+        schedule: saturdays,
+      }),
+    ).toEqual({ forecast: null, note: "outsideSchedule" });
   });
 
   it("forecasts a spent window as out of allowance now", () => {

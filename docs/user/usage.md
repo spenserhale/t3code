@@ -127,6 +127,22 @@ share would be used by now at an even rate, and whether it lasts until the reset
 left out for the first few percent of a window. Schedules are saved on the device where you set
 them and apply whether or not grouping is on.
 
+Each weekly and monthly window has a **Burn-down** below its bar. It charts what was left over the
+window beside even spending, forecasts where the window ends, and shows how much of your last
+windows you used. Choose the forecast: the run rate so far, a weekday pattern from your last 90
+days of token use with that provider, or your recent trend. T3 Code records readings while it is
+open, so the history starts when you first open it and has gaps while the app is closed.
+
+Choose **Reminders** to be nudged when a subscription is about to reset with allowance to spare:
+a weekly window within a day of its reset, or a monthly one within three days, with at least a
+quarter of it left and about that much on course to go unused, during the days and hours its
+schedule says it is used. One notice lists every window that qualifies, soonest reset first, and
+mentions each window once per reset. Choose when it comes (as windows come up, once a day for each
+group, in the app only, or off), how much left triggers it, and whether 5-hour session windows
+count. Reminders follow your notification settings and permission, and arrive only while T3 Code
+is open. The same windows are listed as **Use today** at the top of Limits and in the hover card
+on the sidebar's Usage button, which also shows a dot while there are any.
+
 Opening Limits checks the selected connected environments automatically. Each client waits at
 least five minutes between automatic checks of an environment, including after a failed check.
 If a window still looks stale, refresh Limits to re-check every provider and hub.

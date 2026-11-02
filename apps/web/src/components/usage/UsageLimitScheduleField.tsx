@@ -171,10 +171,10 @@ function CustomSchedule({
 }
 
 /**
- * A schedule picked from presets or built by hand. `value` is what is set
- * here; undefined is unset, which reads as "Every day" or, when
- * `inheritLabel` is given, as that. Renders the picker and, below it in a
- * wrapping row, the custom editor, so put it in a row that can wrap.
+ * A schedule picked from presets or built by hand. `value` is what is set here;
+ * undefined is unset, which reads as "Every day", or as "Same as group" when
+ * `inherits`. Renders the picker and, after it, the custom editor on a line of
+ * its own, so put it in a row that can wrap.
  */
 export function LimitScheduleField({
   label,
