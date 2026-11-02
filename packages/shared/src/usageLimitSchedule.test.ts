@@ -405,6 +405,101 @@ describe("counting and the delivery gate", () => {
     expect(isLimitActiveAt(schedule, at("2026-11-01T06:10:00Z"))).toBe(true); // 01:10 EST
   });
 
+  describe("in a zone east of Greenwich", () => {
+    const berlin = "Europe/Berlin";
+
+    it("agree inside the hour a clock change repeats, ending the stretch on the first pass", () => {
+      const schedule: LimitSchedule = {
+        days: [7],
+        hours: { start: 90, end: 150 },
+        timeZone: berlin,
+      };
+      // 02:30 comes twice on 25 October; 01:30 to 02:30 ends the first time, an hour after it began.
+      expect(compare(schedule, "2026-10-24T22:00:00Z", "2026-10-25T23:00:00Z")).toEqual({
+        disagreements: [],
+        inSession: 60,
+        counted: 60,
+      });
+      expect(isLimitActiveAt(schedule, at("2026-10-24T23:30:00Z"))).toBe(true); // 01:30 CEST
+      expect(isLimitActiveAt(schedule, at("2026-10-25T00:15:00Z"))).toBe(true); // 02:15 CEST
+      expect(isLimitActiveAt(schedule, at("2026-10-25T00:45:00Z"))).toBe(false); // 02:45 CEST
+      expect(isLimitActiveAt(schedule, at("2026-10-25T01:45:00Z"))).toBe(false); // 02:45 CET
+    });
+
+    it("agree inside the hour a clock change skips", () => {
+      const schedule: LimitSchedule = {
+        days: [7],
+        hours: { start: 150, end: 240 },
+        timeZone: berlin,
+      };
+      // 02:30 does not exist on 29 March; counting starts when the clock reaches 03:30.
+      expect(compare(schedule, "2026-03-28T23:00:00Z", "2026-03-29T22:00:00Z")).toEqual({
+        disagreements: [],
+        inSession: 30,
+        counted: 30,
+      });
+    });
+  });
+
+  describe("a wall time that happens twice", () => {
+    // Where each wall minute of a zone first occurs, and which come round again.
+    const passes = (zone: string, from: string, to: string) => {
+      const format = new Intl.DateTimeFormat("en-CA", {
+        timeZone: zone,
+        hourCycle: "h23",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      const first = new Map<string, number>();
+      const repeated = new Map<string, number>();
+      for (let instant = at(from); instant < at(to); instant += MINUTE) {
+        const parts = Object.fromEntries(
+          format.formatToParts(instant).map((part) => [part.type, part.value]),
+        );
+        const key = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+        if (first.has(key)) repeated.set(key, Number(parts.hour) * 60 + Number(parts.minute));
+        else first.set(key, instant);
+      }
+      return { first, repeated };
+    };
+    const zones = [
+      ["America/New_York", "2026-11-01T00:00:00Z", "2026-11-02T06:00:00Z"],
+      ["Europe/London", "2026-10-24T22:00:00Z", "2026-10-26T00:00:00Z"],
+      ["Europe/Berlin", "2026-10-24T20:00:00Z", "2026-10-26T00:00:00Z"],
+      ["Australia/Sydney", "2026-04-04T10:00:00Z", "2026-04-06T00:00:00Z"],
+      ["Australia/Lord_Howe", "2026-04-04T10:00:00Z", "2026-04-06T00:00:00Z"],
+      ["Pacific/Auckland", "2026-04-04T10:00:00Z", "2026-04-06T00:00:00Z"],
+    ] as const;
+
+    it.each(zones)("begins and ends a stretch at its first pass in %s", (zone, from, to) => {
+      const { first, repeated } = passes(zone, from, to);
+      const times = [...repeated].filter(([, minutes]) => minutes % 15 === 0);
+      expect(times.length).toBeGreaterThan(0);
+      const days: LimitSchedule["days"] = [1, 2, 3, 4, 5, 6, 7];
+      for (const [key, minutes] of times) {
+        const firstPass = first.get(key)!;
+        const begins: LimitSchedule = {
+          days,
+          hours: { start: minutes, end: minutes + 15 },
+          timeZone: zone,
+        };
+        expect(isLimitActiveAt(begins, firstPass - MINUTE), `${zone} ${key} begins`).toBe(false);
+        expect(isLimitActiveAt(begins, firstPass), `${zone} ${key} begins`).toBe(true);
+        const ends: LimitSchedule = {
+          days,
+          hours: { start: minutes - 15, end: minutes },
+          timeZone: zone,
+        };
+        expect(isLimitActiveAt(ends, firstPass - MINUTE), `${zone} ${key} ends`).toBe(true);
+        expect(isLimitActiveAt(ends, firstPass), `${zone} ${key} ends`).toBe(false);
+        expect(isLimitActiveAt(ends, firstPass + 15 * MINUTE), `${zone} ${key} ends`).toBe(false);
+      }
+    });
+  });
+
   it("agree over the short and long days", () => {
     const sunday: LimitSchedule = { days: [7], timeZone: newYork };
     expect(compare(sunday, "2026-03-07T00:00:00Z", "2026-03-10T00:00:00Z")).toMatchObject({

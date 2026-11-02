@@ -76,14 +76,15 @@ describe("Limits group preferences", () => {
     },
   );
 
-  it("keeps schedules beside the assignments", () => {
-    updateUsageLimitGroups(() => grouped);
+  it("keeps schedules, and the workspaces already migrated, beside the assignments", () => {
+    updateUsageLimitGroups(() => ({ ...grouped, migrated: ["codex:me@example.com:ws-1"] }));
     updateUsageLimitGroups((groups) => setLimitSchedule(groups, "named:Work", WORK_HOURS));
     updateUsageLimitGroups((groups) => assignLimitGroup(groups, "claude:me@example.com", "Home"));
     expect(readUsageLimitGroups()).toEqual({
       enabled: true,
       assignments: { "codex:me@example.com": "Work", "claude:me@example.com": "Home" },
       schedules: { "named:Work": WORK_HOURS },
+      migrated: ["codex:me@example.com:ws-1"],
     });
   });
 

@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { getClientSettings } from "../../hooks/useSettings";
 import { toastManager } from "../ui/toast";
 import { startUsageLimitReminders } from "./UsageLimitReminderCoordinator";
-import { loadDailyTokens } from "./usageLimitDailyTokensLoader";
+import { holdDailyTokens } from "./usageLimitDailyTokens";
+import { loadEnvironmentDailyTokens, readyUsageEnvironments } from "./usageLimitDailyTokensLoader";
 import { updateReminderSettings } from "./usageLimitReminderPreferences";
 import { publishUseToday } from "./useTodayStore";
 
@@ -21,7 +22,8 @@ vi.mock("../../threadNotifications", () => ({
 vi.mock("../settings/providerDriverMeta", () => ({ providerClients: new Map() }));
 vi.mock("./useTodayStore", () => ({ publishUseToday: vi.fn() }));
 vi.mock("./usageLimitDailyTokensLoader", () => ({
-  loadDailyTokens: vi.fn(async () => ({ attempted: false, daily: null })),
+  readyUsageEnvironments: vi.fn(() => []),
+  loadEnvironmentDailyTokens: vi.fn(async () => null),
 }));
 
 // Thursday 5 November 2026, ten in the morning.
@@ -138,8 +140,10 @@ beforeEach(() => {
   vi.stubGlobal("Notification", FakeNotification);
   vi.mocked(toastManager.add).mockClear();
   vi.mocked(publishUseToday).mockClear();
-  vi.mocked(loadDailyTokens).mockReset();
-  vi.mocked(loadDailyTokens).mockResolvedValue({ attempted: false, daily: null });
+  vi.mocked(readyUsageEnvironments).mockReset();
+  vi.mocked(readyUsageEnvironments).mockReturnValue([]);
+  vi.mocked(loadEnvironmentDailyTokens).mockReset();
+  vi.mocked(loadEnvironmentDailyTokens).mockResolvedValue(null);
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -298,9 +302,35 @@ describe("use-it-or-lose-it reminders", () => {
     };
     stops.push(startUsageLimitReminders(registryOf as never, { navigate: vi.fn() } as never));
     expect(JSON.parse(values.get(GROUPS_KEY)!).assignments).toEqual({
+      "codex:same@example.com": "Work",
       "codex:same@example.com:ws-business": "Work",
       "codex:same@example.com:ws-plus": "Work",
     });
+  });
+
+  it("raises one notice for a window whose workspace arrives after an empty start, with groups from before", () => {
+    settings("off", true);
+    values.set(
+      GROUPS_KEY,
+      JSON.stringify({ enabled: true, assignments: { "codex:same@example.com": "Work" } }),
+    );
+    let push!: (next: typeof presentations) => void;
+    const registryOf = {
+      subscribe: (_atom: unknown, listener: (value: typeof presentations) => void) => {
+        push = listener;
+        listener(new Map());
+        return () => {};
+      },
+    };
+    stops.push(startUsageLimitReminders(registryOf as never, { navigate: vi.fn() } as never));
+    push(
+      environmentOf(
+        provider("codex", "same@example.com", { instanceId: "business", workspaceId: "ws-a" }),
+      ),
+    );
+    expect(toastManager.add).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(5 * 60_000);
+    expect(toastManager.add).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -311,43 +341,109 @@ describe("the token history the usual pattern needs", () => {
     totalTokens: 100,
     byProvider: new Map([["codex" as const, { costUsd: 0, totalTokens: 100 }]]),
   };
+  const desk = { environmentId: EnvironmentId.make("desk"), label: "Desk" };
+  const laptop = { environmentId: EnvironmentId.make("laptop"), label: "Laptop" };
+  const kept = () => Object.keys(JSON.parse(values.get(TOKENS_KEY) ?? "{}").environments ?? {});
+  const asked = () => vi.mocked(loadEnvironmentDailyTokens).mock.calls.map(([, one]) => one);
 
-  it("is fetched once when none is kept, wherever the user is, and kept", async () => {
+  it("is fetched once for each environment when none is kept, wherever the user is, and kept", async () => {
     settings("off", false);
-    vi.mocked(loadDailyTokens).mockResolvedValue({ attempted: true, daily: [day] });
+    vi.mocked(readyUsageEnvironments).mockReturnValue([desk]);
+    vi.mocked(loadEnvironmentDailyTokens).mockResolvedValue([day]);
     run();
     await vi.advanceTimersByTimeAsync(1);
-    expect(loadDailyTokens).toHaveBeenCalledTimes(1);
+    expect(asked()).toEqual([desk]);
     expect(JSON.parse(values.get(TOKENS_KEY)!)).toMatchObject({
-      at: start,
-      byProvider: { codex: [["2026-11-04", 100]] },
+      environments: { desk: { at: start, byProvider: { codex: [["2026-11-04", 100]] } } },
     });
     await vi.advanceTimersByTimeAsync(60 * 60_000);
-    expect(loadDailyTokens).toHaveBeenCalledTimes(1);
+    expect(loadEnvironmentDailyTokens).toHaveBeenCalledTimes(1);
     // Half a day on, it is fetched again.
     await vi.advanceTimersByTimeAsync(12 * HOUR);
-    expect(loadDailyTokens).toHaveBeenCalledTimes(2);
+    expect(loadEnvironmentDailyTokens).toHaveBeenCalledTimes(2);
   });
 
-  it("is tried again at the next look when no environment was ready, but waits half an hour after a failure", async () => {
+  it("keeps what one environment sent when another fails, and asks only that one again, after a wait", async () => {
     settings("off", false);
-    vi.mocked(loadDailyTokens).mockResolvedValueOnce({ attempted: false, daily: null });
+    vi.mocked(readyUsageEnvironments).mockReturnValue([desk, laptop]);
+    vi.mocked(loadEnvironmentDailyTokens).mockImplementation(async (_registry, one) =>
+      one === desk ? [day] : null,
+    );
     run();
     await vi.advanceTimersByTimeAsync(1);
-    expect(loadDailyTokens).toHaveBeenCalledTimes(1);
-    vi.mocked(loadDailyTokens).mockRejectedValueOnce(new Error("offline"));
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(loadDailyTokens).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(25 * 60_000);
-    expect(loadDailyTokens).toHaveBeenCalledTimes(2);
-    vi.mocked(loadDailyTokens).mockResolvedValue({ attempted: true, daily: [day] });
-    await vi.advanceTimersByTimeAsync(6 * 60_000);
-    expect(loadDailyTokens).toHaveBeenCalledTimes(3);
-    expect(values.has(TOKENS_KEY)).toBe(true);
+    expect(asked()).toEqual([desk, laptop]);
+    expect(kept()).toEqual(["desk"]);
+    vi.mocked(loadEnvironmentDailyTokens).mockClear();
+    vi.mocked(loadEnvironmentDailyTokens).mockResolvedValue([day]);
+    await vi.advanceTimersByTimeAsync(29 * 60_000);
+    expect(loadEnvironmentDailyTokens).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    expect(asked()).toEqual([laptop]);
+    expect(kept().sort()).toEqual(["desk", "laptop"]);
+    // Both are fresh now; the next fetch is half a day on, for each.
+    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(loadEnvironmentDailyTokens).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits longer after each miss, whether the environment says nothing or fails", async () => {
+    settings("off", false);
+    vi.mocked(readyUsageEnvironments).mockReturnValue([desk]);
+    vi.mocked(loadEnvironmentDailyTokens).mockResolvedValueOnce(null);
+    run();
+    await vi.advanceTimersByTimeAsync(1);
+    vi.mocked(loadEnvironmentDailyTokens).mockRejectedValueOnce(new Error("offline"));
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(loadEnvironmentDailyTokens).toHaveBeenCalledTimes(2);
+    // The second miss waits an hour.
+    await vi.advanceTimersByTimeAsync(59 * 60_000);
+    expect(loadEnvironmentDailyTokens).toHaveBeenCalledTimes(2);
+    vi.mocked(loadEnvironmentDailyTokens).mockResolvedValue([day]);
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    expect(loadEnvironmentDailyTokens).toHaveBeenCalledTimes(3);
+    expect(kept()).toEqual(["desk"]);
+  });
+
+  it("is not asked for again while the first request is still out", async () => {
+    settings("off", false);
+    vi.mocked(readyUsageEnvironments).mockReturnValue([desk]);
+    let answer!: (daily: Array<typeof day>) => void;
+    vi.mocked(loadEnvironmentDailyTokens).mockReturnValue(
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+    );
+    run();
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(loadEnvironmentDailyTokens).toHaveBeenCalledTimes(1);
+    answer([day]);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(loadEnvironmentDailyTokens).toHaveBeenCalledTimes(1);
+    expect(kept()).toEqual(["desk"]);
+  });
+
+  it("is fetched for an open chart when reminders are off, and not otherwise", async () => {
+    settings("off", false);
+    updateReminderSettings({ mode: "off" });
+    vi.mocked(readyUsageEnvironments).mockReturnValue([desk]);
+    vi.mocked(loadEnvironmentDailyTokens).mockResolvedValue([day]);
+    run();
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(loadEnvironmentDailyTokens).not.toHaveBeenCalled();
+    const release = holdDailyTokens();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(loadEnvironmentDailyTokens).toHaveBeenCalledTimes(1);
+    release();
+    await vi.advanceTimersByTimeAsync(13 * HOUR);
+    expect(loadEnvironmentDailyTokens).toHaveBeenCalledTimes(1);
+    // With reminders on again, the stale totals are fetched at the next look.
+    updateReminderSettings({ mode: "perWindow" });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(loadEnvironmentDailyTokens).toHaveBeenCalledTimes(2);
   });
 
   it("is not fetched with no account to judge", async () => {
     settings("off", false);
+    vi.mocked(readyUsageEnvironments).mockReturnValue([desk]);
     const none = {
       subscribe: (_atom: unknown, listener: (value: typeof presentations) => void) => {
         listener(new Map());
@@ -356,6 +452,6 @@ describe("the token history the usual pattern needs", () => {
     };
     stops.push(startUsageLimitReminders(none as never, { navigate: vi.fn() } as never));
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(loadDailyTokens).not.toHaveBeenCalled();
+    expect(loadEnvironmentDailyTokens).not.toHaveBeenCalled();
   });
 });

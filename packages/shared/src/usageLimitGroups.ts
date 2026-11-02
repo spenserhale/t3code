@@ -14,6 +14,8 @@ export interface LimitGroupState {
   readonly assignments: Readonly<Record<string, string>>;
   /** When the accounts are used: by group key, or by `limitAccountScheduleKey` for one account. */
   readonly schedules?: Readonly<Record<string, LimitSchedule>> | undefined;
+  /** Subscriptions that were given what was stored under their login, which is not given again. */
+  readonly migrated?: readonly string[] | undefined;
 }
 
 /** The longest group name kept; a longer one is cut to this. */
@@ -199,39 +201,35 @@ export function setLimitSchedule(
 
 /**
  * Gives each account the group and schedule stored under its login before accounts
- * told workspaces apart: workspaces under one email each get a copy, so they can
- * then differ. Choices already made stay, as does a key another account goes by.
+ * told workspaces apart, so workspaces under one email can then differ. What was
+ * stored stays as the default for workspaces not seen yet; a workspace is given it once,
+ * and what it already chose, or later has taken away, is never overwritten.
  */
 export function migrateLegacyAccountKeys(
   state: LimitGroupState,
   accounts: readonly LimitAccount[],
 ): LimitGroupState {
-  const own = new Set(accounts.map(limitSubscriptionId));
-  const assignments = { ...state.assignments };
-  const schedules = { ...state.schedules };
-  const movedAssignments = new Set<string>();
-  const movedSchedules = new Set<string>();
+  const migrated = new Set(state.migrated);
+  const assignments: Record<string, string> = { ...state.assignments };
+  const schedules: Record<string, LimitSchedule> = { ...state.schedules };
+  let changed = false;
   for (const account of accounts) {
     const id = limitSubscriptionId(account);
     const legacy = legacyLimitSubscriptionId(account);
-    if (legacy === id) continue;
-    const group = assignments[legacy];
-    if (group !== undefined && assignments[id] === undefined) {
-      assignments[id] = group;
-      movedAssignments.add(legacy);
-    }
-    const schedule = schedules[limitAccountScheduleKey(legacy)];
-    if (schedule !== undefined && schedules[limitAccountScheduleKey(id)] === undefined) {
-      schedules[limitAccountScheduleKey(id)] = schedule;
-      movedSchedules.add(limitAccountScheduleKey(legacy));
-    }
+    if (legacy === id || migrated.has(id)) continue;
+    const group = state.assignments[legacy];
+    const schedule = state.schedules?.[limitAccountScheduleKey(legacy)];
+    if (group === undefined && schedule === undefined) continue;
+    migrated.add(id);
+    changed = true;
+    if (group !== undefined) assignments[id] ??= group;
+    if (schedule !== undefined) schedules[limitAccountScheduleKey(id)] ??= schedule;
   }
-  if (movedAssignments.size === 0 && movedSchedules.size === 0) return state;
-  for (const legacy of movedAssignments) if (!own.has(legacy)) delete assignments[legacy];
-  for (const key of movedSchedules)
-    if (!own.has(key.slice("account:".length))) delete schedules[key];
-  const { schedules: _before, ...others } = state;
-  return Object.keys(schedules).length > 0
-    ? { ...others, assignments, schedules }
-    : { ...others, assignments };
+  if (!changed) return state;
+  return {
+    ...state,
+    assignments,
+    ...(Object.keys(schedules).length > 0 ? { schedules } : {}),
+    migrated: [...migrated],
+  };
 }

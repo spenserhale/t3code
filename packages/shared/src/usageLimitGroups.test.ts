@@ -414,17 +414,31 @@ describe("one email in two workspaces", () => {
 
     it("pass to every workspace under that email, which can then be changed apart", () => {
       const migrated = migrateLegacyAccountKeys(legacy, accounts);
-      expect(migrated.assignments).toEqual({
-        [business]: "Work",
-        [plus]: "Work",
-        "claudeAgent:other@example.com": "Home",
-      });
-      expect(migrated.schedules).toEqual({
+      expect(migrated.assignments).toMatchObject({ [business]: "Work", [plus]: "Work" });
+      expect(migrated.schedules).toMatchObject({
         [limitAccountScheduleKey(business)]: WEEKDAYS,
         [limitAccountScheduleKey(plus)]: WEEKDAYS,
         "named:Work": WORK_HOURS,
       });
       expect(assignLimitGroup(migrated, plus, "Home").assignments[business]).toBe("Work");
+    });
+
+    it("stay for a workspace that is seen later, and are not brought back once it was given them", () => {
+      const first = migrateLegacyAccountKeys(legacy, [accounts[0]!]);
+      expect(first.assignments[plus]).toBeUndefined();
+      const later = migrateLegacyAccountKeys(first, accounts);
+      expect(later.assignments[plus]).toBe("Work");
+      expect(resolveLimitSchedule(later, accounts[1]!)).toEqual(WEEKDAYS);
+      // Taking a group and a schedule away from the first workspace is a choice that sticks.
+      const cleared = setLimitSchedule(
+        assignLimitGroup(later, business, ""),
+        limitAccountScheduleKey(business),
+        null,
+      );
+      const again = migrateLegacyAccountKeys(cleared, accounts);
+      expect(again).toBe(cleared);
+      expect(again.assignments[business]).toBeUndefined();
+      expect(again.schedules?.[limitAccountScheduleKey(business)]).toBeUndefined();
     });
 
     it("change nothing a second time, or where no account has changed identity", () => {
