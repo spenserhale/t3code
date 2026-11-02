@@ -4,6 +4,7 @@
  * was assigned, else under its email.
  * @module usageLimitGroups
  */
+import type { LimitSchedule } from "./usageLimitSchedule.ts";
 import type { LimitAccount, LimitPresentations } from "./usageLimits.ts";
 
 /** A client's grouping preference. It names accounts by email, so it stays on the device. */
@@ -11,6 +12,8 @@ export interface LimitGroupState {
   readonly enabled: boolean;
   /** Group name by `limitSubscriptionId`, kept while the account is out of sight. */
   readonly assignments: Readonly<Record<string, string>>;
+  /** When the accounts are used: by group key, or by `limitAccountScheduleKey` for one account. */
+  readonly schedules?: Readonly<Record<string, LimitSchedule>> | undefined;
   /** Subscriptions already given what was saved under an id they had before; never given it again. */
   readonly migrated?: readonly string[] | undefined;
 }
@@ -75,6 +78,27 @@ export function labelLimitAccounts(
   });
 }
 
+export interface LimitGroupOf {
+  readonly key: string;
+  readonly kind: LimitGroup["kind"];
+  readonly name: string;
+}
+
+/**
+ * The group an account is in: the one it was assigned, else its email's, else
+ * the rest. It holds whether or not the grouped view is on.
+ */
+export function limitGroupOf(
+  account: LimitAccount,
+  assignments: LimitGroupState["assignments"],
+): LimitGroupOf {
+  const assigned = assignments[limitSubscriptionId(account)]?.trim();
+  if (assigned) return { key: `named:${assigned}`, kind: "named", name: assigned };
+  const email = accountEmail(account);
+  if (email) return { key: `email:${email}`, kind: "email", name: email };
+  return { key: "other", kind: "other", name: "Other accounts" };
+}
+
 /**
  * Accounts split into the groups to draw, named groups first, then one per
  * email, then the accounts with neither. Each group pools separately, so pass
@@ -93,10 +117,9 @@ export function groupLimitAccounts(
     else groups.set(name, [account]);
   };
   for (const account of accounts) {
-    const assigned = assignments[limitSubscriptionId(account)]?.trim();
-    const email = accountEmail(account);
-    if (assigned) add(named, assigned, account);
-    else if (email) add(byEmail, email, account);
+    const { kind, name } = limitGroupOf(account, assignments);
+    if (kind === "named") add(named, name, account);
+    else if (kind === "email") add(byEmail, name, account);
     else other.push(account);
   }
   const ordered = (kind: "named" | "email", groups: Map<string, LimitAccount[]>) =>
@@ -136,6 +159,39 @@ export function setLimitGroupsEnabled(state: LimitGroupState, enabled: boolean):
 /** Every group name in use, to offer when assigning another account. */
 export function limitGroupNames(assignments: LimitGroupState["assignments"]): readonly string[] {
   return [...new Set(Object.values(assignments))].sort(compareNames);
+}
+
+/** Where one account's own schedule is kept, ahead of its group's. */
+export function limitAccountScheduleKey(subscriptionId: string): string {
+  return `account:${subscriptionId}`;
+}
+
+/**
+ * When an account is meant to be used: its own schedule, else its group's,
+ * else none, which counts every hour. The groups need not be switched on.
+ */
+export function resolveLimitSchedule(
+  state: LimitGroupState,
+  account: LimitAccount,
+): LimitSchedule | undefined {
+  const schedules = state.schedules;
+  if (schedules === undefined) return undefined;
+  return (
+    schedules[limitAccountScheduleKey(limitSubscriptionId(account))] ??
+    schedules[limitGroupOf(account, state.assignments).key]
+  );
+}
+
+/** Sets the schedule kept under a group key or account key; null takes it away. */
+export function setLimitSchedule(
+  state: LimitGroupState,
+  key: string,
+  schedule: LimitSchedule | null,
+): LimitGroupState {
+  const { [key]: _previous, ...rest } = state.schedules ?? {};
+  const schedules = schedule === null ? rest : { ...rest, [key]: schedule };
+  const { schedules: _schedules, ...others } = state;
+  return Object.keys(schedules).length > 0 ? { ...others, schedules } : others;
 }
 
 /** Today's key of each hub account, mapped to the keys it had before. */
