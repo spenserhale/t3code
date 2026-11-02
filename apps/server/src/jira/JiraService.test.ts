@@ -6,7 +6,9 @@ import {
   JiraRequestError,
   type JiraIssueSummary,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
@@ -569,3 +571,79 @@ it.effect("searches in the order the person chose", () => {
     assert.strictEqual(searchIssues.mock.calls[0]?.[1].jql, result.jql);
   }).pipe(Effect.provide(serviceLayer(fakeClient({ searchIssues }))));
 });
+
+// Site A's issue after a move, and what site B's search index says of the same key.
+const fromSiteA = (): JiraIssueSummary => ({
+  ...issue("PROJ-1", "In Review"),
+  summary: "Summary from site A",
+  url: "https://acme.atlassian.net/browse/PROJ-1",
+  updatedAt: "2026-11-01T09:31:00.000Z",
+});
+const fromSiteB = (): JiraIssueSummary => ({
+  ...issue("PROJ-1", "To Do"),
+  summary: "Summary from site B",
+  url: "https://other.atlassian.net/browse/PROJ-1",
+  updatedAt: "2026-11-01T09:00:00.000Z",
+});
+const siteB = {
+  siteUrl: "https://other.atlassian.net",
+  email: "pat@other.example",
+  apiToken: Redacted.make("token-b"),
+};
+const clientForSites = (partial: Partial<JiraClient.JiraClient["Service"]> = {}) =>
+  fakeClient({
+    myself: () => Effect.succeed({ accountId: "acc-b", displayName: "Pat" }),
+    getIssueSummary: () => Effect.succeed(fromSiteA()),
+    searchIssues: () => Effect.succeed(page(fromSiteB())),
+    transition: () => Effect.void,
+    ...partial,
+  });
+
+it.effect("does not show a move made on one site as the same key on the site connected next", () =>
+  Effect.gen(function* () {
+    const jira = yield* JiraService.JiraService;
+    const moved = yield* jira.transition({ key: "PROJ-1", transitionId: "31" });
+    assert.strictEqual(moved.summary, "Summary from site A");
+    yield* jira.configure(siteB);
+    const [found] = (yield* jira.lookupIssues({ keys: ["PROJ-1"] })).issues;
+    assert.strictEqual(found?.summary, "Summary from site B");
+    assert.strictEqual(found?.url, "https://other.atlassian.net/browse/PROJ-1");
+    assert.strictEqual(found?.status.name, "To Do");
+    const listed = (yield* jira.search({ preset: "assigned" })).issues[0];
+    assert.strictEqual(listed?.summary, "Summary from site B");
+  }).pipe(Effect.provide(serviceLayer(clientForSites()))),
+);
+
+it.effect("does not show a move made before a disconnect once the person connects again", () =>
+  Effect.gen(function* () {
+    const jira = yield* JiraService.JiraService;
+    yield* jira.transition({ key: "PROJ-1", transitionId: "31" });
+    yield* jira.disconnect;
+    yield* jira.configure(siteB);
+    const [found] = (yield* jira.lookupIssues({ keys: ["PROJ-1"] })).issues;
+    assert.strictEqual(found?.summary, "Summary from site B");
+  }).pipe(Effect.provide(serviceLayer(clientForSites()))),
+);
+
+it.effect("does not let a move that finishes after a change of site touch the new one", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const finish = yield* Deferred.make<void>();
+    const client = clientForSites({
+      transition: () =>
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(finish))),
+    });
+    yield* Effect.gen(function* () {
+      const jira = yield* JiraService.JiraService;
+      const move = yield* jira
+        .transition({ key: "PROJ-1", transitionId: "31" })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(started);
+      yield* jira.configure(siteB);
+      yield* Deferred.succeed(finish, undefined);
+      yield* Fiber.join(move);
+      const [found] = (yield* jira.lookupIssues({ keys: ["PROJ-1"] })).issues;
+      assert.strictEqual(found?.summary, "Summary from site B");
+    }).pipe(Effect.provide(serviceLayer(client)));
+  }),
+);

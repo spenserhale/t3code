@@ -114,7 +114,12 @@ const invalidRequest = (operation: "verifyAccount" | "search", detail: string) =
 interface SettledIssue {
   readonly issue: JiraIssueSummary;
   readonly until: number;
+  /** The site and account it was read as; a record is never shown to another connection. */
+  readonly connection: string;
 }
+
+const connectionOf = (credential: JiraCredential): string =>
+  `${credential.siteUrl}\n${credential.email}`;
 
 const epochOf = (value: string): number =>
   Option.match(DateTime.make(value), { onNone: () => Number.NaN, onSome: DateTime.toEpochMillis });
@@ -136,26 +141,33 @@ const make = Effect.gen(function* () {
   // later, and until it does a list or chip built from it would show the old status.
   const settled = yield* Ref.make<ReadonlyMap<string, SettledIssue>>(new Map());
 
-  const settle = (issue: JiraIssueSummary) =>
+  const settle = (credential: JiraCredential, issue: JiraIssueSummary) =>
     Clock.currentTimeMillis.pipe(
       Effect.flatMap((now) =>
         Ref.update(settled, (current) => {
           const next = new Map([...current].filter(([, kept]) => kept.until > now));
-          return next.set(issue.key, { issue, until: now + SETTLED_TTL_MILLIS });
+          return next.set(issue.key, {
+            issue,
+            until: now + SETTLED_TTL_MILLIS,
+            connection: connectionOf(credential),
+          });
         }),
       ),
     );
 
   /** The settled record stands in for an index answer that is older than it. */
   const withSettled = Effect.fn("JiraService.withSettled")(function* (
+    credential: JiraCredential,
     issues: ReadonlyArray<JiraIssueSummary>,
   ) {
     const current = yield* Ref.get(settled);
     if (current.size === 0) return issues;
     const now = yield* Clock.currentTimeMillis;
+    const connection = connectionOf(credential);
     return issues.map((found) => {
       const kept = current.get(found.key);
       return kept !== undefined &&
+        kept.connection === connection &&
         kept.until > now &&
         epochOf(kept.issue.updatedAt) > epochOf(found.updatedAt)
         ? kept.issue
@@ -214,7 +226,7 @@ const make = Effect.gen(function* () {
             error.status === 400 ? lookupOneByOne(credential, keys) : Effect.fail(error),
         }),
       );
-      return yield* withSettled(found);
+      return yield* withSettled(credential, found);
     }),
   });
 
@@ -232,7 +244,7 @@ const make = Effect.gen(function* () {
         pageSize: request.pageSize,
         ...(request.pageToken === null ? {} : { pageToken: request.pageToken }),
       });
-      return { ...page, issues: yield* withSettled(page.issues) };
+      return { ...page, issues: yield* withSettled(credential, page.issues) };
     }),
   });
 
@@ -298,6 +310,9 @@ const make = Effect.gen(function* () {
     { discard: true },
   );
 
+  /** Another site or account: nothing read with the old connection may be shown for the new one. */
+  const forgetConnection = Effect.andThen(forgetEverything, Ref.set(settled, new Map()));
+
   /** A change to one issue also changes every list and chip that shows it. */
   const forgetIssue = (key: string) =>
     Effect.all(
@@ -338,12 +353,12 @@ const make = Effect.gen(function* () {
     // Saved only once Jira has accepted it.
     const account = yield* client.myself(credential);
     yield* credentials.set(credential);
-    yield* forgetEverything;
+    yield* forgetConnection;
     return { configured: true, siteUrl, email, account } satisfies JiraStatus;
   });
 
   const disconnect = credentials.clear.pipe(
-    Effect.andThen(forgetEverything),
+    Effect.andThen(forgetConnection),
     Effect.withSpan("JiraService.disconnect"),
   );
 
@@ -393,7 +408,7 @@ const make = Effect.gen(function* () {
     yield* client.transition(credential, input.key, input.transitionId);
     // The issue itself is current at once; the search index is not, so it is not asked here.
     const issue = yield* client.getIssueSummary(credential, input.key);
-    yield* settle(issue);
+    yield* settle(credential, issue);
     yield* forgetIssue(input.key);
     return issue;
   });
