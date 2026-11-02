@@ -33,6 +33,8 @@ export interface OllamaCloudValueInput {
   /** Included credit the period has used, from the balance. */
   readonly usedUsd: number;
   readonly models: ReadonlyArray<OllamaCloudModelUsage>;
+  /** What Ollama billed for the models beyond the ten its history lists. */
+  readonly remainderUsageUsd: number;
 }
 
 /**
@@ -42,7 +44,7 @@ export interface OllamaCloudValueInput {
 export class OllamaCloudValuation extends Context.Service<
   OllamaCloudValuation,
   {
-    /** What `usedUsd` of Ollama credit would cost there, or undefined when no model had a price. */
+    /** What `usedUsd` of Ollama credit would cost there, or undefined when too little of it could be priced. */
     readonly openRouterValueUsd: (
       input: OllamaCloudValueInput,
     ) => Effect.Effect<number | undefined>;
