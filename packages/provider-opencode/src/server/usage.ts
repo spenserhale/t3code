@@ -15,7 +15,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { OpenCodeSettings } from "../settings.ts";
-import { OLLAMA_CLOUD_PROVIDER_ID, ollamaCloudRateModel } from "./ollamaCloudMarket.ts";
+import { OLLAMA_CLOUD_PROVIDER_ID } from "./ollamaCloudMarket.ts";
 
 function object(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -78,7 +78,6 @@ function parseOpenCodeMessage(
     timestampMs,
     model: ollamaCloud ? `${OLLAMA_CLOUD_PROVIDER_ID}/${model}` : model,
     ...(prefix !== undefined && !model.includes("/") ? { rateModel: `${prefix}/${model}` } : {}),
-    ...(ollamaCloud ? { rateModel: ollamaCloudRateModel(model) } : {}),
     sessionId: fallback.sessionId || text(message.sessionID),
     totals,
     // OpenCode records zero for unknown rates and paid subscriptions alike, so only its own

@@ -10,6 +10,9 @@ import * as Layer from "effect/Layer";
 import { OpenRouterZdrRates } from "./OpenRouterZdrRates.ts";
 import { priceUsage, type RateTable } from "./usagePricing.ts";
 
+/** Below this share of the period's Ollama dollars on priced models, the ratio says too little. */
+const PRICED_SHARE_FLOOR = 0.5;
+
 /**
  * What `usedUsd` of Ollama credit would cost at the market rates: the ratio of market to Ollama
  * price over the models that have a market price, applied to the credit the period used. That
@@ -21,7 +24,9 @@ export function openRouterValueUsd(
 ): number | undefined {
   let marketUsd = 0;
   let billedUsd = 0;
+  let periodUsd = input.remainderUsageUsd;
   for (const usage of input.models) {
+    periodUsd += usage.usageUsd;
     const uncachedInputTokens = Math.max(0, usage.inputTokens - usage.cachedInputTokens);
     const totals = {
       uncachedInputTokens,
@@ -42,7 +47,8 @@ export function openRouterValueUsd(
     marketUsd += priced.costUsd;
     billedUsd += usage.usageUsd;
   }
-  return billedUsd > 0 ? (marketUsd / billedUsd) * input.usedUsd : undefined;
+  if (billedUsd <= 0 || billedUsd < periodUsd * PRICED_SHARE_FLOOR) return undefined;
+  return (marketUsd / billedUsd) * input.usedUsd;
 }
 
 export const layer = Layer.effect(
