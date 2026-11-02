@@ -143,13 +143,14 @@ quota and its monthly tool allowance, along with any banked quota resets. **Use 
 of the two, because a weekly reset also clears the 5-hour quota. An Ollama Cloud subscription signed
 in through OpenCode reports its monthly credit, or its session and weekly usage on older plans, each
 with its reset time. Under a monthly credit, Limits also shows how much of the pool the period has
-used, what the plan costs, and any purchased credit. When at least half of that usage was on models
-OpenRouter prices, it also shows what the usage would have cost at OpenRouter's zero-data-retention
-rates. Cursor reports
-its monthly allowance, including separate Auto and API usage, using the CLI login or
-`CURSOR_AUTH_TOKEN`. On macOS, this includes the default Keychain login after you enable Cursor
-usage. Keychain login is used for limits only with Cursor's default API endpoint. If you configure
-a custom Cursor endpoint, use an explicit token or file-based CLI login for limits.
+used, what the plan costs, and any purchased credit. On a $60 Pro or $300 Max plan, when at least
+half of that usage was on models OpenRouter prices, it also shows what the usage would have cost at
+OpenRouter's zero-data-retention rates. Team and custom-sized pools skip that, because their balance
+can include other members' usage. Cursor reports its monthly allowance, including separate Auto and
+API usage, using the CLI login or `CURSOR_AUTH_TOKEN`. On macOS, this includes the default Keychain
+login after you enable Cursor usage. Keychain login is used for limits only with Cursor's default
+API endpoint. If you configure a custom Cursor endpoint, use an explicit token or file-based CLI
+login for limits.
 
 Grok reports the remaining subscription allowance and reset time for its current billing period
 after signing in with `grok login`. Explicit `XAI_API_KEY` connections and custom authentication

@@ -119,12 +119,15 @@ const throttled = (retryAfterSeconds?: number) => () =>
 /** Answers each Ollama path with its body (or a bare status) and records the requests. */
 function ollamaApi(routes: Routes) {
   const requests: HttpClientRequest.HttpClientRequest[] = [];
+  /** Paths whose requests are never answered. */
+  const stalled = new Set<string>();
   const layer = Layer.mergeAll(
     NodeServices.layer,
     Layer.succeed(
       HttpClient.HttpClient,
       HttpClient.make((request) => {
         requests.push(request);
+        if (stalled.has(new URL(request.url).pathname)) return Effect.never;
         const response = routes[new URL(request.url).pathname];
         return Effect.succeed(
           HttpClientResponse.fromWeb(
@@ -142,7 +145,7 @@ function ollamaApi(routes: Routes) {
     ),
   );
   const paths = () => requests.map((request) => new URL(request.url).pathname);
-  return { layer, requests, paths, routes };
+  return { layer, requests, paths, routes, stalled };
 }
 
 /** A valuation that records what it was asked and answers with `value`. */
@@ -513,24 +516,30 @@ describe("Ollama Cloud credit value", () => {
   });
 
   it.effect(
-    "gives a team plan no value, since its balance is shared and the history is one member's",
-    () => {
-      const api = ollamaApi({
-        "/api/balance": {
-          included: { ...poolBalance.included, allowance_usd: 1000, balance_usd: 800 },
-        },
-        "/api/usage": USAGE,
-      });
-      const market = valuation(9.1);
-      return Effect.gen(function* () {
-        const limits = yield* readOnce(account());
-        assert.strictEqual(limits.credit?.allowanceUsd, 1000);
-        assert.strictEqual(limits.credit?.planPriceUsd, 500);
-        assert.isUndefined(limits.credit?.openRouterValueUsd);
-        assert.deepStrictEqual(api.paths(), ["/api/balance"]);
-        assert.deepStrictEqual(market.inputs, []);
-      }).pipe(Effect.provide(Layer.merge(api.layer, market.layer)));
-    },
+    "values only a personal plan's pool, since the balance does not say whose any other is",
+    () =>
+      Effect.gen(function* () {
+        for (const allowance of [1000, 2000, 100]) {
+          const api = ollamaApi({
+            "/api/balance": {
+              included: {
+                ...poolBalance.included,
+                allowance_usd: allowance,
+                balance_usd: allowance * 0.8,
+              },
+            },
+            "/api/usage": USAGE,
+          });
+          const market = valuation(9.1);
+          const limits = yield* readOnce(account()).pipe(
+            Effect.provide(Layer.merge(api.layer, market.layer)),
+          );
+          assert.strictEqual(limits.credit?.allowanceUsd, allowance);
+          assert.isUndefined(limits.credit?.openRouterValueUsd);
+          assert.deepStrictEqual(api.paths(), ["/api/balance"]);
+          assert.deepStrictEqual(market.inputs, []);
+        }
+      }),
   );
 
   it.effect("keeps the last good history through a failed read, and waits out Retry-After", () => {
@@ -556,6 +565,32 @@ describe("Ollama Cloud credit value", () => {
       assert.strictEqual(historyReads(), 2);
       yield* TestClock.adjust("1 minute");
       api.routes["/api/usage"] = USAGE;
+      yield* probe;
+      assert.strictEqual(historyReads(), 3);
+    }).pipe(Effect.provide(Layer.merge(api.layer, market.layer)));
+  });
+
+  it.effect("treats a stalled history read as a failure: the last good history stands", () => {
+    const api = ollamaApi({ "/api/balance": poolBalance, "/api/usage": USAGE });
+    const market = valuation(9.1);
+    const historyReads = () => api.paths().filter((path) => path === "/api/usage").length;
+    return Effect.gen(function* () {
+      const probe = yield* makeOllamaCloudUsageLimits(account());
+      yield* probe;
+
+      yield* TestClock.adjust("11 minutes");
+      api.stalled.add("/api/usage");
+      const stalling = yield* probe.pipe(Effect.forkChild);
+      yield* TestClock.adjust("5 seconds");
+      const during = yield* Fiber.join(stalling);
+      assert.strictEqual(historyReads(), 2);
+      assert.strictEqual(during.credit?.openRouterValueUsd, 9.1);
+
+      // The stall counts like any failed read: nothing is asked again for a minute.
+      yield* probe;
+      assert.strictEqual(historyReads(), 2);
+      api.stalled.delete("/api/usage");
+      yield* TestClock.adjust("1 minute");
       yield* probe;
       assert.strictEqual(historyReads(), 3);
     }).pipe(Effect.provide(Layer.merge(api.layer, market.layer)));

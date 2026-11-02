@@ -103,12 +103,18 @@ const LEGACY_WINDOWS = [
   },
 ] as const;
 
-/** The plans, by the size of the credit pool they include and what that costs for a period. */
-const PLANS: ReadonlyMap<number, { readonly priceUsd: number; readonly team?: true }> = new Map([
-  [60, { priceUsd: 20 }],
-  [300, { priceUsd: 100 }],
-  [1000, { priceUsd: 500, team: true }],
-]);
+/**
+ * The plans, by the size of the credit pool they include and what that costs for a period. The
+ * balance does not say whose a pool is, so only the sizes of the personal plans are taken as one
+ * person's.
+ */
+const PLANS: ReadonlyMap<number, { readonly priceUsd: number; readonly personal?: true }> = new Map(
+  [
+    [60, { priceUsd: 20, personal: true }],
+    [300, { priceUsd: 100, personal: true }],
+    [1000, { priceUsd: 500 }],
+  ],
+);
 
 /** Two decimals keep float noise (27.500000000000004) off the wire. */
 const toPercent = (value: number) => clampPercent(Math.round(value * 100) / 100);
@@ -304,7 +310,7 @@ export const makeOllamaCloudUsageLimits = Effect.fn("makeOllamaCloudUsageLimits"
       return yield* HttpClientResponse.filterStatusOk(response).pipe(
         Effect.flatMap(HttpClientResponse.schemaBodyJson(UsageResponse)),
       );
-    }).pipe(Effect.option);
+    }).pipe(Effect.timeout("5 seconds"), Effect.option);
     if (Option.isSome(read)) {
       yield* Ref.set(usageHold, undefined);
     } else {
@@ -378,15 +384,14 @@ export const makeOllamaCloudUsageLimits = Effect.fn("makeOllamaCloudUsageLimits"
   ) {
     const usedUsd = Math.max(0, pool.allowanceUsd - pool.balanceUsd);
     const plan = PLANS.get(pool.allowanceUsd);
-    // A team's balance is shared by every member, while the history is the key owner's.
+    // A shared balance counts every member's use, while the history is the key owner's.
     const value =
-      Option.isSome(valuation) && usedUsd > 0 && plan?.team !== true
+      Option.isSome(valuation) && usedUsd > 0 && plan?.personal === true
         ? yield* readUsage(apiKey, fingerprint).pipe(
             Effect.map((buckets) =>
               periodUsage(buckets, { start: pool.periodStart, end: pool.periodEnd }),
             ),
             Effect.flatMap((usage) => valuation.value.openRouterValueUsd({ usedUsd, ...usage })),
-            Effect.timeout("5 seconds"),
             Effect.orElseSucceed(() => undefined),
           )
         : undefined;
