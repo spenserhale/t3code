@@ -188,7 +188,7 @@ export function paceLabel(pace: WindowPace): string {
   return pace.state === "under" ? `${points}% in reserve` : `${points}% in deficit`;
 }
 
-function paceExpected(pace: WindowPace): string {
+export function paceExpected(pace: WindowPace): string {
   return `Expected ${Math.round(pace.expectedUsedPercent)}% used`;
 }
 
@@ -201,6 +201,13 @@ export function paceOutlook(pace: WindowPace): string | null {
   return outlook.inMs < MINUTE
     ? "Runs out within a minute"
     : `Runs out in ${formatDuration(outlook.inMs)}`;
+}
+
+/** One phrase for a crowded place: when the window runs out, else how it is pacing. */
+export function paceBrief(pace: WindowPace): string {
+  return pace.outlook?.kind === "runsOut"
+    ? (paceOutlook(pace) ?? paceLabel(pace))
+    : paceLabel(pace);
 }
 
 /** `Pace: 6% in reserve | Expected 47% used | Lasts until reset`. */
