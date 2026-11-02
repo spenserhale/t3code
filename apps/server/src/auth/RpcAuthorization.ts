@@ -128,6 +128,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.jiraTransition]: AuthSourceControlWriteScope,
   [WS_METHODS.jiraAddComment]: AuthSourceControlWriteScope,
   [WS_METHODS.jiraLookupIssues]: AuthOrchestrationReadScope,
+  [WS_METHODS.jiraRefresh]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsList]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsListStats]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsFilterOptions]: AuthOrchestrationReadScope,

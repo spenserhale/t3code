@@ -33,33 +33,42 @@ const RawComment = Schema.Struct({
   updated: Schema.optional(Schema.String),
 });
 
-const RawIssueFields = Schema.Struct({
-  summary: Schema.optional(Schema.NullOr(Schema.String)),
-  status: Schema.optional(Schema.NullOr(RawStatus)),
-  issuetype: Schema.optional(
-    Schema.NullOr(Schema.Struct({ name: Schema.optional(Schema.String) })),
-  ),
-  priority: Schema.optional(Schema.NullOr(Schema.Struct({ name: Schema.optional(Schema.String) }))),
-  assignee: Schema.optional(Schema.NullOr(RawUser)),
-  reporter: Schema.optional(Schema.NullOr(RawUser)),
-  project: Schema.optional(
-    Schema.NullOr(
-      Schema.Struct({ key: Schema.optional(Schema.String), name: Schema.optional(Schema.String) }),
+// The rest of the keys are the site's custom fields, read only when a request names them.
+const RawIssueFields = Schema.StructWithRest(
+  Schema.Struct({
+    summary: Schema.optional(Schema.NullOr(Schema.String)),
+    status: Schema.optional(Schema.NullOr(RawStatus)),
+    issuetype: Schema.optional(
+      Schema.NullOr(Schema.Struct({ name: Schema.optional(Schema.String) })),
     ),
-  ),
-  created: Schema.optional(Schema.NullOr(Schema.String)),
-  updated: Schema.optional(Schema.NullOr(Schema.String)),
-  labels: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
-  description: Schema.optional(Schema.Unknown),
-  comment: Schema.optional(
-    Schema.NullOr(
-      Schema.Struct({
-        total: Schema.optional(Schema.Number),
-        comments: Schema.optional(Schema.Array(RawComment)),
-      }),
+    priority: Schema.optional(
+      Schema.NullOr(Schema.Struct({ name: Schema.optional(Schema.String) })),
     ),
-  ),
-});
+    assignee: Schema.optional(Schema.NullOr(RawUser)),
+    reporter: Schema.optional(Schema.NullOr(RawUser)),
+    project: Schema.optional(
+      Schema.NullOr(
+        Schema.Struct({
+          key: Schema.optional(Schema.String),
+          name: Schema.optional(Schema.String),
+        }),
+      ),
+    ),
+    created: Schema.optional(Schema.NullOr(Schema.String)),
+    updated: Schema.optional(Schema.NullOr(Schema.String)),
+    labels: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
+    description: Schema.optional(Schema.Unknown),
+    comment: Schema.optional(
+      Schema.NullOr(
+        Schema.Struct({
+          total: Schema.optional(Schema.Number),
+          comments: Schema.optional(Schema.Array(RawComment)),
+        }),
+      ),
+    ),
+  }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+);
 
 export const RawIssue = Schema.Struct({
   key: Schema.String,
@@ -89,6 +98,10 @@ export const RawProjectsResponse = Schema.Struct({
   values: Schema.Array(Schema.Struct({ key: Schema.String, name: Schema.optional(Schema.String) })),
   isLast: Schema.optional(Schema.Boolean),
 });
+
+export const RawFieldsResponse = Schema.Array(
+  Schema.Struct({ id: Schema.String, name: Schema.optional(Schema.String) }),
+);
 
 export const RawMyself = RawUser;
 export { RawComment };
@@ -161,17 +174,68 @@ export function toComment(raw: RawComment): JiraComment {
 
 const COMMENTS_SHOWN = 50;
 
-export function toIssueDetail(raw: RawIssue, siteUrl: string): JiraIssueDetail | null {
+/** A site's own field that the app asks for by id, with the name people know it by. */
+export interface JiraFieldRef {
+  readonly id: string;
+  readonly name: string;
+}
+
+const ACCEPTANCE_CRITERIA_NAME = /\bacceptance[\s_-]*criteri(?:a|on)\b/iu;
+const CUSTOM_FIELD_ID = /^customfield_\d+$/u;
+const MAX_ACCEPTANCE_FIELDS = 5;
+
+/** Sites keep acceptance criteria in a custom field of their own, so the fields are found by name. */
+export function acceptanceCriteriaFields(
+  fields: ReadonlyArray<{ readonly id: string; readonly name?: string | undefined }>,
+): ReadonlyArray<JiraFieldRef> {
+  const found = new Map<string, JiraFieldRef>();
+  for (const field of fields) {
+    if (found.size === MAX_ACCEPTANCE_FIELDS) break;
+    if (
+      field.name !== undefined &&
+      CUSTOM_FIELD_ID.test(field.id) &&
+      ACCEPTANCE_CRITERIA_NAME.test(field.name) &&
+      !found.has(field.id)
+    ) {
+      found.set(field.id, { id: field.id, name: field.name });
+    }
+  }
+  return [...found.values()];
+}
+
+/** Rich text, plain text or a list of text; anything else (an option, a user) holds no prose. */
+function customFieldMarkdown(value: unknown): string | null {
+  const markdown = Array.isArray(value)
+    ? value
+        .flatMap((item: unknown) =>
+          typeof item === "string" && item.trim() !== "" ? [item.trim()] : [],
+        )
+        .map((item) => `- ${item}`)
+        .join("\n")
+    : adfToMarkdown(value).trim();
+  return markdown.length > 0 ? markdown : null;
+}
+
+export function toIssueDetail(
+  raw: RawIssue,
+  siteUrl: string,
+  extraFields: ReadonlyArray<JiraFieldRef> = [],
+): JiraIssueDetail | null {
   const summary = toIssueSummary(raw, siteUrl);
   if (summary === null) return null;
   const fields = raw.fields ?? undefined;
   const comments = fields?.comment?.comments ?? [];
+  const acceptanceCriteria = extraFields.flatMap((field) => {
+    const markdown = customFieldMarkdown(fields?.[field.id]);
+    return markdown === null ? [] : [{ name: field.name, markdown }];
+  });
   return {
     ...summary,
     reporter: userOf(fields?.reporter),
     createdAt: isoTimestamp(fields?.created),
     labels: fields?.labels ?? [],
     descriptionMarkdown: adfToMarkdown(fields?.description),
+    ...(acceptanceCriteria.length === 0 ? {} : { acceptanceCriteria }),
     comments: comments.slice(-COMMENTS_SHOWN).map(toComment),
     commentCount: Math.max(fields?.comment?.total ?? 0, comments.length),
   };

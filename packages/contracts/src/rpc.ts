@@ -583,6 +583,7 @@ export const WS_METHODS = {
   jiraTransition: "jira.transition",
   jiraAddComment: "jira.addComment",
   jiraLookupIssues: "jira.lookupIssues",
+  jiraRefresh: "jira.refresh",
 
   pullRequestsList: "pullRequests.list",
   pullRequestsListStats: "pullRequests.listStats",
@@ -1094,6 +1095,13 @@ const WsJiraAddCommentRpc = Rpc.make(WS_METHODS.jiraAddComment, {
 const WsJiraLookupIssuesRpc = Rpc.make(WS_METHODS.jiraLookupIssues, {
   payload: JiraLookupInput,
   success: JiraLookupResult,
+  error: JiraRpcError,
+});
+
+// Forgets what the server kept from Jira, so the next list, detail and chip ask Jira again.
+const WsJiraRefreshRpc = Rpc.make(WS_METHODS.jiraRefresh, {
+  payload: Schema.Struct({}),
+  success: Schema.Void,
   error: JiraRpcError,
 });
 
@@ -2153,6 +2161,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsJiraTransitionRpc,
   WsJiraAddCommentRpc,
   WsJiraLookupIssuesRpc,
+  WsJiraRefreshRpc,
   WsPullRequestsListRpc,
   WsPullRequestsListStatsRpc,
   WsPullRequestsFilterOptionsRpc,
