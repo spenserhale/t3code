@@ -18,6 +18,15 @@ features target the repository a fork tracks. A fork also reports its own
 `origin`, and clients group and label by that, so a fork never collapses into a
 checkout of its upstream.
 
+Continuing a thread on another machine is the client's work, not a link between
+servers. The source pushes a WIP commit to a branch of the shared remote, the
+client reads the conversation as a transcript, and it opens a draft in the
+target's member of the same project group. The thread, its provider session and
+its checkpoints stay on the source. Nothing on the servers ties the two threads,
+so the client remembers the draft's source and settles it once the first message
+is on the target
+([`threadMachineHandoffSettle`](../../apps/web/src/lib/threadMachineHandoffSettle.ts)).
+
 [Environment ID initialization](../../apps/server/src/environment/ServerEnvironment.ts)
 must publish a complete ID atomically. Repair of an empty ID file retains a
 recovery file so concurrent or delayed initializers choose the same winner.

@@ -35,6 +35,14 @@ function recordEffect(action: string) {
 }
 
 vi.mock("../components/CustomSnoozeDialog", () => ({ requestCustomSnooze: vi.fn() }));
+vi.mock("../lib/handoffMachines", () => ({ readContinueOnChoices: () => [] }));
+vi.mock("../components/continueOnMachineState", () => ({
+  handleContinueOnMenuAction: (action: string, threadRef: { readonly threadId: string }) => {
+    if (!action.startsWith("continue-on:")) return false;
+    recordEffect(`${action} ${threadRef.threadId}`);
+    return true;
+  },
+}));
 vi.mock("react", () => ({
   useCallback: (callback: unknown) => callback,
   useMemo: (factory: () => unknown) => factory(),
@@ -166,19 +174,32 @@ beforeEach(() => {
 });
 
 describe("thread menu permissions", () => {
-  it.each(["rename", "regenerate-title", "delete", "pin", "settle", "archive"] as const)(
-    "%s rechecks after the native menu closes",
-    async (action) => {
-      state.granted.add("secondary");
-      const choice = deferred<ThreadActionMenuId | null>();
-      state.show.mockReturnValue(choice.promise);
-      createMenu().openMenu(position);
-      state.granted.delete("secondary");
-      choice.resolve(action);
-      await state.completed.promise;
-      expect(state.effects).toEqual([]);
-    },
-  );
+  it.each([
+    "rename",
+    "regenerate-title",
+    "delete",
+    "pin",
+    "settle",
+    "archive",
+    "continue-on:primary",
+  ] as const)("%s rechecks after the native menu closes", async (action) => {
+    state.granted.add("secondary");
+    const choice = deferred<ThreadActionMenuId | null>();
+    state.show.mockReturnValue(choice.promise);
+    createMenu().openMenu(position);
+    state.granted.delete("secondary");
+    choice.resolve(action);
+    await state.completed.promise;
+    expect(state.effects).toEqual([]);
+  });
+
+  it("opens the machine dialog for the machine picked in Continue on", async () => {
+    state.granted.add("secondary");
+    state.show.mockResolvedValue("continue-on:primary");
+    createMenu().openMenu(position);
+    await state.completed.promise;
+    expect(state.effects).toEqual(["continue-on:primary thread"]);
+  });
 
   it("offers find only to a header that can open it, without task permission", async () => {
     createMenu().openMenu(position);
