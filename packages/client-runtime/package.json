@@ -31,6 +31,10 @@
       "types": "./src/handoff.ts",
       "default": "./src/handoff.ts"
     },
+    "./thread-machine-handoff": {
+      "types": "./src/threadMachineHandoff.ts",
+      "default": "./src/threadMachineHandoff.ts"
+    },
     "./device/stream": {
       "types": "./src/device/stream.ts",
       "default": "./src/device/stream.ts"

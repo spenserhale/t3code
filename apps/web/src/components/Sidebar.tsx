@@ -9,6 +9,7 @@ import {
   moveThreadContextDrag as moveThreadContextDragGhost,
 } from "./chat/threadContextDrag";
 import { discardComposerDraft } from "../lib/discardComposerDraft";
+import { handleContinueOnMenuAction } from "./continueOnMachineState";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
@@ -238,6 +239,7 @@ import {
 } from "./sidebar/routeReveal";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { copyThreadReference } from "../lib/copyThreadReference";
+import { readContinueOnChoices } from "../lib/handoffMachines";
 import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import { Button } from "./ui/button";
 import { isProjectPinShortcut, ProjectPinButton } from "./ProjectPinButton";
@@ -2646,6 +2648,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 canShareWithGuestAtom(threadRef.environmentId),
               ),
               canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+              continueOn: readContinueOnChoices(threadRef),
               supports: {
                 settlement: configLoaded,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -2673,6 +2676,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           if (preset) attemptSnooze(threadRef, preset);
           return;
         }
+        if (handleContinueOnMenuAction(clicked.value, threadRef)) return;
         switch (clicked.value) {
           case "filter-by-project":
             if (threadProjectGroup) {

@@ -58,6 +58,29 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Continue on another machine
+
+Hand a thread to another machine you have connected. Open the thread's menu in the header or on
+its sidebar row, pick **Continue on…**, and choose the machine. The command palette has
+**Continue on another machine** for the open thread. This is available on web and desktop.
+
+T3 Code commits the thread's uncommitted changes as `WIP: hand off to <machine>`, pushes the
+branch, and opens a draft on the other machine: in the same project, on a new worktree that starts
+from that branch, with the conversation attached as a file and a short note naming the thread, the
+machine and the branch. Add your instructions and send. The original thread settles when you send
+the first message there; **Undo** in the toast, or **Un-settle** on the thread, reverses that.
+
+- From the default branch, the work goes to a new `handoff/<thread title>` branch first. The
+  default branch is never pushed.
+- The other machine needs the same project. If it does not have it yet, the dialog offers **Add
+  project to** that machine.
+- A project without a git remote, or a thread without a project, hands over only the conversation,
+  into a thread without a project on the other machine.
+- The thread must not be working or waiting on an approval. If the remote has newer commits on
+  the branch, the push is refused and the dialog says so; pull, then hand off again.
+- The conversation is a copy. The thread, its provider session and its checkpoints stay where they
+  were, and the new thread starts a fresh provider session.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work.
