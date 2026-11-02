@@ -1,11 +1,10 @@
 /**
  * Splitting the Limits view into groups of subscription accounts, so quota
- * that is not interchangeable (personal and work, say) is never pooled into
- * one number. An account lands in the group it was assigned, else with the
- * other accounts under its email.
- *
+ * that is not interchangeable (personal and work, say) is never pooled. An
+ * account lands in the group it was assigned, else under its email.
  * @module usageLimitGroups
  */
+import type { LimitSchedule } from "./usageLimitSchedule.ts";
 import type { LimitAccount } from "./usageLimits.ts";
 
 /** A client's grouping preference. It names accounts by email, so it stays on the device. */
@@ -13,6 +12,8 @@ export interface LimitGroupState {
   readonly enabled: boolean;
   /** Group name by `limitSubscriptionId`, kept while the account is out of sight. */
   readonly assignments: Readonly<Record<string, string>>;
+  /** When the accounts are used: by group key, or by `limitAccountScheduleKey` for one account. */
+  readonly schedules?: Readonly<Record<string, LimitSchedule>> | undefined;
 }
 
 /** The longest group name kept; a longer one is cut to this. */
@@ -33,11 +34,9 @@ function accountEmail(account: LimitAccount): string | undefined {
 }
 
 /**
- * The identity an assignment is stored under. It follows the way accounts
- * merge across environments (email, else credential), so it names the same
- * subscription whichever environment reports it first. It holds while the
- * account keeps its email, or, with none, its credential; signing in with a
- * different key, or gaining an email, makes it a new account to assign.
+ * The identity an assignment is stored under. It follows the way accounts merge
+ * across environments (email, else credential), so every environment names a
+ * subscription the same way. A new key, or a gained email, is a new account.
  */
 export function limitSubscriptionId(account: LimitAccount): string {
   const email = accountEmail(account);
@@ -77,6 +76,27 @@ export function labelLimitAccounts(
   });
 }
 
+export interface LimitGroupOf {
+  readonly key: string;
+  readonly kind: LimitGroup["kind"];
+  readonly name: string;
+}
+
+/**
+ * The group an account is in: the one it was assigned, else its email's, else
+ * the rest. It holds whether or not the grouped view is on.
+ */
+export function limitGroupOf(
+  account: LimitAccount,
+  assignments: LimitGroupState["assignments"],
+): LimitGroupOf {
+  const assigned = assignments[limitSubscriptionId(account)]?.trim();
+  if (assigned) return { key: `named:${assigned}`, kind: "named", name: assigned };
+  const email = accountEmail(account);
+  if (email) return { key: `email:${email}`, kind: "email", name: email };
+  return { key: "other", kind: "other", name: "Other accounts" };
+}
+
 /**
  * Accounts split into the groups to draw, named groups first, then one per
  * email, then the accounts with neither. Each group pools separately, so pass
@@ -95,10 +115,9 @@ export function groupLimitAccounts(
     else groups.set(name, [account]);
   };
   for (const account of accounts) {
-    const assigned = assignments[limitSubscriptionId(account)]?.trim();
-    const email = accountEmail(account);
-    if (assigned) add(named, assigned, account);
-    else if (email) add(byEmail, email, account);
+    const { kind, name } = limitGroupOf(account, assignments);
+    if (kind === "named") add(named, name, account);
+    else if (kind === "email") add(byEmail, name, account);
     else other.push(account);
   }
   const ordered = (kind: "named" | "email", groups: Map<string, LimitAccount[]>) =>
@@ -126,7 +145,7 @@ export function assignLimitGroup(
   const trimmed = name.trim().slice(0, MAX_LIMIT_GROUP_NAME_LENGTH).trimEnd();
   const { [subscriptionId]: _previous, ...rest } = state.assignments;
   return trimmed
-    ? { enabled: true, assignments: { ...rest, [subscriptionId]: trimmed } }
+    ? { ...state, enabled: true, assignments: { ...rest, [subscriptionId]: trimmed } }
     : { ...state, assignments: rest };
 }
 
@@ -138,4 +157,37 @@ export function setLimitGroupsEnabled(state: LimitGroupState, enabled: boolean):
 /** Every group name in use, to offer when assigning another account. */
 export function limitGroupNames(assignments: LimitGroupState["assignments"]): readonly string[] {
   return [...new Set(Object.values(assignments))].sort(compareNames);
+}
+
+/** Where one account's own schedule is kept, ahead of its group's. */
+export function limitAccountScheduleKey(subscriptionId: string): string {
+  return `account:${subscriptionId}`;
+}
+
+/**
+ * When an account is meant to be used: its own schedule, else its group's,
+ * else none, which counts every hour. The groups need not be switched on.
+ */
+export function resolveLimitSchedule(
+  state: LimitGroupState,
+  account: LimitAccount,
+): LimitSchedule | undefined {
+  const schedules = state.schedules;
+  if (schedules === undefined) return undefined;
+  return (
+    schedules[limitAccountScheduleKey(limitSubscriptionId(account))] ??
+    schedules[limitGroupOf(account, state.assignments).key]
+  );
+}
+
+/** Sets the schedule kept under a group key or account key; null takes it away. */
+export function setLimitSchedule(
+  state: LimitGroupState,
+  key: string,
+  schedule: LimitSchedule | null,
+): LimitGroupState {
+  const { [key]: _previous, ...rest } = state.schedules ?? {};
+  const schedules = schedule === null ? rest : { ...rest, [key]: schedule };
+  const { schedules: _schedules, ...others } = state;
+  return Object.keys(schedules).length > 0 ? { ...others, schedules } : others;
 }
