@@ -11,7 +11,7 @@ const credit: ServerProviderUsageCredit = {
 };
 
 describe("creditSummary", () => {
-  it("reads as spent of the pool, the renewal day, the market value, the plan and bought credit", () => {
+  it("reads as spent of the pool, what is left and when it expires, the market value, the plan and bought credit", () => {
     expect(
       creditSummary(
         { ...credit, openRouterValueUsd: 9.1, planPriceUsd: 20, purchasedBalanceUsd: 25 },
@@ -19,7 +19,7 @@ describe("creditSummary", () => {
       ),
     ).toEqual([
       "$18.80 of $60 used",
-      "resets Nov 14",
+      "$41.20 left, expires Nov 14",
       "≈ $9.10 at OpenRouter private rates",
       "plan $20",
       "$25 purchased credit",
@@ -29,19 +29,24 @@ describe("creditSummary", () => {
   it("leaves out what the server did not report, and bought credit that is gone", () => {
     expect(creditSummary({ ...credit, purchasedBalanceUsd: 0 }, { timeZone: "UTC" })).toEqual([
       "$18.80 of $60 used",
-      "resets Nov 14",
+      "$41.20 left, expires Nov 14",
     ]);
-    expect(creditSummary({ ...credit, periodEnd: "never" })).toEqual(["$18.80 of $60 used"]);
+    expect(creditSummary({ ...credit, periodEnd: "never" })).toEqual([
+      "$18.80 of $60 used",
+      "$41.20 left",
+    ]);
   });
 
   it("names the day in the viewer's zone", () => {
-    expect(creditSummary(credit, { timeZone: "Pacific/Auckland" })[1]).toBe("resets Nov 14");
+    expect(creditSummary(credit, { timeZone: "Pacific/Auckland" })[1]).toBe(
+      "$41.20 left, expires Nov 14",
+    );
     expect(
       creditSummary(
         { ...credit, periodEnd: "2026-11-14T23:30:00.000Z" },
         { timeZone: "Pacific/Auckland" },
       )[1],
-    ).toBe("resets Nov 15");
+    ).toBe("$41.20 left, expires Nov 15");
   });
 
   it("keeps cents on an odd pool and never reports a negative spend", () => {

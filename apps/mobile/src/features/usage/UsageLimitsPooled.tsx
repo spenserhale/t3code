@@ -3,6 +3,7 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import { EnvironmentId } from "@t3tools/contracts";
 import { providerClients } from "@t3tools/client-runtime/provider-clients";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
+import { creditSummary } from "@t3tools/shared/usageCredit";
 import {
   collectHttpQuotaSources,
   collectLimitAccounts,
@@ -197,6 +198,11 @@ function PoolWindowCard({
   const inlineReset = wide && segmentWidth >= 150;
   const inlineName = wide && segmentWidth >= 220;
   const nextRefill = pool.resets.find((reset) => reset.at > now && reset.restoresPercent > 0);
+  const creditLines = pool.members.flatMap(({ account }) =>
+    account.credit
+      ? [{ key: account.key, name: accountName(account), credit: account.credit }]
+      : [],
+  );
   const openAccount = (account: LimitAccount) =>
     navigation.navigate("SettingsUsageAccount", {
       accountKey: account.key,
@@ -227,6 +233,12 @@ function PoolWindowCard({
         ) : null}
       </View>
       {description ? <Text className="text-xs text-foreground-muted">{description}</Text> : null}
+      {creditLines.map(({ key, name, credit }) => (
+        <Text key={key} className="text-xs tabular-nums text-foreground-muted">
+          {creditLines.length > 1 ? `${name}: ` : ""}
+          {creditSummary(credit).join(" · ")}
+        </Text>
+      ))}
       {nextRefill ? (
         <Text className="text-xs tabular-nums text-foreground-muted">
           {refillLabel(nextRefill.member.window, now, nextRefill.restoresPercent, m)}
@@ -715,6 +727,16 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
                 </Text>
               ) : null}
             </View>
+            {account.credit ? (
+              <View className="gap-1 rounded-[24px] border-continuous bg-grouped-card p-4">
+                <Text className="text-sm font-t3-medium text-foreground">Credit</Text>
+                {creditSummary(account.credit).map((part) => (
+                  <Text key={part} className="text-sm text-foreground-muted">
+                    {part}
+                  </Text>
+                ))}
+              </View>
+            ) : null}
             <View className="gap-2 rounded-[24px] border-continuous bg-grouped-card p-4">
               <Text className="text-sm font-t3-medium text-foreground">
                 {account.environments.length
