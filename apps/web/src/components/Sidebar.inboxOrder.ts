@@ -1,7 +1,15 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import { sortInboxThreadsByOrder } from "@t3tools/client-runtime/state/thread-order";
+import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
+import {
+  createInboxWakeTracker,
+  sortInboxThreadsByOrder,
+} from "@t3tools/client-runtime/state/thread-order";
 import type { SidebarInboxThreadOrder } from "@t3tools/contracts/settings";
-import { resolveSidebarThreadStatus, type SidebarThreadStatus } from "./Sidebar.logic";
+import {
+  applySidebarThreadDrop,
+  resolveSidebarThreadStatus,
+  type SidebarThreadStatus,
+} from "./Sidebar.logic";
 
 // Threads that need the user lead, then broken runs, then running work, then
 // idle threads.
@@ -16,17 +24,36 @@ const STATUS_RANK: Record<SidebarThreadStatus, number> = {
   ready: 3,
 };
 
+export const inboxWakes = createInboxWakeTracker();
+
 export function isSidebarInboxTimeOrdered(order: SidebarInboxThreadOrder): boolean {
   return order !== "default";
+}
+
+/** These orders read status changes, so the trackers must be observing. */
+export function isSidebarInboxStatusOrdered(order: SidebarInboxThreadOrder): boolean {
+  return order === "last_status_change" || order === "status";
 }
 
 export function sortSidebarInboxThreads(
   threads: readonly EnvironmentThreadShell[],
   order: Exclude<SidebarInboxThreadOrder, "default">,
-  nowMs: number,
+  now: string,
+  returnedAt: (thread: EnvironmentThreadShell) => number | undefined,
 ): EnvironmentThreadShell[] {
   return sortInboxThreadsByOrder(threads, order, {
-    nowMs,
+    now,
     statusRank: (thread) => STATUS_RANK[resolveSidebarThreadStatus(thread)],
+    returnedAt,
+    wokeAt: inboxWakes.wokeAt,
   });
+}
+
+/** A drop out of Snoozed reads as a snooze that ended at the drop, which the sort counts as a wake. */
+export function projectSidebarInboxDrop(
+  thread: EnvironmentThreadShell,
+  now: string,
+): EnvironmentThreadShell {
+  const dropped = applySidebarThreadDrop(thread, "active", now);
+  return effectiveSnoozed(thread, { now }) ? { ...dropped, snoozedUntil: now } : dropped;
 }

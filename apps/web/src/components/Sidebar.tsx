@@ -130,7 +130,13 @@ import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { registerSettleAndAdvance } from "../settleAndAdvance";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings } from "../hooks/useSettings";
-import { isSidebarInboxTimeOrdered, sortSidebarInboxThreads } from "./Sidebar.inboxOrder";
+import {
+  inboxWakes,
+  isSidebarInboxStatusOrdered,
+  isSidebarInboxTimeOrdered,
+  projectSidebarInboxDrop,
+  sortSidebarInboxThreads,
+} from "./Sidebar.inboxOrder";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -400,9 +406,10 @@ function resolveDraggedOrders(input: {
     activeOrder:
       inboxOrder !== "default"
         ? sortSidebarInboxThreads(
-            [...others(activeThreads), applySidebarThreadDrop(thread, "active", drag.occurredAt)],
+            [...others(activeThreads), projectSidebarInboxDrop(thread, drag.occurredAt)],
             inboxOrder,
-            Date.parse(drag.occurredAt),
+            drag.occurredAt,
+            inboxReturns.returnedAt,
           ).map(threadShellKey)
         : workingShelfEnabled
           ? sortInboxThreadsByReturn(
@@ -641,7 +648,11 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   } = input;
   const preciseNow = new Date().toISOString();
   const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
-  const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
+  const observesStatus = isSidebarInboxStatusOrdered(inboxOrder);
+  const inboxObservation = inboxReturns.observe(
+    workingShelfEnabled || observesStatus ? threads : null,
+  );
+  inboxWakes.observe(observesStatus ? threads : null, preciseNow);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
   const working: EnvironmentThreadShell[] = [];
@@ -698,7 +709,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   const sortedActive = sortActiveBySend
     ? sortWorkingThreadsBySend(active)
     : inboxOrder !== "default"
-      ? sortSidebarInboxThreads(active, inboxOrder, Date.parse(preciseNow))
+      ? sortSidebarInboxThreads(active, inboxOrder, preciseNow, inboxObservation.returnedAt)
       : workingShelfEnabled
         ? sortInboxThreadsByReturn(active, inboxObservation.returnedAt)
         : sortThreadsForSidebar(active);
@@ -2168,6 +2179,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       keysAtDrop: target.section === "active" ? activeKeysById : pinnedKeysById,
       assignedKeys: new Map(assignments.map(({ id, orderKey }) => [id, orderKey])),
     };
+    if (plan.kind === "move-active" && plan.unsnooze) {
+      inboxWakes.noteWake(activeThread, Date.parse(drop.occurredAt));
+    }
     setOptimisticDrop(drop);
     void (async () => {
       const run = async (
