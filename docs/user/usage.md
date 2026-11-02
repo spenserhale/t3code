@@ -118,6 +118,15 @@ across providers. Type a name next to an account to put it in a group of your ow
 to return it to its email. Naming a group turns grouping on. Groups are saved on the device where
 you set them.
 
+A subscription you use only some days, such as a work account, can have a schedule. In **Groups**,
+choose when each group is used: every day, Monday to Friday, Monday to Friday between 9 and 5, or
+your own days, hours and time zone. An account that differs can have its own. The pace mark on each
+bar, and the pace in the hover card below, then count only the scheduled time, so a work account is
+not shown as behind on a Sunday. Pace reads as how far in reserve or in deficit an account is, what
+share would be used by now at an even rate, and whether it lasts until the reset or runs out. It is
+left out for the first few percent of a window. Schedules are saved on the device where you set
+them and apply whether or not grouping is on.
+
 Opening Limits checks the selected connected environments automatically. Each client waits at
 least five minutes between automatic checks of an environment, including after a failed check.
 If a window still looks stale, refresh Limits to re-check every provider and hub.

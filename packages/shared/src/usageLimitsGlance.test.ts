@@ -2,6 +2,7 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { NO_LIMIT_GROUPS } from "./usageLimitGroups.ts";
+import { paceLabel } from "./usageLimitPace.ts";
 import { type LimitAccount } from "./usageLimits.ts";
 import { collectLimitGlance, formatCheckedAgo } from "./usageLimitsGlance.ts";
 
@@ -248,6 +249,30 @@ describe("collectLimitGlance", () => {
     expect(rows([account({ key: "a" }, [now0])])).toMatchObject([
       { remainingPercent: 80, resetsIn: "resets now", resetSinceChecked: false },
     ]);
+  });
+
+  it("judges each row's pace against its account's schedule", () => {
+    // Monday noon, 3.5 days into a week that began on Thursday: 62% of the calendar week
+    // has passed, but only 47% of the Monday to Friday time in it.
+    const monday = Date.parse("2026-09-07T12:00:00.000Z");
+    const paced = (groups: Parameters<typeof collectLimitGlance>[1]) =>
+      collectLimitGlance([account({ key: "a" }, [weekly(30)])], groups, monday, nameOf).sections[0]!
+        .rows[0]!.pace;
+    expect(paceLabel(paced(NO_LIMIT_GROUPS)!)).toBe("32% in reserve");
+    expect(
+      paceLabel(
+        paced({
+          enabled: false,
+          assignments: {},
+          schedules: { other: { days: [1, 2, 3, 4, 5], timeZone: "UTC" } },
+        })!,
+      ),
+    ).toBe("17% in reserve");
+  });
+
+  it("has no pace for a row whose window has no clock", () => {
+    const { resetsAt: _resetsAt, ...open } = session(25);
+    expect(rows([account({ key: "a" }, [open])])[0]!.pace).toBeNull();
   });
 
   it("says nothing of a reset the window does not report", () => {

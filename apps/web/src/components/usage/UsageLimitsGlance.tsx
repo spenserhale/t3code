@@ -1,8 +1,10 @@
+import { paceBrief } from "@t3tools/shared/usageLimitPace";
 import type { LimitAccount } from "@t3tools/shared/usageLimits";
 import { collectLimitGlance, formatCheckedAgo } from "@t3tools/shared/usageLimitsGlance";
 import { ArrowRightIcon } from "lucide-react";
 import { Fragment, useState } from "react";
 
+import { cn } from "../../lib/utils";
 import { providerClients } from "../settings/providerDriverMeta";
 import { InlineButton } from "../ui/button";
 import { useUsageLimitGroups } from "./usageLimitGroupPreferences";
@@ -40,7 +42,7 @@ export function UsageLimitsGlance({
           <span className="text-2xs text-muted-foreground tabular-nums">{checked}</span>
         ) : null}
       </div>
-      <div className="grid min-h-0 grid-cols-[auto_minmax(0,1fr)_auto_auto_auto] items-center gap-x-2 gap-y-1 overflow-y-auto">
+      <div className="grid min-h-0 grid-cols-[auto_minmax(0,1fr)_auto_auto_auto_auto] items-center gap-x-2 gap-y-1 overflow-y-auto">
         {sections.map(({ group, rows }) => (
           <Fragment key={group?.key ?? "all"}>
             {group ? (
@@ -55,7 +57,7 @@ export function UsageLimitsGlance({
                 </span>
                 <span className="truncate font-medium text-foreground">{row.name}</span>
                 {row.resetSinceChecked ? (
-                  <span className="col-span-3 text-end text-2xs whitespace-nowrap text-muted-foreground">
+                  <span className="col-span-4 text-end text-2xs whitespace-nowrap text-muted-foreground">
                     reset since checked
                   </span>
                 ) : (
@@ -63,6 +65,16 @@ export function UsageLimitsGlance({
                     <span className="text-muted-foreground">{row.windowLabel}</span>
                     <span className="text-end font-medium whitespace-nowrap text-foreground tabular-nums">
                       {row.remainingPercent}% left
+                    </span>
+                    <span
+                      className={cn(
+                        "text-end text-2xs whitespace-nowrap",
+                        row.pace?.outlook?.kind === "runsOut"
+                          ? "text-warning-foreground"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {row.pace ? paceBrief(row.pace) : ""}
                     </span>
                     <span className="text-end text-2xs whitespace-nowrap text-muted-foreground tabular-nums">
                       {row.resetsIn?.replace("resets in ", "↻ ") ?? ""}

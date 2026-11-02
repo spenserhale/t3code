@@ -10,9 +10,15 @@ import {
   type LimitPool,
   type LimitPoolMember,
   type LimitPoolWindow,
-  paceRemainingPercent,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
+import {
+  paceLabel,
+  paceOutlook,
+  scheduledPaceRemaining,
+  windowPace,
+} from "@t3tools/shared/usageLimitPace";
+import { describeLimitSchedule, limitSchedulePreset } from "@t3tools/shared/usageLimitSchedule";
 import type { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import { AlertTriangleIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
@@ -39,7 +45,6 @@ import { OpenAI } from "../Icons";
 import { Alert, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import {
-  PaceIcon,
   ResetCreditDialog,
   barColor,
   usePaceMark,
@@ -47,6 +52,14 @@ import {
   useResetCredit,
 } from "./UsageLimits";
 import { LimitGroupSections, useLimitPools } from "./UsageLimitGroupSections";
+import { useUsageLimitGroups } from "./usageLimitGroupPreferences";
+import {
+  LimitGroupsContext,
+  PaceBadge,
+  PaceText,
+  useLimitSchedule,
+  usePoolPace,
+} from "./UsageLimitPace";
 
 function accountInitials(email: string): string {
   const [local = "", domain = ""] = email.split("@");
@@ -150,7 +163,9 @@ function SegmentPopover({
 }) {
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const remaining = remainingPercent(window);
-  const timeLeft = paceRemainingPercent(window, now);
+  const schedule = useLimitSchedule(account);
+  const pace = windowPace(window, now, schedule);
+  const outlook = pace ? paceOutlook(pace) : null;
   const resetsIn = formatResetsIn(window, now);
   const where =
     account.environments.length > 0
@@ -191,7 +206,14 @@ function SegmentPopover({
             {resetsIn ? ` · ${resetsIn.replace("resets in ", "in ")}` : ""}
           </Row>
         ) : null}
-        {timeLeft !== null ? <Row label="Even pace">{timeLeft}% left by now</Row> : null}
+        {pace ? <Row label="Pace">{paceLabel(pace)}</Row> : null}
+        {pace ? (
+          <Row label="Expected">{Math.round(pace.expectedUsedPercent)}% used by now</Row>
+        ) : null}
+        {outlook ? <Row label="Outlook">{outlook}</Row> : null}
+        {schedule && limitSchedulePreset(schedule) !== "everyDay" ? (
+          <Row label="Schedule">{describeLimitSchedule(schedule)}</Row>
+        ) : null}
         {reset && reset.restoresPercent > 0 ? (
           <Row label="Restores">+{reset.restoresPercent}% of pool</Row>
         ) : null}
@@ -344,7 +366,8 @@ function SegmentTriggers({
   const popover = use(SegmentPopoverContext) ?? undefined;
   const payload: SegmentPayload = { account, window, reset, redeem };
   const remaining = remainingPercent(window);
-  const timeLeft = paceRemainingPercent(window, now);
+  const schedule = useLimitSchedule(account);
+  const timeLeft = scheduledPaceRemaining(window, now, schedule);
   const [segmentRef, paceMark] = usePaceMark(timeLeft);
   const resetsIn = formatResetsIn(window, now);
   const credits = account.limits.resetCredits?.availableCount ?? 0;
@@ -542,6 +565,7 @@ function PoolWindowCard({
   readonly description?: string | undefined;
 }) {
   const nextRefill = pool.resets.find((reset) => reset.restoresPercent > 0);
+  const pace = usePoolPace(pool, now);
   return (
     <div className="grid items-center gap-x-6 gap-y-3 rounded-lg border border-border/60 p-4 md:grid-cols-[11rem_minmax(0,1fr)]">
       <div className="flex flex-col gap-1">
@@ -552,7 +576,7 @@ function PoolWindowCard({
           </span>
           <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
             <span>left</span>
-            {pool.pace ? <PaceIcon pace={pool.pace} /> : null}
+            {pace ? <PaceBadge pace={pace} /> : null}
           </span>
         </span>
         {nextRefill && pool.columns.length > 1 ? (
@@ -560,6 +584,7 @@ function PoolWindowCard({
             ↻ +{nextRefill.restoresPercent}%
           </span>
         ) : null}
+        {pace ? <PaceText pace={pace} /> : null}
       </div>
       <PoolBar pool={pool} color={color} now={now} />
       {description ? (
@@ -610,7 +635,16 @@ export function PoolSection({
   );
 }
 
-export function UsageLimitsPooled({
+export function UsageLimitsPooled(props: Parameters<typeof UsageLimitsPooledBody>[0]) {
+  const [groups] = useUsageLimitGroups();
+  return (
+    <LimitGroupsContext value={groups}>
+      <UsageLimitsPooledBody {...props} />
+    </LimitGroupsContext>
+  );
+}
+
+function UsageLimitsPooledBody({
   presentations,
   now,
   cursorPrompt,
