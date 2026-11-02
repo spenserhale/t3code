@@ -14,7 +14,8 @@ import {
   planReminders,
   pruneReminderState,
   reminderBody,
-  useItOrLoseIt,
+  reminderChannel,
+  windowsToUseToday,
 } from "./usageLimitReminders.ts";
 import { WORK_HOURS, type LimitSchedule } from "./usageLimitSchedule.ts";
 import type { LimitAccount } from "./usageLimits.ts";
@@ -93,7 +94,7 @@ const find = (
     at?: number;
   } = {},
 ) =>
-  useItOrLoseIt({
+  windowsToUseToday({
     accounts,
     groups: options.groups ?? NO_LIMIT_GROUPS,
     settings: { ...DEFAULT_REMINDER_SETTINGS, ...options.settings },
@@ -103,7 +104,7 @@ const find = (
 
 const names = (items: ReturnType<typeof find>) => items.map((item) => item.account.key);
 
-describe("useItOrLoseIt", () => {
+describe("windowsToUseToday", () => {
   it("picks a weekly window with plenty left that resets within a day and is going unused", () => {
     // Six days in, 40% spent: on course for about 45%, so over half would be lost.
     const [item, ...rest] = find([account("a", [weekly(40, 20)])]);
@@ -402,5 +403,22 @@ describe("reminderBody", () => {
   it("never prints an email", () => {
     const items = find([account("w", [weekly(40, 20)])]);
     expect(reminderBody(items, now, nameOf)).not.toContain("@");
+  });
+});
+
+describe("reminderChannel", () => {
+  const open = { focused: false, inAppEnabled: true, systemEnabled: true, systemPermitted: true };
+
+  it("uses a toast while the app has focus, and only if in-app notifications are on", () => {
+    expect(reminderChannel({ ...open, focused: true })).toBe("toast");
+    expect(reminderChannel({ ...open, focused: true, inAppEnabled: false })).toBeNull();
+  });
+
+  it("uses a system notification while it does not, and only if they are on and allowed", () => {
+    expect(reminderChannel(open)).toBe("system");
+    expect(reminderChannel({ ...open, systemEnabled: false })).toBeNull();
+    expect(reminderChannel({ ...open, systemPermitted: false })).toBeNull();
+    // A toast is never the fallback for a window nobody is looking at.
+    expect(reminderChannel({ ...open, systemEnabled: false, inAppEnabled: true })).toBeNull();
   });
 });
