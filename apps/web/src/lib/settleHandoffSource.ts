@@ -4,16 +4,35 @@ import {
   runAtomCommand,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { EnvironmentResourceNotFoundError, type ScopedThreadRef } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { readThreadShell, waitForThreadShell } from "../state/entities";
+import { orchestrationEnvironment } from "../state/orchestration";
 import { threadEnvironment } from "../state/threads";
 import type { PendingMachineHandoff } from "../threadMachineHandoffStore";
 import type { HandoffSettleOutcome } from "./threadMachineHandoffSettle";
 
 /** The failures already shown, so a retry that fails again does not toast again. */
 const reportedFailures = new Set<string>();
+
+const isResourceNotFound = Schema.is(EnvironmentResourceNotFoundError);
+
+/**
+ * Whether the server says the thread does not exist. A shell the client lacks proves nothing: it
+ * trails a reconnect. The transcript route is the one read that answers for a thread by id.
+ */
+async function serverSaysGone(source: ScopedThreadRef): Promise<boolean> {
+  const result = await runAtomCommand(
+    appAtomRegistry,
+    orchestrationEnvironment.threadTranscript,
+    { environmentId: source.environmentId, input: { threadId: source.threadId } },
+    { reportFailure: false },
+  );
+  return result._tag === "Failure" && isResourceNotFound(squashAtomCommandFailure(result));
+}
 
 /**
  * Settles the thread a machine handoff came from, and offers to take that back. A failure leaves
@@ -23,8 +42,9 @@ export async function settleHandoffSource(
   pending: PendingMachineHandoff,
 ): Promise<HandoffSettleOutcome> {
   const { source } = pending;
-  // The shell can trail the connection; a thread that is still missing then was deleted.
-  if (readThreadShell(source) === null && !(await waitForThreadShell(source))) return "gone";
+  if (readThreadShell(source) === null && !(await waitForThreadShell(source))) {
+    return (await serverSaysGone(source)) ? "gone" : "retry";
+  }
   const result = await runAtomCommand(
     appAtomRegistry,
     threadEnvironment.settle,
@@ -60,7 +80,7 @@ export async function settleHandoffSource(
   if (isAtomCommandInterrupted(result)) return "retry";
   // Settled by hand or on another tab since, or deleted: nothing is left to do.
   const shell = readThreadShell(source);
-  if (shell === null) return "gone";
+  if (shell === null) return (await serverSaysGone(source)) ? "gone" : "retry";
   if (shell.settledOverride === "settled") return "settled";
   if (!reportedFailures.has(scopedThreadKey(pending.source))) {
     reportedFailures.add(scopedThreadKey(pending.source));

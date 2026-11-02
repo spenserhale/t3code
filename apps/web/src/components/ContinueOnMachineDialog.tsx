@@ -194,7 +194,7 @@ function stepLabel(step: HandoffStep, plan: HandoffReady, projectTitle: string |
     case "fetch":
       return `Check that ${target.label} can see ${code.kind === "carry" ? code.branch : "the branch"}`;
     case "worktree":
-      return `Put ${code.kind === "carry" ? code.branch : "the branch"} on a worktree on ${target.label}`;
+      return `Put ${code.kind === "carry" ? code.branch : "the branch"} on a worktree on ${target.label} and check it has the pushed commit`;
     case "draft":
       return target.project === null
         ? `Open a thread without a project on ${target.label}`
