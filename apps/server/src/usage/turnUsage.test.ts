@@ -210,10 +210,16 @@ describe("recordedTurns", () => {
       [null, "glm-5"],
       [null, "glm-5"],
     ]);
+    // OpenCode's selection names its provider; a driver that does not qualify its models has none.
+    expect(reported.map((turn) => turn.models[0]?.qualifiedModel)).toEqual([
+      "zai-coding-plan/glm-5",
+      "zai-coding-plan/glm-5",
+    ]);
 
     // Without a provider-reported model, the thread's own selection prices it.
     const fallback = recordedTurns(records({ providerTurns: subagentTurns }));
     expect(fallback.map((turn) => turn.models[0]?.model)).toEqual(["thread-model", "thread-model"]);
+    expect(fallback.map((turn) => turn.models[0]?.qualifiedModel)).toEqual([undefined, undefined]);
   });
 });
 
@@ -221,17 +227,27 @@ describe("priceTurn", () => {
   const table = parseRateTable({
     "priced-model": { input_cost_per_token: 1e-6, output_cost_per_token: 5e-6 },
     "mapped-target": { input_cost_per_token: 2e-6, output_cost_per_token: 2e-6 },
+    "shared-model": { input_cost_per_token: 1e-6, output_cost_per_token: 5e-6 },
+    "acme/shared-model": { input_cost_per_token: 2e-6, output_cost_per_token: 2e-6 },
   });
   const noRates = { table, overrides: new Map(), aliases: new Map() };
-  const turn = (model: string) =>
+  const turn = (model: string, driver = claude) =>
     recordedTurns(
-      records({
-        runs: [{ id: RunId.make("run"), modelSelection: selection(model) }],
-        attempts: [{ id: RunAttemptId.make("attempt"), runId: RunId.make("run") }],
-        providerTurns: [
-          providerTurn("turn", "attempt", "2026-10-05T10:00:00.000Z", usage(1_000_000, 1_000_000)),
-        ],
-      }),
+      records(
+        {
+          runs: [{ id: RunId.make("run"), modelSelection: selection(model) }],
+          attempts: [{ id: RunAttemptId.make("attempt"), runId: RunId.make("run") }],
+          providerTurns: [
+            providerTurn(
+              "turn",
+              "attempt",
+              "2026-10-05T10:00:00.000Z",
+              usage(1_000_000, 1_000_000),
+            ),
+          ],
+        },
+        driver,
+      ),
     )[0]!;
 
   it("prices at the published rate and reports when it finished", () => {
@@ -265,6 +281,58 @@ describe("priceTurn", () => {
   it("reports a model with no known price as unpriced, not free", () => {
     expect(priceTurn(turn("unknown-model"), noRates).models).toEqual([
       expect.objectContaining({ totalTokens: 2_000_000, costUsd: 0, costSource: "unpriced" }),
+    ]);
+  });
+
+  it("prices an OpenCode turn by its provider-qualified model when the rates have one", () => {
+    const opencodeModels = (selected: string, rates: Parameters<typeof priceTurn>[1] = noRates) =>
+      priceTurn(turn(selected, opencode), rates).models;
+
+    // The rates price acme's shared-model apart from the bare name, so the row is acme's.
+    expect(opencodeModels("acme/shared-model")).toEqual([
+      expect.objectContaining({
+        model: "acme/shared-model",
+        costUsd: 4,
+        costSource: "modelPriced",
+      }),
+    ]);
+    // A custom price and a mapping are keyed by the id the row reports.
+    const overrides = createOverrideRateTable({
+      "acme/shared-model": { inputCostPerMillionTokens: 10, outputCostPerMillionTokens: 10 },
+    });
+    expect(opencodeModels("acme/shared-model", { ...noRates, overrides })).toEqual([
+      expect.objectContaining({ costUsd: 20, customPrice: true }),
+    ]);
+    const aliases = new Map([["acme/shared-model", "priced-model"]]);
+    expect(opencodeModels("acme/shared-model", { ...noRates, aliases })).toEqual([
+      expect.objectContaining({ model: "priced-model", costUsd: 6 }),
+    ]);
+  });
+
+  it("prices an OpenCode turn as the bare model when the rates know its provider's model by no name", () => {
+    const opencodeModels = (selected: string) =>
+      priceTurn(turn(selected, opencode), noRates).models;
+    expect(opencodeModels("other/shared-model")).toEqual([
+      expect.objectContaining({ model: "shared-model", costUsd: 6, costSource: "modelPriced" }),
+    ]);
+    expect(opencodeModels("other/unknown-model")).toEqual([
+      expect.objectContaining({ model: "unknown-model", costUsd: 0, costSource: "unpriced" }),
+    ]);
+    // A model that names no provider is its own bare id.
+    expect(opencodeModels("shared-model")).toEqual([
+      expect.objectContaining({ model: "shared-model", costUsd: 6 }),
+    ]);
+  });
+
+  it("leaves a driver that does not qualify its models as it was", () => {
+    // Claude and Codex keep their ids whole, so the rates see the id they always saw.
+    for (const driver of [claude, codex]) {
+      expect(priceTurn(turn("acme/shared-model", driver), noRates).models).toEqual([
+        expect.objectContaining({ model: "acme/shared-model", costUsd: 4 }),
+      ]);
+    }
+    expect(priceTurn(turn("shared-model"), noRates).models).toEqual([
+      expect.objectContaining({ model: "shared-model", costUsd: 6 }),
     ]);
   });
 

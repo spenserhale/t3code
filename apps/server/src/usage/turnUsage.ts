@@ -1,12 +1,7 @@
 /**
- * turnUsage - the pure half of thread usage: what each run of a thread used,
- * per model, and what that costs at a given set of rates.
- *
- * Nothing is stored for this. Orchestration already records the main agent's
- * tokens on every provider turn (`turnTokenUsage`), and a run is priced when
- * read, with the same rate table, custom prices and model mappings as the
- * usage breakdown. A price saved later therefore reaches every past run too.
- *
+ * turnUsage - the pure half of thread usage: what each run used, per model, and what that costs.
+ * Nothing is stored: a run is priced when read, with the same rates, custom prices and model
+ * mappings as the usage breakdown, so a price saved later reaches every past run too.
  * @module turnUsage
  */
 import type {
@@ -30,7 +25,7 @@ import * as DateTime from "effect/DateTime";
 
 import type { UsageRates } from "./UsageService.ts";
 import { makeDayFormatter } from "./usageAggregation.ts";
-import { priceUsage } from "./usagePricing.ts";
+import { lookupRate, priceUsage } from "./usagePricing.ts";
 import { totalTokens } from "@t3tools/provider-core/server/usage";
 
 /** The parts of a thread's projection that decide its usage. */
@@ -57,6 +52,8 @@ export interface ThreadUsageRecords {
 /** One model's share of a run, before pricing. */
 export interface ModelUsageRow {
   readonly model: string;
+  /** An OpenCode selection's `providerID/modelID`, which a rate table may price apart from `model`. */
+  readonly qualifiedModel?: string;
   readonly totals: UsageTokenTotals;
 }
 
@@ -71,13 +68,9 @@ export interface RecordedTurn {
 }
 
 /**
- * The id the usage scan records for a model the thread selected.
- *
- * - A `[1m]`-style suffix selects a context window, not a model; transcripts
- *   never carry it.
- * - OpenCode selections are `providerID/modelID`, and its database records
- *   the bare `modelID`.
- * - Other drivers get their own alias expansion, as their CLIs receive it.
+ * The id the usage scan records for a model the thread selected: without a `[1m]`-style context
+ * suffix, OpenCode's bare `modelID` of its `providerID/modelID`, and other drivers' own alias
+ * expansion, as their CLIs receive it.
  */
 export function usageModelId(driver: ProviderDriverKind | undefined, model: string): string {
   const trimmed = model.trim().replace(/\[.*$/, "");
@@ -159,11 +152,12 @@ export function recordedTurns(records: ThreadUsageRecords): readonly RecordedTur
       (runId === null ? undefined : runById.get(runId)?.modelSelection) ??
       providerThread?.nativeMetadata?.modelSelection ??
       records.thread.modelSelection;
+    const driver = providerThread?.driver ?? providerTurn.nativeTurnRef?.driver;
     const row: ModelUsageRow = {
-      model: usageModelId(
-        providerThread?.driver ?? providerTurn.nativeTurnRef?.driver,
-        selection.model,
-      ),
+      model: usageModelId(driver, selection.model),
+      ...(driver === "opencode" && selection.model.indexOf("/") > 0
+        ? { qualifiedModel: selection.model.trim() }
+        : {}),
       totals,
     };
     const completedAtMs = DateTime.toEpochMillis(providerTurn.completedAt);
@@ -184,9 +178,16 @@ export function recordedTurns(records: ThreadUsageRecords): readonly RecordedTur
 
 /** Prices a run the way the usage breakdown prices the same tokens. */
 export function priceTurn(turn: RecordedTurn, rates: UsageRates): ThreadTurnUsage {
-  // A mapped model reports and prices as its target, as usage buckets do.
+  // A model reports and prices under its provider-qualified id when the rates have one, else the
+  // bare id. A mapped model reports and prices as its target, as usage buckets do.
   const rows = mergeModelRows(
-    turn.models.map((row) => ({ ...row, model: rates.aliases.get(row.model) ?? row.model })),
+    turn.models.map((row) => {
+      const model =
+        row.qualifiedModel !== undefined && lookupRate(rates.table, row.qualifiedModel) !== null
+          ? row.qualifiedModel
+          : row.model;
+      return { ...row, model: rates.aliases.get(model) ?? model };
+    }),
   );
   const models = rows.map((row): ThreadUsageModel => {
     const priced = priceUsage(
