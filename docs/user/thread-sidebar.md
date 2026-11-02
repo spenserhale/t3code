@@ -62,19 +62,29 @@ its sidebar row, pick **Continue on…**, and choose the machine. The command pa
 **Continue on another machine** for the open thread. This is available on web and desktop.
 
 T3 Code commits the thread's uncommitted changes as `WIP: hand off to <machine>`, pushes the
-branch, and opens a draft on the other machine: in the same project, on a new worktree that starts
-from that branch, with the conversation attached as a file and a short note naming the thread, the
-machine and the branch. Add your instructions and send. The original thread settles when you send
-the first message there; **Undo** in the toast, or **Un-settle** on the thread, reverses that.
+branch, and opens a draft on the other machine: in the same project, on a new worktree that
+continues that branch under the same name, with the conversation attached as a file and a short
+note naming the thread, the machine and the branch. Later pushes from there update the same branch
+and pull request. Add your instructions and send. The original thread settles when you send the
+first message there; **Undo** in the toast, or **Un-settle** on the thread, reverses that.
 
 - From the default branch, the work goes to a new `handoff/<thread title>` branch first. The
-  default branch is never pushed.
-- The other machine needs the same project. If it does not have it yet, the dialog offers **Add
-  project to** that machine.
+  default branch is never pushed, and a repository that does not say which branch is its default
+  is treated the same way for every branch.
+- The other machine needs a checkout of the same repository, at the same place in it for a project
+  inside a larger repository. If it does not have one yet, the dialog offers **Add project to**
+  that machine; if it has several, the dialog asks which to use.
+- The other machine must be able to reach the remote the branch was pushed to. The dialog checks
+  that it can see the branch before it opens the draft, and stops if it cannot.
+- A branch of the same name that the other machine already has is used only if no worktree has it
+  checked out and it can catch up to the remote without a merge; otherwise the dialog stops and
+  leaves it alone.
 - A project without a git remote, or a thread without a project, hands over only the conversation,
   into a thread without a project on the other machine.
 - The thread must not be working or waiting on an approval. If the remote has newer commits on
   the branch, the push is refused and the dialog says so; pull, then hand off again.
+- If the source machine is away when you send, or the thread is busy, it is settled later; the
+  hand-off is kept until it has been.
 - The conversation is a copy. The thread, its provider session and its checkpoints stay where they
   were, and the new thread starts a fresh provider session.
 

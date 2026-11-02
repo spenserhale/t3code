@@ -1,12 +1,15 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { selectProjectGroupingSettings } from "@t3tools/client-runtime/state/project-grouping";
 import {
   assessHandoffMachines,
   carriesHandoffCode,
+  collectHandoffBranchNames,
   explainNoHandoffCode,
+  HANDOFF_BRANCH_QUERY,
   isHandoffDefaultBranch,
   listHandoffSteps,
   planThreadMachineHandoff,
+  type HandoffGitStatus,
+  type HandoffMachine,
   type HandoffReady,
   type HandoffStep,
 } from "@t3tools/client-runtime/thread-machine-handoff";
@@ -15,25 +18,28 @@ import {
   squashAtomCommandFailure,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
-import { type EnvironmentId, type ScopedThreadRef, type VcsStatusResult } from "@t3tools/contracts";
-import { sanitizeBranchFragment } from "@t3tools/shared/git";
+import { type EnvironmentId, type VcsStatusResult } from "@t3tools/contracts";
+import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { CheckIcon, CircleAlertIcon, CircleIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { useClientSettings } from "../hooks/useSettings";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useScratchProject } from "../hooks/useScratchProject";
-import { continueOnChoiceOf, useHandoffEnvironments } from "../lib/handoffMachines";
+import {
+  continueOnChoiceOf,
+  useHandoffEnvironments,
+  useHandoffSourceAccess,
+} from "../lib/handoffMachines";
+import { readAllRefPages } from "../lib/handoffRefs";
 import {
   runThreadMachineHandoff,
   type HandoffStepState,
   type ThreadMachineHandoffResult,
 } from "../lib/threadMachineHandoff";
 import { createThreadMachineHandoffIo } from "../lib/threadMachineHandoffIo";
-import { isElectron } from "../env";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useEnvironmentMachines } from "../state/environments";
-import { useProjects, useQuietThreadShell } from "../state/entities";
+import { readThreadShell, useProjects, useQuietThreadShell } from "../state/entities";
 import { vcsEnvironment } from "../state/vcs";
 import { openAddProjectToMachine } from "./AddProjectToMachineDialog";
 import {
@@ -61,20 +67,13 @@ export function ContinueOnMachineDialogHost() {
   return request ? <ContinueOnMachineDialog key={session} request={request} /> : null;
 }
 
-/** A link back to the thread that works in the client the user is in, when that has addresses. */
-function threadLinkOf(threadRef: ScopedThreadRef): string | null {
-  if (isElectron || typeof window === "undefined") return null;
-  const { protocol, origin } = window.location;
-  return protocol === "http:" || protocol === "https:"
-    ? `${origin}/${threadRef.environmentId}/${threadRef.threadId}`
-    : null;
-}
-
 type GitLoad =
   | { readonly kind: "loading" }
   | {
       readonly kind: "ready";
       readonly status: VcsStatusResult;
+      /** Whether the repository names its default branch, so any other can be told from it. */
+      readonly defaultBranchKnown: boolean;
       /** The branch names a new handoff branch has to avoid; only read when it will be made. */
       readonly branchNames: ReadonlyArray<string>;
     }
@@ -85,8 +84,32 @@ function failureText(result: AtomCommandResult<unknown, unknown>, fallback: stri
   return error instanceof Error && error.message.length > 0 ? error.message : fallback;
 }
 
-/** Reads now, bypassing caches: the plan commits and pushes whatever is there. */
-async function readGit(environmentId: EnvironmentId, cwd: string, title: string): Promise<GitLoad> {
+/**
+ * Reads now, bypassing caches: the plan commits and pushes whatever is there. A read that fails
+ * fails the whole load; a plan made from part of the answers could push to the default branch or
+ * pick a name that is taken.
+ */
+async function readGit(environmentId: EnvironmentId, cwd: string): Promise<GitLoad> {
+  const readRefs = (input: {
+    readonly query?: string;
+    readonly cursor?: number;
+    readonly limit: number;
+  }) =>
+    runAtomCommand(
+      appAtomRegistry,
+      vcsEnvironment.readRefs,
+      {
+        environmentId,
+        input: {
+          cwd,
+          includeMatchingRemoteRefs: true,
+          limit: input.limit,
+          ...(input.query === undefined ? {} : { query: input.query }),
+          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+        },
+      },
+      { reportFailure: false },
+    );
   const refreshed = await runAtomCommand(
     appAtomRegistry,
     vcsEnvironment.refreshStatus,
@@ -100,30 +123,49 @@ async function readGit(environmentId: EnvironmentId, cwd: string, title: string)
     };
   }
   const status = refreshed.value;
-  if (!isHandoffDefaultBranch(status)) return { kind: "ready", status, branchNames: [] };
-  const refs = await runAtomCommand(
-    appAtomRegistry,
-    vcsEnvironment.readRefs,
-    {
-      environmentId,
-      input: {
-        cwd,
-        query: `handoff/${sanitizeBranchFragment(title)}`,
-        includeMatchingRemoteRefs: true,
+  // The server lists the current branch first and the default second, so a few refs show whether
+  // the repository names one.
+  const leading = await readRefs({ limit: 5 });
+  if (leading._tag !== "Success") {
+    return {
+      kind: "failed",
+      message: failureText(leading, "Could not read the repository's branches."),
+    };
+  }
+  const defaultBranchKnown = leading.value.refs.some((ref) => ref.isDefault);
+  if (!isHandoffDefaultBranch({ ...status, defaultBranchKnown })) {
+    return { kind: "ready", status, defaultBranchKnown, branchNames: [] };
+  }
+  try {
+    const refs = await readAllRefPages(async (cursor) => {
+      const page = await readRefs({
+        query: HANDOFF_BRANCH_QUERY,
         limit: 200,
-      },
-    },
-    { reportFailure: false },
-  );
-  const branchNames =
-    refs._tag === "Success"
-      ? refs.value.refs.map((ref) =>
-          ref.isRemote === true && ref.remoteName !== undefined
-            ? ref.name.slice(ref.remoteName.length + 1)
-            : ref.name,
-        )
-      : [];
-  return { kind: "ready", status, branchNames };
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (page._tag !== "Success") {
+        throw new Error(failureText(page, "Could not read the repository's branches."));
+      }
+      return page.value;
+    });
+    return {
+      kind: "ready",
+      status,
+      defaultBranchKnown,
+      branchNames: collectHandoffBranchNames(refs),
+    };
+  } catch (error) {
+    return {
+      kind: "failed",
+      message: error instanceof Error ? error.message : "Could not read the repository's branches.",
+    };
+  }
+}
+
+function handoffGitOf(git: GitLoad): HandoffGitStatus | null {
+  return git.kind === "ready"
+    ? { ...git.status, defaultBranchKnown: git.defaultBranchKnown }
+    : null;
 }
 
 function filesText(count: number) {
@@ -149,11 +191,15 @@ function stepLabel(step: HandoffStep, plan: HandoffReady, projectTitle: string |
         : "Commit";
     case "push":
       return `Push ${code.kind === "carry" ? code.branch : "the branch"} to the remote`;
+    case "fetch":
+      return `Check that ${target.label} can see ${code.kind === "carry" ? code.branch : "the branch"}`;
+    case "worktree":
+      return `Put ${code.kind === "carry" ? code.branch : "the branch"} on a worktree on ${target.label}`;
     case "draft":
       return target.project === null
         ? `Open a thread without a project on ${target.label}`
         : `Open a draft on ${target.label}${projectTitle === null ? "" : ` in ${projectTitle}`}${
-            code.kind === "carry" ? ", on a new worktree from that branch" : ""
+            code.kind === "carry" ? ", in that worktree" : ""
           }`;
   }
 }
@@ -173,6 +219,11 @@ function StepIcon({ state, failed }: { state: HandoffStepState | undefined; fail
   return <CircleIcon aria-hidden className="mt-0.5 size-3.5 text-muted-foreground/50" />;
 }
 
+/** Where a project sits on its machine, to tell several checkouts of one repository apart. */
+function projectOptionLabel(project: { readonly title: string; readonly workspaceRoot: string }) {
+  return `${project.title} (${project.workspaceRoot})`;
+}
+
 function ContinueOnMachineDialog({ request }: { request: ContinueOnMachineRequest }) {
   const { threadRef } = request;
   const thread = useQuietThreadShell(threadRef);
@@ -184,8 +235,8 @@ function ContinueOnMachineDialog({ request }: { request: ContinueOnMachineReques
           (project) =>
             project.environmentId === thread.environmentId && project.id === thread.projectId,
         ) ?? null);
-  const groupingSettings = useClientSettings(selectProjectGroupingSettings);
   const environments = useHandoffEnvironments();
+  const sourceAccess = useHandoffSourceAccess(threadRef.environmentId);
   const machineKinds = useEnvironmentMachines();
   const newThread = useNewThreadHandler();
   const { openScratchProject } = useScratchProject();
@@ -193,51 +244,65 @@ function ContinueOnMachineDialog({ request }: { request: ContinueOnMachineReques
   const sourceLabel =
     environments.find((environment) => environment.environmentId === threadRef.environmentId)
       ?.label ?? "the other machine";
-  const machines =
-    source === null
-      ? []
-      : assessHandoffMachines({ source, projects, settings: groupingSettings, environments });
+  const machines = source === null ? [] : assessHandoffMachines({ source, projects, environments });
   const [chosenId, setChosenId] = useState(request.targetEnvironmentId);
-  const machine =
+  const [chosenProjectId, setChosenProjectId] = useState<string | null>(null);
+  const assessed =
     machines.find((candidate) => candidate.environment.environmentId === chosenId) ??
     machines.find((candidate) => candidate.status.kind === "ready") ??
     machines[0] ??
     null;
+  // Several checkouts fit: the one picked here is the one the thread continues in.
+  const machine: HandoffMachine | null =
+    assessed?.status.kind === "choose"
+      ? (() => {
+          const picked = assessed.status.projects.find((project) => project.id === chosenProjectId);
+          return picked === undefined
+            ? assessed
+            : { environment: assessed.environment, status: { kind: "ready", project: picked } };
+        })()
+      : assessed;
 
   const cwd =
     thread === null || source === null ? null : (thread.worktreePath ?? source.workspaceRoot);
   const readsGit = source !== null && cwd !== null && carriesHandoffCode(source);
   const [git, setGit] = useState<GitLoad>({ kind: "loading" });
-  const title = thread?.title ?? "";
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the checkout's full status once from its machine; the live stream omits upstream counts until its remote half arrives
   useEffect(() => {
     if (!readsGit || cwd === null) return;
     let stale = false;
-    void readGit(threadRef.environmentId, cwd, title).then((next) => {
+    void readGit(threadRef.environmentId, cwd).then((next) => {
       if (!stale) setGit(next);
     });
     return () => {
       stale = true;
     };
-  }, [readsGit, cwd, threadRef.environmentId, title]);
+  }, [readsGit, cwd, threadRef.environmentId]);
   const gitStatus = git.kind === "ready" ? git.status : null;
-  const existingBranchNames = git.kind === "ready" ? git.branchNames : [];
 
+  const planFor = (
+    shell: NonNullable<typeof thread>,
+    from: NonNullable<typeof source>,
+    on: HandoffMachine,
+    read: GitLoad,
+  ) =>
+    planThreadMachineHandoff({
+      thread: {
+        title: shell.title,
+        modelSelection: shell.modelSelection,
+        runStatus: shell.runtime?.status ?? null,
+        hasPendingApproval: shell.hasPendingApprovals,
+      },
+      source: from,
+      sourceAccess,
+      machine: on,
+      git: handoffGitOf(read),
+      existingBranchNames: read.kind === "ready" ? read.branchNames : [],
+    });
   const plan =
     thread === null || source === null || machine === null
       ? null
-      : planThreadMachineHandoff({
-          thread: {
-            title: thread.title,
-            modelSelection: thread.modelSelection,
-            runStatus: thread.runtime?.status ?? null,
-            hasPendingApproval: thread.hasPendingApprovals,
-          },
-          source,
-          machine,
-          git: gitStatus,
-          existingBranchNames,
-        });
+      : planFor(thread, source, machine, git);
 
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<Partial<Record<HandoffStep, HandoffStepState>>>({});
@@ -246,7 +311,16 @@ function ContinueOnMachineDialog({ request }: { request: ContinueOnMachineReques
   );
 
   const submit = async () => {
-    if (plan?.kind !== "ready" || thread === null || cwd === null || running) return;
+    if (
+      plan?.kind !== "ready" ||
+      thread === null ||
+      source === null ||
+      machine === null ||
+      cwd === null ||
+      running
+    ) {
+      return;
+    }
     setRunning(true);
     setFailure(null);
     setSteps({});
@@ -254,7 +328,10 @@ function ContinueOnMachineDialog({ request }: { request: ContinueOnMachineReques
       plan,
       title: thread.title,
       sourceLabel,
-      threadLink: threadLinkOf(threadRef),
+      threadLink: formatThreadLink({
+        environmentId: threadRef.environmentId,
+        threadId: threadRef.threadId,
+      }),
       io: createThreadMachineHandoffIo({
         plan,
         thread,
@@ -262,6 +339,15 @@ function ContinueOnMachineDialog({ request }: { request: ContinueOnMachineReques
         sourceLabel,
         newThread,
         openScratchProject: (environmentId) => openScratchProject(environmentId),
+        // Read again at the moment of the change: the checkout may have moved since it was read.
+        replan: async () => {
+          const shell = readThreadShell(threadRef);
+          if (shell === null) throw new Error("This thread is no longer available.");
+          const fresh = readsGit ? await readGit(threadRef.environmentId, cwd) : git;
+          if (fresh.kind === "failed") throw new Error(fresh.message);
+          setGit(fresh);
+          return planFor(shell, source, machine, fresh);
+        },
       }),
       onStep: (step, state) => setSteps((current) => ({ ...current, [step]: state })),
     });
@@ -274,7 +360,7 @@ function ContinueOnMachineDialog({ request }: { request: ContinueOnMachineReques
     if (readsGit) {
       // A failed attempt may have created the branch or the commit, so plan again from a fresh read.
       setGit({ kind: "loading" });
-      void readGit(threadRef.environmentId, cwd, thread.title).then(setGit);
+      void readGit(threadRef.environmentId, cwd).then(setGit);
     }
   };
 
@@ -352,6 +438,29 @@ function ContinueOnMachineDialog({ request }: { request: ContinueOnMachineReques
                     })}
                   </SelectPopup>
                 </Select>
+
+                {assessed?.status.kind === "choose" ? (
+                  <Select
+                    value={chosenProjectId}
+                    onValueChange={(value) => setChosenProjectId(value)}
+                    items={assessed.status.projects.map((project) => ({
+                      value: project.id,
+                      label: projectOptionLabel(project),
+                    }))}
+                    disabled={running}
+                  >
+                    <SelectTrigger size="sm" aria-label="Project to continue in">
+                      <SelectValue placeholder="Choose a project" />
+                    </SelectTrigger>
+                    <SelectPopup>
+                      {assessed.status.projects.map((project) => (
+                        <SelectItem key={project.id} value={project.id}>
+                          {projectOptionLabel(project)}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
+                ) : null}
 
                 {plan?.kind === "blocked" ? (
                   <p className="text-muted-foreground text-sm">

@@ -1,6 +1,7 @@
 import type {
   EnvironmentId,
   ModelSelection,
+  RepositoryIdentity,
   ScopedProjectRef,
   ServerProvider,
   VcsStatusResult,
@@ -10,7 +11,7 @@ import { resolveSelectableModel } from "@t3tools/shared/model";
 
 import { scopeProjectRef } from "./environment/scoped.ts";
 import type { EnvironmentProject, ThreadRuntimeSummary } from "./state/models.ts";
-import { buildProjectGroups, type ProjectGroupingSettings } from "./state/projectGrouping.ts";
+import { deriveRepositoryRelativeProjectPath } from "./state/projectGrouping.ts";
 
 export interface HandoffThread {
   readonly title: string;
@@ -28,6 +29,8 @@ export interface HandoffEnvironment {
   readonly canOperate: boolean;
   /** Can clone a project it does not have yet. */
   readonly canAddProject: boolean;
+  /** Can make worktrees and fetch there. */
+  readonly canSourceControl: boolean;
   readonly scratchAvailable: boolean;
   readonly providers: ReadonlyArray<ServerProvider>;
   /** The largest file it takes as an attachment; null when it takes none. */
@@ -40,6 +43,8 @@ export type HandoffMachineStatus =
       /** The machine's checkout of the project, or null for its project-less folder. */
       readonly project: EnvironmentProject | null;
     }
+  /** Several checkouts fit; the user says which one the thread continues in. */
+  | { readonly kind: "choose"; readonly projects: ReadonlyArray<EnvironmentProject> }
   | { readonly kind: "needs-project"; readonly canAdd: boolean }
   | { readonly kind: "unavailable"; readonly reason: "offline" | "read-only" | "no-folder" };
 
@@ -50,14 +55,22 @@ export interface HandoffMachine {
 
 export type HandoffGitStatus = Pick<
   VcsStatusResult,
-  | "isRepo"
-  | "hasPrimaryRemote"
-  | "refName"
-  | "isDefaultRef"
-  | "hasWorkingTreeChanges"
-  | "hasUpstream"
-  | "aheadCount"
-> & { readonly workingTree: { readonly files: ReadonlyArray<unknown> } };
+  "isRepo" | "refName" | "isDefaultRef" | "hasWorkingTreeChanges" | "hasUpstream" | "aheadCount"
+> & {
+  readonly workingTree: { readonly files: ReadonlyArray<unknown> };
+  /** Whether the repository names its default branch (the remote's HEAD); false guesses by name. */
+  readonly defaultBranchKnown: boolean;
+  /** What the branch is compared with, which the new worktree keeps for pull requests. */
+  readonly branchChanges?: { readonly baseRef: string | null } | undefined;
+};
+
+/** What the connection may do on the source's machine. */
+export interface HandoffSourceAccess {
+  /** Change threads there: move their branch, settle them. */
+  readonly canOperate: boolean;
+  /** Commit and push there. */
+  readonly canSourceControl: boolean;
+}
 
 export type HandoffNoCodeReason = "scratch" | "no-remote" | "not-a-repo" | "nothing-to-carry";
 
@@ -69,15 +82,21 @@ export type HandoffCodePlan =
       readonly branch: string;
       readonly createBranch: boolean;
       readonly commit: { readonly fileCount: number; readonly message: string } | null;
+      /** What the branch is compared with in pull requests; the new worktree keeps it. */
+      readonly comparisonBase: string | null;
     };
 
 export type HandoffBlockReason =
   | "thread-running"
   | "thread-waiting"
+  | "source-read-only"
+  | "source-no-source-control"
+  | "machine-no-source-control"
   | "machine-offline"
   | "machine-read-only"
   | "no-folder"
   | "needs-project"
+  | "choose-project"
   | "git-loading"
   | "detached-head";
 
@@ -90,13 +109,16 @@ export interface HandoffBlocked {
 export interface HandoffReady {
   readonly kind: "ready";
   readonly code: HandoffCodePlan;
+  /** The source's repository, to tell which of its remotes the work was pushed to. */
+  readonly sourceIdentity: RepositoryIdentity | null;
   readonly target: {
     readonly environmentId: EnvironmentId;
     readonly label: string;
     /** Null opens the machine's project-less folder. */
     readonly project: ScopedProjectRef | null;
-    /** What the machine calls the remote the work is pushed to. */
-    readonly remoteName: string;
+    /** The project's folder on that machine, where git runs. */
+    readonly cwd: string | null;
+    readonly identity: RepositoryIdentity | null;
   };
   readonly transcript: { readonly attach: boolean; readonly maxBytes: number | null };
   /** Null leaves the draft on the machine's own default. */
@@ -105,7 +127,14 @@ export interface HandoffReady {
 
 export type ThreadMachineHandoffPlan = HandoffBlocked | HandoffReady;
 
-export type HandoffStep = "conversation" | "branch" | "commit" | "push" | "draft";
+export type HandoffStep =
+  | "conversation"
+  | "branch"
+  | "commit"
+  | "push"
+  | "fetch"
+  | "worktree"
+  | "draft";
 
 /** The statuses the app counts as working; settling refuses all of them. */
 const BUSY_RUN_STATUSES = new Set<HandoffThread["runStatus"]>([
@@ -116,43 +145,70 @@ const BUSY_RUN_STATUSES = new Set<HandoffThread["runStatus"]>([
   "waiting",
 ]);
 
-/** The remote a project's grouping follows: a fork's own `origin`, else the one it locates by. */
-function remoteNameOf(project: EnvironmentProject | null): string {
-  const identity = project?.repositoryIdentity;
-  if (identity == null || identity.origin !== undefined) return "origin";
-  return identity.locator.remoteName;
-}
-
 /** Whether work in the project can travel through its git remote. */
 export function carriesHandoffCode(project: EnvironmentProject): boolean {
   return project.isScratch !== true && Boolean(project.repositoryIdentity?.locator.remoteUrl);
+}
+
+/** The repository a push from the project goes to: a fork's own origin, else its only remote. */
+function pushedRepositoryKey(identity: RepositoryIdentity): string {
+  return identity.origin?.canonicalKey ?? identity.canonicalKey;
+}
+
+/** The repository one of the project's remotes points to, when the identity says. */
+function repositoryKeyOfRemote(identity: RepositoryIdentity, remoteName: string): string | null {
+  if (remoteName === "origin") return pushedRepositoryKey(identity);
+  return remoteName === identity.locator.remoteName ? identity.canonicalKey : null;
+}
+
+/** The project's name for its remote of that repository. */
+function remoteNameOfRepository(identity: RepositoryIdentity, key: string): string | null {
+  if (identity.origin?.canonicalKey === key) return "origin";
+  return identity.canonicalKey === key ? identity.locator.remoteName : null;
+}
+
+function isCheckoutOf(project: EnvironmentProject, key: string): boolean {
+  const identity = project.repositoryIdentity;
+  return (
+    identity != null && (identity.canonicalKey === key || identity.origin?.canonicalKey === key)
+  );
+}
+
+/**
+ * The machine's checkouts of the source's repository, in the source's place in it. This follows
+ * the repository itself, so the sidebar's grouping can neither hide a checkout nor merge another
+ * project of the same repository into it.
+ */
+function findCheckouts(
+  source: EnvironmentProject,
+  environmentId: EnvironmentId,
+  projects: ReadonlyArray<EnvironmentProject>,
+): ReadonlyArray<EnvironmentProject> {
+  const key = source.repositoryIdentity ? pushedRepositoryKey(source.repositoryIdentity) : null;
+  if (key === null) return [];
+  const sourcePath = deriveRepositoryRelativeProjectPath(source);
+  return projects.filter((project) => {
+    if (
+      project.environmentId !== environmentId ||
+      project.archivedAt != null ||
+      project.isScratch === true ||
+      !isCheckoutOf(project, key)
+    ) {
+      return false;
+    }
+    const path = deriveRepositoryRelativeProjectPath(project);
+    // A path that cannot be worked out on either side can still be the one project there is.
+    return sourcePath === null || path === null || path === sourcePath;
+  });
 }
 
 /** One entry for every machine but the source's, saying whether the thread can go there. */
 export function assessHandoffMachines(input: {
   readonly source: EnvironmentProject;
   readonly projects: ReadonlyArray<EnvironmentProject>;
-  readonly settings: ProjectGroupingSettings;
   readonly environments: ReadonlyArray<HandoffEnvironment>;
 }): ReadonlyArray<HandoffMachine> {
   const carriesCode = carriesHandoffCode(input.source);
-  // The machines' checkouts of the same repository are the source's project group.
-  const siblings = carriesCode
-    ? (buildProjectGroups({ projects: input.projects, settings: input.settings })
-        .find((group) =>
-          group.memberProjectRefs.some(
-            (ref) =>
-              ref.environmentId === input.source.environmentId && ref.projectId === input.source.id,
-          ),
-        )
-        ?.memberProjectRefs.flatMap((ref) => {
-          const project = input.projects.find(
-            (candidate) =>
-              candidate.environmentId === ref.environmentId && candidate.id === ref.projectId,
-          );
-          return project === undefined || project.archivedAt != null ? [] : [project];
-        }) ?? [])
-    : [];
   return input.environments
     .filter((environment) => environment.environmentId !== input.source.environmentId)
     .map((environment): HandoffMachine => {
@@ -167,15 +223,19 @@ export function assessHandoffMachines(input: {
           ? { environment, status: { kind: "ready", project: null } }
           : { environment, status: { kind: "unavailable", reason: "no-folder" } };
       }
-      const project = siblings.find(
-        (sibling) => sibling.environmentId === environment.environmentId,
+      const [first, ...others] = findCheckouts(
+        input.source,
+        environment.environmentId,
+        input.projects,
       );
       return {
         environment,
         status:
-          project === undefined
+          first === undefined
             ? { kind: "needs-project", canAdd: environment.canAddProject }
-            : { kind: "ready", project },
+            : others.length === 0
+              ? { kind: "ready", project: first }
+              : { kind: "choose", projects: [first, ...others] },
       };
     });
 }
@@ -215,13 +275,38 @@ export function handoffCommitMessage(machineLabel: string): string {
 }
 
 /**
- * The server only knows the default branch from `origin/HEAD`, so main and master count whatever
- * it says: a WIP commit never goes to either.
+ * The server only knows the default branch from `origin/HEAD`. Without it any branch could be the
+ * default, so a WIP commit never goes to a branch that might be: main and master by name, and
+ * every branch of a repository that does not say.
  */
 export function isHandoffDefaultBranch(
-  git: Pick<HandoffGitStatus, "isDefaultRef" | "refName">,
+  git: Pick<HandoffGitStatus, "isDefaultRef" | "refName" | "defaultBranchKnown">,
 ): boolean {
-  return git.isDefaultRef || git.refName === "main" || git.refName === "master";
+  return (
+    git.isDefaultRef ||
+    !git.defaultBranchKnown ||
+    git.refName === "main" ||
+    git.refName === "master"
+  );
+}
+
+/** What names the new branch must not take, as the names refs go by without their remote. */
+export const HANDOFF_BRANCH_QUERY = "handoff";
+
+export function collectHandoffBranchNames(
+  refs: ReadonlyArray<{
+    readonly name: string;
+    readonly isRemote?: boolean | undefined;
+    readonly remoteName?: string | undefined;
+  }>,
+): ReadonlyArray<string> {
+  return refs.map((ref) =>
+    ref.isRemote === true &&
+    ref.remoteName !== undefined &&
+    ref.name.startsWith(`${ref.remoteName}/`)
+      ? ref.name.slice(ref.remoteName.length + 1)
+      : ref.name,
+  );
 }
 
 function planCode(input: {
@@ -233,7 +318,6 @@ function planCode(input: {
   const { git } = input;
   const none = (reason: HandoffNoCodeReason) => ({ code: { kind: "none", reason } }) as const;
   if (!git.isRepo) return none("not-a-repo");
-  if (!git.hasPrimaryRemote) return none("no-remote");
   if (git.refName === null) {
     return {
       kind: "blocked",
@@ -249,6 +333,7 @@ function planCode(input: {
         message: handoffCommitMessage(input.machineLabel),
       }
     : null;
+  const comparisonBase = git.branchChanges?.baseRef ?? null;
   if (isHandoffDefaultBranch(git)) {
     if (!hasLocalWork) return none("nothing-to-carry");
     return {
@@ -257,17 +342,33 @@ function planCode(input: {
         branch: pickHandoffBranchName(input.thread.title, input.existingBranchNames),
         createBranch: true,
         commit,
+        comparisonBase,
       },
     };
   }
   if (!hasLocalWork && !git.hasUpstream) return none("nothing-to-carry");
-  return { code: { kind: "carry", branch: git.refName, createBranch: false, commit } };
+  return {
+    code: { kind: "carry", branch: git.refName, createBranch: false, commit, comparisonBase },
+  };
+}
+
+/** Whether two plans do the same to the checkout, so one made earlier still holds. */
+export function isSameHandoffCode(planned: HandoffCodePlan, fresh: HandoffCodePlan): boolean {
+  if (planned.kind === "none" || fresh.kind === "none") {
+    return planned.kind === "none" && fresh.kind === "none" && planned.reason === fresh.reason;
+  }
+  return (
+    planned.branch === fresh.branch &&
+    planned.createBranch === fresh.createBranch &&
+    (planned.commit === null) === (fresh.commit === null)
+  );
 }
 
 /** What continuing the thread on a machine takes, or why it cannot be done yet. */
 export function planThreadMachineHandoff(input: {
   readonly thread: HandoffThread;
   readonly source: EnvironmentProject;
+  readonly sourceAccess: HandoffSourceAccess;
   readonly machine: HandoffMachine;
   /** Null while the checkout's status is still loading. */
   readonly git: HandoffGitStatus | null;
@@ -287,6 +388,13 @@ export function planThreadMachineHandoff(input: {
       kind: "blocked",
       reason: "thread-waiting",
       message: "This thread is waiting on an approval. Answer it first.",
+    };
+  }
+  if (!input.sourceAccess.canOperate) {
+    return {
+      kind: "blocked",
+      reason: "source-read-only",
+      message: "This connection cannot change this thread, so it cannot hand it off.",
     };
   }
   if (status.kind === "unavailable") {
@@ -318,6 +426,13 @@ export function planThreadMachineHandoff(input: {
       message: `${environment.label} does not have this project yet.`,
     };
   }
+  if (status.kind === "choose") {
+    return {
+      kind: "blocked",
+      reason: "choose-project",
+      message: `${environment.label} has more than one checkout of this project. Choose the one to continue in.`,
+    };
+  }
   const targetProject = status.project;
   const target = {
     environmentId: environment.environmentId,
@@ -326,10 +441,12 @@ export function planThreadMachineHandoff(input: {
       targetProject === null
         ? null
         : scopeProjectRef(targetProject.environmentId, targetProject.id),
-    remoteName: remoteNameOf(targetProject),
+    cwd: targetProject?.workspaceRoot ?? null,
+    identity: targetProject?.repositoryIdentity ?? null,
   };
   const common = {
     kind: "ready",
+    sourceIdentity: input.source.repositoryIdentity ?? null,
     target,
     transcript: {
       attach: environment.maxFileBytes !== null,
@@ -350,7 +467,22 @@ export function planThreadMachineHandoff(input: {
     git: input.git,
     existingBranchNames: input.existingBranchNames,
   });
-  return "kind" in planned ? planned : { ...common, code: planned.code };
+  if ("kind" in planned) return planned;
+  if (planned.code.kind === "carry" && !input.sourceAccess.canSourceControl) {
+    return {
+      kind: "blocked",
+      reason: "source-no-source-control",
+      message: "This connection cannot commit or push on the source machine.",
+    };
+  }
+  if (planned.code.kind === "carry" && !environment.canSourceControl) {
+    return {
+      kind: "blocked",
+      reason: "machine-no-source-control",
+      message: `This connection cannot create worktrees on ${environment.label}.`,
+    };
+  }
+  return { ...common, code: planned.code };
 }
 
 /** The steps a ready plan runs, in order. */
@@ -363,6 +495,8 @@ export function listHandoffSteps(plan: HandoffReady): ReadonlyArray<HandoffStep>
           ...(code.createBranch ? (["branch"] as const) : []),
           ...(code.commit === null ? [] : (["commit"] as const)),
           "push" as const,
+          "fetch" as const,
+          "worktree" as const,
         ]
       : []),
     "draft" as const,
@@ -385,15 +519,68 @@ export function explainHandoffGitFailure(message: string): string {
   return (reason === undefined ? undefined : GIT_FAILURE_TEXT[reason]) ?? message;
 }
 
-/** The base branch for the machine's worktree, from where the work was pushed. */
-export function resolveHandoffDraftBase(
+export type HandoffPushed =
+  | {
+      readonly ok: true;
+      /** The branch on the remote, which the worktree continues under the same name. */
+      readonly branch: string;
+      /** What the source calls the remote the work went to, and the target machine calls it. */
+      readonly sourceRemote: string;
+      readonly remote: string;
+      readonly remoteRef: string;
+    }
+  | { readonly ok: false; readonly message: string };
+
+/**
+ * Where the push put the work, in the target machine's terms. The remote the source pushed to has
+ * to be a repository the target has a remote for, or the target would be told to fetch from
+ * somewhere the branch is not.
+ */
+export function resolveHandoffPushed(
   plan: HandoffReady,
-  pushedUpstreamBranch: string | undefined,
+  upstreamBranch: string | undefined,
+): HandoffPushed {
+  const refuse = (message: string) => ({ ok: false, message }) as const;
+  if (plan.code.kind !== "carry") return refuse("No code was planned to hand off.");
+  if (upstreamBranch === undefined) {
+    return refuse("The push did not say which remote branch it updated.");
+  }
+  const known = [plan.sourceIdentity?.locator.remoteName, "origin"]
+    .filter((name): name is string => name !== undefined)
+    .sort((left, right) => right.length - left.length);
+  const sourceRemote =
+    known.find((name) => upstreamBranch.startsWith(`${name}/`)) ??
+    upstreamBranch.slice(0, Math.max(upstreamBranch.indexOf("/"), 0));
+  const branch = upstreamBranch.slice(sourceRemote.length + 1);
+  if (sourceRemote.length === 0 || branch.length === 0) {
+    return refuse(`The push reported the remote branch "${upstreamBranch}", which is not usable.`);
+  }
+  const key =
+    plan.sourceIdentity === null ? null : repositoryKeyOfRemote(plan.sourceIdentity, sourceRemote);
+  if (key === null) {
+    return refuse(
+      `The work was pushed to the remote "${sourceRemote}", which cannot be matched to a remote on ${plan.target.label}.`,
+    );
+  }
+  const remote =
+    plan.target.identity === null ? null : remoteNameOfRepository(plan.target.identity, key);
+  if (remote === null) {
+    return refuse(
+      `${plan.target.label} has no remote for ${key}, where the work was pushed to ("${sourceRemote}").`,
+    );
+  }
+  return { ok: true, branch, sourceRemote, remote, remoteRef: `${remote}/${branch}` };
+}
+
+/** The branch the work is compared with, under the target machine's name for its remote. */
+export function resolveHandoffComparisonBase(
+  base: string | null,
+  pushed: Extract<HandoffPushed, { ok: true }>,
 ): string | null {
-  if (plan.code.kind !== "carry" || pushedUpstreamBranch === undefined) return null;
-  const separator = pushedUpstreamBranch.indexOf("/");
-  const branch = separator < 0 ? pushedUpstreamBranch : pushedUpstreamBranch.slice(separator + 1);
-  return branch.length === 0 ? null : `${plan.target.remoteName}/${branch}`;
+  if (base === null) return null;
+  return base.startsWith(`${pushed.sourceRemote}/`)
+    ? `${pushed.remote}/${base.slice(pushed.sourceRemote.length + 1)}`
+    : base;
 }
 
 const NO_CODE_TEXT = {
@@ -412,17 +599,19 @@ export function buildHandoffNote(input: {
   readonly title: string;
   readonly sourceLabel: string;
   readonly code: HandoffCodePlan;
-  /** Where the work landed, when it did. */
-  readonly pushedBase: string | null;
+  /** What the worktree tracks, once the work is there. */
+  readonly remoteRef: string | null;
   readonly threadLink: string | null;
   readonly transcriptAttached: boolean;
 }): string {
   const title = input.title.replace(/\s+/g, " ").trim().slice(0, 120) || "Untitled thread";
   const lines = [`Continuing "${title}", handed off from ${input.sourceLabel}.`, ""];
-  if (input.code.kind === "carry" && input.pushedBase !== null) {
+  if (input.code.kind === "carry" && input.remoteRef !== null) {
     const wip =
-      input.code.commit === null ? "" : ", which includes a WIP commit of the uncommitted changes";
-    lines.push(`- The worktree starts from \`${input.pushedBase}\`${wip}.`);
+      input.code.commit === null ? "" : " and includes a WIP commit of the uncommitted changes";
+    lines.push(
+      `- The worktree continues \`${input.code.branch}\`, which tracks \`${input.remoteRef}\`${wip}.`,
+    );
   } else {
     const reason = explainNoHandoffCode(
       input.code.kind === "none" ? input.code.reason : "nothing-to-carry",
