@@ -29,6 +29,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import type { AdfDocument } from "./jiraAdf.ts";
 import {
   DETAIL_FIELDS,
+  RawFieldsResponse,
   RawIssue,
   RawMyself,
   RawProjectsResponse,
@@ -36,12 +37,14 @@ import {
   RawComment,
   RawTransitionsResponse,
   SUMMARY_FIELDS,
+  acceptanceCriteriaFields,
   jiraErrorDetail,
   toComment,
   toIssueDetail,
   toIssueSummary,
   toTransition,
   userFromMyself,
+  type JiraFieldRef,
 } from "./jiraApi.ts";
 
 export interface JiraCredential {
@@ -70,6 +73,9 @@ export class JiraClient extends Context.Service<
     readonly listProjects: (
       credential: JiraCredential,
     ) => Effect.Effect<ReadonlyArray<JiraProject>, JiraError>;
+    readonly listAcceptanceCriteriaFields: (
+      credential: JiraCredential,
+    ) => Effect.Effect<ReadonlyArray<JiraFieldRef>, JiraError>;
     readonly searchIssues: (
       credential: JiraCredential,
       request: JiraSearchRequest,
@@ -77,9 +83,11 @@ export class JiraClient extends Context.Service<
       { readonly issues: ReadonlyArray<JiraIssueSummary>; readonly nextPageToken: string | null },
       JiraError
     >;
+    /** `extraFields` are the site's own fields to read along with the standard ones. */
     readonly getIssue: (
       credential: JiraCredential,
       key: string,
+      extraFields: ReadonlyArray<JiraFieldRef>,
     ) => Effect.Effect<JiraIssueDetail, JiraError>;
     readonly getIssueSummary: (
       credential: JiraCredential,
@@ -214,6 +222,18 @@ const make = Effect.gen(function* () {
     return projects;
   });
 
+  const listAcceptanceCriteriaFields = Effect.fn("JiraClient.listAcceptanceCriteriaFields")(
+    function* (credential: JiraCredential) {
+      const fields = yield* sendJson(
+        credential,
+        "listFields",
+        HttpClientRequest.get(api(credential, "/field")),
+        RawFieldsResponse,
+      );
+      return acceptanceCriteriaFields(fields);
+    },
+  );
+
   const searchIssues = Effect.fn("JiraClient.searchIssues")(function* (
     credential: JiraCredential,
     request: JiraSearchRequest,
@@ -243,17 +263,20 @@ const make = Effect.gen(function* () {
   const getIssue = Effect.fn("JiraClient.getIssue")(function* (
     credential: JiraCredential,
     key: string,
+    extraFields: ReadonlyArray<JiraFieldRef>,
   ) {
     const raw = yield* sendJson(
       credential,
       "getIssue",
       HttpClientRequest.get(api(credential, issuePath(key))).pipe(
-        HttpClientRequest.setUrlParams({ fields: DETAIL_FIELDS.join(",") }),
+        HttpClientRequest.setUrlParams({
+          fields: [...DETAIL_FIELDS, ...extraFields.map((field) => field.id)].join(","),
+        }),
       ),
       RawIssue,
       key,
     );
-    const issue = toIssueDetail(raw, credential.siteUrl);
+    const issue = toIssueDetail(raw, credential.siteUrl, extraFields);
     if (issue === null) return yield* new JiraNotFoundError({ key });
     return issue;
   });
@@ -327,6 +350,7 @@ const make = Effect.gen(function* () {
   return JiraClient.of({
     myself,
     listProjects,
+    listAcceptanceCriteriaFields,
     searchIssues,
     getIssue,
     getIssueSummary,

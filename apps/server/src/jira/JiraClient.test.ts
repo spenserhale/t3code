@@ -186,7 +186,7 @@ it.effect("reads an issue with its description and newest comments as Markdown",
       }),
     ),
   );
-  return run(layer, (client) => client.getIssue(credential, "PROJ-12")).pipe(
+  return run(layer, (client) => client.getIssue(credential, "PROJ-12", [])).pipe(
     Effect.map((issue) => {
       assert.strictEqual(
         addressOf(lastRequest()),
@@ -204,6 +204,63 @@ it.effect("reads an issue with its description and newest comments as Markdown",
           updatedAt: "2026-10-21T10:05:00.000Z",
           bodyMarkdown: "Reproduced.",
         },
+      ]);
+    }),
+  );
+});
+
+it.effect("finds the acceptance criteria fields among the site's fields", () => {
+  const { layer, lastRequest } = makeClient(() =>
+    Response.json([
+      { id: "summary", name: "Summary", custom: false },
+      { id: "customfield_10050", name: "Acceptance Criteria", custom: true },
+      { id: "customfield_10060", name: "Story Points", custom: true },
+    ]),
+  );
+  return run(layer, (client) => client.listAcceptanceCriteriaFields(credential)).pipe(
+    Effect.map((fields) => {
+      assert.strictEqual(addressOf(lastRequest()), "https://acme.atlassian.net/rest/api/3/field");
+      assert.deepStrictEqual(fields, [{ id: "customfield_10050", name: "Acceptance Criteria" }]);
+    }),
+  );
+});
+
+it.effect("asks for the acceptance criteria fields it is given and reads them as Markdown", () => {
+  const { layer, lastRequest } = makeClient(() =>
+    Response.json(
+      rawIssue("PROJ-12", {
+        customfield_10050: {
+          version: 1,
+          type: "doc",
+          content: [
+            {
+              type: "bulletList",
+              content: [
+                {
+                  type: "listItem",
+                  content: [
+                    { type: "paragraph", content: [{ type: "text", text: "Redirect works." }] },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    ),
+  );
+  return run(layer, (client) =>
+    client.getIssue(credential, "PROJ-12", [
+      { id: "customfield_10050", name: "Acceptance Criteria" },
+    ]),
+  ).pipe(
+    Effect.map((issue) => {
+      assert.strictEqual(
+        addressOf(lastRequest()),
+        "https://acme.atlassian.net/rest/api/3/issue/PROJ-12?fields=summary%2Cstatus%2Cissuetype%2Cpriority%2Cassignee%2Cproject%2Cupdated%2Ccreated%2Creporter%2Clabels%2Cdescription%2Ccomment%2Ccustomfield_10050",
+      );
+      assert.deepStrictEqual(issue.acceptanceCriteria, [
+        { name: "Acceptance Criteria", markdown: "- Redirect works." },
       ]);
     }),
   );
@@ -316,7 +373,7 @@ it.effect.each([
   const { layer } = makeClient(
     () => new Response(JSON.stringify({ errorMessages: ["nope"] }), { status, headers }),
   );
-  return run(layer, (client) => client.getIssue(credential, "PROJ-12")).pipe(
+  return run(layer, (client) => client.getIssue(credential, "PROJ-12", [])).pipe(
     Effect.flip,
     Effect.map((error) => {
       assert.strictEqual(error._tag, tag);

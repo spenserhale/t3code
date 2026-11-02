@@ -48,5 +48,10 @@ export const make = Effect.gen(function* () {
       use((service) => service.addComment(input)),
     [WS_METHODS.jiraLookupIssues]: (input: JiraLookupInput) =>
       use((service) => service.lookupIssues(input)),
+    [WS_METHODS.jiraRefresh]: (_input: Record<string, never>) =>
+      Option.match(jira, {
+        onNone: () => Effect.void,
+        onSome: (service) => service.refresh,
+      }),
   };
 });

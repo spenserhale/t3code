@@ -71,6 +71,7 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.jiraGetIssue,
       WS_METHODS.jiraListTransitions,
       WS_METHODS.jiraLookupIssues,
+      WS_METHODS.jiraRefresh,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
       expect(clientRpcRequiredScopes(method, {})).toEqual([]);
