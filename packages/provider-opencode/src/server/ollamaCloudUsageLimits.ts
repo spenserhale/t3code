@@ -30,6 +30,7 @@ import {
   type OllamaCloudModelUsage,
   type OllamaCloudValueInput,
 } from "./ollamaCloudMarket.ts";
+import { makeSingleFlight, ReadFailed, retryDelayMs } from "./ollamaCloudThrottle.ts";
 import type { SubscriptionLimits } from "./zaiUsageLimits.ts";
 
 const API_ORIGIN = "https://ollama.com";
@@ -102,15 +103,29 @@ const LEGACY_WINDOWS = [
   },
 ] as const;
 
-/** What a plan costs for a period, by the size of the credit pool it includes. */
-const PLAN_PRICES_USD: ReadonlyMap<number, number> = new Map([
-  [60, 20],
-  [300, 100],
-  [1000, 500],
+/** The plans, by the size of the credit pool they include and what that costs for a period. */
+const PLANS: ReadonlyMap<number, { readonly priceUsd: number; readonly team?: true }> = new Map([
+  [60, { priceUsd: 20 }],
+  [300, { priceUsd: 100 }],
+  [1000, { priceUsd: 500, team: true }],
 ]);
 
 /** Two decimals keep float noise (27.500000000000004) off the wire. */
 const toPercent = (value: number) => clampPercent(Math.round(value * 100) / 100);
+
+interface Hold {
+  readonly fingerprint: string;
+  readonly untilMs: number;
+}
+
+const holdsOff = (hold: Hold | undefined, fingerprint: string, nowMs: number) =>
+  hold?.fingerprint === fingerprint && hold.untilMs > nowMs;
+
+interface BalanceReading {
+  readonly windows: ReadonlyArray<ServerProviderUsageWindow>;
+  readonly pool: CreditPool | undefined;
+  readonly purchasedUsd: number;
+}
 
 interface CreditPool {
   readonly allowanceUsd: number;
@@ -178,7 +193,10 @@ function readIncluded(included: typeof BalanceResponse.Type.included): {
   };
 }
 
-/** Usage of the buckets that overlap the period; the first one may straddle its start. */
+/**
+ * Usage of the days the period holds whole. The day it began in also holds usage from before,
+ * which a day bucket cannot split, so it is left out.
+ */
 function periodUsage(
   buckets: UsageBuckets,
   period: { readonly start: DateTime.Utc; readonly end: DateTime.Utc },
@@ -187,11 +205,9 @@ function periodUsage(
   let remainderUsageUsd = 0;
   for (const bucket of buckets) {
     const from = DateTime.make(bucket.from);
-    const until = DateTime.make(bucket.until);
     if (
       Option.isNone(from) ||
-      Option.isNone(until) ||
-      until.value.epochMilliseconds <= period.start.epochMilliseconds ||
+      from.value.epochMilliseconds < period.start.epochMilliseconds ||
       from.value.epochMilliseconds >= period.end.epochMilliseconds
     ) {
       continue;
@@ -250,46 +266,108 @@ export const makeOllamaCloudUsageLimits = Effect.fn("makeOllamaCloudUsageLimits"
     | { readonly fingerprint: string; readonly readAtMs: number; readonly buckets: UsageBuckets }
     | undefined
   >(undefined);
+  // Until when Ollama is left alone for a credential, after it asked for time or a read failed.
+  const balanceHold = yield* Ref.make<Hold | undefined>(undefined);
+  const usageHold = yield* Ref.make<Hold | undefined>(undefined);
+  const balanceFlight = makeSingleFlight<BalanceReading | undefined>();
+  const usageFlight = makeSingleFlight<UsageBuckets>();
 
-  const readUsage = Effect.fn("readOllamaCloudUsage")(function* (
+  const holdOff = (hold: Ref.Ref<Hold | undefined>, fingerprint: string, untilMs: number) =>
+    Ref.set(hold, { fingerprint, untilMs });
+
+  /** Notes Ollama's request for time, and whether it made one. */
+  const noteThrottle = Effect.fn("noteOllamaCloudThrottle")(function* (
+    hold: Ref.Ref<Hold | undefined>,
+    fingerprint: string,
+    response: HttpClientResponse.HttpClientResponse,
+    nowMs: number,
+  ) {
+    const retryAfter = response.headers["retry-after"];
+    if (response.status !== 429 && !(response.status === 503 && retryAfter !== undefined)) return;
+    yield* holdOff(hold, fingerprint, nowMs + retryDelayMs(retryAfter, nowMs));
+  });
+
+  const fetchHistory = Effect.fn("fetchOllamaCloudHistory")(function* (
+    apiKey: string,
+    fingerprint: string,
+    nowMs: number,
+  ) {
+    const client = yield* HttpClient.HttpClient;
+    const read = yield* Effect.gen(function* () {
+      const response = yield* client.execute(
+        HttpClientRequest.get(`${API_ORIGIN}/api/usage`).pipe(
+          HttpClientRequest.setUrlParams({ range: "30d", group_by: "model" }),
+          HttpClientRequest.bearerToken(apiKey),
+        ),
+      );
+      yield* noteThrottle(usageHold, fingerprint, response, nowMs);
+      return yield* HttpClientResponse.filterStatusOk(response).pipe(
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(UsageResponse)),
+      );
+    }).pipe(Effect.option);
+    if (Option.isSome(read)) {
+      yield* Ref.set(usageHold, undefined);
+    } else {
+      // A failure that was not a throttle still waits a minute, unless Ollama said longer.
+      yield* Ref.update(usageHold, (hold) =>
+        holdsOff(hold, fingerprint, nowMs)
+          ? hold
+          : { fingerprint, untilMs: nowMs + retryDelayMs(undefined, nowMs) },
+      );
+    }
+    return Option.map(read, ({ buckets }) => buckets);
+  });
+
+  const readHistory = Effect.fn("readOllamaCloudHistory")(function* (
     apiKey: string,
     fingerprint: string,
   ) {
-    const now = yield* Clock.currentTimeMillis;
+    const nowMs = yield* Clock.currentTimeMillis;
     const cached = yield* Ref.get(usageCache);
-    if (cached?.fingerprint === fingerprint && now - cached.readAtMs < USAGE_CACHE_MS) {
-      return cached.buckets;
+    const lastGood = cached?.fingerprint === fingerprint ? cached : undefined;
+    if (lastGood !== undefined && nowMs - lastGood.readAtMs < USAGE_CACHE_MS) {
+      return lastGood.buckets;
     }
-    const client = yield* HttpClient.HttpClient;
-    const response = yield* client.execute(
-      HttpClientRequest.get(`${API_ORIGIN}/api/usage`).pipe(
-        HttpClientRequest.setUrlParams({ range: "30d", group_by: "model" }),
-        HttpClientRequest.bearerToken(apiKey),
-      ),
-    );
-    const { buckets } = yield* HttpClientResponse.filterStatusOk(response).pipe(
-      Effect.flatMap(HttpClientResponse.schemaBodyJson(UsageResponse)),
-    );
-    yield* Ref.set(usageCache, { fingerprint, readAtMs: now, buckets });
-    return buckets;
+    const held = holdsOff(yield* Ref.get(usageHold), fingerprint, nowMs);
+    const read = held ? Option.none() : yield* fetchHistory(apiKey, fingerprint, nowMs);
+    if (Option.isSome(read)) {
+      yield* Ref.set(usageCache, { fingerprint, readAtMs: nowMs, buckets: read.value });
+      return read.value;
+    }
+    // The history from before still says which models the period used.
+    if (lastGood !== undefined) return lastGood.buckets;
+    return yield* new ReadFailed();
   });
 
-  /** The limits a balance describes, or undefined when it names none or the account is suspended. */
-  const readBalance = Effect.fn("readOllamaCloudBalance")(function* (apiKey: string) {
+  const readUsage = (apiKey: string, fingerprint: string) =>
+    usageFlight(fingerprint, readHistory(apiKey, fingerprint));
+
+  const fetchBalance = Effect.fn("fetchOllamaCloudBalance")(function* (
+    apiKey: string,
+    fingerprint: string,
+  ) {
+    const nowMs = yield* Clock.currentTimeMillis;
+    if (holdsOff(yield* Ref.get(balanceHold), fingerprint, nowMs)) return yield* new ReadFailed();
     const client = yield* HttpClient.HttpClient;
     const response = yield* client.execute(
       HttpClientRequest.get(`${API_ORIGIN}/api/balance`).pipe(
         HttpClientRequest.bearerToken(apiKey),
       ),
     );
+    yield* noteThrottle(balanceHold, fingerprint, response, nowMs);
     if (response.status === 403) return undefined;
     const balance = yield* HttpClientResponse.filterStatusOk(response).pipe(
       Effect.flatMap(HttpClientResponse.schemaBodyJson(BalanceResponse)),
     );
+    yield* Ref.set(balanceHold, undefined);
     const { windows, pool } = readIncluded(balance.included);
     if (windows.length === 0) return undefined;
     return { windows, pool, purchasedUsd: Math.max(0, balance.purchased?.balance_usd ?? 0) };
   });
+
+  /** The limits a balance describes, or undefined when it names none or the account is suspended. */
+  const readBalance = (apiKey: string, fingerprint: string) =>
+    balanceFlight(fingerprint, fetchBalance(apiKey, fingerprint));
 
   // Whatever goes wrong here only leaves the value out; the pool and the bar do not depend on it.
   const readCredit = Effect.fn("readOllamaCloudCredit")(function* (
@@ -299,8 +377,10 @@ export const makeOllamaCloudUsageLimits = Effect.fn("makeOllamaCloudUsageLimits"
     fingerprint: string,
   ) {
     const usedUsd = Math.max(0, pool.allowanceUsd - pool.balanceUsd);
+    const plan = PLANS.get(pool.allowanceUsd);
+    // A team's balance is shared by every member, while the history is the key owner's.
     const value =
-      Option.isSome(valuation) && usedUsd > 0
+      Option.isSome(valuation) && usedUsd > 0 && plan?.team !== true
         ? yield* readUsage(apiKey, fingerprint).pipe(
             Effect.map((buckets) =>
               periodUsage(buckets, { start: pool.periodStart, end: pool.periodEnd }),
@@ -310,14 +390,13 @@ export const makeOllamaCloudUsageLimits = Effect.fn("makeOllamaCloudUsageLimits"
             Effect.orElseSucceed(() => undefined),
           )
         : undefined;
-    const planPriceUsd = PLAN_PRICES_USD.get(pool.allowanceUsd);
     return {
       allowanceUsd: pool.allowanceUsd,
       balanceUsd: pool.balanceUsd,
       ...(purchasedUsd > 0 ? { purchasedBalanceUsd: purchasedUsd } : {}),
       periodStart: DateTime.formatIso(pool.periodStart),
       periodEnd: DateTime.formatIso(pool.periodEnd),
-      ...(planPriceUsd === undefined ? {} : { planPriceUsd }),
+      ...(plan === undefined ? {} : { planPriceUsd: plan.priceUsd }),
       ...(value === undefined ? {} : { openRouterValueUsd: value }),
     } satisfies ServerProviderUsageCredit;
   });
@@ -353,7 +432,10 @@ export const makeOllamaCloudUsageLimits = Effect.fn("makeOllamaCloudUsageLimits"
         .digest("SHA-256", new TextEncoder().encode(`ollama-cloud\0${apiKey}`))
         .pipe(Effect.map(Hex.encode), Effect.orDie);
 
-      const balance = yield* readBalance(apiKey).pipe(Effect.timeout("5 seconds"), Effect.option);
+      const balance = yield* readBalance(apiKey, credentialFingerprint).pipe(
+        Effect.timeout("5 seconds"),
+        Effect.option,
+      );
       if (Option.isNone(balance)) return probeFailed(credentialFingerprint);
       if (balance.value === undefined) return unsupported;
       const { windows, pool, purchasedUsd } = balance.value;

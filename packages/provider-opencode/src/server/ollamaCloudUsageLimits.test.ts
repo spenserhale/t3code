@@ -77,7 +77,7 @@ const USAGE = {
       until: "2026-09-11T00:00:00Z",
       groups: [group("glm-5.3", 5, 1_000_000, 0, 100_000)],
     },
-    // The period began at 09:30 on the 15th, in the middle of this day.
+    // The period began at 09:30 on the 15th, in the middle of this day: some of it is from before.
     {
       from: "2026-09-15T00:00:00Z",
       until: "2026-09-16T00:00:00Z",
@@ -104,7 +104,17 @@ const USAGE = {
   ],
 };
 
-type Routes = Readonly<Record<string, unknown | number>>;
+/** A body, a bare status, or a function that makes a response. */
+type Routes = Record<string, unknown>;
+
+/** A 429, with the `Retry-After` Ollama sends when it has one. */
+const throttled = (retryAfterSeconds?: number) => () =>
+  new Response(null, {
+    status: 429,
+    ...(retryAfterSeconds === undefined
+      ? {}
+      : { headers: { "retry-after": String(retryAfterSeconds) } }),
+  });
 
 /** Answers each Ollama path with its body (or a bare status) and records the requests. */
 function ollamaApi(routes: Routes) {
@@ -121,16 +131,18 @@ function ollamaApi(routes: Routes) {
             request,
             response === undefined
               ? new Response(null, { status: 404 })
-              : typeof response === "number"
-                ? new Response(null, { status: response })
-                : Response.json(response),
+              : typeof response === "function"
+                ? (response as () => Response)()
+                : typeof response === "number"
+                  ? new Response(null, { status: response })
+                  : Response.json(response),
           ),
         );
       }),
     ),
   );
   const paths = () => requests.map((request) => new URL(request.url).pathname);
-  return { layer, requests, paths };
+  return { layer, requests, paths, routes };
 }
 
 /** A valuation that records what it was asked and answers with `value`. */
@@ -298,13 +310,69 @@ describe("makeOllamaCloudUsageLimits", () => {
   });
 });
 
+describe("Ollama Cloud rate limits", () => {
+  it.effect("waits out the Retry-After of a throttled balance, then asks again", () => {
+    const api = ollamaApi({ "/api/balance": throttled(600) });
+    const balanceReads = () => api.paths().length;
+    return Effect.gen(function* () {
+      const probe = yield* makeOllamaCloudUsageLimits(account());
+      const first = yield* probe;
+      assert.strictEqual(first.unavailable?.reason, "probeFailed");
+      assert.isDefined(first.credentialFingerprint);
+
+      yield* TestClock.adjust("9 minutes");
+      const waiting = yield* probe;
+      assert.strictEqual(waiting.unavailable?.reason, "probeFailed");
+      assert.strictEqual(waiting.credentialFingerprint, first.credentialFingerprint);
+      assert.strictEqual(balanceReads(), 1);
+
+      api.routes["/api/balance"] = BALANCE;
+      yield* TestClock.adjust("1 minute");
+      const again = yield* probe;
+      assert.strictEqual(balanceReads(), 2);
+      assert.isUndefined(again.unavailable);
+    }).pipe(Effect.provide(api.layer));
+  });
+
+  it.effect("holds off for a minute when it is throttled without being told how long", () => {
+    const api = ollamaApi({ "/api/balance": throttled() });
+    return Effect.gen(function* () {
+      const probe = yield* makeOllamaCloudUsageLimits(account());
+      yield* probe;
+      yield* TestClock.adjust("59 seconds");
+      yield* probe;
+      assert.strictEqual(api.paths().length, 1);
+      yield* TestClock.adjust("1 second");
+      yield* probe;
+      assert.strictEqual(api.paths().length, 2);
+    }).pipe(Effect.provide(api.layer));
+  });
+
+  it.effect("asks again for a different key at once", () => {
+    const api = ollamaApi({ "/api/balance": throttled(600) });
+    return Effect.gen(function* () {
+      const environment: NodeJS.ProcessEnv = {};
+      const probe = yield* makeOllamaCloudUsageLimits({
+        enabled: true,
+        serverUrl: "",
+        environment,
+      });
+      for (const key of ["first-key", "second-key"]) {
+        environment.OPENCODE_AUTH_CONTENT = encodeJson({ "ollama-cloud": { type: "api", key } });
+        yield* probe;
+      }
+      assert.strictEqual(api.paths().length, 2);
+    }).pipe(Effect.provide(api.layer));
+  });
+});
+
 describe("Ollama Cloud credit value", () => {
   const poolBalance = {
     included: { ...BALANCE.included, allowance_usd: 60, balance_usd: 41.2 },
     purchased: { balance_usd: 0 },
   };
 
-  it.effect("prices the period's usage per model, ignoring buckets before it began", () => {
+  it.effect("prices the period's usage per model, from the days it holds whole", () => {
     const api = ollamaApi({ "/api/balance": poolBalance, "/api/usage": USAGE });
     const market = valuation(9.1);
     return Effect.gen(function* () {
@@ -334,18 +402,18 @@ describe("Ollama Cloud credit value", () => {
             remainderUsageUsd: 0.001,
             models: [
               {
-                model: "glm-5.3",
-                usageUsd: 0.012,
-                inputTokens: 5000,
-                cachedInputTokens: 0,
-                outputTokens: 1200,
-              },
-              {
                 model: "glm-5.3-flash",
                 usageUsd: 0.0132,
                 inputTokens: 96000,
                 cachedInputTokens: 60000,
                 outputTokens: 12000,
+              },
+              {
+                model: "glm-5.3",
+                usageUsd: 0.01,
+                inputTokens: 4000,
+                cachedInputTokens: 0,
+                outputTokens: 1000,
               },
               {
                 model: "gpt-oss:120b",
@@ -414,6 +482,84 @@ describe("Ollama Cloud credit value", () => {
       }
     }),
   );
+
+  it.effect("leaves out the day the period began in, which also holds usage from before it", () => {
+    // Renewed at 09:30 on the 15th: $30 on a priced model that morning, $1 on another since.
+    const api = ollamaApi({
+      "/api/balance": poolBalance,
+      "/api/usage": {
+        buckets: [
+          {
+            from: "2026-09-15T00:00:00Z",
+            until: "2026-09-16T00:00:00Z",
+            groups: [group("glm-5.3", 30, 1_000_000, 0, 100_000)],
+          },
+          {
+            from: "2026-09-16T00:00:00Z",
+            until: "2026-09-16T12:00:00Z",
+            groups: [group("unlisted", 1, 1000, 0, 100)],
+          },
+        ],
+      },
+    });
+    const market = valuation(9.1);
+    return Effect.gen(function* () {
+      yield* readOnce(account());
+      assert.deepStrictEqual(
+        market.inputs.flatMap((input) => input.models.map((entry) => entry.model)),
+        ["unlisted"],
+      );
+    }).pipe(Effect.provide(Layer.merge(api.layer, market.layer)));
+  });
+
+  it.effect(
+    "gives a team plan no value, since its balance is shared and the history is one member's",
+    () => {
+      const api = ollamaApi({
+        "/api/balance": {
+          included: { ...poolBalance.included, allowance_usd: 1000, balance_usd: 800 },
+        },
+        "/api/usage": USAGE,
+      });
+      const market = valuation(9.1);
+      return Effect.gen(function* () {
+        const limits = yield* readOnce(account());
+        assert.strictEqual(limits.credit?.allowanceUsd, 1000);
+        assert.strictEqual(limits.credit?.planPriceUsd, 500);
+        assert.isUndefined(limits.credit?.openRouterValueUsd);
+        assert.deepStrictEqual(api.paths(), ["/api/balance"]);
+        assert.deepStrictEqual(market.inputs, []);
+      }).pipe(Effect.provide(Layer.merge(api.layer, market.layer)));
+    },
+  );
+
+  it.effect("keeps the last good history through a failed read, and waits out Retry-After", () => {
+    const api = ollamaApi({ "/api/balance": poolBalance, "/api/usage": USAGE });
+    const market = valuation(9.1);
+    const historyReads = () => api.paths().filter((path) => path === "/api/usage").length;
+    return Effect.gen(function* () {
+      const probe = yield* makeOllamaCloudUsageLimits(account());
+      yield* probe;
+      assert.strictEqual(historyReads(), 1);
+
+      yield* TestClock.adjust("11 minutes");
+      api.routes["/api/usage"] = throttled(300);
+      const during = yield* probe;
+      // The read failed, but the history from before still prices the period.
+      assert.strictEqual(historyReads(), 2);
+      assert.strictEqual(during.credit?.openRouterValueUsd, 9.1);
+      assert.strictEqual(market.inputs.length, 2);
+      assert.deepStrictEqual(market.inputs[1]?.models, market.inputs[0]?.models);
+
+      yield* TestClock.adjust("4 minutes");
+      yield* probe;
+      assert.strictEqual(historyReads(), 2);
+      yield* TestClock.adjust("1 minute");
+      api.routes["/api/usage"] = USAGE;
+      yield* probe;
+      assert.strictEqual(historyReads(), 3);
+    }).pipe(Effect.provide(Layer.merge(api.layer, market.layer)));
+  });
 
   it.effect("does not ask for the history before any credit is used", () => {
     const api = ollamaApi({

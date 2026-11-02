@@ -191,6 +191,9 @@ describe("withMarketRates", () => {
       "gpt-oss:120b",
       "openai/gpt-oss-120b",
       "zai/gpt-oss:120b",
+      // OpenRouter's own prices are not Ollama Cloud's private ones.
+      "openrouter/openai/gpt-oss-120b",
+      "openrouter/gpt-oss:120b",
     ]) {
       assert.isNull(lookupRate(table, model));
     }

@@ -291,7 +291,7 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  // Checking the rates also asks the market's for a refresh, which happens behind this call.
+  // Checking the rates also asks for the market's, which keeps itself fresh once it is asked.
   const ensureRates = (force: boolean) =>
     ratesLock
       .withPermit(loadRates(force))
