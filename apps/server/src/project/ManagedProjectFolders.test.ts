@@ -1,6 +1,12 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { CommandId, ProjectId, ThreadId, VcsProcessSpawnError } from "@t3tools/contracts";
+import {
+  CommandId,
+  ProjectId,
+  ServerSettingsError,
+  ThreadId,
+  VcsProcessSpawnError,
+} from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -54,6 +60,9 @@ const layerRealGit = GitVcsDriver.layer.pipe(Layer.provide(VcsProcess.layer));
 interface HarnessOptions {
   readonly vcsProcess?: Layer.Layer<VcsProcess.VcsProcess>;
   readonly git?: Layer.Layer<GitVcsDriver.GitVcsDriver>;
+  readonly settings?: (
+    real: ServerSettings.ServerSettingsService["Service"],
+  ) => ServerSettings.ServerSettingsService["Service"];
   readonly projects?: (
     real: ProjectService.ProjectService["Service"],
   ) => ProjectService.ProjectService["Service"];
@@ -75,7 +84,14 @@ const layer = (baseDir: string, options?: HarnessOptions) =>
     Layer.provideMerge(layerGitWorkflow(options?.vcsProcess)),
     Layer.provideMerge(options?.git ?? layerRealGit),
     Layer.provideMerge(SqlitePersistence.layerMemory),
-    Layer.provideMerge(ServerSettings.layerTest()),
+    Layer.provideMerge(
+      options?.settings === undefined
+        ? ServerSettings.layerTest()
+        : Layer.effect(
+            ServerSettings.ServerSettingsService,
+            ServerSettings.ServerSettingsService.pipe(Effect.map(options.settings)),
+          ).pipe(Layer.provide(ServerSettings.layerTest())),
+    ),
     Layer.provideMerge(ServerConfig.layerTest(baseDir, baseDir)),
     Layer.provideMerge(NodeServices.layer),
   );
@@ -419,6 +435,36 @@ it.effect("puts a named project in the folder the setting names, read at each cr
         assert.equal(ignored.workspaceRoot, path.join(folders.namedProjectsRoot, "another"));
       }),
     ),
+  ),
+);
+
+it.effect("fails before touching the filesystem when the setting cannot be read", () =>
+  withScratch(
+    ({ baseDir }) =>
+      Effect.gen(function* () {
+        const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+        const projects = yield* ProjectService.ProjectService;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+
+        const failure = yield* Effect.flip(folders.createNamedProject({ name: "Pinball Stats" }));
+
+        assert.equal(failure._tag, "NamedProjectSettingsError");
+        assert.isFalse(yield* fileSystem.exists(path.join(baseDir, "projects")));
+        assert.deepEqual((yield* projects.snapshot).projects, []);
+      }),
+    {
+      settings: (real) => ({
+        ...real,
+        getSettings: Effect.fail(
+          new ServerSettingsError({
+            settingsPath: "settings.json",
+            operation: "read-file",
+            cause: "unreadable",
+          }),
+        ),
+      }),
+    },
   ),
 );
 

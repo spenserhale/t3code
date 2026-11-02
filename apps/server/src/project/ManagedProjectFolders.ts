@@ -25,7 +25,7 @@ import * as ServerConfig from "../config.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import { resolveNewProjectsRoot } from "./newProjectsDirectory.ts";
+import { defaultNewProjectsRoot, resolveNewProjectsRoot } from "./newProjectsDirectory.ts";
 import * as ProjectService from "./ProjectService.ts";
 
 export class ScratchUnavailableError extends Schema.TaggedError<ScratchUnavailableError>()(
@@ -87,7 +87,19 @@ export class NamedProjectCreateError extends Schema.TaggedError<NamedProjectCrea
   }
 }
 
-export type NamedProjectError = NamedProjectFolderError | NamedProjectCreateError;
+export class NamedProjectSettingsError extends Schema.TaggedError<NamedProjectSettingsError>()(
+  "NamedProjectSettingsError",
+  { cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return "Failed to read where new projects go.";
+  }
+}
+
+export type NamedProjectError =
+  | NamedProjectFolderError
+  | NamedProjectCreateError
+  | NamedProjectSettingsError;
 
 export class ManagedProjectFolders extends Context.Service<
   ManagedProjectFolders,
@@ -346,23 +358,25 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const namedProjectsRoot = path.resolve(config.baseDir, "projects");
+  const namedProjectsRoot = defaultNewProjectsRoot(
+    config.baseDir,
+    path,
+    yield* HostProcess.HomeDirectory,
+  );
 
   // Read at each creation, so a changed setting applies without a restart.
   const currentNamedProjectsRoot = Effect.fn("ManagedProjectFolders.currentNamedProjectsRoot")(
     function* () {
       if (Option.isNone(serverSettings)) return namedProjectsRoot;
       const settings = yield* serverSettings.value.getSettings.pipe(
-        Effect.orElseSucceed(() => null),
+        Effect.mapError((cause) => new NamedProjectSettingsError({ cause })),
       );
-      return settings === null
-        ? namedProjectsRoot
-        : resolveNewProjectsRoot(
-            settings.newProjectsDirectory,
-            namedProjectsRoot,
-            path,
-            yield* HostProcess.HomeDirectory,
-          );
+      return resolveNewProjectsRoot(
+        settings.newProjectsDirectory,
+        namedProjectsRoot,
+        path,
+        yield* HostProcess.HomeDirectory,
+      );
     },
   );
 
