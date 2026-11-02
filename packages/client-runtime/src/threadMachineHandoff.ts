@@ -57,7 +57,7 @@ export type HandoffGitStatus = Pick<
   VcsStatusResult,
   "isRepo" | "refName" | "isDefaultRef" | "hasWorkingTreeChanges" | "hasUpstream" | "aheadCount"
 > & {
-  readonly workingTree: { readonly files: ReadonlyArray<unknown> };
+  readonly workingTree: { readonly files: ReadonlyArray<{ readonly path: string }> };
   /** Whether the repository names its default branch (the remote's HEAD); false guesses by name. */
   readonly defaultBranchKnown: boolean;
   /** What the branch is compared with, which the new worktree keeps for pull requests. */
@@ -81,7 +81,12 @@ export type HandoffCodePlan =
       /** The branch that holds the work once the steps below have run. */
       readonly branch: string;
       readonly createBranch: boolean;
-      readonly commit: { readonly fileCount: number; readonly message: string } | null;
+      readonly commit: {
+        readonly fileCount: number;
+        readonly message: string;
+        /** The files the user was shown, sorted: what the plan asks to commit. */
+        readonly paths: ReadonlyArray<string>;
+      } | null;
       /** What the branch is compared with in pull requests; the new worktree keeps it. */
       readonly comparisonBase: string | null;
     };
@@ -331,6 +336,7 @@ function planCode(input: {
     ? {
         fileCount: Math.max(git.workingTree.files.length, 1),
         message: handoffCommitMessage(input.machineLabel),
+        paths: git.workingTree.files.map((file) => file.path).sort(),
       }
     : null;
   const comparisonBase = git.branchChanges?.baseRef ?? null;
@@ -360,7 +366,9 @@ export function isSameHandoffCode(planned: HandoffCodePlan, fresh: HandoffCodePl
   return (
     planned.branch === fresh.branch &&
     planned.createBranch === fresh.createBranch &&
-    (planned.commit === null) === (fresh.commit === null)
+    (planned.commit === null) === (fresh.commit === null) &&
+    // Changes the user did not see listed are not changes they agreed to push.
+    (planned.commit?.paths.join("\0") ?? "") === (fresh.commit?.paths.join("\0") ?? "")
   );
 }
 

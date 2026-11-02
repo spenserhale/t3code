@@ -29,7 +29,11 @@ source and settles it once the first message is on the target
 ([`threadMachineHandoffSettle`](../../apps/web/src/lib/threadMachineHandoffSettle.ts)).
 The target's worktree is made when the handoff runs, not on the first send,
 because the launch path has one ref for both the start point and the branch a
-pull request compares with, and cannot track a branch of the same name.
+pull request compares with, and cannot track a branch of the same name. The
+target's remote-tracking refs may be old and no command fetches a named remote,
+so the new worktree fetches the remote it tracks (`vcs.pull`) and the client
+checks it holds the pushed commit (`review.getBranchCommits`) before the draft
+opens.
 
 [Environment ID initialization](../../apps/server/src/environment/ServerEnvironment.ts)
 must publish a complete ID atomically. Repair of an empty ID file retains a
