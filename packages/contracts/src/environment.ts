@@ -214,6 +214,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   linkedThreadRefreshes: Schema.optionalKey(Schema.Boolean),
   /** Answers `issues.linkedThreads`, the threads an issue is linked to. */
   issueLinkedThreads: Schema.optionalKey(Schema.Boolean),
+  /** Server answers the jira.* requests. Whether Jira is set up is a separate question: jira.status. */
+  jiraIssues: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

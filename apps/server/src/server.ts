@@ -212,6 +212,9 @@ import * as AntigravityUsage from "./provider/Drivers/AntigravityUsage.ts";
 import { MuseUsageHome } from "@t3tools/provider-muse/server";
 import * as CursorAccountReader from "@t3tools/provider-cursor/server/CursorAccountReader";
 import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsageAccounts";
+import * as JiraClient from "./jira/JiraClient.ts";
+import * as JiraCredentials from "./jira/JiraCredentials.ts";
+import * as JiraService from "./jira/JiraService.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as CodexUsageHistory from "./usage/CodexUsageHistory.ts";
 import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
@@ -319,6 +322,12 @@ const layerUsage = UsageService.layer.pipe(
     ).pipe(Layer.provide(ProviderHostLive.layer.pipe(Layer.provide(ServerSecretStore.layer)))),
   ),
   Layer.provide(layerServerSettings),
+);
+
+const layerJira = JiraService.layer.pipe(
+  Layer.provide(JiraClient.layer),
+  Layer.provide(JiraCredentials.layer),
+  Layer.provide(ServerSecretStore.layer),
 );
 
 const layerResourceDiagnostics = Layer.mergeAll(
@@ -813,6 +822,7 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
 );
 
 const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
+  Layer.provideMerge(layerJira),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   // The same layer the event sink uses; memoized, subscriptions and batch ranking share it.
