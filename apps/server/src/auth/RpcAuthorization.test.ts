@@ -16,6 +16,7 @@ import {
   AuthTerminalOperateScope,
   WS_METHODS,
   WsRpcGroup,
+  clientRpcRequiredScopes,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -49,6 +50,31 @@ describe("RPC authorization scopes", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.serverPrepareTriage)).toBe(
       AuthOrchestrationOperateScope,
     );
+  });
+
+  it("keeps Jira credentials behind settings scope and Jira writes behind source control scope", () => {
+    const writes = {
+      [WS_METHODS.jiraConfigure]: AuthSettingsWriteScope,
+      [WS_METHODS.jiraDisconnect]: AuthSettingsWriteScope,
+      [WS_METHODS.jiraTransition]: AuthSourceControlWriteScope,
+      [WS_METHODS.jiraAddComment]: AuthSourceControlWriteScope,
+    } as const;
+    for (const [method, scope] of Object.entries(writes)) {
+      expect(requiredScopeForRpcMethod(method)).toBe(scope);
+      // The client refuses a write the server would refuse.
+      expect(clientRpcRequiredScopes(method, {})).toEqual([scope]);
+    }
+    for (const method of [
+      WS_METHODS.jiraStatus,
+      WS_METHODS.jiraListProjects,
+      WS_METHODS.jiraSearch,
+      WS_METHODS.jiraGetIssue,
+      WS_METHODS.jiraListTransitions,
+      WS_METHODS.jiraLookupIssues,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+      expect(clientRpcRequiredScopes(method, {})).toEqual([]);
+    }
   });
 
   it("separates passive terminal observation from operations that can change a shell", () => {
