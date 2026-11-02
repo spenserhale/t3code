@@ -23,6 +23,8 @@ const JiraThreadStart = Schema.Struct({
   title: Schema.String,
   /** The branch for the thread's new worktree, when it was asked to have one. */
   branch: Schema.NullOr(Schema.String),
+  /** Which thread of a multi-model send this is, so a retry of it finds its earlier branch. */
+  fanoutKey: Schema.optional(Schema.String),
   startedAt: Schema.Number,
 });
 export type JiraThreadStart = typeof JiraThreadStart.Type;
@@ -153,20 +155,18 @@ export function followUpToRename(
   return retryInMs === undefined ? "keep" : { retryInMs };
 }
 
-/** The registered branch for the first thread, and the next free numbered name for each other. */
-export function fanoutBranches(
-  base: string,
-  count: number,
-  takenElsewhere: ReadonlySet<string>,
-): ReadonlyArray<string> {
-  const used = new Set(takenElsewhere).add(base);
-  const branches = [base];
-  for (let index = 1; index < count; index += 1) {
-    const next = unusedBranchName(base, used);
-    used.add(next);
-    branches.push(next);
-  }
-  return branches;
+/**
+ * The branch for one thread of a multi-model send: the one it had on an earlier attempt while that
+ * is still free, else the first free name from the draft's own. Names never start over from the
+ * draft's branch, which an earlier thread of the send may hold by now.
+ */
+export function branchForFanoutChild(input: {
+  readonly base: string;
+  readonly previous: string | null;
+  readonly taken: ReadonlySet<string>;
+}): string {
+  if (input.previous !== null && !input.taken.has(input.previous)) return input.previous;
+  return unusedBranchName(input.base, input.taken);
 }
 
 /** Branches the unsent starts on this device have already claimed. */
@@ -179,44 +179,70 @@ export function pendingStartBranches(): ReadonlySet<string> {
 }
 
 interface JiraFanout {
-  /** Registers child `index` for its title and returns the worktree branch it should get. */
-  readonly adopt: (index: number, childThreadId: ThreadId) => { readonly branch?: string };
-  /** Drops the draft's own registration, once every child has started. */
+  /**
+   * Registers one thread of the send for its title and, when the draft was to have a worktree,
+   * picks the branch it gets. `childKey` names the model it runs, the same on every attempt.
+   */
+  readonly adopt: (
+    childKey: string,
+    childThreadId: ThreadId,
+  ) => Promise<{ readonly branch?: string }>;
+  /** Drops the draft's own registration, once every thread has started. */
   readonly finish: () => void;
 }
 
-const NO_FANOUT: JiraFanout = { adopt: () => ({}), finish: () => {} };
+const NO_FANOUT: JiraFanout = { adopt: () => Promise.resolve({}), finish: () => {} };
+
+const readStarts = () => readLocalStorageValue(STORAGE_KEY, NO_STARTS, StartsSchema);
 
 /**
- * A send to several models starts one new thread per model, so the draft's registration cannot
- * follow any of them. Each child is registered for the same title, and when the draft was to have
- * a worktree each gets a branch of its own: the registered one first, then numbered ones.
+ * Each thread of a multi-model send gets the draft's title and, if the draft had a worktree, its
+ * own branch: against the repository (read once), other claims, and its earlier attempt's name.
+ * Nothing awaits between choosing a name and claiming it, so threads started together differ.
  */
-export function planJiraFanout(parentThreadId: ThreadId, count: number): JiraFanout {
-  const starts = readLocalStorageValue(STORAGE_KEY, NO_STARTS, StartsSchema);
-  const parent = starts.find((entry) => entry.threadId === parentThreadId);
+export function planJiraFanout(
+  parentThreadId: ThreadId,
+  readExisting: (wanted: string) => Promise<ReadonlySet<string>>,
+): JiraFanout {
+  const parent = readStarts().find((entry) => entry.threadId === parentThreadId);
   if (parent === undefined) return NO_FANOUT;
-  const branches =
-    parent.branch === null
-      ? null
-      : fanoutBranches(
-          parent.branch,
-          count,
-          new Set(
-            starts.flatMap((entry) =>
-              entry.threadId === parentThreadId || entry.branch === null ? [] : [entry.branch],
-            ),
-          ),
-        );
+  const parentBranch = parent.branch;
+  let existing: Promise<ReadonlySet<string>> | undefined;
+  const readOnce = (wanted: string) =>
+    (existing ??= readExisting(wanted).catch((): ReadonlySet<string> => new Set()));
   return {
-    adopt: (index, childThreadId) => {
-      const branch = branches?.[index] ?? null;
+    adopt: async (childKey, childThreadId) => {
+      const fanoutKey = `${parentThreadId}\n${childKey}`;
+      const repositoryBranches = parentBranch === null ? null : await readOnce(parentBranch);
+      const starts = readStarts();
+      const earlier = starts.find((entry) => entry.fanoutKey === fanoutKey);
+      const branch =
+        parentBranch === null || repositoryBranches === null
+          ? null
+          : branchForFanoutChild({
+              base: parentBranch,
+              previous: earlier?.branch ?? null,
+              taken: new Set([
+                ...repositoryBranches,
+                ...starts.flatMap((entry) =>
+                  entry.threadId === parentThreadId ||
+                  entry.fanoutKey === fanoutKey ||
+                  entry.branch === null
+                    ? []
+                    : [entry.branch],
+                ),
+              ]),
+            });
+      if (earlier !== undefined && earlier.threadId !== childThreadId) {
+        forgetJiraThreadStart(earlier.threadId);
+      }
       registerJiraThreadStart({
         environmentId: parent.environmentId,
         threadId: childThreadId,
         issueKey: parent.issueKey,
         title: parent.title,
         branch,
+        fanoutKey,
       });
       return branch === null ? {} : { branch };
     },
