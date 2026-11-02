@@ -61,6 +61,16 @@ describe("recording Limits history", () => {
     expect(readUsageLimitHistory()).toEqual(history);
   });
 
+  it("keeps where a cleared window's spending is counted from, across a read", () => {
+    recordUsageLimitHistory([account(60, read)], read);
+    const later = read + 2 * 3_600_000;
+    const history = recordUsageLimitHistory([account(0, later)], later);
+    expect(history[series]![1]!.baseline).toEqual([later, 0]);
+    // Another page, or a reload, reads the stored text back.
+    expect(readUsageLimitHistory()[series]![1]!.baseline).toEqual([later, 0]);
+    expect(JSON.parse(values.get(key)!)[series][1].baseline).toEqual([later, 0]);
+  });
+
   it("writes nothing when a look adds nothing", () => {
     recordUsageLimitHistory([account(10, read)], read);
     expect(setItem).toHaveBeenCalledTimes(1);

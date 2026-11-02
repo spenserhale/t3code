@@ -6,7 +6,13 @@
  */
 import type { ServerProviderUsageWindow } from "@t3tools/contracts";
 
-import { type ActiveTimeline, type LimitSchedule, limitTimeline } from "./usageLimitSchedule.ts";
+import type { LimitReading } from "./usageLimitHistory.ts";
+import {
+  type ActiveTimeline,
+  type LimitSchedule,
+  type WeekdayWeights,
+  limitTimeline,
+} from "./usageLimitSchedule.ts";
 import { type LimitPace, formatDuration } from "./usageLimits.ts";
 
 const MINUTE = 60_000;
@@ -53,31 +59,59 @@ export function windowSpan(window: ServerProviderUsageWindow): WindowSpan | null
   return window.kind === "monthly" ? { start: oneMonthBefore(end), end } : null;
 }
 
+/** What changes where a window's spending is judged from, and against what. */
+export interface PaceDetail {
+  /** Set when a reset credit cleared the window early: spending is counted from this reading. */
+  readonly baseline?: LimitReading | undefined;
+  /** The usual spend by weekday. When set, even spending follows it instead of flat counted time. */
+  readonly weights?: WeekdayWeights | null | undefined;
+}
+
 export interface TimedWindow {
   readonly span: WindowSpan;
+  /** Where counting starts: the window's start, or the clearing when one fell inside it. */
+  readonly startAt: number;
+  /** What was already spent at `startAt`. */
+  readonly startUsed: number;
+  /** The reference line: how counted time, or the usual pattern, accrues from `startAt` to the reset. */
   readonly timeline: ActiveTimeline;
+  /** Whether the line follows the usual pattern or spreads evenly over counted time. */
+  readonly reference: "pattern" | "even";
 }
+
+const clampPercent = (value: number) => Math.max(0, Math.min(100, value));
 
 /** The window with the time that counts in it; null when it has no span or none of it counts. */
 export function timedWindow(
   window: ServerProviderUsageWindow,
   schedule: LimitSchedule | undefined,
+  detail?: PaceDetail,
 ): TimedWindow | null {
   const span = windowSpan(window);
   if (span === null) return null;
-  const timeline = limitTimeline(schedule, span.start, span.end);
-  return timeline.total > 0 ? { span, timeline } : null;
+  const baseline = detail?.baseline;
+  const cleared = baseline !== undefined && baseline[0] > span.start && baseline[0] < span.end;
+  const startAt = cleared ? baseline[0] : span.start;
+  const startUsed = cleared ? clampPercent(baseline[1]) : 0;
+  const weights = detail?.weights ?? undefined;
+  let timeline = limitTimeline(schedule, startAt, span.end, weights);
+  let reference: TimedWindow["reference"] = weights ? "pattern" : "even";
+  // A pattern with nothing on the days that count says nothing about them.
+  if (weights && !(timeline.total > 0)) {
+    timeline = limitTimeline(schedule, startAt, span.end);
+    reference = "even";
+  }
+  return timeline.total > 0 ? { span, startAt, startUsed, timeline, reference } : null;
 }
-
-const clampPercent = (value: number) => Math.max(0, Math.min(100, value));
 
 /** The share of a window's counted time that has passed, 0 to 1; null when it cannot be told. */
 export function scheduledElapsedShare(
   window: ServerProviderUsageWindow,
   now: number,
   schedule?: LimitSchedule,
+  detail?: PaceDetail,
 ): number | null {
-  const timed = timedWindow(window, schedule);
+  const timed = timedWindow(window, schedule, detail);
   return timed === null
     ? null
     : Math.max(0, Math.min(1, timed.timeline.massBefore(now) / timed.timeline.total));
@@ -90,8 +124,10 @@ export type PaceOutlook =
 
 export interface WindowPace {
   readonly state: LimitPace;
-  /** What even spending would have used by now. */
+  /** What spending on the reference line would have used by now. */
   readonly expectedUsedPercent: number;
+  /** The line it was judged against: the usual pattern, or even spending over counted time. */
+  readonly reference: TimedWindow["reference"];
   /** Used minus expected, in points; positive is spending ahead of the schedule. */
   readonly gapPoints: number;
   /** What the pace so far means for the rest of the window; null for a pool of accounts. */
@@ -106,27 +142,29 @@ function judge(usedPercent: number, expectedPercent: number): LimitPace {
 }
 
 /**
- * The pace of a window now, judged against the time that counts. Null when
- * the reset is unknown, nothing in the window counts, it has run less than
- * three percent of its counted time, or it already reset.
+ * The pace of a window now, against its reference line; null when the reset is
+ * unknown, nothing counts, under three percent of the counted time (from a
+ * clearing, if any) has run, or it reset. The outlook follows the same line.
  */
 export function windowPace(
   window: ServerProviderUsageWindow,
   now: number,
   schedule?: LimitSchedule,
+  detail?: PaceDetail,
 ): WindowPace | null {
-  const timed = timedWindow(window, schedule);
+  const timed = timedWindow(window, schedule, detail);
   if (timed === null || timed.span.end <= now) return null;
-  const { timeline } = timed;
+  const { timeline, startUsed } = timed;
   const elapsed = timeline.massBefore(now);
   const share = Math.max(0, Math.min(1, elapsed / timeline.total));
   if (share < MIN_ELAPSED_SHARE) return null;
   const used = clampPercent(window.usedPercent);
-  const expected = share * 100;
+  const expected = startUsed + (100 - startUsed) * share;
+  const spent = Math.max(0, used - startUsed);
   let outlook: PaceOutlook = { kind: "lasts" };
   if (used >= 100) outlook = { kind: "exhausted" };
-  else if (used > 0) {
-    const needed = ((100 - used) / used) * elapsed;
+  else if (spent > 0) {
+    const needed = ((100 - used) / spent) * elapsed;
     if (elapsed + needed < timeline.total) {
       outlook = { kind: "runsOut", inMs: Math.max(0, timeline.timeAtMass(elapsed + needed) - now) };
     }
@@ -134,6 +172,7 @@ export function windowPace(
   return {
     state: judge(used, expected),
     expectedUsedPercent: expected,
+    reference: timed.reference,
     gapPoints: used - expected,
     outlook,
   };
@@ -142,42 +181,58 @@ export function windowPace(
 /**
  * The pace of the windows pooled in one bar. One account keeps its own
  * outlook. Several are judged on the windows that have a clock, by their mean
- * spend against their mean share of counted time; the pool has no outlook.
+ * spend against their mean expected spend; the pool has no outlook.
  */
 export function pooledPace(
-  entries: ReadonlyArray<{
-    readonly window: ServerProviderUsageWindow;
-    readonly schedule?: LimitSchedule | undefined;
-  }>,
+  entries: ReadonlyArray<
+    PaceDetail & {
+      readonly window: ServerProviderUsageWindow;
+      readonly schedule?: LimitSchedule | undefined;
+    }
+  >,
   now: number,
 ): WindowPace | null {
-  const timed = entries.flatMap(({ window, schedule }) => {
-    const share = scheduledElapsedShare(window, now, schedule);
-    const span = windowSpan(window);
-    return share === null || span === null || span.end <= now
-      ? []
-      : [{ window, schedule, used: clampPercent(window.usedPercent), share }];
+  const timed = entries.flatMap((entry) => {
+    const window = timedWindow(entry.window, entry.schedule, entry);
+    if (window === null || window.span.end <= now) return [];
+    const share = Math.max(0, Math.min(1, window.timeline.massBefore(now) / window.timeline.total));
+    return [
+      {
+        entry,
+        reference: window.reference,
+        share,
+        used: clampPercent(entry.window.usedPercent),
+        expected: window.startUsed + (100 - window.startUsed) * share,
+      },
+    ];
   });
   if (timed.length === 0) return null;
-  if (timed.length === 1) return windowPace(timed[0]!.window, now, timed[0]!.schedule);
-  const share = timed.reduce((sum, entry) => sum + entry.share, 0) / timed.length;
-  if (share < MIN_ELAPSED_SHARE) return null;
-  const used = timed.reduce((sum, entry) => sum + entry.used, 0) / timed.length;
+  if (timed.length === 1) {
+    const { entry } = timed[0]!;
+    return windowPace(entry.window, now, entry.schedule, entry);
+  }
+  const mean = (pick: (item: (typeof timed)[number]) => number) =>
+    timed.reduce((sum, item) => sum + pick(item), 0) / timed.length;
+  if (mean((item) => item.share) < MIN_ELAPSED_SHARE) return null;
+  const used = mean((item) => item.used);
+  const expected = mean((item) => item.expected);
   return {
-    state: judge(used, share * 100),
-    expectedUsedPercent: share * 100,
-    gapPoints: used - share * 100,
+    state: judge(used, expected),
+    expectedUsedPercent: expected,
+    reference: timed.every((item) => item.reference === "pattern") ? "pattern" : "even",
+    gapPoints: used - expected,
     outlook: null,
   };
 }
 
-/** Where the pace tick sits on a bar that shows what is left: the share even spending would have left. */
+/** Where the pace tick sits on a bar that shows what is left: the share the reference line would have left. */
 export function scheduledPaceRemaining(
   window: ServerProviderUsageWindow,
   now: number,
   schedule?: LimitSchedule,
+  detail?: PaceDetail,
 ): number | null {
-  const pace = windowPace(window, now, schedule);
+  const pace = windowPace(window, now, schedule, detail);
   return pace === null ? null : Math.round(100 - pace.expectedUsedPercent);
 }
 

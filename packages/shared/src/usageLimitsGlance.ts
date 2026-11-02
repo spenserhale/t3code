@@ -13,6 +13,8 @@ import {
   labelLimitAccounts,
   resolveLimitSchedule,
 } from "./usageLimitGroups.ts";
+import { type DailyTokens, paceDetailFor } from "./usageLimitForecast.ts";
+import type { LimitHistory } from "./usageLimitHistory.ts";
 import { type WindowPace, windowPace } from "./usageLimitPace.ts";
 import {
   type LimitAccount,
@@ -85,6 +87,13 @@ export function collectLimitGlance(
   groups: LimitGroupState,
   now: number,
   nameOf: (account: LimitAccount) => string,
+  /** What pace is judged by beyond the schedule: recorded clearings, and token history for the usual pattern. */
+  extras: {
+    readonly history?: LimitHistory | undefined;
+    readonly dailyTokens?:
+      | ((account: LimitAccount) => readonly DailyTokens[] | undefined)
+      | undefined;
+  } = {},
 ): LimitGlance {
   const section = (group: LimitGroup | null, members: readonly LimitAccount[]) => {
     const pools = collectLimitPools(members, now);
@@ -134,6 +143,7 @@ export function collectLimitGlance(
         }
         const details =
           account.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
+        const schedule = resolveLimitSchedule(groups, account);
         return [
           {
             account,
@@ -142,7 +152,12 @@ export function collectLimitGlance(
             windowLabel: details?.label ?? window.label,
             remainingPercent: remainingPercent(window),
             resetsIn: formatResetsIn(window, now),
-            pace: windowPace(window, now, resolveLimitSchedule(groups, account)),
+            pace: windowPace(
+              window,
+              now,
+              schedule,
+              paceDetailFor({ account, window, schedule, now, ...extras }),
+            ),
           },
         ];
       }),

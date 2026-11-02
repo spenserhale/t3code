@@ -11,6 +11,7 @@ import {
   limitGroupOf,
   MAX_LIMIT_GROUP_NAME_LENGTH,
   limitSubscriptionId,
+  migrateLegacyAccountKeys,
   resolveLimitSchedule,
   setLimitGroupsEnabled,
   setLimitSchedule,
@@ -323,6 +324,124 @@ describe("schedules", () => {
     });
     expect(assignLimitGroup(assignLimitGroup(state, "a", "Work"), "a", "").schedules).toEqual({
       "named:Work": WEEKDAYS,
+    });
+  });
+});
+
+describe("one email in two workspaces", () => {
+  const weekly = {
+    id: "primary",
+    kind: "weekly",
+    label: "Weekly",
+    usedPercent: 8,
+    windowDurationMins: 10_080,
+    resetsAt: "2026-09-08T12:00:00.000Z",
+  } as const;
+  const login = (instanceId: string, workspaceId?: string) => ({
+    instanceId: ProviderInstanceId.make(instanceId),
+    driver: codex,
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready" as const,
+    auth: {
+      status: "authenticated" as const,
+      email: "same@example.com",
+      ...(workspaceId ? { workspaceId } : {}),
+    },
+    checkedAt,
+    models: [],
+    slashCommands: [],
+    skills: [],
+    usageLimits: { checkedAt, windows: [weekly] },
+  });
+  const accountsOf = (...logins: Array<ReturnType<typeof login>>) =>
+    collectLimitAccounts(
+      new Map([
+        [
+          EnvironmentId.make("laptop"),
+          { entry: { target: { label: "Laptop" } }, serverConfig: { providers: logins } },
+        ],
+      ]) satisfies LimitPresentations,
+    );
+  const business = "codex:same@example.com:ws-business";
+  const plus = "codex:same@example.com:ws-plus";
+
+  it("names each workspace's subscription apart, and the same wherever it is reported", () => {
+    const accounts = accountsOf(login("business", "ws-business"), login("personal", "ws-plus"));
+    expect(accounts.map(limitSubscriptionId)).toEqual([business, plus]);
+    expect(
+      accountsOf(login("personal", "ws-plus"), login("business", "ws-business"))
+        .map(limitSubscriptionId)
+        .sort(),
+    ).toEqual([business, plus]);
+    // A login the page cannot tell which workspace it is keeps to its own instance.
+    const unplaced = accountsOf(
+      login("business", "ws-business"),
+      login("personal", "ws-plus"),
+      login("other"),
+    );
+    expect(unplaced.map(limitSubscriptionId)).toEqual([business, plus, "laptop:other"]);
+  });
+
+  it("lets one workspace be in a group and keep its own schedule", () => {
+    const accounts = accountsOf(login("business", "ws-business"), login("personal", "ws-plus"));
+    const state = setLimitSchedule(
+      assignLimitGroup(NO_LIMIT_GROUPS, business, "Work"),
+      limitAccountScheduleKey(plus),
+      WEEKDAYS,
+    );
+    expect(summary(groupLimitAccounts(accounts, state.assignments))).toEqual([
+      ["named", "Work", ["laptop:business"]],
+      ["email", "same@example.com", ["laptop:personal"]],
+    ]);
+    expect(accounts.map((entry) => resolveLimitSchedule(state, entry))).toEqual([
+      undefined,
+      WEEKDAYS,
+    ]);
+  });
+
+  describe("assignments made before accounts carried a workspace", () => {
+    const accounts = accountsOf(login("business", "ws-business"), login("personal", "ws-plus"));
+    const legacy = {
+      enabled: true,
+      assignments: { "codex:same@example.com": "Work", "claudeAgent:other@example.com": "Home" },
+      schedules: {
+        [limitAccountScheduleKey("codex:same@example.com")]: WEEKDAYS,
+        "named:Work": WORK_HOURS,
+      },
+    };
+
+    it("pass to every workspace under that email, which can then be changed apart", () => {
+      const migrated = migrateLegacyAccountKeys(legacy, accounts);
+      expect(migrated.assignments).toEqual({
+        [business]: "Work",
+        [plus]: "Work",
+        "claudeAgent:other@example.com": "Home",
+      });
+      expect(migrated.schedules).toEqual({
+        [limitAccountScheduleKey(business)]: WEEKDAYS,
+        [limitAccountScheduleKey(plus)]: WEEKDAYS,
+        "named:Work": WORK_HOURS,
+      });
+      expect(assignLimitGroup(migrated, plus, "Home").assignments[business]).toBe("Work");
+    });
+
+    it("change nothing a second time, or where no account has changed identity", () => {
+      const migrated = migrateLegacyAccountKeys(legacy, accounts);
+      expect(migrateLegacyAccountKeys(migrated, accounts)).toBe(migrated);
+      expect(migrateLegacyAccountKeys(NO_LIMIT_GROUPS, accounts)).toBe(NO_LIMIT_GROUPS);
+      const plain = [account({ key: "a", email: "me@acme.dev" })];
+      expect(migrateLegacyAccountKeys(legacy, plain)).toBe(legacy);
+    });
+
+    it("keep a key that is another account's own identity, and never overwrite a choice already made", () => {
+      const kept = { ...accounts[0]!, identity: "codex:same@example.com" };
+      const state = migrateLegacyAccountKeys(legacy, [kept, accounts[1]!]);
+      expect(state.assignments["codex:same@example.com"]).toBe("Work");
+      expect(state.assignments[plus]).toBe("Work");
+      const chosen = { ...legacy, assignments: { ...legacy.assignments, [business]: "Home" } };
+      expect(migrateLegacyAccountKeys(chosen, accounts).assignments[business]).toBe("Home");
     });
   });
 });

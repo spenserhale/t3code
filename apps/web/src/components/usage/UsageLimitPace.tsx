@@ -1,8 +1,12 @@
+import type { ServerProviderUsageWindow } from "@t3tools/contracts";
+import type { DailyTokens } from "@t3tools/shared/usageLimitForecast";
+import { paceDetailFor } from "@t3tools/shared/usageLimitForecast";
 import {
   NO_LIMIT_GROUPS,
   resolveLimitSchedule,
   type LimitGroupState,
 } from "@t3tools/shared/usageLimitGroups";
+import { type LimitHistory, NO_LIMIT_HISTORY } from "@t3tools/shared/usageLimitHistory";
 import {
   paceExpected,
   paceLabel,
@@ -17,25 +21,58 @@ import { createContext, use } from "react";
 
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
-/** The groups, with their schedules, for the bars and cards that judge pace against them. */
-export const LimitGroupsContext = createContext<LimitGroupState>(NO_LIMIT_GROUPS);
-
-/** When this account is meant to be used; undefined counts every hour. */
-export function useLimitSchedule(account: LimitAccount) {
-  return resolveLimitSchedule(use(LimitGroupsContext), account);
+/** What pace is judged by, for the bars and cards that show it. */
+export interface LimitPaceInputs {
+  /** The groups, with their schedules. */
+  readonly groups: LimitGroupState;
+  /** The recorded readings, which know where a reset credit cleared a window. */
+  readonly history: LimitHistory;
+  /** Daily token totals for an account's provider, which give the usual pattern. */
+  readonly dailyTokens: (account: LimitAccount) => readonly DailyTokens[] | undefined;
 }
 
-/** The pace of a pooled bar, each account judged against its own schedule. */
+export const LimitPaceContext = createContext<LimitPaceInputs>({
+  groups: NO_LIMIT_GROUPS,
+  history: NO_LIMIT_HISTORY,
+  dailyTokens: () => undefined,
+});
+
+/** When this account is meant to be used, and what else its pace is judged by. */
+export function useWindowPaceInputs(
+  account: LimitAccount,
+  window: ServerProviderUsageWindow,
+  now: number,
+) {
+  const { groups, history, dailyTokens } = use(LimitPaceContext);
+  const schedule = resolveLimitSchedule(groups, account);
+  return {
+    schedule,
+    detail: paceDetailFor({ account, window, schedule, now, history, dailyTokens }),
+  };
+}
+
+/** The pace of a pooled bar, each account judged against its own schedule and reference line. */
 export function usePoolPace(pool: LimitPoolWindow, now: number): WindowPace | null {
-  const groups = use(LimitGroupsContext);
+  const { groups, history, dailyTokens } = use(LimitPaceContext);
   return pooledPace(
-    pool.members.map(({ account, window }) => ({
-      window,
-      schedule: resolveLimitSchedule(groups, account),
-    })),
+    pool.members.map(({ account, window }) => {
+      const schedule = resolveLimitSchedule(groups, account);
+      return {
+        window,
+        schedule,
+        ...paceDetailFor({ account, window, schedule, now, history, dailyTokens }),
+      };
+    }),
     now,
   );
 }
+
+/** The line pace is judged against, as it is named in a row and in a sentence. */
+export const PACE_REFERENCE_NAME = { pattern: "Usual pattern", even: "Even spending" } as const;
+export const PACE_REFERENCE_TEXT = {
+  pattern: "Against your usual pattern",
+  even: "Against even spending",
+} as const;
 
 const PACE_ICONS = {
   ahead: TrendingUpIcon,
@@ -52,7 +89,7 @@ export function PaceBadge({ pace }: { readonly pace: WindowPace }) {
         render={
           <span
             role="img"
-            aria-label={paceSummary(pace)}
+            aria-label={`${paceSummary(pace)} | ${PACE_REFERENCE_TEXT[pace.reference]}`}
             className="inline-flex text-muted-foreground"
           />
         }
@@ -64,6 +101,7 @@ export function PaceBadge({ pace }: { readonly pace: WindowPace }) {
           <span className="text-foreground">{paceLabel(pace)}</span>
           <span className="text-muted-foreground">{paceExpected(pace)}</span>
           {outlook ? <span className="text-muted-foreground">{outlook}</span> : null}
+          <span className="text-muted-foreground">{PACE_REFERENCE_TEXT[pace.reference]}</span>
         </div>
       </TooltipPopup>
     </Tooltip>
