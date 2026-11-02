@@ -24,6 +24,7 @@ import type { NewThreadHandler } from "../hooks/useHandleNewThread";
 import { resolveProjectDefaultProviderModelSelection } from "../providerInstances";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { orchestrationEnvironment } from "../state/orchestration";
+import { reviewEnvironment } from "../state/review";
 import { environmentServerConfigsAtom } from "../state/server";
 import { threadEnvironment } from "../state/threads";
 import { vcsActionManager, vcsEnvironment } from "../state/vcs";
@@ -103,15 +104,33 @@ function createTargetGitIo(environmentId: EnvironmentId, cwd: string): HandoffTa
       );
       return { upstreamRef: pulled.upstreamRef };
     },
-    status: async (worktreeCwd) =>
-      run("Reading the branch", () =>
+    status: async (worktreeCwd) => {
+      const status = await run("Reading the branch", () =>
         runAtomCommand(
           appAtomRegistry,
           vcsEnvironment.refreshStatus,
           { environmentId, input: { cwd: worktreeCwd } },
           { reportFailure: false },
         ),
-      ),
+      );
+      return {
+        hasUpstream: status.hasUpstream,
+        aheadCount: status.aheadCount,
+        behindCount: status.behindCount,
+        baseRef: status.branchChanges?.baseRef ?? null,
+      };
+    },
+    commits: async (worktreeCwd) => {
+      const read = await run("Reading the commits", () =>
+        runAtomCommand(
+          appAtomRegistry,
+          reviewEnvironment.readBranchCommits,
+          { environmentId, input: { cwd: worktreeCwd } },
+          { reportFailure: false },
+        ),
+      );
+      return { shas: read.commits.map((commit) => commit.sha), truncated: read.truncated };
+    },
     removeWorktree: async (path) => {
       await run("Removing the worktree", () =>
         runAtomCommand(
@@ -158,6 +177,18 @@ export function createThreadMachineHandoffIo(input: {
           ? "This thread is too large to attach as a file."
           : failureMessage(result, "Could not read this thread's conversation."),
       );
+    },
+    readTip: async () => {
+      const read = await runAtomCommand(
+        appAtomRegistry,
+        reviewEnvironment.readBranchCommits,
+        { environmentId: source.environmentId, input: { cwd } },
+        { reportFailure: false },
+      );
+      if (read._tag !== "Success") {
+        throw new Error(failureMessage(read, "Could not read this checkout's latest commit."));
+      }
+      return read.value.commits[0]?.sha ?? null;
     },
     createBranch: async (name) => {
       const created = await runAtomCommand(
@@ -208,9 +239,12 @@ export function createThreadMachineHandoffIo(input: {
           explainHandoffGitFailure(failure ?? failureMessage(result, "Could not push the branch.")),
         );
       }
-      return { upstreamBranch: result.value.push.upstreamBranch };
+      return {
+        upstreamBranch: result.value.push.upstreamBranch,
+        commitSha: result.value.commit.commitSha,
+      };
     },
-    prepareTarget: async ({ pushed, comparisonBase, onPhase }) => {
+    prepareTarget: async ({ pushed, comparisonBase, expectedCommit, onPhase }) => {
       if (plan.target.cwd === null) {
         throw new Error(`${plan.target.label} has no folder for this project.`);
       }
@@ -220,6 +254,7 @@ export function createThreadMachineHandoffIo(input: {
         branch: pushed.branch,
         remote: pushed.remote,
         comparisonBase,
+        expectedCommit,
         onPhase,
       });
     },

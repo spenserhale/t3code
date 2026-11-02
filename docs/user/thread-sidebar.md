@@ -75,16 +75,22 @@ first message there; **Undo** in the toast, or **Un-settle** on the thread, reve
   inside a larger repository. If it does not have one yet, the dialog offers **Add project to**
   that machine; if it has several, the dialog asks which to use.
 - The other machine must be able to reach the remote the branch was pushed to. The dialog checks
-  that it can see the branch before it opens the draft, and stops if it cannot.
+  that it can see the branch, fetches it there, and confirms the worktree holds the commit that was
+  pushed before it opens the draft. It stops if it cannot.
 - A branch of the same name that the other machine already has is used only if no worktree has it
-  checked out and it can catch up to the remote without a merge; otherwise the dialog stops and
-  leaves it alone.
+  checked out, it tracks that remote branch, it compares against the same base, and it can catch
+  up to the remote without a merge; otherwise the dialog stops and leaves it alone.
+- The files the dialog lists are the ones that are committed. If they change before the hand-off
+  starts, nothing is pushed and the dialog shows the new list for you to confirm.
 - A project without a git remote, or a thread without a project, hands over only the conversation,
   into a thread without a project on the other machine.
 - The thread must not be working or waiting on an approval. If the remote has newer commits on
   the branch, the push is refused and the dialog says so; pull, then hand off again.
 - If the source machine is away when you send, or the thread is busy, it is settled later; the
   hand-off is kept until it has been.
+- Sending to several models at once starts each one on its own worktree and branch, since a branch
+  can be checked out in one worktree only. The original thread is settled when the first of them
+  starts.
 - The conversation is a copy. The thread, its provider session and its checkpoints stay where they
   were, and the new thread starts a fresh provider session.
 
