@@ -5,10 +5,10 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
-  fanoutBranches,
+  branchForFanoutChild,
   followUpToRename,
   forgetJiraThreadStart,
   jiraWorktreeBranchFor,
@@ -171,67 +171,151 @@ describe("renameOutcome", () => {
   });
 });
 
-describe("fanoutBranches", () => {
-  it("keeps the registered branch for the first thread and numbers the rest", () => {
-    expect(fanoutBranches("PROJ-12-fix-login", 3, new Set())).toEqual([
-      "PROJ-12-fix-login",
-      "PROJ-12-fix-login-2",
-      "PROJ-12-fix-login-3",
-    ]);
+describe("branchForFanoutChild", () => {
+  const base = "PROJ-12-fix-login";
+
+  it("gives a child the first free name from the draft's branch", () => {
+    expect(branchForFanoutChild({ base, previous: null, taken: new Set() })).toBe(base);
+    expect(branchForFanoutChild({ base, previous: null, taken: new Set([base]) })).toBe(
+      `${base}-2`,
+    );
+    expect(
+      branchForFanoutChild({ base, previous: null, taken: new Set([base, `${base}-2`]) }),
+    ).toBe(`${base}-3`);
   });
 
-  it("steps over names other threads have claimed", () => {
-    expect(fanoutBranches("PROJ-12-fix-login", 3, new Set(["PROJ-12-fix-login-2"]))).toEqual([
-      "PROJ-12-fix-login",
-      "PROJ-12-fix-login-3",
-      "PROJ-12-fix-login-4",
-    ]);
+  it("keeps the name a child had on an earlier attempt while it is still free", () => {
+    expect(branchForFanoutChild({ base, previous: `${base}-2`, taken: new Set([base]) })).toBe(
+      `${base}-2`,
+    );
+  });
+
+  it("moves on from a name that has been taken since, rather than starting over", () => {
+    expect(
+      branchForFanoutChild({
+        base,
+        previous: `${base}-2`,
+        taken: new Set([base, `${base}-2`]),
+      }),
+    ).toBe(`${base}-3`);
   });
 });
 
 describe("planJiraFanout", () => {
+  const base = "PROJ-12-fix-the-login-redirect";
   const parent = ThreadId.make("draft-thread");
   const child = (index: number) => ThreadId.make(`child-${index}`);
+  const repository =
+    (...names: ReadonlyArray<string>) =>
+    () =>
+      Promise.resolve(new Set<string>(names));
+  const cleanUp = (...ids: ReadonlyArray<string>) => {
+    for (const id of ["draft-thread", "other-draft", ...ids])
+      forgetJiraThreadStart(ThreadId.make(id));
+  };
 
-  it("does nothing for a thread that was not started from an issue", () => {
-    const plan = planJiraFanout(ThreadId.make("unrelated"), 2);
-    expect(plan.adopt(0, child(0))).toEqual({});
+  it("does nothing for a thread that was not started from an issue", async () => {
+    const read = vi.fn(repository());
+    const plan = planJiraFanout(ThreadId.make("unrelated"), read);
+    expect(await plan.adopt("a", child(0))).toEqual({});
     expect(jiraWorktreeBranchFor(child(0))).toEqual({});
+    expect(read).not.toHaveBeenCalled();
     plan.finish();
   });
 
-  it("registers every child for its title and gives each a branch of its own", () => {
+  it("registers every child for its title and gives each a branch of its own, base first", async () => {
+    registerJiraThreadStart({ ...registration, threadId: parent });
+    const plan = planJiraFanout(parent, repository());
+    const branches = await Promise.all([
+      plan.adopt("a", child(0)),
+      plan.adopt("b", child(1)),
+      plan.adopt("c", child(2)),
+    ]);
+    expect(branches).toEqual([{ branch: base }, { branch: `${base}-2` }, { branch: `${base}-3` }]);
+    expect(jiraWorktreeBranchFor(child(2))).toEqual({ branch: `${base}-3` });
+    // The draft's own entry stays until every child has started, in case one is retried.
+    expect(jiraWorktreeBranchFor(parent)).toEqual({ branch: base });
+    plan.finish();
+    expect(jiraWorktreeBranchFor(parent)).toEqual({});
+    cleanUp("child-0", "child-1", "child-2");
+  });
+
+  it("reads the repository once for all the children", async () => {
+    registerJiraThreadStart({ ...registration, threadId: parent });
+    const read = vi.fn(repository());
+    const plan = planJiraFanout(parent, read);
+    await Promise.all([plan.adopt("a", child(0)), plan.adopt("b", child(1))]);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith(base);
+    cleanUp("child-0", "child-1");
+  });
+
+  it("steps over branches the repository already has, the draft's own included", async () => {
+    registerJiraThreadStart({ ...registration, threadId: parent });
+    const plan = planJiraFanout(parent, repository(base, `${base}-3`));
+    const branches = await Promise.all([plan.adopt("a", child(0)), plan.adopt("b", child(1))]);
+    expect(branches).toEqual([{ branch: `${base}-2` }, { branch: `${base}-4` }]);
+    cleanUp("child-0", "child-1");
+  });
+
+  it("steps over names other unsent starts have claimed", async () => {
     registerJiraThreadStart({ ...registration, threadId: parent });
     registerJiraThreadStart({
       ...registration,
       threadId: ThreadId.make("other-draft"),
-      branch: "PROJ-12-fix-the-login-redirect-2",
+      branch: `${base}-2`,
     });
-    const plan = planJiraFanout(parent, 3);
-    expect(plan.adopt(0, child(0))).toEqual({ branch: "PROJ-12-fix-the-login-redirect" });
-    expect(plan.adopt(1, child(1))).toEqual({ branch: "PROJ-12-fix-the-login-redirect-3" });
-    expect(plan.adopt(2, child(2))).toEqual({ branch: "PROJ-12-fix-the-login-redirect-4" });
-    expect(jiraWorktreeBranchFor(child(1))).toEqual({
-      branch: "PROJ-12-fix-the-login-redirect-3",
-    });
-    // The draft's own entry stays until every child has started, in case one has to be retried.
-    expect(jiraWorktreeBranchFor(parent)).toEqual({ branch: "PROJ-12-fix-the-login-redirect" });
-    plan.finish();
-    expect(jiraWorktreeBranchFor(parent)).toEqual({});
-    expect(jiraWorktreeBranchFor(child(2))).toEqual({
-      branch: "PROJ-12-fix-the-login-redirect-4",
-    });
-    for (const id of ["other-draft", "child-0", "child-1", "child-2"]) {
-      forgetJiraThreadStart(ThreadId.make(id));
-    }
+    const plan = planJiraFanout(parent, repository());
+    const branches = await Promise.all([plan.adopt("a", child(0)), plan.adopt("b", child(1))]);
+    expect(branches).toEqual([{ branch: base }, { branch: `${base}-3` }]);
+    cleanUp("child-0", "child-1");
   });
 
-  it("registers children of a thread that asked for no worktree without branches", () => {
-    registerJiraThreadStart({ ...registration, threadId: parent, branch: null });
-    const plan = planJiraFanout(parent, 2);
-    expect(plan.adopt(1, child(1))).toEqual({});
+  it("hands a retried child the name it had, and never the branch a sibling now holds", async () => {
+    registerJiraThreadStart({ ...registration, threadId: parent });
+    const first = planJiraFanout(parent, repository());
+    await first.adopt("a", child(0));
+    await first.adopt("b", child(1));
+    // The first child started; the second did not. The repository has the first one's branch.
+    const retry = planJiraFanout(parent, repository(base));
+    expect(await retry.adopt("b", child(9))).toEqual({ branch: `${base}-2` });
+    // One registration for the retried child, under the thread that is starting now.
     expect(jiraWorktreeBranchFor(child(1))).toEqual({});
+    expect(jiraWorktreeBranchFor(child(9))).toEqual({ branch: `${base}-2` });
+    expect(jiraWorktreeBranchFor(child(0))).toEqual({ branch: base });
+    cleanUp("child-0", "child-1", "child-9");
+  });
+
+  it("moves a retried child on when its name was taken in the meantime", async () => {
+    registerJiraThreadStart({ ...registration, threadId: parent });
+    const first = planJiraFanout(parent, repository());
+    await first.adopt("a", child(0));
+    await first.adopt("b", child(1));
+    const retry = planJiraFanout(parent, repository(base, `${base}-2`));
+    expect(await retry.adopt("b", child(9))).toEqual({ branch: `${base}-3` });
+    cleanUp("child-0", "child-1", "child-9");
+  });
+
+  it("still keeps clear of threads and unsent starts when the repository cannot be read", async () => {
+    registerJiraThreadStart({ ...registration, threadId: parent });
+    registerJiraThreadStart({
+      ...registration,
+      threadId: ThreadId.make("other-draft"),
+      branch: base,
+    });
+    const plan = planJiraFanout(parent, () => Promise.reject(new Error("offline")));
+    expect(await plan.adopt("a", child(0))).toEqual({ branch: `${base}-2` });
+    cleanUp("child-0");
+  });
+
+  it("registers children of a draft that asked for no worktree without branches or a read", async () => {
+    registerJiraThreadStart({ ...registration, threadId: parent, branch: null });
+    const read = vi.fn(repository());
+    const plan = planJiraFanout(parent, read);
+    expect(await plan.adopt("a", child(1))).toEqual({});
+    expect(jiraWorktreeBranchFor(child(1))).toEqual({});
+    expect(read).not.toHaveBeenCalled();
     plan.finish();
-    forgetJiraThreadStart(child(1));
+    cleanUp("child-1");
   });
 });

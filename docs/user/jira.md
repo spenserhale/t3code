@@ -10,7 +10,8 @@ your Atlassian email, and an API token created without scopes at
 [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens). T3 Code checks them
 with Jira before saving. The token stays on that environment's server and is never shown again.
 **Disconnect** removes it, and stays available when Jira has stopped accepting the saved token, so an
-expired one can be replaced or removed.
+expired one can be replaced or removed. A check that fails is shown even if an earlier one had
+worked.
 
 Each environment has its own Jira connection. **Jira** appears in the sidebar once one of your
 environments has it set up. The Jira page reads from the primary environment if Jira is set up
@@ -29,9 +30,10 @@ grouped by status category, and each row shows how many threads are linked to it
 loads the next page.
 
 Opening Jira from the sidebar returns to the filters and sort you last used. The list and the open
-issue refresh about every minute while the page is in view, and the refresh button asks Jira itself
-rather than the server's short memory of it. **Escape** closes the open issue, and then leaves the
-page. While you are typing in a field, it only lets go of the field.
+issue refresh about every minute while the page is in view, as do the status chips of linked
+threads anywhere in the app; neither refreshes while the window is hidden. The refresh button asks
+Jira itself rather than the server's short memory of it. **Escape** closes the open issue, and then
+leaves the page. While you are typing in a field, it only lets go of the field.
 
 Select an issue to read its description, its acceptance criteria and its comments, move it with the
 status menu, comment on it, open it in Jira, or copy its key. Acceptance criteria are shown when
@@ -47,8 +49,10 @@ the key, and **Link thread** restores it.
 
 - **Work on issue** opens a new thread in a project you choose (the one you used last for that Jira
   project is preselected), with the key, summary, link, description and acceptance criteria in the
-  composer. **New worktree** is on whenever the project is a Git repository, so the work happens on
-  a branch named after the key, such as `PROJ-123-fix-login-redirect`, or the next free
+  composer. Only projects whose environment reads this issue's Jira site are offered: with two
+  environments that each have their own Jira, a project on the other one would show `PROJ-1` as
+  that site's issue. **New worktree** is on whenever the project is a Git repository, so the work
+  happens on a branch named after the key, such as `PROJ-123-fix-login-redirect`, or the next free
   `PROJ-123-fix-login-redirect-2` when the repository or another thread already has that name. Start
   waits until the project has been checked; if the check fails, turn **New worktree** off to start
   without one. Once the first message has been sent, the thread is titled
@@ -59,8 +63,10 @@ the key, and **Link thread** restores it.
 - **Plan issue** opens a thread in plan mode, in a new worktree like **Work on issue**, with the
   issue and a request for a plan.
 - Sending the same draft to several models at once starts one thread per model. Each gets the same
-  title, and when the draft had a worktree each gets its own branch: `PROJ-123-fix-login-redirect`,
-  then `-2`, `-3` and so on.
+  title, and when the draft had a worktree each gets its own branch, checked against the
+  repository as for a single thread: `PROJ-123-fix-login-redirect`, then `-2`, `-3` and so on. A
+  model that is sent again after failing keeps the name it had, and never takes a branch another
+  model's thread now holds.
 - **Link thread** puts the key at the front of an existing thread's title. It lists the threads you
   can change, and with several Jira sites only those that use this one. The unlink button next to a
   linked thread takes it off again, and is unavailable where you cannot change threads.

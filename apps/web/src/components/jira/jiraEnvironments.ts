@@ -12,3 +12,15 @@ export function jiraEnvironmentForThread(
   if (configured.includes(threadEnvironmentId)) return threadEnvironmentId;
   return configured.length === 1 ? (configured[0] ?? null) : null;
 }
+
+/**
+ * Whether a thread on this environment reads its issue keys on the given Jira site: the one rule
+ * for where a thread or a project may be linked to an issue of that site.
+ */
+export function threadUsesJiraSite(
+  threadEnvironmentId: EnvironmentId,
+  configured: ReadonlyArray<EnvironmentId>,
+  jiraEnvironmentId: EnvironmentId,
+): boolean {
+  return jiraEnvironmentForThread(threadEnvironmentId, configured) === jiraEnvironmentId;
+}
