@@ -1,6 +1,7 @@
 import {
   JIRA_ISSUE_KEY_PATTERN,
   type JiraSearchInput,
+  type JiraSearchSort,
   type JiraStatusCategoryFilter,
 } from "@t3tools/contracts";
 
@@ -17,6 +18,14 @@ const PRESET_QUERIES = {
 } as const;
 
 const DEFAULT_CUSTOM_ORDER = "updated DESC";
+
+// Each order puts the most useful issue first.
+const SORT_ORDERS: Record<JiraSearchSort, string> = {
+  updated: "updated DESC",
+  created: "created DESC",
+  priority: "priority DESC, updated DESC",
+  key: "key ASC",
+};
 
 // Jira names the three categories in JQL.
 const STATUS_CATEGORY_NAMES: Record<JiraStatusCategoryFilter, string> = {
@@ -117,7 +126,9 @@ export type JqlBuild =
  * The JQL a search runs: the preset (or the person's own query), then the
  * project, status category and text filters, then the ordering.
  */
-export function buildJql(input: Pick<JiraSearchInput, "preset" | "jql"> & JqlFilters): JqlBuild {
+export function buildJql(
+  input: Pick<JiraSearchInput, "preset" | "jql" | "sort"> & JqlFilters,
+): JqlBuild {
   const base =
     input.preset === "custom"
       ? splitOrderBy(input.jql ?? "")
@@ -127,7 +138,12 @@ export function buildJql(input: Pick<JiraSearchInput, "preset" | "jql"> & JqlFil
         };
   const clauses = filterClauses(input);
   if (base.where.length === 0 && clauses.length === 0) return { _tag: "EmptyCustomQuery" };
-  const orderBy = base.orderBy.length > 0 ? base.orderBy : DEFAULT_CUSTOM_ORDER;
+  const orderBy =
+    input.sort !== undefined
+      ? SORT_ORDERS[input.sort]
+      : base.orderBy.length > 0
+        ? base.orderBy
+        : DEFAULT_CUSTOM_ORDER;
   const where = [
     ...(base.where.length > 0 ? [clauses.length > 0 ? `(${base.where})` : base.where] : []),
     ...clauses,
