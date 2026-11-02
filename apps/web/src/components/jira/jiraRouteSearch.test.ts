@@ -30,6 +30,17 @@ describe("parseJiraSearch", () => {
     });
   });
 
+  it("keeps a known order and drops any other", () => {
+    expect(parseJiraSearch({ order: "priority" })).toEqual({ order: "priority" });
+    expect(parseJiraSearch({ order: "key", preset: "recent" })).toEqual({
+      preset: "recent",
+      order: "key",
+    });
+    expect(parseJiraSearch({ order: "bogus" })).toEqual({});
+    expect(parseJiraSearch({ order: ["key"] })).toEqual({});
+    expect(parseJiraSearch({ sort: "key" })).toEqual({});
+  });
+
   it("ignores a JQL query unless the view uses one, and an unknown view or issue", () => {
     expect(parseJiraSearch({ preset: "sprint", jql: "a = b" })).toEqual({ preset: "sprint" });
     expect(parseJiraSearch({ preset: "nonsense", issue: "not-a-key-1" })).toEqual({});
@@ -46,6 +57,15 @@ describe("jiraSearchInput", () => {
     const b = jiraSearchInput({ projects: ["OPS"], q: "x" });
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
     expect(a).toEqual({ preset: "assigned", projectKeys: ["OPS"], text: "x", pageSize: 50 });
+  });
+
+  it("asks for the order that was chosen, and for none otherwise", () => {
+    expect(jiraSearchInput({ order: "priority" })).toEqual({
+      preset: "assigned",
+      sort: "priority",
+      pageSize: 50,
+    });
+    expect("sort" in jiraSearchInput({})).toBe(false);
   });
 });
 

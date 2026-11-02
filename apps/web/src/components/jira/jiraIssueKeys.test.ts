@@ -5,6 +5,7 @@ import {
   issueBranchName,
   issueThreadTitle,
   linkedThreadTitle,
+  takenBranchNames,
   unlinkedThreadTitle,
   unusedBranchName,
 } from "./jiraIssueKeys";
@@ -91,5 +92,27 @@ describe("thread names", () => {
     const taken = new Set(["PROJ-1-a", "PROJ-1-a-2"]);
     expect(unusedBranchName("PROJ-1-b", taken)).toBe("PROJ-1-b");
     expect(unusedBranchName("PROJ-1-a", taken)).toBe("PROJ-1-a-3");
+  });
+});
+
+describe("takenBranchNames", () => {
+  it("lists local branches and the remote ones by their short name", () => {
+    expect(
+      takenBranchNames([
+        { name: "main" },
+        { name: "feature/a", isRemote: false },
+        { name: "origin/PROJ-1-fix", isRemote: true, remoteName: "origin" },
+        { name: "upstream/PROJ-1-fix", isRemote: true, remoteName: "upstream" },
+        { name: "odd/name", isRemote: true },
+      ]),
+    ).toEqual(new Set(["main", "feature/a", "PROJ-1-fix", "odd/name"]));
+  });
+
+  it("makes the next free name step over a branch that exists only in the repository", () => {
+    const taken = takenBranchNames([
+      { name: "PROJ-1-fix" },
+      { name: "origin/PROJ-1-fix-2", isRemote: true, remoteName: "origin" },
+    ]);
+    expect(unusedBranchName("PROJ-1-fix", taken)).toBe("PROJ-1-fix-3");
   });
 });

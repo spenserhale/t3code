@@ -7,10 +7,15 @@ import type { ReactElement } from "react";
 import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
 import type { ThreadJiraLink } from "~/state/jira";
 import { cn } from "~/lib/utils";
+import {
+  THREAD_DETAILS_PANEL_ICON_CLASS,
+  THREAD_DETAILS_PANEL_LABEL_CLASS,
+} from "../chat/threadDetailsPanelStyles";
 import { InlineButton } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { toastManager } from "../ui/toast";
 import { openJiraCommentDialog } from "./JiraCommentDialog";
+import { readJiraView } from "./jiraViewMemory";
 
 const STATUS_DOT: Record<JiraStatusCategory, string> = {
   todo: "bg-muted-foreground/60",
@@ -24,6 +29,7 @@ export function JiraThreadChip({
   link,
   thread,
   render = <InlineButton tone="muted" />,
+  panel = false,
 }: {
   link: ThreadJiraLink | null;
   thread: {
@@ -32,6 +38,8 @@ export function JiraThreadChip({
   } | null;
   /** The control the chip is drawn as; sidebar rows use the inline one. */
   render?: ReactElement;
+  /** Drawn as a row of the thread details panel, which gives its icon and labels their own style. */
+  panel?: boolean;
 }) {
   const navigate = useNavigate();
   if (link === null || thread === null) return null;
@@ -44,24 +52,38 @@ export function JiraThreadChip({
         onClick={stop}
         render={render}
       >
-        <TicketIcon aria-hidden className="size-3 shrink-0" />
-        <span className="shrink-0">{link.key}</span>
+        <TicketIcon
+          aria-hidden
+          className={panel ? THREAD_DETAILS_PANEL_ICON_CLASS : "size-3 shrink-0"}
+        />
+        <span className={cn("shrink-0", panel && THREAD_DETAILS_PANEL_LABEL_CLASS)}>
+          {link.key}
+        </span>
         {status === null ? null : (
           <>
             <span
               aria-hidden
               className={cn("size-1.5 shrink-0 rounded-full", STATUS_DOT[status.category])}
             />
-            <span className="max-w-24 truncate">{status.name}</span>
+            <span
+              className={cn(
+                "truncate",
+                panel
+                  ? cn("min-w-0 text-muted-foreground", THREAD_DETAILS_PANEL_LABEL_CLASS)
+                  : "max-w-24",
+              )}
+            >
+              {status.name}
+            </span>
           </>
         )}
       </MenuTrigger>
-      <MenuPopup align="end" onClick={stop}>
+      <MenuPopup align={panel ? "start" : "end"} onClick={stop}>
         <MenuItem
           onClick={() =>
             void navigate({
               to: "/jira",
-              search: { issue: link.key, environmentId: link.environmentId },
+              search: { ...readJiraView(), issue: link.key, environmentId: link.environmentId },
             })
           }
         >

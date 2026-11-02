@@ -1,15 +1,14 @@
 /**
- * Jira issues for the Jira page, and the status chips of threads linked to them.
- *
- * One environment is the Jira source: the primary one if Jira is set up there,
- * else the first that has it. Nothing here asks for Jira until some server both
- * advertises `capabilities.jiraIssues` and reports it set up.
+ * Jira issues for the Jira page, and the status chips of threads linked to them. Each environment
+ * with Jira set up is its own site; a thread's chip reads the one its key belongs to. Nothing here
+ * asks for Jira until a server advertises `capabilities.jiraIssues` and reports it set up.
  */
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   createEnvironmentRpcCommand,
   createEnvironmentRpcQueryAtomFamily,
+  runAtomCommand,
 } from "@t3tools/client-runtime/state/runtime";
 import {
   WS_METHODS,
@@ -24,6 +23,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 
+import { jiraEnvironmentForThread } from "../components/jira/jiraEnvironments";
 import { extractIssueKeys } from "../components/jira/jiraIssueKeys";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -48,6 +48,26 @@ const writeDone = (
 /** Asks again for everything shown from this environment, as after a change made elsewhere. */
 export function refreshJira(environmentId: EnvironmentId): void {
   appAtomRegistry.update(jiraRevisionAtom(environmentId), (count) => count + 1);
+}
+
+const jiraForget = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "web:jira:forget",
+  tag: WS_METHODS.jiraRefresh,
+});
+
+/**
+ * Like `refreshJira`, but the server first forgets what it kept from Jira, so the answers come
+ * from Jira itself. For a person who pressed Refresh, not for the periodic refresh.
+ */
+export async function refreshJiraFromSource(environmentId: EnvironmentId): Promise<void> {
+  // A server that cannot forget still answers, from what it kept.
+  await runAtomCommand(
+    appAtomRegistry,
+    jiraForget,
+    { environmentId, input: {} },
+    { reportFailure: false, reportDefect: false },
+  );
+  refreshJira(environmentId);
 }
 
 const NO_INPUT = {} as const;
@@ -174,20 +194,24 @@ export function useJiraEnvironmentId(): EnvironmentId | null {
 
 const EMPTY_PROJECT_KEYS: ReadonlySet<string> = new Set();
 
-/** The site's project keys; text only counts as an issue key when its project is one of these. */
-const jiraProjectKeysAtom = Atom.make((get): ReadonlySet<string> => {
-  const environmentId = get(jiraEnvironmentIdAtom);
-  const previous = Option.getOrNull(get.self<ReadonlySet<string>>()) ?? EMPTY_PROJECT_KEYS;
-  if (environmentId === null) return EMPTY_PROJECT_KEYS;
-  const projects = Option.getOrNull(
-    AsyncResult.value(get(jiraProjectsQuery({ environmentId, input: NO_INPUT }))),
-  );
-  if (projects === null) return previous;
-  const next = new Set(projects.projects.map((project) => project.key.toUpperCase()));
-  return next.size === previous.size && [...next].every((key) => previous.has(key))
-    ? previous
-    : next;
-}).pipe(Atom.withLabel("web:jira:project-keys"));
+/** One site's project keys; text only counts as an issue key when its project is one of these. */
+const jiraProjectKeysAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make((get): ReadonlySet<string> => {
+    const previous = Option.getOrNull(get.self<ReadonlySet<string>>()) ?? EMPTY_PROJECT_KEYS;
+    const projects = Option.getOrNull(
+      AsyncResult.value(get(jiraProjectsQuery({ environmentId, input: NO_INPUT }))),
+    );
+    if (projects === null) return previous;
+    const next = new Set(projects.projects.map((project) => project.key.toUpperCase()));
+    return next.size === previous.size && [...next].every((key) => previous.has(key))
+      ? previous
+      : next;
+  }).pipe(Atom.withLabel(`web:jira:project-keys:${environmentId}`)),
+);
+
+const NO_PROJECT_KEYS_ATOM = Atom.make<ReadonlySet<string>>(EMPTY_PROJECT_KEYS).pipe(
+  Atom.withLabel("web:jira:project-keys:none"),
+);
 
 const EMPTY_LINKED: ReadonlyMap<string, ReadonlyArray<ScopedThreadRef>> = new Map();
 
@@ -199,17 +223,22 @@ const linkedSignature = (linked: ReadonlyMap<string, ReadonlyArray<ScopedThreadR
     )
     .join(";");
 
-/** The threads whose title or branch names each issue, from every connected environment. */
-export const jiraLinkedThreadsAtom = Atom.make(
-  (get): ReadonlyMap<string, ReadonlyArray<ScopedThreadRef>> => {
-    const projectKeys = get(jiraProjectKeysAtom);
+/**
+ * The threads whose title or branch names each issue of one site: those of every connected
+ * environment that belong to that site, as `jiraEnvironmentForThread` decides.
+ */
+export const jiraLinkedThreadsAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make((get): ReadonlyMap<string, ReadonlyArray<ScopedThreadRef>> => {
+    const projectKeys = get(jiraProjectKeysAtom(environmentId));
     const previous = Option.getOrNull(
       get.self<ReadonlyMap<string, ReadonlyArray<ScopedThreadRef>>>(),
     );
     if (projectKeys.size === 0) return EMPTY_LINKED;
+    const configured = get(jiraConfiguredEnvironmentIdsAtom);
     const linked = new Map<string, ScopedThreadRef[]>();
     for (const shell of get(environmentThreadShells.threadShellsAtom)) {
       if (shell.archivedAt !== null || shell.deletedAt !== null) continue;
+      if (jiraEnvironmentForThread(shell.environmentId, configured) !== environmentId) continue;
       for (const key of extractIssueKeys(shell, projectKeys)) {
         const refs = linked.get(key) ?? [];
         refs.push(scopeThreadRef(shell.environmentId, shell.id));
@@ -219,49 +248,73 @@ export const jiraLinkedThreadsAtom = Atom.make(
     return previous !== null && linkedSignature(previous) === linkedSignature(linked)
       ? previous
       : linked;
-  },
-).pipe(Atom.withLabel("web:jira:linked-threads"));
+  }).pipe(Atom.withLabel(`web:jira:linked-threads:${environmentId}`)),
+);
 
 const MAX_LOOKUP_KEYS = 200;
 
 /** Every linked issue's current status, in one request however many threads there are. */
-const jiraLinkedIssuesAtom = Atom.make((get): ReadonlyMap<string, JiraIssueSummary> => {
-  const environmentId = get(jiraEnvironmentIdAtom);
-  const keys = [...get(jiraLinkedThreadsAtom).keys()].toSorted().slice(0, MAX_LOOKUP_KEYS);
-  const previous = Option.getOrNull(get.self<ReadonlyMap<string, JiraIssueSummary>>());
-  if (environmentId === null || keys.length === 0) return new Map();
-  const found = Option.getOrNull(
-    AsyncResult.value(get(jiraLookupQuery({ environmentId, input: { keys } }))),
-  );
-  if (found === null) return previous ?? new Map();
-  return new Map(found.issues.map((issue) => [issue.key, issue]));
-}).pipe(Atom.withLabel("web:jira:linked-issues"));
-
-const jiraIssueByKeyAtom = Atom.family((key: string) =>
-  Atom.make((get) => get(jiraLinkedIssuesAtom).get(key) ?? null).pipe(
-    Atom.withLabel(`web:jira:linked-issue:${key}`),
-  ),
+const jiraLinkedIssuesAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make((get): ReadonlyMap<string, JiraIssueSummary> => {
+    const keys = [...get(jiraLinkedThreadsAtom(environmentId)).keys()]
+      .toSorted()
+      .slice(0, MAX_LOOKUP_KEYS);
+    const previous = Option.getOrNull(get.self<ReadonlyMap<string, JiraIssueSummary>>());
+    if (keys.length === 0) return new Map();
+    const found = Option.getOrNull(
+      AsyncResult.value(get(jiraLookupQuery({ environmentId, input: { keys } }))),
+    );
+    if (found === null) return previous ?? new Map();
+    return new Map(found.issues.map((issue) => [issue.key, issue]));
+  }).pipe(Atom.withLabel(`web:jira:linked-issues:${environmentId}`)),
 );
+
+const jiraIssueByKeyAtom = Atom.family((target: string) => {
+  const [environmentId, key] = JSON.parse(target) as [EnvironmentId, string];
+  return Atom.make((get) => get(jiraLinkedIssuesAtom(environmentId)).get(key) ?? null).pipe(
+    Atom.withLabel(`web:jira:linked-issue:${target}`),
+  );
+});
 
 const NO_ISSUE_ATOM = Atom.make<JiraIssueSummary | null>(null).pipe(
   Atom.withLabel("web:jira:linked-issue:none"),
 );
 
 export interface ThreadJiraLink {
+  /** The environment whose Jira site the key is on. */
   readonly environmentId: EnvironmentId;
   readonly key: string;
   /** `null` until Jira has answered for this key. */
   readonly issue: JiraIssueSummary | null;
 }
 
-/** The issue a thread is about, from its title or branch, or `null`. */
+/**
+ * The issue a thread is about, from its title or branch, or `null`. The key is looked up on the
+ * thread's own Jira site, or the only one there is; with several to choose from and none the
+ * thread's own, the thread has no chip rather than a chip from the wrong site.
+ */
 export function useThreadJiraLink(
-  thread: { readonly title: string; readonly branch: string | null } | null,
+  thread: {
+    readonly environmentId: EnvironmentId;
+    readonly title: string;
+    readonly branch: string | null;
+  } | null,
 ): ThreadJiraLink | null {
-  const environmentId = useAtomValue(jiraEnvironmentIdAtom);
-  const projectKeys = useAtomValue(jiraProjectKeysAtom);
-  const key = thread === null ? null : (extractIssueKeys(thread, projectKeys)[0] ?? null);
-  const issue = useAtomValue(key === null ? NO_ISSUE_ATOM : jiraIssueByKeyAtom(key));
+  const configured = useAtomValue(jiraConfiguredEnvironmentIdsAtom);
+  const environmentId =
+    thread === null ? null : jiraEnvironmentForThread(thread.environmentId, configured);
+  const projectKeys = useAtomValue(
+    environmentId === null ? NO_PROJECT_KEYS_ATOM : jiraProjectKeysAtom(environmentId),
+  );
+  const key =
+    thread === null || environmentId === null
+      ? null
+      : (extractIssueKeys(thread, projectKeys)[0] ?? null);
+  const issue = useAtomValue(
+    key === null || environmentId === null
+      ? NO_ISSUE_ATOM
+      : jiraIssueByKeyAtom(JSON.stringify([environmentId, key])),
+  );
   return key === null || environmentId === null ? null : { environmentId, key, issue };
 }
 

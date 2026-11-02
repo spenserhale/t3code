@@ -1,4 +1,9 @@
-import type { JiraProject, JiraSearchPreset, JiraStatusCategoryFilter } from "@t3tools/contracts";
+import type {
+  JiraProject,
+  JiraSearchPreset,
+  JiraSearchSort,
+  JiraStatusCategoryFilter,
+} from "@t3tools/contracts";
 import { ChevronDownIcon, SearchIcon } from "lucide-react";
 import { useState } from "react";
 
@@ -16,6 +21,8 @@ export interface JiraFilters {
   readonly projects: ReadonlyArray<string>;
   readonly status: ReadonlyArray<JiraStatusCategoryFilter>;
   readonly q: string;
+  /** `null` keeps the order of the view, or of the query. */
+  readonly sort: JiraSearchSort | null;
 }
 
 const PRESET_LABELS: Record<JiraSearchPreset, string> = {
@@ -24,6 +31,14 @@ const PRESET_LABELS: Record<JiraSearchPreset, string> = {
   reported: "Reported by me",
   recent: "Recently updated",
   custom: "JQL query",
+};
+
+const SORT_LABELS: Record<JiraSearchSort | "default", string> = {
+  default: "View order",
+  updated: "Last updated",
+  created: "Newest",
+  priority: "Priority",
+  key: "Key",
 };
 
 const STATUS_OPTIONS: ReadonlyArray<{ value: JiraStatusCategoryFilter; label: string }> = [
@@ -178,6 +193,27 @@ export function JiraFilterBar({
             onChange={(keys) => onChange({ projects: keys })}
           />
         ) : null}
+        <Select
+          value={filters.sort ?? "default"}
+          onValueChange={(value) =>
+            onChange({ sort: value === "default" ? null : (value as JiraSearchSort) })
+          }
+        >
+          <SelectTrigger size="default" className="w-40" aria-label="Sort issues">
+            <SelectValue>
+              {(value: JiraSearchSort | "default" | null) =>
+                value === null ? "" : `Sort: ${SORT_LABELS[value]}`
+              }
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup alignItemWithTrigger={false}>
+            {(Object.keys(SORT_LABELS) as Array<JiraSearchSort | "default">).map((sort) => (
+              <SelectItem key={sort} hideIndicator value={sort}>
+                {SORT_LABELS[sort]}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
       </div>
       {filters.preset === "custom" ? (
         <Input

@@ -11,6 +11,7 @@ import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ensureLocalApi } from "../../localApi";
 import { useJiraPreferences } from "../jira/jiraPreferences";
+import { jiraConnectionSummary } from "./jiraConnectionSummary";
 import { Button, InlineButton } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -23,7 +24,10 @@ import { SettingsRow, SettingsSection } from "./settingsLayout";
 const API_TOKEN_URL = "https://id.atlassian.com/manage-profile/security/api-tokens";
 
 function JiraConnection({ environmentId }: { environmentId: EnvironmentId }) {
-  const status = useEnvironmentQuery(jiraStatusQuery({ environmentId, input: { verify: true } }));
+  // What is saved and whether Jira accepts it are asked apart, so credentials Jira has stopped
+  // accepting still show as saved and can be replaced or removed.
+  const saved = useEnvironmentQuery(jiraStatusQuery({ environmentId, input: {} }));
+  const verified = useEnvironmentQuery(jiraStatusQuery({ environmentId, input: { verify: true } }));
   const canConfigure = useAtomValue(jiraConfigure.permissionAtom(environmentId));
   const configure = useAtomCommand(jiraConfigure, { reportFailure: false });
   const disconnect = useAtomCommand(jiraDisconnect, { reportFailure: false });
@@ -33,10 +37,13 @@ function JiraConnection({ environmentId }: { environmentId: EnvironmentId }) {
   const [pending, setPending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
-  const saved = status.data;
-  const configured = saved?.configured === true;
-  const siteValue = site ?? saved?.siteUrl ?? "";
-  const emailValue = email ?? saved?.email ?? "";
+  const { configured, message } = jiraConnectionSummary({
+    saved: saved.data,
+    account: verified.data?.account ?? null,
+    error: verified.error,
+  });
+  const siteValue = site ?? saved.data?.siteUrl ?? "";
+  const emailValue = email ?? saved.data?.email ?? "";
   const ready = siteValue.trim() !== "" && emailValue.trim() !== "" && token.trim() !== "";
 
   const save = async () => {
@@ -144,15 +151,7 @@ function JiraConnection({ environmentId }: { environmentId: EnvironmentId }) {
         </div>
         {problem === null ? null : <p className="text-destructive text-xs">{problem}</p>}
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs text-muted-foreground">
-            {configured
-              ? saved?.account
-                ? `Connected as ${saved.account.displayName}.`
-                : status.error === null
-                  ? "Connected."
-                  : `Saved, but Jira did not confirm it: ${status.error}`
-              : "Not connected."}
-          </p>
+          <p className="text-xs text-muted-foreground">{message}</p>
           <div className="flex shrink-0 gap-2">
             {configured ? (
               <Button type="button" size="xs" variant="outline" onClick={() => void remove()}>
