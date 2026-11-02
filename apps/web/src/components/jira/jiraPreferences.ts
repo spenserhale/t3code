@@ -10,8 +10,6 @@ const JiraPreferences = Schema.Struct({
     Schema.String,
     Schema.Struct({ environmentId: EnvironmentId, projectId: ProjectId }),
   ),
-  /** Whether a new thread gets its own worktree and branch. */
-  newWorktree: Schema.Boolean,
   /** The status to move an issue to when a thread starts from it; `null` leaves it alone. */
   moveOnStart: Schema.NullOr(Schema.String),
 });
@@ -20,7 +18,6 @@ export type JiraPreferences = typeof JiraPreferences.Type;
 const STORAGE_KEY = "t3code:jira:preferences:v1";
 const DEFAULT_PREFERENCES: JiraPreferences = {
   projects: {},
-  newWorktree: false,
   moveOnStart: null,
 };
 
