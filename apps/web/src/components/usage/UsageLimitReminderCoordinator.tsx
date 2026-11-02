@@ -24,12 +24,16 @@ import { hasDesktopNotifications } from "../../threadNotifications";
 import { providerClients } from "../settings/providerDriverMeta";
 import { toastManager } from "../ui/toast";
 import {
-  cacheDailyTokens,
-  dailyTokensDue,
+  DAILY_TOKENS_STORAGE_KEY,
+  type TokenMiss,
+  cacheEnvironmentDailyTokens,
+  dailyTokensHeld,
+  environmentsDueForTokens,
+  onDailyTokensHeld,
   readDailyTokens,
-  readDailyTokensCachedAt,
+  readDailyTokensFetchedAt,
 } from "./usageLimitDailyTokens";
-import { loadDailyTokens } from "./usageLimitDailyTokensLoader";
+import { loadEnvironmentDailyTokens, readyUsageEnvironments } from "./usageLimitDailyTokensLoader";
 import {
   USAGE_LIMIT_GROUPS_STORAGE_KEY,
   readUsageLimitGroups,
@@ -124,46 +128,61 @@ export function startUsageLimitReminders(
     }
   };
 
-  let tokensAttemptedAt: number | null = null;
-  let loadingTokens = false;
+  const misses = new Map<string, TokenMiss>();
+  const asking = new Set<string>();
   // The usual pattern and the weekday forecast need 90 days of token totals, wherever the user is in the app.
+  // Each environment is asked on its own, so one that fails is asked again without the others.
   const refreshDailyTokens = (now: number) => {
-    if (loadingTokens || accounts.length === 0) return;
-    const due = dailyTokensDue({
-      cachedAt: readDailyTokensCachedAt(),
-      attemptedAt: tokensAttemptedAt,
-      now,
-    });
-    if (!due) return;
-    loadingTokens = true;
-    void loadDailyTokens(registry)
-      .then(({ attempted, daily }) => {
-        if (attempted) tokensAttemptedAt = Date.now();
-        if (daily === null) return;
-        cacheDailyTokens(daily, Date.now());
-        // The usual pattern is known now, so the lists and reminders can use it.
-        evaluate(false);
-      })
-      .catch((error: unknown) => {
-        tokensAttemptedAt = Date.now();
-        console.error("Could not load daily token totals.", error);
-      })
-      .finally(() => {
-        loadingTokens = false;
-      });
+    if (accounts.length === 0) return;
+    const ready = readyUsageEnvironments(registry);
+    const due = new Set(
+      environmentsDueForTokens({
+        ready: ready.map((environment) => environment.environmentId),
+        fetchedAt: readDailyTokensFetchedAt(),
+        misses,
+        now,
+      }),
+    );
+    for (const environment of ready) {
+      const id = environment.environmentId;
+      if (!due.has(id) || asking.has(id)) continue;
+      asking.add(id);
+      const miss = () =>
+        misses.set(id, { at: Date.now(), count: (misses.get(id)?.count ?? 0) + 1 });
+      void (async () => {
+        try {
+          const daily = await loadEnvironmentDailyTokens(registry, environment);
+          if (daily === null) {
+            miss();
+            return;
+          }
+          misses.delete(id);
+          cacheEnvironmentDailyTokens(id, daily, Date.now());
+        } catch (error) {
+          miss();
+          console.error("Could not load daily token totals.", error);
+        } finally {
+          asking.delete(id);
+        }
+      })();
+    }
   };
 
-  const evaluate = (record: boolean) => {
+  let recorded: readonly LimitAccount[] | null = null;
+  const evaluate = () => {
     const now = Date.now();
-    if (record) {
-      // Accounts told workspaces apart only lately; what was stored for the login is theirs now.
-      const stored = readUsageLimitGroups();
-      const migrated = migrateLegacyAccountKeys(stored, accounts);
-      if (migrated !== stored) updateUsageLimitGroups(() => migrated);
+    // Readings go in first, so a window is always named by its recorded instance, even when
+    // a look begins inside this one (the migration's write below tells the groups' subscribers).
+    const history =
+      recorded === accounts ? readUsageLimitHistory() : recordUsageLimitHistory(accounts, now);
+    recorded = accounts;
+    // Accounts told workspaces apart only lately; what was stored for the login is theirs now.
+    const savedGroups = readUsageLimitGroups();
+    if (migrateLegacyAccountKeys(savedGroups, accounts) !== savedGroups) {
+      updateUsageLimitGroups((current) => migrateLegacyAccountKeys(current, accounts));
     }
-    refreshDailyTokens(now);
-    const history = record ? recordUsageLimitHistory(accounts, now) : readUsageLimitHistory();
     const settings = readReminderSettings();
+    if (settings.mode !== "off" || dailyTokensHeld()) refreshDailyTokens(now);
     if (settings.mode === "off") {
       publishUseToday([], now);
       return;
@@ -191,19 +210,22 @@ export function startUsageLimitReminders(
     environmentPresentations.presentationsWithProvidersAtom,
     (presentations) => {
       accounts = collectLimitAccounts(presentations);
-      evaluate(true);
+      evaluate();
     },
     { immediate: true },
   );
-  const reevaluate = () => evaluate(false);
-  const stopGroups = subscribeLocalStorageKey(USAGE_LIMIT_GROUPS_STORAGE_KEY, reevaluate);
-  const stopSettings = subscribeLocalStorageKey(USAGE_LIMIT_REMINDER_SETTINGS_KEY, reevaluate);
-  const timer = setInterval(reevaluate, EVALUATE_EVERY_MS);
+  const stopGroups = subscribeLocalStorageKey(USAGE_LIMIT_GROUPS_STORAGE_KEY, evaluate);
+  const stopSettings = subscribeLocalStorageKey(USAGE_LIMIT_REMINDER_SETTINGS_KEY, evaluate);
+  const stopTokens = subscribeLocalStorageKey(DAILY_TOKENS_STORAGE_KEY, evaluate);
+  const stopHolds = onDailyTokensHeld(evaluate);
+  const timer = setInterval(evaluate, EVALUATE_EVERY_MS);
 
   return () => {
     stopPresentations();
     stopGroups();
     stopSettings();
+    stopTokens();
+    stopHolds();
     clearInterval(timer);
   };
 }

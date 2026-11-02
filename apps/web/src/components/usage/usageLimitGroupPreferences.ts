@@ -14,6 +14,7 @@ const UsageLimitGroupsSchema = Schema.Struct({
   enabled: Schema.Boolean,
   assignments: Schema.Record(Schema.String, Schema.String),
   schedules: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  migrated: Schema.optional(Schema.Array(Schema.String)),
 });
 type StoredGroups = typeof UsageLimitGroupsSchema.Type;
 

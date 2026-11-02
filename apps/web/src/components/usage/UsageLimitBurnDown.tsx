@@ -22,7 +22,7 @@ import { paceLabel, windowPace, windowSpan } from "@t3tools/shared/usageLimitPac
 import { resolveTimeZone } from "@t3tools/shared/usageLimitSchedule";
 import type { LimitPoolMember, LimitPoolWindow } from "@t3tools/shared/usageLimits";
 import { ChevronRightIcon } from "lucide-react";
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
 
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { usePrimarySettings } from "../../hooks/useSettings";
@@ -33,6 +33,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { LimitPaceContext, PACE_REFERENCE_TEXT } from "./UsageLimitPace";
+import { holdDailyTokens } from "./usageLimitDailyTokens";
 import { FORECAST_ALGORITHM_LABELS, useReminderSettings } from "./usageLimitReminderPreferences";
 import { AccountName } from "./UsageLimitsPooled";
 
@@ -328,6 +329,9 @@ function BurnDownPanel({
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [settings, updateSettings] = useReminderSettings();
   const { groups, history, dailyTokens } = use(LimitPaceContext);
+  // The usual-pattern line reads token totals, which are fetched for an open chart even with reminders off.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers this chart's need for the fetched totals with a store outside React
+  useEffect(() => holdDailyTokens(), []);
   // The page keeps the time it was opened or refreshed at; a chart left open must not.
   const minute = useNowMinute();
   const clock = Date.parse(`${minute}:00Z`);
