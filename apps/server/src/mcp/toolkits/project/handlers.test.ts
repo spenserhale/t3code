@@ -22,12 +22,14 @@ import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import { ChildProcessSpawner } from "effect/process";
 
 import * as DocumentText from "../../../provider/DocumentText.ts";
 import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ServerConfig from "../../../config.ts";
+import * as GitWorkflow from "../../../git/GitWorkflowService.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
@@ -663,4 +665,77 @@ it.effect("deleting a project through MCP also discards its clone record", () =>
 
     expect(discarded).toEqual([harness.projectId]);
   }),
+);
+
+it.effect("a project started from a title through MCP goes in the folder the setting names", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-mcp-new-project-" });
+    const configured = path.join(home, "elsewhere", "projects");
+    const stored = new Map<ProjectId, ProjectRecord>();
+    const settings = ServerSettings.layerTest({ newProjectsDirectory: configured });
+    const projects = Layer.mock(Project.ProjectService)({
+      create: (input) => {
+        const project = {
+          id: input.projectId,
+          title: input.title,
+          workspaceRoot: input.workspaceRoot,
+          repositoryIdentity: null,
+          faviconPath: null,
+          defaultModelSelection: null,
+          defaultThreadEnvMode: null,
+          autoPull: false,
+          projectIcon: null,
+          scripts: [],
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          deletedAt: null,
+        } satisfies ProjectRecord;
+        stored.set(project.id, project);
+        return Effect.succeed(project);
+      },
+      getById: (id) => Effect.succeed(Option.fromNullishOr(stored.get(id))),
+    });
+    const folders = ManagedProjectFolders.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          settings,
+          projects,
+          Layer.mock(GitWorkflow.GitWorkflowService)({}),
+          Layer.mock(GitVcsDriver.GitVcsDriver)({
+            readConfigValue: () => Effect.succeed(null),
+            execute: () =>
+              Effect.succeed({
+                exitCode: ChildProcessSpawner.ExitCode(0),
+                stdout: "",
+                stderr: "",
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              }),
+          }),
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-new-project-config-" }),
+          NodeCrypto.layer,
+        ),
+      ),
+    );
+    const harness = clientLaunchHarness({ runtimeModeCeiling: "full-access", launched: [] });
+    const dependencies = Layer.merge(
+      harness.dependencies,
+      Layer.mergeAll(settings, projects, folders),
+    );
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+
+    const result = yield* toolkit
+      .handle("t3_project_create", { title: "Pinball Stats" })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+
+    const workspaceRoot = path.join(configured, "pinball-stats");
+    expect(result.at(-1)?.result).toMatchObject({ title: "Pinball Stats", workspaceRoot });
+    expect(yield* fileSystem.exists(path.join(workspaceRoot, "README.md"))).toBe(true);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

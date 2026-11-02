@@ -217,6 +217,7 @@ import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts
 import * as ProjectService from "./project/ProjectService.ts";
 import { threadWorkspaceRoot } from "./project/threadWorkspaceRoot.ts";
 import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
+import { resolveNewProjectsRoot } from "./project/newProjectsDirectory.ts";
 import * as ScratchThreadPromotion from "./project/ScratchThreadPromotion.ts";
 import { mutateProjectWithClone } from "./project/ProjectMutation.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
@@ -260,6 +261,7 @@ import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { isNetworkPath } from "@t3tools/shared/path";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import { isTelemetryIdHash } from "@t3tools/shared/telemetryId";
@@ -321,6 +323,7 @@ export const withLateConfigDiscovery = <E, R>(
   launcher: EditorDiscovery,
   remoteOpenTargets: RemoteOpenTargets.RemoteOpenTargets["Service"],
   directEndpoints: Pick<DirectEndpoints.DirectEndpoints["Service"], "resolve">,
+  newProjectsRootFor?: (directory: string) => string,
 ) => {
   const lateEditorConfig = Stream.fromEffect(launcher.resolveAvailableEditors()).pipe(
     Stream.filter(
@@ -386,8 +389,18 @@ export const withLateConfigDiscovery = <E, R>(
             return [{ ...current, ...event.payload }, [event]];
           case "providerStatuses":
             return [{ ...current, providers: event.payload.providers }, [event]];
-          case "settingsUpdated":
-            return [{ ...current, settings: event.payload.settings }, [event]];
+          case "settingsUpdated": {
+            const next = { ...current, settings: event.payload.settings };
+            const newProjectsRoot = newProjectsRootFor?.(
+              event.payload.settings.newProjectsDirectory,
+            );
+            if (newProjectsRoot === undefined || newProjectsRoot === current.newProjectsRoot) {
+              return [next, [event]];
+            }
+            // The folder sits outside `settings`, so only a snapshot tells open clients it moved.
+            const moved = { ...next, newProjectsRoot };
+            return [moved, [{ version: 1, type: "snapshot", config: moved }]];
+          }
           // Themes and usage-limit sources survive snapshots because snapshots never include them.
           default:
             return [current, [event]];
@@ -1847,6 +1860,14 @@ export const layerWsRpc = (
           ),
         );
 
+      // One resolution for the snapshot and for later changes, so clients never see two answers.
+      const newProjectsRootFor = Effect.fn("ws.newProjectsRootFor")(function* () {
+        const path = yield* Path.Path;
+        const home = yield* HostProcess.HomeDirectory;
+        return (directory: string) =>
+          resolveNewProjectsRoot(directory, managedFolders.namedProjectsRoot, path, home);
+      });
+
       const loadServerConfig = Effect.fn("ws.loadServerConfig")(function* (options: {
         readonly usageLimitsCommand: boolean;
         readonly workspaceSnapshotsOnDemand: boolean;
@@ -1933,7 +1954,7 @@ export const layerWsRpc = (
             onNone: () => ({}),
             onSome: (root) => ({ scratchWorkspaceRoot: root }),
           }),
-          newProjectsRoot: managedFolders.namedProjectsRoot,
+          newProjectsRoot: (yield* newProjectsRootFor())(settings.newProjectsDirectory),
           ...(lastEventLoopStall === undefined ? {} : { lastEventLoopStall }),
         };
       });
@@ -3335,6 +3356,7 @@ export const layerWsRpc = (
                     resolveTargets: () => Fiber.join(remoteTargets),
                   },
                   { resolve: () => Fiber.join(directResult) },
+                  yield* newProjectsRootFor(),
                 ),
               );
             }),
