@@ -10,7 +10,7 @@ import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import type * as HttpClient from "effect/http/HttpClient";
 
-import { readOllamaCloudUsageLimits } from "./ollamaCloudUsageLimits.ts";
+import { makeOllamaCloudUsageLimits } from "./ollamaCloudUsageLimits.ts";
 import {
   combineUsageLimits,
   consumeZaiResetCredit,
@@ -37,7 +37,9 @@ export const makeSubscriptionUsageLimits = Effect.fn("makeSubscriptionUsageLimit
     >();
     const readOpenCodeLimits = yield* keepLastGoodUsageLimits(input.openCodeLimits);
     const readZaiLimits = yield* keepLastGoodUsageLimits(readZaiCodingPlanUsageLimits(input));
-    const readOllamaLimits = yield* keepLastGoodUsageLimits(readOllamaCloudUsageLimits(input));
+    const readOllamaLimits = yield* keepLastGoodUsageLimits(
+      yield* makeOllamaCloudUsageLimits(input),
+    );
     const usageLimits = Effect.all(
       {
         openCodeLimits: readOpenCodeLimits,

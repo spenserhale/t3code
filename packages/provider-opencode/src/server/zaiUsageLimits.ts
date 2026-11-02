@@ -1,6 +1,7 @@
 import type {
   ProviderConsumeResetCreditOutcome,
   ServerProviderResetCredits,
+  ServerProviderUsageCredit,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
@@ -319,11 +320,20 @@ export const consumeZaiResetCredit = Effect.fn("consumeZaiResetCredit")(function
   return "reset" as const satisfies ProviderConsumeResetCreditOutcome;
 }, Effect.timeout("20 seconds"));
 
+/**
+ * What a subscription probe reads: its limits, and its credit pool when the plan has one.
+ * The credit travels with the limits so a failed read keeps both, and leaves them
+ * together in `combineUsageLimits`, which lists it under the subscription only.
+ */
+export type SubscriptionLimits = ServerProviderUsageLimits & {
+  readonly credit?: ServerProviderUsageCredit | undefined;
+};
+
 /** What one subscription probe returned, with the plan it reads. */
 interface SubscriptionProbe {
   readonly id: string;
   readonly label: string;
-  readonly limits: ServerProviderUsageLimits;
+  readonly limits: SubscriptionLimits;
 }
 
 /**
@@ -363,6 +373,7 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
             checkedAt: entry.checkedAt,
             windowIds: entry.windows.map((window) => window.id),
             ...(entry.resetCredits ? { resetCredits: entry.resetCredits } : {}),
+            ...(entry.credit ? { credit: entry.credit } : {}),
           },
         ]
       : [],
@@ -385,10 +396,10 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
  * `unsupported` replaces the memory, as for the whole provider, and so does a failure that names
  * a different credential, which is a different account.
  */
-export const keepLastGoodUsageLimits = <E, R>(
-  probe: Effect.Effect<ServerProviderUsageLimits, E, R>,
+export const keepLastGoodUsageLimits = <Limits extends ServerProviderUsageLimits, E, R>(
+  probe: Effect.Effect<Limits, E, R>,
 ) =>
-  Effect.map(Ref.make<ServerProviderUsageLimits | undefined>(undefined), (published) =>
+  Effect.map(Ref.make<Limits | undefined>(undefined), (published) =>
     Effect.flatMap(probe, (probed) =>
       Ref.modify(published, (last) => {
         const otherAccount =

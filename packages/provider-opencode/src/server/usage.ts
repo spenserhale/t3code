@@ -15,6 +15,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { OpenCodeSettings } from "../settings.ts";
+import { OLLAMA_CLOUD_PROVIDER_ID, ollamaCloudRateModel } from "./ollamaCloudMarket.ts";
 
 function object(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -70,11 +71,14 @@ function parseOpenCodeMessage(
   const cost = message.cost;
   const prefix = LITELLM_PREFIXES.get(providerId);
   const free = OPENCODE_GATEWAYS.has(providerId) && model.endsWith("-free");
+  // Ollama Cloud serves models that Z.ai and local Ollama serve too, at its own price.
+  const ollamaCloud = providerId === OLLAMA_CLOUD_PROVIDER_ID;
   return {
     provider: "opencode",
     timestampMs,
-    model,
+    model: ollamaCloud ? `${OLLAMA_CLOUD_PROVIDER_ID}/${model}` : model,
     ...(prefix !== undefined && !model.includes("/") ? { rateModel: `${prefix}/${model}` } : {}),
+    ...(ollamaCloud ? { rateModel: ollamaCloudRateModel(model) } : {}),
     sessionId: fallback.sessionId || text(message.sessionID),
     totals,
     // OpenCode records zero for unknown rates and paid subscriptions alike, so only its own

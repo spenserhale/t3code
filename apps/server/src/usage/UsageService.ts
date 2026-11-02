@@ -39,6 +39,8 @@ import type {
   TranscriptUsageFormat,
   UsageRecord,
 } from "@t3tools/provider-core/server/usage";
+import { OpenRouterZdrRates } from "./OpenRouterZdrRates.ts";
+import { withMarketRates, withoutCatalogCost } from "./openRouterZdr.ts";
 import {
   canonicalModelFilter,
   resolveModelAliases,
@@ -196,6 +198,13 @@ export const make = Effect.gen(function* () {
     });
   const hostname = yield* HostProcess.Hostname;
   const readerContext = yield* Effect.context<BuiltInUsageReadersEnv>();
+  // Optional, so a runtime without it prices Ollama Cloud's models from the LiteLLM table alone.
+  const readMarketRates = (yield* Effect.serviceOption(OpenRouterZdrRates)).pipe(
+    Option.match({
+      onNone: () => Effect.succeed<RateTable>(new Map()),
+      onSome: (market) => market.rates,
+    }),
+  );
 
   const fileCache: ScanCache = new Map();
   // Reads from concurrent windows can still hold the original record after it is corrected.
@@ -917,9 +926,9 @@ export const make = Effect.gen(function* () {
       );
       return { scannedDirs: scanned, fromMemory };
     });
-    const [{ scannedDirs, fromMemory }] = yield* Effect.all(
-      [collect, provisional ? Effect.void : ensureRates(false)],
-      { concurrency: 2 },
+    const [{ scannedDirs, fromMemory }, , marketRates] = yield* Effect.all(
+      [collect, provisional ? Effect.void : ensureRates(false), readMarketRates],
+      { concurrency: 3 },
     );
 
     const priceOverrides = createOverrideRateTable(settings.usagePriceOverrides);
@@ -1022,7 +1031,7 @@ export const make = Effect.gen(function* () {
       untilDay: input.untilDay,
       resolution: input.resolution ?? "day",
       ...hourlyWindow,
-      rates,
+      rates: withMarketRates(rates, marketRates),
       priceOverrides,
       modelAliases,
       rateModel: (provider, model) => providerRateModels.get(provider)?.(model),
@@ -1102,7 +1111,7 @@ export const make = Effect.gen(function* () {
         scannedFiles += 1;
         const eventOccurrences = new Map<string, number>();
         for (const rawRecord of file.records) {
-          const record = correctedRecord(rawRecord);
+          const record = withoutCatalogCost(correctedRecord(rawRecord), marketRates);
           let usageRecord = record;
           if (
             sharedSessionProviders.has(record.provider) &&
