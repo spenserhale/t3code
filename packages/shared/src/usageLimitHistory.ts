@@ -31,6 +31,11 @@ export interface LimitInstance {
   readonly resetsAt: number;
   /** When this instance was first seen; it names the instance for as long as it lasts. */
   readonly from: number;
+  /**
+   * Set when a reset credit cleared the window before its reset: the first reading
+   * after, where spending is counted from again.
+   */
+  readonly baseline?: LimitReading | undefined;
   /** At most one reading per hour, the latest of it, oldest first. The last is the final one once the window ends. */
   readonly readings: readonly LimitReading[];
 }
@@ -95,9 +100,16 @@ function withSample(instances: readonly LimitInstance[], sample: LimitSample) {
     Math.abs(last.resetsAt - sample.resetsAt) <= RESET_TOLERANCE_MS &&
     used >= final[1] - DROP_TOLERANCE_POINTS;
   if (!continues) {
+    // The same window with less spent is one cleared early; a moved reset is a new window.
+    const cleared = Math.abs(last.resetsAt - sample.resetsAt) <= RESET_TOLERANCE_MS;
     return [
       ...instances,
-      { resetsAt: sample.resetsAt, from: sample.at, readings: [[sample.at, used]] as const },
+      {
+        resetsAt: sample.resetsAt,
+        from: sample.at,
+        ...(cleared ? { baseline: [sample.at, used] as const } : {}),
+        readings: [[sample.at, used]] as const,
+      },
     ];
   }
   const sameHour = Math.floor(final[0] / HOUR) === Math.floor(sample.at / HOUR);
@@ -203,6 +215,17 @@ export function currentLimitInstance(
 ): LimitInstance | null {
   const last = history[series]?.at(-1);
   return last !== undefined && last.resetsAt > now ? last : null;
+}
+
+/** Where spending is counted from again in the window that ends at `resetsAt`, if it was cleared early. */
+export function windowBaseline(
+  instances: readonly LimitInstance[] | undefined,
+  resetsAt: number,
+): LimitReading | undefined {
+  const current = instances?.at(-1);
+  return current !== undefined && Math.abs(current.resetsAt - resetsAt) <= RESET_TOLERANCE_MS
+    ? current.baseline
+    : undefined;
 }
 
 export interface PastLimitWindow {

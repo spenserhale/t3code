@@ -15,10 +15,8 @@ function accountName(item: UseItItem): string {
 }
 
 /** Round to the nearest five so a forecast reads as the estimate it is. */
-function unusedHint(item: UseItItem): string | null {
-  return item.forecastUnusedPercent === null
-    ? null
-    : `On course to leave about ${Math.round(item.forecastUnusedPercent / 5) * 5}% unused`;
+function unusedHint(item: UseItItem): string {
+  return `On course to leave about ${Math.round(item.forecastUnusedPercent / 5) * 5}% unused`;
 }
 
 function UseTodayRows({

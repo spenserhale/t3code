@@ -87,8 +87,8 @@ export interface UseItItem {
   readonly group: LimitGroupOf;
   readonly schedule: LimitSchedule | undefined;
   readonly remainingPercent: number;
-  /** What the forecast leaves unspent; null when no forecast could be made. */
-  readonly forecastUnusedPercent: number | null;
+  /** What the forecast leaves unspent, which is at least the threshold. */
+  readonly forecastUnusedPercent: number;
   readonly resetsAt: number;
 }
 
@@ -169,7 +169,8 @@ export function windowsToUseToday(input: UseItInput): readonly UseItItem[] {
         instances,
         dailyTokens: input.dailyTokens?.(account),
       });
-      if (forecast !== null && forecast.unusedPercent < settings.thresholdPercent) continue;
+      // A window that cannot be forecast is left alone, and not recorded, until it can.
+      if (forecast === null || forecast.unusedPercent < settings.thresholdPercent) continue;
       items.push({
         tag: windowTag(series, instances, resetsAt),
         account,
@@ -177,15 +178,40 @@ export function windowsToUseToday(input: UseItInput): readonly UseItItem[] {
         group,
         schedule,
         remainingPercent: remaining,
-        forecastUnusedPercent: forecast?.unusedPercent ?? null,
+        forecastUnusedPercent: forecast.unusedPercent,
         resetsAt,
       });
     }
   }
-  return items.sort(
-    (left, right) =>
-      left.resetsAt - right.resetsAt || right.remainingPercent - left.remainingPercent,
-  );
+  return items.sort(bySoonestReset);
+}
+
+const bySoonestReset = (left: UseItItem, right: UseItItem) =>
+  left.resetsAt - right.resetsAt || right.remainingPercent - left.remainingPercent;
+
+/** Every window in the batches, once, soonest reset first. */
+export function reminderItems(batches: readonly ReminderBatch[]): readonly UseItItem[] {
+  const byTag = new Map<string, UseItItem>();
+  for (const batch of batches) {
+    for (const item of batch.items) if (!byTag.has(item.tag)) byTag.set(item.tag, item);
+  }
+  return [...byTag.values()].sort(bySoonestReset);
+}
+
+/**
+ * A short name for one notice, from the windows in it. A notice with other
+ * windows has another name, so it stands beside an earlier one and does not
+ * replace it.
+ */
+export function reminderNotificationTag(items: readonly UseItItem[]): string {
+  let hash = 0x811c9dc5;
+  for (const character of items
+    .map((item) => item.tag)
+    .sort()
+    .join("\n")) {
+    hash = Math.imul(hash ^ character.charCodeAt(0), 0x01000193);
+  }
+  return `usage-limits-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 /** What has been said already: window tags until their reset, and the day each group last had its digest. */

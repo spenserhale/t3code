@@ -3,7 +3,7 @@ import type { LimitAccount } from "@t3tools/shared/usageLimits";
 import type { DailyTotals } from "@t3tools/shared/usageMerge";
 import { describe, expect, it } from "vite-plus/test";
 
-import { dailyTokensByProvider, dailyTokensFor } from "./usageLimitDailyTokens";
+import { dailyTokensByProvider, dailyTokensDue, dailyTokensFor } from "./usageLimitDailyTokens";
 
 const day = (date: string, totals: Partial<Record<UsageProviderKind, number>>): DailyTotals => ({
   day: date,
@@ -65,5 +65,25 @@ describe("daily token totals for forecasts", () => {
     expect(dailyTokensFor(stored, account("claudeAgent"), 14 * 24 * 3_600_000)).toBeDefined();
     expect(dailyTokensFor(stored, account("claudeAgent"), 14 * 24 * 3_600_000 + 1)).toBeUndefined();
     expect(dailyTokensFor(null, account("claudeAgent"), 0)).toBeUndefined();
+  });
+});
+
+describe("when token totals are fetched", () => {
+  const HOUR = 3_600_000;
+
+  it("when there are none, or the ones kept are half a day old", () => {
+    expect(dailyTokensDue({ cachedAt: null, attemptedAt: null, now: 1_000 })).toBe(true);
+    expect(dailyTokensDue({ cachedAt: 0, attemptedAt: null, now: 12 * HOUR - 1 })).toBe(false);
+    expect(dailyTokensDue({ cachedAt: 0, attemptedAt: null, now: 12 * HOUR })).toBe(true);
+  });
+
+  it("but not again within half an hour of a try, whether or not it brought anything", () => {
+    expect(dailyTokensDue({ cachedAt: null, attemptedAt: 100, now: 100 + 29 * 60_000 })).toBe(
+      false,
+    );
+    expect(dailyTokensDue({ cachedAt: null, attemptedAt: 100, now: 100 + 30 * 60_000 })).toBe(true);
+    expect(dailyTokensDue({ cachedAt: 0, attemptedAt: 13 * HOUR, now: 13 * HOUR + 60_000 })).toBe(
+      false,
+    );
   });
 });

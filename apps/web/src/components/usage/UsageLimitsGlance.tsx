@@ -7,6 +7,8 @@ import { Fragment, useState } from "react";
 import { cn } from "../../lib/utils";
 import { providerClients } from "../settings/providerDriverMeta";
 import { InlineButton } from "../ui/button";
+import { useDailyTokens } from "./usageLimitDailyTokens";
+import { useUsageLimitHistory } from "./usageLimitHistoryStore";
 import { LimitGroupName, useCarriedLimitGroups } from "./UsageLimitGroupSections";
 import { AccountAvatar } from "./UsageLimitsPooled";
 import { UseTodayGlance } from "./UseTodayList";
@@ -28,12 +30,15 @@ export function UsageLimitsGlance({
 }) {
   const [now] = useState(() => Date.now());
   const [groups] = useCarriedLimitGroups(accounts, presentations);
+  const history = useUsageLimitHistory();
+  const dailyTokens = useDailyTokens(now);
   const { sections, checkedAt } = collectLimitGlance(
     accounts,
     groups,
     now,
     (account) =>
       account.displayName ?? providerClients.get(account.driver)?.label ?? String(account.driver),
+    { history, dailyTokens },
   );
   const checked = checkedAt ? formatCheckedAgo(checkedAt, now) : null;
   return (

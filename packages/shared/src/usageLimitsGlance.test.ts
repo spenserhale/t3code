@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off -- Token days are listed from fixed epochs.
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -268,6 +269,35 @@ describe("collectLimitGlance", () => {
         })!,
       ),
     ).toBe("17% in reserve");
+  });
+
+  it("judges pace from a recorded clearing and against the usual pattern when it knows them", () => {
+    const monday = Date.parse("2026-09-07T12:00:00.000Z");
+    const entry = account({ key: "a" }, [weekly(30)]);
+    const withExtras = (extras: Parameters<typeof collectLimitGlance>[4]) =>
+      collectLimitGlance([entry], NO_LIMIT_GROUPS, monday, nameOf, extras).sections[0]!.rows[0]!
+        .pace;
+    // A reset credit on Sunday noon: 30% in the day since is spending ahead of what remained.
+    const credit = Date.parse("2026-09-06T12:00:00.000Z");
+    const cleared = {
+      "a|weekly": [
+        {
+          resetsAt: Date.parse("2026-09-10T04:00:00.000Z"),
+          from: credit,
+          baseline: [credit, 0] as const,
+          readings: [[credit, 0] as const],
+        },
+      ],
+    };
+    expect(paceLabel(withExtras({ history: cleared })!)).toBe("3% in deficit");
+    // A pattern that puts everything on Thursday: nothing is expected before then.
+    const thursdaysOnly = Array.from({ length: 31 }, (_, offset) => {
+      const day = new Date(Date.UTC(2026, 7, 4 + offset));
+      return { day: day.toISOString().slice(0, 10), tokens: day.getUTCDay() === 4 ? 100 : 0 };
+    });
+    const pace = withExtras({ dailyTokens: () => thursdaysOnly })!;
+    expect(pace.reference).toBe("pattern");
+    expect(paceLabel(pace)).not.toBe(paceLabel(withExtras({})!));
   });
 
   it("has no pace for a row whose window has no clock", () => {

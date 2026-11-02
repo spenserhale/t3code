@@ -15,6 +15,8 @@ import {
   pruneReminderState,
   reminderBody,
   reminderChannel,
+  reminderItems,
+  reminderNotificationTag,
   windowsToUseToday,
 } from "./usageLimitReminders.ts";
 import { WORK_HOURS, type LimitSchedule } from "./usageLimitSchedule.ts";
@@ -113,23 +115,23 @@ describe("windowsToUseToday", () => {
     expect(item!.forecastUnusedPercent).toBeCloseTo(100 - 40 / ((168 - 20) / 168));
   });
 
-  it("waits until the reset is within a day, and until enough is left", () => {
+  it("waits until the reset is within a day", () => {
     expect(find([account("a", [weekly(40, 30)])])).toEqual([]);
     expect(find([account("a", [weekly(40, 24)])])).toHaveLength(1);
-    // With no pace to judge by, the share left alone decides.
-    expect(find([account("a", [unpaced(weekly(75, 20))])])).toHaveLength(1);
-    expect(find([account("a", [unpaced(weekly(76, 20))])])).toEqual([]);
-    const forty = { settings: { thresholdPercent: 40 } };
-    expect(find([account("a", [unpaced(weekly(60, 20))])], forty)).toHaveLength(1);
-    expect(find([account("a", [unpaced(weekly(61, 20))])], forty)).toHaveLength(0);
   });
 
   it("stays quiet when the pace so far would use it all anyway", () => {
     // 30% is left, but at this rate only about 16% of the week goes unused.
     expect(find([account("a", [weekly(70, 20)])])).toEqual([]);
-    // With no pace to judge by, the share left is all there is to go on.
-    const [item] = find([account("a", [unpaced(weekly(70, 20))])]);
-    expect(item).toMatchObject({ remainingPercent: 30, forecastUnusedPercent: null });
+  });
+
+  it("says nothing of a window it cannot forecast, and speaks once it can", () => {
+    // Without a length the window has no start, so there is no pace to judge it by.
+    const unknown = find([account("a", [unpaced(weekly(10, 20))])]);
+    expect(unknown).toEqual([]);
+    expect(planReminders(unknown, NO_REMINDER_STATE, "perWindow", now)).toEqual([]);
+    const known = find([account("a", [weekly(10, 20)])]);
+    expect(planReminders(known, NO_REMINDER_STATE, "perWindow", now)).toHaveLength(1);
   });
 
   it("gives monthly windows three days and sessions an hour, when sessions are asked for", () => {
@@ -313,6 +315,26 @@ describe("planReminders", () => {
     // The next week's window has its own reset, so its own tag.
     const nextWeek = find([account("w", [weekly(40, 20 + 168)])], { groups, at: now + 7 * DAY });
     expect(planReminders(nextWeek, told, "perWindow", now + 7 * DAY)).toHaveLength(1);
+  });
+
+  it("joins the digests that fall due together into one set of windows", () => {
+    const batches = planReminders(items, NO_REMINDER_STATE, "digest", now);
+    expect(batches).toHaveLength(3);
+    // Two groups can come due on the same look, and they are one notice, not two.
+    expect(reminderItems(batches).map((item) => item.account.key)).toEqual(["q", "p", "w"]);
+    expect(
+      reminderItems([batches[2]!, batches[0]!, batches[2]!]).map((item) => item.account.key),
+    ).toEqual(["q", "w"]);
+    expect(reminderItems([])).toEqual([]);
+  });
+
+  it("names a notice by the windows in it, so a different set stands beside it, not over it", () => {
+    const [q, p, w] = items;
+    const tag = reminderNotificationTag([q!, p!]);
+    expect(reminderNotificationTag([p!, q!])).toBe(tag);
+    expect(reminderNotificationTag([q!, p!, w!])).not.toBe(tag);
+    expect(reminderNotificationTag([w!])).not.toBe(tag);
+    expect(tag).toMatch(/^usage-limits-[0-9a-f]{8}$/);
   });
 
   it("sends one digest a day for each group, at the first look that has something to say", () => {
