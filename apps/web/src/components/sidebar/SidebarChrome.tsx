@@ -1,4 +1,5 @@
 import { ArrowLeftIcon, ArrowRightIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import { SquareKanbanIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { T, useGT } from "gt-react";
 import { memo } from "react";
@@ -15,6 +16,7 @@ import {
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { cn } from "../../lib/utils";
 import { useIssuesSupported, usePullRequestsSupported } from "../../state/environments";
+import { useJiraEnvironmentId } from "../../state/jira";
 import { T3Wordmark } from "../T3Wordmark";
 import {
   resolveEnvironmentIdentificationPillLabel,
@@ -235,6 +237,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   });
   const pullRequestsSupported = usePullRequestsSupported();
   const issuesSupported = useIssuesSupported();
+  const jiraAvailable = useJiraEnvironmentId() !== null;
   const closeMobileSidebar = () => {
     if (isMobile) {
       setOpenMobile(false);
@@ -250,6 +253,10 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const handleIssuesClick = () => {
     closeMobileSidebar();
     void navigate({ to: "/issues", search: readIssueListPreferences() });
+  };
+  const handleJiraClick = () => {
+    closeMobileSidebar();
+    void navigate({ to: "/jira" });
   };
   const handleSettingsClick = () => {
     closeMobileSidebar();
@@ -298,6 +305,13 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
               icon={<IssueGlyph.issue />}
               label={gt("Issues", { $context: "sidebar link to the list of issues" })}
               onClick={handleIssuesClick}
+            />
+          ) : null}
+          {jiraAvailable ? (
+            <SidebarUtilityItem
+              icon={<SquareKanbanIcon />}
+              label="Jira"
+              onClick={handleJiraClick}
             />
           ) : null}
           <SidebarUtilityItem
