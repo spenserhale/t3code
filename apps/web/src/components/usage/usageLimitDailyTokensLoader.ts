@@ -1,47 +1,62 @@
-import { AuthDiagnosticsReadScope, USAGE_CONTRACT_VERSION } from "@t3tools/contracts";
+import {
+  AuthDiagnosticsReadScope,
+  USAGE_CONTRACT_VERSION,
+  type EnvironmentId,
+} from "@t3tools/contracts";
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
 import { makeWindow } from "@t3tools/shared/usageFormat";
-import { type EnvironmentUsage, type DailyTotals, mergeUsage } from "@t3tools/shared/usageMerge";
+import { type DailyTotals, mergeUsage } from "@t3tools/shared/usageMerge";
 import type { AtomRegistry } from "effect/reactivity";
 
 import { environmentPresentations } from "../../state/presentation";
 import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope } from "../../state/session";
 
-/**
- * The last 90 days of token totals from every connected environment that lets
- * this client read usage, as the Usage page merges them. `attempted` is false
- * when no environment was ready to ask, which is not worth waiting out a retry for.
- */
-export async function loadDailyTokens(
+/** An environment that has not answered by now is given up on, and asked again later. */
+const REQUEST_TIMEOUT_MS = 2 * 60_000;
+
+export interface UsageEnvironment {
+  readonly environmentId: EnvironmentId;
+  readonly label: string;
+}
+
+/** The connected environments that let this client read usage. */
+export function readyUsageEnvironments(
   registry: AtomRegistry.AtomRegistry,
-): Promise<{ readonly attempted: boolean; readonly daily: readonly DailyTotals[] | null }> {
-  const input = makeWindow(90);
-  const ready = [...registry.get(environmentPresentations.presentationsAtom)].filter(
-    ([environmentId, presentation]) =>
-      presentation.connection.phase === "connected" &&
-      readEnvironmentScope(environmentId, AuthDiagnosticsReadScope),
-  );
-  if (ready.length === 0) return { attempted: false, daily: null };
-  const answered: EnvironmentUsage[] = [];
-  await Promise.all(
-    ready.map(async ([environmentId, presentation]) => {
-      const result = await executeAtomQuery(
-        registry,
-        serverEnvironment.usageSummary({ environmentId, input }),
-        { reportFailure: false, reportDefect: false },
-      );
-      if (result._tag === "Success") {
-        answered.push({
-          environmentId,
-          label: presentation.entry.target.label,
-          summary: result.value,
-        });
-      }
+): readonly UsageEnvironment[] {
+  return [...registry.get(environmentPresentations.presentationsAtom)]
+    .filter(
+      ([environmentId, presentation]) =>
+        presentation.connection.phase === "connected" &&
+        readEnvironmentScope(environmentId, AuthDiagnosticsReadScope),
+    )
+    .map(([environmentId, presentation]) => ({
+      environmentId,
+      label: presentation.entry.target.label,
+    }));
+}
+
+/**
+ * The last 90 days of one environment's token totals; null when it did not answer.
+ * It asks once and has the server wait for slow sources, where the Usage page's
+ * query would take the cached answer and then ask a second time.
+ */
+export async function loadEnvironmentDailyTokens(
+  registry: AtomRegistry.AtomRegistry,
+  environment: UsageEnvironment,
+): Promise<readonly DailyTotals[] | null> {
+  const result = await executeAtomQuery(
+    registry,
+    serverEnvironment.usageSummary({
+      environmentId: environment.environmentId,
+      input: { ...makeWindow(90), awaitRefresh: true },
     }),
+    {
+      reportFailure: false,
+      reportDefect: false,
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    },
   );
-  return {
-    attempted: true,
-    daily: answered.length > 0 ? mergeUsage(answered, USAGE_CONTRACT_VERSION).daily : null,
-  };
+  if (result._tag !== "Success") return null;
+  return mergeUsage([{ ...environment, summary: result.value }], USAGE_CONTRACT_VERSION).daily;
 }

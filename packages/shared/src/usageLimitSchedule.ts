@@ -199,12 +199,18 @@ function zoneOffset(timeZone: string, at: number): number {
  */
 function zonedInstant(timeZone: string, date: Date, minutes: number): number {
   const local = date.getTime() + minutes * MINUTE;
-  const guess = local - zoneOffset(timeZone, local);
-  const offset = zoneOffset(timeZone, guess);
-  if (guess + offset === local) return guess;
-  const corrected = local - offset;
-  const second = zoneOffset(timeZone, corrected);
-  return second === offset ? corrected : local - Math.min(offset, second);
+  // A day either side holds the offsets in force before and after a change near this time.
+  const before = zoneOffset(timeZone, local - DAY);
+  const after = zoneOffset(timeZone, local + DAY);
+  const early = local - before;
+  if (before === after) return early;
+  const late = local - after;
+  const earlyHolds = zoneOffset(timeZone, early) === before;
+  const lateHolds = zoneOffset(timeZone, late) === after;
+  if (earlyHolds && lateHolds) return Math.min(early, late);
+  if (lateHolds) return late;
+  // Read by the offset before the change, a skipped time lands just after it.
+  return early;
 }
 
 const calendarDay = (year: number, month: number, day: number) =>
