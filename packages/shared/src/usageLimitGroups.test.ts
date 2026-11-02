@@ -6,11 +6,16 @@ import {
   assignLimitGroup,
   groupLimitAccounts,
   labelLimitAccounts,
+  limitAccountScheduleKey,
   limitGroupNames,
+  limitGroupOf,
   MAX_LIMIT_GROUP_NAME_LENGTH,
   limitSubscriptionId,
+  resolveLimitSchedule,
   setLimitGroupsEnabled,
+  setLimitSchedule,
 } from "./usageLimitGroups.ts";
+import { EVERY_DAY, WEEKDAYS, WORK_HOURS } from "./usageLimitSchedule.ts";
 import {
   type LimitAccount,
   type LimitPresentations,
@@ -258,5 +263,66 @@ describe("assigning groups", () => {
       "Personal",
       "work",
     ]);
+  });
+});
+
+describe("schedules", () => {
+  const work = account({ key: "w", email: "me@acme.dev" });
+  const home = account({ key: "h", driver: claude, email: "me@home.dev" });
+  const assigned = { ...NO_LIMIT_GROUPS, assignments: { "codex:me@acme.dev": "Work" } };
+
+  it("finds the group an account is in whether or not the grouped view is on", () => {
+    expect(limitGroupOf(work, assigned.assignments)).toEqual({
+      key: "named:Work",
+      kind: "named",
+      name: "Work",
+    });
+    expect(limitGroupOf(home, assigned.assignments)).toEqual({
+      key: "email:me@home.dev",
+      kind: "email",
+      name: "me@home.dev",
+    });
+    expect(limitGroupOf(account({ key: "x" }), {})).toMatchObject({ key: "other", kind: "other" });
+  });
+
+  it("gives an account its own schedule, else its group's, else none", () => {
+    const state = {
+      ...assigned,
+      schedules: {
+        "named:Work": WORK_HOURS,
+        [limitAccountScheduleKey("claudeAgent:me@home.dev")]: WEEKDAYS,
+      },
+    };
+    expect(resolveLimitSchedule(state, work)).toEqual(WORK_HOURS);
+    expect(resolveLimitSchedule(state, home)).toEqual(WEEKDAYS);
+    expect(resolveLimitSchedule(state, account({ key: "x", email: "a@b.dev" }))).toBeUndefined();
+    expect(resolveLimitSchedule(assigned, work)).toBeUndefined();
+    // An account can be set back to every day while its group works weekdays.
+    const own = setLimitSchedule(state, limitAccountScheduleKey("codex:me@acme.dev"), EVERY_DAY);
+    expect(resolveLimitSchedule(own, work)).toEqual(EVERY_DAY);
+  });
+
+  it("applies with the grouped view off", () => {
+    const state = setLimitSchedule(setLimitGroupsEnabled(assigned, false), "named:Work", WEEKDAYS);
+    expect(state.enabled).toBe(false);
+    expect(resolveLimitSchedule(state, work)).toEqual(WEEKDAYS);
+  });
+
+  it("sets and clears schedules without disturbing assignments, and leaves no empty record behind", () => {
+    const set = setLimitSchedule(assigned, "named:Work", WEEKDAYS);
+    expect(set).toEqual({ ...assigned, schedules: { "named:Work": WEEKDAYS } });
+    expect(setLimitSchedule(set, "named:Work", null)).toEqual(assigned);
+    expect("schedules" in setLimitSchedule(set, "named:Work", null)).toBe(false);
+    expect(setLimitSchedule(NO_LIMIT_GROUPS, "other", null)).toEqual(NO_LIMIT_GROUPS);
+  });
+
+  it("keeps schedules when an account is given a group, or the group is cleared", () => {
+    const state = setLimitSchedule(NO_LIMIT_GROUPS, "named:Work", WEEKDAYS);
+    expect(assignLimitGroup(state, "codex:me@acme.dev", "Work").schedules).toEqual({
+      "named:Work": WEEKDAYS,
+    });
+    expect(assignLimitGroup(assignLimitGroup(state, "a", "Work"), "a", "").schedules).toEqual({
+      "named:Work": WEEKDAYS,
+    });
   });
 });
