@@ -353,6 +353,28 @@ import {
 } from "./providerUsageLimits.ts";
 import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
 import {
+  JiraAddCommentInput,
+  JiraAuthFailedError,
+  JiraComment,
+  JiraConfigureInput,
+  JiraIssueDetail,
+  JiraIssueInput,
+  JiraIssueSummary,
+  JiraLookupInput,
+  JiraLookupResult,
+  JiraNotConfiguredError,
+  JiraNotFoundError,
+  JiraProjectList,
+  JiraRateLimitedError,
+  JiraRequestError,
+  JiraSearchInput,
+  JiraSearchResult,
+  JiraStatus,
+  JiraStatusInput,
+  JiraTransitionInput,
+  JiraTransitionList,
+} from "./jiraIssues.ts";
+import {
   StorageCleanupReport,
   DatabaseStorageStatus,
   ServerSettings,
@@ -551,6 +573,17 @@ export const WS_METHODS = {
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
+
+  jiraStatus: "jira.status",
+  jiraConfigure: "jira.configure",
+  jiraDisconnect: "jira.disconnect",
+  jiraListProjects: "jira.listProjects",
+  jiraSearch: "jira.search",
+  jiraGetIssue: "jira.getIssue",
+  jiraListTransitions: "jira.listTransitions",
+  jiraTransition: "jira.transition",
+  jiraAddComment: "jira.addComment",
+  jiraLookupIssues: "jira.lookupIssues",
 
   pullRequestsList: "pullRequests.list",
   pullRequestsListStats: "pullRequests.listStats",
@@ -992,6 +1025,78 @@ const WsCloudInstallRelayClientRpc = Rpc.make(WS_METHODS.cloudInstallRelayClient
 const WsServerReportClientActivityRpc = Rpc.make(WS_METHODS.serverReportClientActivity, {
   payload: ClientActivityReportInput,
   error: EnvironmentAuthorizationError,
+});
+
+const JiraRpcError = Schema.Union([
+  JiraNotConfiguredError,
+  JiraAuthFailedError,
+  JiraNotFoundError,
+  JiraRateLimitedError,
+  JiraRequestError,
+  EnvironmentAuthorizationError,
+]);
+
+const WsJiraStatusRpc = Rpc.make(WS_METHODS.jiraStatus, {
+  payload: JiraStatusInput,
+  success: JiraStatus,
+  error: JiraRpcError,
+});
+
+// Checks the credentials with Jira, then saves them.
+const WsJiraConfigureRpc = Rpc.make(WS_METHODS.jiraConfigure, {
+  payload: JiraConfigureInput,
+  success: JiraStatus,
+  error: JiraRpcError,
+});
+
+const WsJiraDisconnectRpc = Rpc.make(WS_METHODS.jiraDisconnect, {
+  payload: Schema.Struct({}),
+  success: Schema.Void,
+  error: JiraRpcError,
+});
+
+const WsJiraListProjectsRpc = Rpc.make(WS_METHODS.jiraListProjects, {
+  payload: Schema.Struct({}),
+  success: JiraProjectList,
+  error: JiraRpcError,
+});
+
+const WsJiraSearchRpc = Rpc.make(WS_METHODS.jiraSearch, {
+  payload: JiraSearchInput,
+  success: JiraSearchResult,
+  error: JiraRpcError,
+});
+
+const WsJiraGetIssueRpc = Rpc.make(WS_METHODS.jiraGetIssue, {
+  payload: JiraIssueInput,
+  success: JiraIssueDetail,
+  error: JiraRpcError,
+});
+
+const WsJiraListTransitionsRpc = Rpc.make(WS_METHODS.jiraListTransitions, {
+  payload: JiraIssueInput,
+  success: JiraTransitionList,
+  error: JiraRpcError,
+});
+
+// Answers with the issue as it stands after the move.
+const WsJiraTransitionRpc = Rpc.make(WS_METHODS.jiraTransition, {
+  payload: JiraTransitionInput,
+  success: JiraIssueSummary,
+  error: JiraRpcError,
+});
+
+const WsJiraAddCommentRpc = Rpc.make(WS_METHODS.jiraAddComment, {
+  payload: JiraAddCommentInput,
+  success: JiraComment,
+  error: JiraRpcError,
+});
+
+// Many keys in one request, for the status chips of linked threads.
+const WsJiraLookupIssuesRpc = Rpc.make(WS_METHODS.jiraLookupIssues, {
+  payload: JiraLookupInput,
+  success: JiraLookupResult,
+  error: JiraRpcError,
 });
 
 const PullRequestRpcError = Schema.Union([
@@ -2056,6 +2161,16 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerReportClientActivityRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
+  WsJiraStatusRpc,
+  WsJiraConfigureRpc,
+  WsJiraDisconnectRpc,
+  WsJiraListProjectsRpc,
+  WsJiraSearchRpc,
+  WsJiraGetIssueRpc,
+  WsJiraListTransitionsRpc,
+  WsJiraTransitionRpc,
+  WsJiraAddCommentRpc,
+  WsJiraLookupIssuesRpc,
   WsPullRequestsListRpc,
   WsPullRequestsListStatsRpc,
   WsPullRequestsFilterOptionsRpc,
