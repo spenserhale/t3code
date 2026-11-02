@@ -3,8 +3,14 @@ import type {
   HandoffCodePlan,
   HandoffReady,
   HandoffStep,
+  ThreadMachineHandoffPlan,
 } from "@t3tools/client-runtime/thread-machine-handoff";
-import { EnvironmentId, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  type RepositoryIdentity,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { DraftId } from "../composerDraftStore";
@@ -18,16 +24,26 @@ import {
 const server = EnvironmentId.make("server");
 const draftId = DraftId.make("draft-1");
 const model = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus" };
+const identity = (remoteName: string): RepositoryIdentity => ({
+  canonicalKey: "github.com/t3tools/t3code",
+  locator: {
+    source: "git-remote",
+    remoteName,
+    remoteUrl: "https://github.com/t3tools/t3code.git",
+  },
+});
 
 function plan(code: HandoffCodePlan, overrides: Partial<HandoffReady> = {}): HandoffReady {
   return {
     kind: "ready",
     code,
+    sourceIdentity: identity("origin"),
     target: {
       environmentId: server,
       label: "Server",
       project: scopeProjectRef(server, ProjectId.make("project")),
-      remoteName: "origin",
+      cwd: "/work/target",
+      identity: identity("origin"),
     },
     transcript: { attach: true, maxBytes: 1_000 },
     modelSelection: model,
@@ -40,9 +56,13 @@ const carryOnNewBranch: HandoffCodePlan = {
   branch: "handoff/fix-login",
   createBranch: true,
   commit: { fileCount: 2, message: "WIP: hand off to Server" },
+  comparisonBase: "origin/main",
 };
 
-function fakes(overrides: Partial<ThreadMachineHandoffIo> = {}) {
+// The plan each io is run with, which a later read of the checkout finds unchanged by default.
+const plans = new WeakMap<ThreadMachineHandoffIo, HandoffReady>();
+
+function fakes(overrides: Partial<ThreadMachineHandoffIo> = {}, fresh?: ThreadMachineHandoffPlan) {
   const calls: Array<string> = [];
   const drafts: Array<HandoffDraftRequest> = [];
   const conversation = new File(["{}"], "thread.jsonl", { type: "application/x-ndjson" });
@@ -50,6 +70,10 @@ function fakes(overrides: Partial<ThreadMachineHandoffIo> = {}) {
     readConversation: async () => {
       calls.push("read conversation");
       return conversation;
+    },
+    replan: async () => {
+      calls.push("replan");
+      return fresh ?? plans.get(io)!;
     },
     createBranch: async (name) => {
       calls.push(`create branch ${name}`);
@@ -59,6 +83,15 @@ function fakes(overrides: Partial<ThreadMachineHandoffIo> = {}) {
       onPhase("commit");
       onPhase("push");
       return { upstreamBranch: "origin/handoff/fix-login" };
+    },
+    prepareTarget: async ({ pushed, comparisonBase, onPhase }) => {
+      calls.push(`prepare ${pushed.remoteRef} from ${comparisonBase}`);
+      onPhase("fetch");
+      onPhase("worktree");
+      return { worktreePath: "/worktrees/handoff", branch: pushed.branch };
+    },
+    removeTargetWorktree: async (path) => {
+      calls.push(`remove ${path}`);
     },
     openDraft: async (request) => {
       calls.push("open draft");
@@ -75,6 +108,7 @@ async function run(
   io: ThreadMachineHandoffIo,
   steps: Array<`${HandoffStep} ${HandoffStepState}`> = [],
 ) {
+  plans.set(io, handoff);
   return runThreadMachineHandoff({
     plan: handoff,
     title: "Fix the flaky login test",
@@ -93,8 +127,10 @@ describe("runThreadMachineHandoff", () => {
     expect(result).toEqual({ ok: true, draftId });
     expect(calls).toEqual([
       "read conversation",
+      "replan",
       "create branch handoff/fix-login",
       'commit and push "WIP: hand off to Server"',
+      "prepare origin/handoff/fix-login from origin/main",
       "open draft",
     ]);
     expect(steps).toEqual([
@@ -106,15 +142,91 @@ describe("runThreadMachineHandoff", () => {
       "commit done",
       "push running",
       "push done",
+      "fetch running",
+      "fetch done",
+      "worktree running",
+      "worktree done",
       "draft running",
       "draft done",
     ]);
     expect(drafts[0]).toMatchObject({
       conversation,
-      baseRef: "origin/handoff/fix-login",
+      worktree: { path: "/worktrees/handoff", branch: "handoff/fix-login" },
       modelSelection: model,
     });
+    expect(drafts[0]?.note).toContain("`handoff/fix-login`");
     expect(drafts[0]?.note).toContain("`origin/handoff/fix-login`");
+  });
+
+  it("checks the checkout still is what was planned before it changes anything", async () => {
+    const moved = plan({ ...carryOnNewBranch, branch: "handoff/other", createBranch: false });
+    const { io, calls } = fakes({}, moved);
+    const result = await run(plan(carryOnNewBranch), io);
+    expect(result).toMatchObject({ ok: false, step: "branch", leftLocalCommit: false });
+    expect(result.ok ? "" : result.message).toContain("changed");
+    expect(calls).toEqual(["read conversation", "replan"]);
+  });
+
+  it("stops where the plan would now be blocked", async () => {
+    const blocked: ThreadMachineHandoffPlan = {
+      kind: "blocked",
+      reason: "detached-head",
+      message: "This checkout is not on a branch.",
+    };
+    const { io, calls } = fakes({}, blocked);
+    expect(await run(plan(carryOnNewBranch), io)).toMatchObject({
+      ok: false,
+      message: "This checkout is not on a branch.",
+    });
+    expect(calls).toEqual(["read conversation", "replan"]);
+  });
+
+  it("continues the branch it pushed to the remote the machine knows it by, with that base", async () => {
+    const { io, calls } = fakes({
+      commitAndPush: async () => ({ upstreamBranch: "fork/handoff/fix-login" }),
+    });
+    const forked = plan(carryOnNewBranch, {
+      sourceIdentity: { ...identity("fork"), canonicalKey: "github.com/t3tools/t3code" },
+      target: { ...plan(carryOnNewBranch).target, identity: identity("github") },
+    });
+    await run(forked, io);
+    expect(calls).toContain("prepare github/handoff/fix-login from origin/main");
+  });
+
+  it("stops after a push to a remote it cannot match, with no worktree or draft", async () => {
+    const { io, calls } = fakes({
+      commitAndPush: async () => ({ upstreamBranch: "publish/handoff/fix-login" }),
+    });
+    const result = await run(plan(carryOnNewBranch), io);
+    expect(result).toMatchObject({ ok: false, step: "push", leftLocalCommit: false });
+    expect(result.ok ? "" : result.message).toContain("publish");
+    expect(calls.some((call) => call.startsWith("prepare") || call === "open draft")).toBe(false);
+  });
+
+  it("stops at the step that failed on the target, and opens no draft", async () => {
+    const { io, calls } = fakes({
+      prepareTarget: async ({ onPhase }) => {
+        onPhase("fetch");
+        throw new Error("Server cannot see handoff/fix-login on origin yet.");
+      },
+    });
+    expect(await run(plan(carryOnNewBranch), io)).toEqual({
+      ok: false,
+      step: "fetch",
+      message: "Server cannot see handoff/fix-login on origin yet.",
+      leftLocalCommit: false,
+    });
+    expect(calls).not.toContain("open draft");
+  });
+
+  it("takes the new worktree down again when the draft cannot be opened", async () => {
+    const { io, calls } = fakes({
+      openDraft: async () => {
+        throw new Error("Could not open a draft on Server.");
+      },
+    });
+    expect(await run(plan(carryOnNewBranch), io)).toMatchObject({ ok: false, step: "draft" });
+    expect(calls.at(-1)).toBe("remove /worktrees/handoff");
   });
 
   it("opens a draft on the machine's defaults when no code travels", async () => {
@@ -122,7 +234,7 @@ describe("runThreadMachineHandoff", () => {
     const result = await run(plan({ kind: "none", reason: "no-remote" }), io);
     expect(result.ok).toBe(true);
     expect(calls).toEqual(["read conversation", "open draft"]);
-    expect(drafts[0]?.baseRef).toBeNull();
+    expect(drafts[0]?.worktree).toBeNull();
   });
 
   it("leaves the conversation off a machine that takes no files, and says so", async () => {
@@ -141,8 +253,11 @@ describe("runThreadMachineHandoff", () => {
   it("pushes without a commit of its own when everything is committed", async () => {
     const { io, calls } = fakes();
     await run(plan({ ...carryOnNewBranch, createBranch: false, commit: null }), io);
-    expect(calls[1]).toBe('commit and push "WIP: hand off to Server"');
-    expect(calls).toHaveLength(3);
+    expect(calls.slice(0, 3)).toEqual([
+      "read conversation",
+      "replan",
+      'commit and push "WIP: hand off to Server"',
+    ]);
   });
 
   it("changes nothing in git when the conversation cannot be read", async () => {
@@ -177,7 +292,7 @@ describe("runThreadMachineHandoff", () => {
     });
     const result = await run(plan(carryOnNewBranch), io);
     expect(result).toMatchObject({ ok: false, step: "branch", leftLocalCommit: false });
-    expect(calls).toEqual(["read conversation"]);
+    expect(calls).toEqual(["read conversation", "replan"]);
   });
 
   it("reports a commit that failed as nothing left behind, and opens no draft", async () => {
@@ -264,23 +379,9 @@ describe("runThreadMachineHandoff", () => {
     });
   });
 
-  it("starts the work from the pushed branch even when the push result names another remote", async () => {
-    const { io, drafts } = fakes({
-      commitAndPush: async () => ({ upstreamBranch: "fork/handoff/fix-login" }),
-    });
-    await run(
-      plan(carryOnNewBranch, {
-        target: { ...plan(carryOnNewBranch).target, remoteName: "github" },
-      }),
-      io,
-    );
-    expect(drafts[0]?.baseRef).toBe("github/handoff/fix-login");
-  });
-
-  it("opens a draft without a base when the push reported no branch", async () => {
-    const { io, drafts } = fakes({ commitAndPush: async () => ({ upstreamBranch: undefined }) });
-    await run(plan(carryOnNewBranch), io);
-    expect(drafts[0]?.baseRef).toBeNull();
-    expect(drafts[0]?.note).toContain("No code was carried over");
+  it("stops when the push reported no branch, rather than guess one", async () => {
+    const { io, calls } = fakes({ commitAndPush: async () => ({ upstreamBranch: undefined }) });
+    expect(await run(plan(carryOnNewBranch), io)).toMatchObject({ ok: false, step: "push" });
+    expect(calls).not.toContain("open draft");
   });
 });

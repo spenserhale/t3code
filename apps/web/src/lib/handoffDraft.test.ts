@@ -29,7 +29,7 @@ const request: HandoffDraftRequest = {
   conversation: new File(['{"title":"t"}\n'], "thread-1234.jsonl", {
     type: "application/x-ndjson",
   }),
-  baseRef: "origin/handoff/fix-login",
+  worktree: { path: "/worktrees/handoff-fix-login", branch: "handoff/fix-login" },
   modelSelection: model,
 };
 
@@ -73,10 +73,9 @@ describe("openHandoffDraft", () => {
     expect(opened).toBe(draftId);
     expect(received).toEqual([
       {
-        branch: "origin/handoff/fix-login",
-        worktreePath: null,
+        branch: "handoff/fix-login",
+        worktreePath: "/worktrees/handoff-fix-login",
         envMode: "worktree",
-        startFromOrigin: true,
         prompt: note,
       },
     ]);
@@ -87,8 +86,8 @@ describe("openHandoffDraft", () => {
       projectId: project.projectId,
       environmentSelection: "manual",
       envMode: "worktree",
-      branch: "origin/handoff/fix-login",
-      startFromOrigin: true,
+      branch: "handoff/fix-login",
+      worktreePath: "/worktrees/handoff-fix-login",
     });
 
     const draft = drafts.getComposerDraft(draftId)!;
@@ -108,6 +107,8 @@ describe("openHandoffDraft", () => {
     expect(entry).toMatchObject({
       ...pending,
       target: scopeThreadRef(targetEnvironment, threadId),
+      noteMarker: "Continuing the thread.",
+      attachmentId: useComposerDraftStore.getState().getComposerDraft(draftId)?.files[0]?.id,
     });
     expect(Number.isNaN(Date.parse(entry?.createdAt ?? ""))).toBe(false);
   });
@@ -117,7 +118,7 @@ describe("openHandoffDraft", () => {
     await openHandoffDraft({
       newThread: newThreadHandler(received),
       project,
-      request: { ...request, baseRef: null, modelSelection: null, conversation: null },
+      request: { ...request, worktree: null, modelSelection: null, conversation: null },
       pending,
     });
     expect(received).toEqual([{ prompt: note }]);
