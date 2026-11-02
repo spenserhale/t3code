@@ -11,9 +11,16 @@ export type LimitWeekday = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 export const LIMIT_WEEKDAYS: readonly LimitWeekday[] = [1, 2, 3, 4, 5, 6, 7];
 
+/** How much a weekday counts for, by ISO weekday. */
+export type WeekdayWeights = Readonly<Record<LimitWeekday, number>>;
+
 export interface LimitSchedule {
   readonly days: readonly LimitWeekday[];
-  /** Minutes after local midnight, `0 <= start < end <= 1440`. Omitted: the whole day counts. */
+  /**
+   * Minutes after local midnight, `start` in 0 to 1439 and `end` in 1 to 1440. An end earlier than
+   * the start runs past midnight into the next morning, and belongs to the day it starts on.
+   * Omitted: the whole day counts.
+   */
   readonly hours?: { readonly start: number; readonly end: number } | undefined;
   /** IANA zone name. Omitted: this device's zone. */
   readonly timeZone?: string | undefined;
@@ -62,7 +69,8 @@ function isValidTimeZone(timeZone: string): boolean {
 /**
  * Makes a schedule from untrusted input (storage, a form): days deduplicated
  * and ordered, hours kept only when they form a real span, a zone kept only
- * when it exists. Returns undefined when no day is left, which has no use.
+ * when it exists. Returns undefined when nothing would be counted: no day is
+ * left, or the hours start and end together.
  */
 export function normalizeLimitSchedule(value: unknown): LimitSchedule | undefined {
   if (typeof value !== "object" || value === null) return undefined;
@@ -72,19 +80,26 @@ export function normalizeLimitSchedule(value: unknown): LimitSchedule | undefine
   if (kept.length === 0) return undefined;
   const { start, end } =
     typeof hours === "object" && hours !== null ? (hours as Record<string, unknown>) : {};
-  const validHours =
+  let span: { readonly start: number; readonly end: number } | undefined;
+  if (
     typeof start === "number" &&
     typeof end === "number" &&
     Number.isInteger(start) &&
     Number.isInteger(end) &&
     start >= 0 &&
-    start < end &&
-    end <= MINUTES_PER_DAY &&
-    !(start === 0 && end === MINUTES_PER_DAY);
+    start < MINUTES_PER_DAY &&
+    end >= 0 &&
+    end <= MINUTES_PER_DAY
+  ) {
+    if (start === end) return undefined;
+    // Midnight ends a day, not begins one.
+    const closing = end === 0 ? MINUTES_PER_DAY : end;
+    if (!(start === 0 && closing === MINUTES_PER_DAY)) span = { start, end: closing };
+  }
   const zone = typeof timeZone === "string" && isValidTimeZone(timeZone) ? timeZone : undefined;
   return {
     days: kept,
-    ...(validHours ? { hours: { start, end } } : {}),
+    ...(span ? { hours: span } : {}),
     ...(zone === undefined ? {} : { timeZone: zone }),
   };
 }
@@ -197,10 +212,13 @@ const calendarDay = (year: number, month: number, day: number) =>
 
 const isoWeekday = (date: Date): LimitWeekday => (date.getUTCDay() || 7) as LimitWeekday;
 
+const dayKey = (date: Date) =>
+  `${String(date.getUTCFullYear()).padStart(4, "0")}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+
 /** `2026-11-02`: the calendar day of an instant in the schedule's zone. */
 export function limitDayKey(schedule: LimitSchedule | undefined, at: number): string {
   const { year, month, day } = zonedParts(resolveTimeZone(schedule), at);
-  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  return dayKey(calendarDay(year, month, day));
 }
 
 /** The weekday of an instant in the schedule's zone. */
@@ -209,18 +227,81 @@ export function limitWeekdayAt(schedule: LimitSchedule | undefined, at: number):
   return isoWeekday(calendarDay(year, month, day));
 }
 
-/** True when `at` falls on a counted day and, if hours are set, inside them. */
+/**
+ * The real stretch of time the schedule counts for the day beginning on `date`:
+ * all of it, or the daily hours, which may run into the morning. A time a clock
+ * change skips lands just after it, and a repeated one takes the first, so
+ * counting and the gate follow the same instants. Null when the weekday is out.
+ */
+function dayStretch(
+  schedule: LimitSchedule | undefined,
+  zone: string,
+  date: Date,
+): { readonly from: number; readonly to: number } | null {
+  const days = schedule?.days ?? LIMIT_WEEKDAYS;
+  if (!days.includes(isoWeekday(date))) return null;
+  const hours = schedule?.hours;
+  const next = new Date(date.getTime() + DAY);
+  if (!hours) return { from: zonedInstant(zone, date, 0), to: zonedInstant(zone, next, 0) };
+  const from = zonedInstant(zone, date, hours.start);
+  const to =
+    hours.end < hours.start
+      ? zonedInstant(zone, next, hours.end)
+      : hours.end >= MINUTES_PER_DAY
+        ? zonedInstant(zone, next, 0)
+        : zonedInstant(zone, date, hours.end);
+  return to > from ? { from, to } : null;
+}
+
+/**
+ * The calendar days in the schedule's zone that `[from, to)` touches, each
+ * clipped to it, so a day a clock change shortens or lengthens has its real
+ * length.
+ */
+export function limitDaysBetween(
+  schedule: LimitSchedule | undefined,
+  from: number,
+  to: number,
+): Array<{ readonly day: string; readonly from: number; readonly to: number }> {
+  if (!(to > from)) return [];
+  const zone = resolveTimeZone(schedule);
+  const { year, month, day } = zonedParts(zone, from);
+  let date = calendarDay(year, month, day);
+  const days: Array<{ day: string; from: number; to: number }> = [];
+  for (let walked = 0; walked <= MAX_WALKED_DAYS; walked += 1) {
+    const begins = zonedInstant(zone, date, 0);
+    if (begins >= to) break;
+    const next = new Date(date.getTime() + DAY);
+    days.push({
+      day: dayKey(date),
+      from: Math.max(begins, from),
+      to: Math.min(zonedInstant(zone, next, 0), to),
+    });
+    date = next;
+  }
+  return days;
+}
+
+/** True when the schedule counts the instant `at`, by the same stretches `limitTimeline` counts. */
 export function isLimitActiveAt(schedule: LimitSchedule | undefined, at: number): boolean {
   if (isEveryDay(schedule)) return true;
-  const { year, month, day, minutes } = zonedParts(resolveTimeZone(schedule), at);
-  if (!schedule!.days.includes(isoWeekday(calendarDay(year, month, day)))) return false;
-  const hours = schedule!.hours;
-  return hours === undefined || (minutes >= hours.start && minutes < hours.end);
+  const zone = resolveTimeZone(schedule);
+  const { year, month, day } = zonedParts(zone, at);
+  const date = calendarDay(year, month, day);
+  // A night that began yesterday may still be running.
+  return [date, new Date(date.getTime() - DAY)].some((candidate) => {
+    const stretch = dayStretch(schedule, zone, candidate);
+    return stretch !== null && at >= stretch.from && at < stretch.to;
+  });
 }
 
 /** How long one counted day lasts: the daily hours, else a whole day. */
 export function limitActiveDayMs(schedule: LimitSchedule | undefined): number {
-  return schedule?.hours ? (schedule.hours.end - schedule.hours.start) * MINUTE : DAY;
+  const hours = schedule?.hours;
+  if (!hours) return DAY;
+  const minutes =
+    hours.end > hours.start ? hours.end - hours.start : MINUTES_PER_DAY - hours.start + hours.end;
+  return minutes * MINUTE;
 }
 
 export interface ActiveTimeline {
@@ -319,39 +400,33 @@ function buildTimeline(
   if (isEveryDay(schedule) && dayWeight === undefined) {
     return timelineOf(start, end, [{ from: start, to: end, mass: end - start }]);
   }
-  const days = schedule?.days ?? LIMIT_WEEKDAYS;
-  const hours = schedule?.hours;
   const zone = resolveTimeZone(schedule);
   if ((end - start) / DAY > MAX_WALKED_DAYS) {
     return timelineOf(start, end, [{ from: start, to: end, mass: end - start }]);
   }
   const first = zonedParts(zone, start);
   const stretches: Stretch[] = [];
-  let date = calendarDay(first.year, first.month, first.day);
-  for (let walked = 0; walked <= MAX_WALKED_DAYS; walked += 1) {
-    const midnight = zonedInstant(zone, date, 0);
-    if (midnight >= end) break;
-    const next = new Date(date.getTime() + DAY);
-    const weekday = isoWeekday(date);
-    if (days.includes(weekday)) {
-      const from = hours ? zonedInstant(zone, date, hours.start) : midnight;
-      const to =
-        hours && hours.end < MINUTES_PER_DAY
-          ? zonedInstant(zone, date, hours.end)
-          : zonedInstant(zone, next, 0);
-      const length = to - from;
-      const clippedFrom = Math.max(from, start);
-      const clippedTo = Math.min(to, end);
-      if (length > 0 && clippedTo > clippedFrom) {
+  // A night that began the day before the window may still be running when it opens.
+  let date = new Date(calendarDay(first.year, first.month, first.day).getTime() - DAY);
+  for (let walked = 0; walked <= MAX_WALKED_DAYS + 1; walked += 1) {
+    const stretch = dayStretch(schedule, zone, date);
+    if (stretch !== null) {
+      if (stretch.from >= end) break;
+      const length = stretch.to - stretch.from;
+      const clippedFrom = Math.max(stretch.from, start);
+      const clippedTo = Math.min(stretch.to, end);
+      if (clippedTo > clippedFrom) {
         const clipped = clippedTo - clippedFrom;
         stretches.push({
           from: clippedFrom,
           to: clippedTo,
-          mass: dayWeight ? (dayWeight(weekday) * clipped) / length : clipped,
+          mass: dayWeight ? (dayWeight(isoWeekday(date)) * clipped) / length : clipped,
         });
       }
+    } else if (zonedInstant(zone, date, 0) >= end) {
+      break;
     }
-    date = next;
+    date = new Date(date.getTime() + DAY);
   }
   return timelineOf(start, end, stretches);
 }
@@ -361,23 +436,24 @@ const MAX_CACHED_TIMELINES = 256;
 
 /**
  * The counted time inside `[start, end)`. Without a schedule, or on one that
- * counts every hour, it is the whole window and costs nothing. `dayWeight`
- * scales a counted day's share, so a quiet weekday can weigh less than a busy
- * one; a day's weight is spread evenly over its counted hours.
+ * counts every hour, it is the whole window and costs nothing. `weights` scale
+ * a counted day's share, so a quiet weekday can weigh less than a busy one; a
+ * day's weight is spread evenly over its counted hours.
  */
 export function limitTimeline(
   schedule: LimitSchedule | undefined,
   start: number,
   end: number,
-  dayWeight?: (weekday: LimitWeekday) => number,
+  weights?: WeekdayWeights | ((weekday: LimitWeekday) => number),
 ): ActiveTimeline {
-  if (dayWeight !== undefined) return buildTimeline(schedule, start, end, dayWeight);
+  if (typeof weights === "function") return buildTimeline(schedule, start, end, weights);
   // Pace is asked for each bar on every render, and a walk costs a few formatter calls per day.
-  const key = `${schedule?.days.join("")}|${schedule?.hours?.start}-${schedule?.hours?.end}|${schedule?.timeZone}|${start}|${end}`;
+  const weighed = weights ? LIMIT_WEEKDAYS.map((day) => weights[day]).join(",") : "";
+  const key = `${schedule?.days.join("")}|${schedule?.hours?.start}-${schedule?.hours?.end}|${schedule?.timeZone}|${weighed}|${start}|${end}`;
   let timeline = cachedTimelines.get(key);
   if (timeline === undefined) {
     if (cachedTimelines.size >= MAX_CACHED_TIMELINES) cachedTimelines.clear();
-    timeline = buildTimeline(schedule, start, end);
+    timeline = buildTimeline(schedule, start, end, weights ? (day) => weights[day] : undefined);
     cachedTimelines.set(key, timeline);
   }
   return timeline;

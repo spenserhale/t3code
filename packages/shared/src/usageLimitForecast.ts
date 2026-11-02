@@ -5,15 +5,26 @@
  */
 import type { ServerProviderUsageWindow } from "@t3tools/contracts";
 
-import { type LimitInstance, RESET_TOLERANCE_MS } from "./usageLimitHistory.ts";
-import { timedWindow, windowSpan } from "./usageLimitPace.ts";
 import {
+  type LimitHistory,
+  type LimitInstance,
+  type LimitReading,
+  RESET_TOLERANCE_MS,
+  limitSeriesKey,
+  windowBaseline,
+} from "./usageLimitHistory.ts";
+import { type PaceDetail, type TimedWindow, timedWindow, windowSpan } from "./usageLimitPace.ts";
+import {
+  type ActiveTimeline,
   type LimitSchedule,
   type LimitWeekday,
+  type WeekdayWeights,
   LIMIT_WEEKDAYS,
   limitDayKey,
+  limitDaysBetween,
   limitTimeline,
 } from "./usageLimitSchedule.ts";
+import type { LimitAccount } from "./usageLimits.ts";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -95,6 +106,15 @@ interface Shape {
   readonly breakpoints: ReadonlyArray<{ readonly at: number; readonly mass: number }>;
 }
 
+const shapeOf = (timeline: ActiveTimeline, now: number): Shape => ({
+  nowMass: timeline.massBefore(now),
+  totalMass: timeline.total,
+  breakpoints: timeline.breakpoints,
+});
+
+const usedOf = (window: ServerProviderUsageWindow) =>
+  Math.max(0, Math.min(100, window.usedPercent));
+
 /**
  * Spend grows with the window's mass at `slope` points per unit from where it
  * stands now. The curve is clipped where it reaches 100.
@@ -137,19 +157,13 @@ function runRate(
   window: ServerProviderUsageWindow,
   now: number,
   schedule: LimitSchedule | undefined,
+  baseline: LimitReading | undefined,
 ): Forecast | "tooEarly" {
-  const timed = timedWindow(window, schedule)!;
-  const { timeline } = timed;
-  const nowMass = timeline.massBefore(now);
-  if (nowMass / timeline.total < MIN_ELAPSED_SHARE) return "tooEarly";
-  const used = Math.max(0, Math.min(100, window.usedPercent));
-  return project(
-    used,
-    now,
-    { nowMass, totalMass: timeline.total, breakpoints: timeline.breakpoints },
-    used / nowMass,
-    "runRate",
-  );
+  const { timeline, startUsed } = timedWindow(window, schedule, { baseline })!;
+  const shape = shapeOf(timeline, now);
+  if (shape.nowMass / timeline.total < MIN_ELAPSED_SHARE) return "tooEarly";
+  const used = usedOf(window);
+  return project(used, now, shape, Math.max(0, used - startUsed) / shape.nowMass, "runRate");
 }
 
 const dayNumber = (day: string) => {
@@ -158,28 +172,29 @@ const dayNumber = (day: string) => {
 };
 
 /**
- * The mean tokens on each weekday over the days from the first one with usage
- * to today, a day without a record counting as a day of none. Null with less
- * than two weeks of that, or when the counted weekdays never saw any use.
+ * The mean tokens on each weekday over the whole days from the first one with
+ * usage until yesterday, a day without a record counting as a day of none. Today
+ * is left out, as its total is not in yet. Null with less than two weeks of
+ * that, or when the counted weekdays never saw any use.
  */
 export function weekdayWeights(
   dailyTokens: readonly DailyTokens[],
   today: string,
   counted: readonly LimitWeekday[],
-): Readonly<Record<LimitWeekday, number>> | null {
+): WeekdayWeights | null {
   const todayNumber = dayNumber(today);
   const recent = dailyTokens.filter((entry) => {
     const age = todayNumber - dayNumber(entry.day);
-    return age >= 0 && age < WEEKDAY_LOOKBACK_DAYS && entry.tokens > 0;
+    return age >= 1 && age <= WEEKDAY_LOOKBACK_DAYS && entry.tokens > 0;
   });
   if (recent.length === 0) return null;
   const first = Math.min(...recent.map((entry) => dayNumber(entry.day)));
-  if (todayNumber - first + 1 < WEEKDAY_MIN_DAYS) return null;
+  if (todayNumber - first < WEEKDAY_MIN_DAYS) return null;
   const sums = new Map<LimitWeekday, number>();
   const days = new Map<LimitWeekday, number>();
   // Day 0, 1 January 1970, was a Thursday.
   const weekdayOf = (number: number) => (((number + 3) % 7) + 1) as LimitWeekday;
-  for (let day = first; day <= todayNumber; day += 1) {
+  for (let day = first; day < todayNumber; day += 1) {
     days.set(weekdayOf(day), (days.get(weekdayOf(day)) ?? 0) + 1);
   }
   for (const entry of recent) {
@@ -198,6 +213,7 @@ function weekdayPattern(
   now: number,
   schedule: LimitSchedule | undefined,
   dailyTokens: readonly DailyTokens[] | undefined,
+  baseline: LimitReading | undefined,
 ): Forecast | "needsTokens" | "tooEarly" {
   const counted = schedule?.days ?? LIMIT_WEEKDAYS;
   const weights =
@@ -205,19 +221,12 @@ function weekdayPattern(
       ? null
       : weekdayWeights(dailyTokens, limitDayKey(schedule, now), counted);
   if (weights === null) return "needsTokens";
-  const span = windowSpan(window)!;
-  const timeline = limitTimeline(schedule, span.start, span.end, (weekday) => weights[weekday]);
-  if (!(timeline.total > 0)) return "needsTokens";
-  const nowMass = timeline.massBefore(now);
-  if (nowMass / timeline.total < MIN_ELAPSED_SHARE) return "tooEarly";
-  const used = Math.max(0, Math.min(100, window.usedPercent));
-  return project(
-    used,
-    now,
-    { nowMass, totalMass: timeline.total, breakpoints: timeline.breakpoints },
-    used / nowMass,
-    "weekday",
-  );
+  const timed = timedWindow(window, schedule, { baseline, weights })!;
+  if (timed.reference !== "pattern") return "needsTokens";
+  const shape = shapeOf(timed.timeline, now);
+  if (shape.nowMass / timed.timeline.total < MIN_ELAPSED_SHARE) return "tooEarly";
+  const used = usedOf(window);
+  return project(used, now, shape, Math.max(0, used - timed.startUsed) / shape.nowMass, "weekday");
 }
 
 /**
@@ -264,22 +273,12 @@ function recentTrend(
   now: number,
   schedule: LimitSchedule | undefined,
   instances: readonly LimitInstance[] | undefined,
+  baseline: LimitReading | undefined,
 ): Forecast | "needsReadings" {
   const rate = instances === undefined ? null : trendRate(instances, now, schedule);
   if (rate === null) return "needsReadings";
-  const { timeline } = timedWindow(window, schedule)!;
-  const used = Math.max(0, Math.min(100, window.usedPercent));
-  return project(
-    used,
-    now,
-    {
-      nowMass: timeline.massBefore(now),
-      totalMass: timeline.total,
-      breakpoints: timeline.breakpoints,
-    },
-    rate,
-    "trend",
-  );
+  const { timeline } = timedWindow(window, schedule, { baseline })!;
+  return project(usedOf(window), now, shapeOf(timeline, now), rate, "trend");
 }
 
 /**
@@ -290,22 +289,25 @@ function recentTrend(
  */
 export function forecastWindow(input: ForecastInput): ForecastOutcome {
   const { window, now, schedule, algorithm } = input;
-  const timed = timedWindow(window, schedule);
-  if (timed === null) {
-    return { forecast: null, note: windowSpan(window) === null ? "noReset" : "outsideSchedule" };
+  const span = windowSpan(window);
+  if (span === null) return { forecast: null, note: "noReset" };
+  // Spending is counted from a clearing if a reset credit emptied the window.
+  const baseline = windowBaseline(input.instances, span.end);
+  if (timedWindow(window, schedule, { baseline }) === null) {
+    return { forecast: null, note: "outsideSchedule" };
   }
-  if (timed.span.end <= now) return { forecast: null, note: "ended" };
+  if (span.end <= now) return { forecast: null, note: "ended" };
   let note: ForecastNote | null = null;
   if (algorithm === "weekday") {
-    const result = weekdayPattern(window, now, schedule, input.dailyTokens);
+    const result = weekdayPattern(window, now, schedule, input.dailyTokens, baseline);
     if (typeof result !== "string") return { forecast: result, note: null };
     note = result === "needsTokens" ? "weekdayNeedsTokens" : "weekdayTooEarly";
   } else if (algorithm === "trend") {
-    const result = recentTrend(window, now, schedule, input.instances);
+    const result = recentTrend(window, now, schedule, input.instances, baseline);
     if (typeof result !== "string") return { forecast: result, note: null };
     note = "trendNeedsReadings";
   }
-  const base = runRate(window, now, schedule);
+  const base = runRate(window, now, schedule, baseline);
   return base === "tooEarly" ? { forecast: null, note: "tooEarly" } : { forecast: base, note };
 }
 
@@ -319,52 +321,172 @@ export function forecastSentence(forecast: Forecast, formatTime: (at: number) =>
   return unused >= 5 ? `On track to leave ~${unused}% unused` : "On track to use nearly all of it";
 }
 
+/**
+ * What pace and the chart's reference line need beyond the schedule: where
+ * spending is counted from if a reset credit cleared the window, and the usual
+ * spend by weekday if the account's provider has enough token history.
+ */
+export function paceDetailFor(input: {
+  readonly account: LimitAccount;
+  readonly window: ServerProviderUsageWindow;
+  readonly schedule: LimitSchedule | undefined;
+  readonly now: number;
+  readonly history?: LimitHistory | undefined;
+  readonly dailyTokens?:
+    | ((account: LimitAccount) => readonly DailyTokens[] | undefined)
+    | undefined;
+}): PaceDetail {
+  const { account, window, schedule, now } = input;
+  const span = windowSpan(window);
+  const tokens = input.dailyTokens?.(account);
+  return {
+    baseline:
+      span === null
+        ? undefined
+        : windowBaseline(input.history?.[limitSeriesKey(account, window)], span.end),
+    weights:
+      tokens === undefined
+        ? null
+        : weekdayWeights(tokens, limitDayKey(schedule, now), schedule?.days ?? LIMIT_WEEKDAYS),
+  };
+}
+
 export interface BurnDownChart {
   readonly start: number;
   readonly end: number;
-  /** Remaining allowance if spent evenly over the counted time; flat where nothing counts. */
-  readonly ideal: ReadonlyArray<{ readonly at: number; readonly remainingPercent: number }>;
+  /** Whether the reference line is the usual weekday pattern or even spending over counted time. */
+  readonly referenceKind: "pattern" | "even";
+  /** What would be left if spending followed the reference line; flat where nothing counts. */
+  readonly reference: ReadonlyArray<{ readonly at: number; readonly remainingPercent: number }>;
   readonly readings: ReadonlyArray<{ readonly at: number; readonly remainingPercent: number }>;
   readonly forecast: ReadonlyArray<{ readonly at: number; readonly remainingPercent: number }>;
 }
 
-/**
- * What the burn-down draws. Readings come from the recorded instance of this
- * window, if it is the one running, plus the reading in hand. Null for a
- * window with no span or nothing in it that counts.
- */
-export function burnDownChart(input: {
+interface ReadingsInput {
   readonly window: ServerProviderUsageWindow;
-  readonly now: number;
+  /** When the reading in hand was taken. It is drawn there, never at the viewer's clock. */
   readonly checkedAt: number;
-  readonly schedule?: LimitSchedule | undefined;
   readonly instance?: LimitInstance | null | undefined;
-  readonly forecast?: Forecast | null | undefined;
-}): BurnDownChart | null {
-  const timed = timedWindow(input.window, input.schedule);
-  if (timed === null) return null;
-  const { span, timeline } = timed;
-  const remaining = (usedPercent: number) => Math.max(0, 100 - usedPercent);
+}
+
+/**
+ * The window's readings from where counting starts: those recorded for this
+ * window, then the reading in hand if it is newer than them.
+ */
+function windowReadings(input: ReadingsInput, timed: TimedWindow): readonly LimitReading[] {
+  const { span, startAt } = timed;
   const recorded =
     input.instance && Math.abs(input.instance.resetsAt - span.end) <= RESET_TOLERANCE_MS
-      ? input.instance.readings
+      ? input.instance.readings.filter(([at]) => at >= startAt && at < span.end)
       : [];
-  const live = Math.min(input.checkedAt, input.now);
-  const readings = [
-    ...recorded.filter(([at]) => at >= span.start && at < live),
-    ...(live >= span.start && live < span.end ? ([[live, input.window.usedPercent]] as const) : []),
-  ];
+  const newest = recorded.at(-1)?.[0] ?? Number.NEGATIVE_INFINITY;
+  const live = input.checkedAt;
+  return live > newest && live >= startAt && live < span.end
+    ? [...recorded, [live, input.window.usedPercent] as const]
+    : recorded;
+}
+
+/**
+ * What the burn-down draws, from where spending is counted. The reference
+ * line is the usual weekday pattern when `weights` are given, else even
+ * spending over the counted time. Null for a window with no span or nothing in
+ * it that counts.
+ */
+export function burnDownChart(
+  input: ReadingsInput &
+    PaceDetail & {
+      readonly schedule?: LimitSchedule | undefined;
+      readonly forecast?: Forecast | null | undefined;
+    },
+): BurnDownChart | null {
+  const timed = timedWindow(input.window, input.schedule, input);
+  if (timed === null) return null;
+  const { span, startAt, startUsed, timeline, reference } = timed;
+  const allowance = 100 - startUsed;
+  const remaining = (usedPercent: number) => Math.max(0, 100 - usedPercent);
   return {
-    start: span.start,
+    start: startAt,
     end: span.end,
-    ideal: timeline.breakpoints.map((point) => ({
+    referenceKind: reference,
+    reference: timeline.breakpoints.map((point) => ({
       at: point.at,
-      remainingPercent: 100 - (100 * point.mass) / timeline.total,
+      remainingPercent: allowance - (allowance * point.mass) / timeline.total,
     })),
-    readings: readings.map(([at, used]) => ({ at, remainingPercent: remaining(used) })),
+    readings: windowReadings(input, timed).map(([at, used]) => ({
+      at,
+      remainingPercent: remaining(used),
+    })),
     forecast: (input.forecast?.curve ?? []).map((point) => ({
       at: point.at,
       remainingPercent: remaining(point.usedPercent),
     })),
   };
+}
+
+export interface DailyBurn {
+  /** The calendar day in the schedule's zone, `YYYY-MM-DD`. */
+  readonly day: string;
+  readonly from: number;
+  readonly to: number;
+  /** Points of allowance the reference line puts on this day. */
+  readonly budgetPercent: number;
+  /** Points used on the day, read off the recorded readings; null where none cover it. */
+  readonly consumedPercent: number | null;
+  /** The readings begin part way through this day. */
+  readonly partial: boolean;
+  readonly today: boolean;
+}
+
+/**
+ * Each day of the window, from where spending is counted: what the reference
+ * line allows it and what the readings say it used. Use is spread evenly over
+ * the time between two readings, so a day the app was closed for is an estimate.
+ */
+export function dailyBurn(
+  input: ReadingsInput &
+    PaceDetail & {
+      readonly now: number;
+      readonly schedule?: LimitSchedule | undefined;
+    },
+): readonly DailyBurn[] | null {
+  const timed = timedWindow(input.window, input.schedule, input);
+  if (timed === null) return null;
+  const { span, startAt, startUsed, timeline } = timed;
+  const readings = windowReadings(input, timed);
+  const first = readings[0];
+  const last = readings.at(-1);
+  const usedAt = (at: number) => {
+    if (first === undefined || last === undefined) return 0;
+    if (at <= first[0]) return first[1];
+    if (at >= last[0]) return last[1];
+    const upper = readings.findIndex(([when]) => when >= at);
+    const [after, usedAfter] = readings[upper]!;
+    const [before, usedBefore] = readings[upper - 1]!;
+    return after === before
+      ? usedAfter
+      : usedBefore + ((usedAfter - usedBefore) * (at - before)) / (after - before);
+  };
+  return limitDaysBetween(input.schedule, startAt, span.end).map((entry) => {
+    const used =
+      first !== undefined && last !== undefined && entry.to > first[0] && entry.from < last[0]
+        ? {
+            points: Math.max(
+              0,
+              usedAt(Math.min(entry.to, last[0])) - usedAt(Math.max(entry.from, first[0])),
+            ),
+            partial: first[0] > entry.from,
+          }
+        : null;
+    return {
+      day: entry.day,
+      from: entry.from,
+      to: entry.to,
+      budgetPercent:
+        ((100 - startUsed) * (timeline.massBefore(entry.to) - timeline.massBefore(entry.from))) /
+        timeline.total,
+      consumedPercent: used?.points ?? null,
+      partial: used?.partial ?? false,
+      today: entry.from <= input.now && input.now < entry.to,
+    };
+  });
 }

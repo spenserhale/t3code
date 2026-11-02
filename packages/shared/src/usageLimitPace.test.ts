@@ -11,6 +11,7 @@ import {
   windowPace,
   windowSpan,
 } from "./usageLimitPace.ts";
+import type { LimitReading } from "./usageLimitHistory.ts";
 import type { LimitSchedule } from "./usageLimitSchedule.ts";
 import { elapsedShare, paceOf } from "./usageLimits.ts";
 
@@ -244,5 +245,126 @@ describe("pooledPace", () => {
       now,
     );
     expect(pace?.state).toBe("on");
+  });
+});
+
+describe("a window cleared before its reset", () => {
+  // A reset credit on Wednesday noon; 4.5 days of the week were left.
+  const credit: LimitReading = [at("2026-11-04T12:00:00Z"), 0];
+  const thursdayNoon = at("2026-11-05T12:00:00Z");
+
+  it("is paced from the clearing, not from the start of the window", () => {
+    const pace = windowPace(weekly(10), thursdayNoon, undefined, { baseline: credit })!;
+    expect(pace.expectedUsedPercent).toBeCloseTo((1 / 4.5) * 100);
+    expect(paceLabel(pace)).toBe("12% in reserve");
+    // Counted from Monday, half the week is gone and the same 10% looks far behind.
+    expect(paceLabel(windowPace(weekly(10), thursdayNoon)!)).toBe("40% in reserve");
+    expect(
+      scheduledElapsedShare(weekly(10), thursdayNoon, undefined, { baseline: credit }),
+    ).toBeCloseTo(1 / 4.5);
+    expect(scheduledPaceRemaining(weekly(10), thursdayNoon, undefined, { baseline: credit })).toBe(
+      78,
+    );
+  });
+
+  it("projects from the spending since the clearing", () => {
+    // 40% in the day since: another 1.5 days at that rate, though a run from Monday would last.
+    const heavy = windowPace(weekly(40), thursdayNoon, undefined, { baseline: credit })!;
+    expect(heavy.outlook).toEqual({ kind: "runsOut", inMs: expect.closeTo(1.5 * DAY, -3) });
+    expect(windowPace(weekly(40), thursdayNoon)!.outlook).toEqual({ kind: "lasts" });
+  });
+
+  it("starts from whatever the window already held when it was first seen cleared", () => {
+    const pace = windowPace(weekly(20), thursdayNoon, undefined, { baseline: [credit[0], 8] })!;
+    expect(pace.expectedUsedPercent).toBeCloseTo(8 + 92 / 4.5);
+    // Nothing spent since the clearing is not a rate.
+    expect(
+      windowPace(weekly(8), thursdayNoon, undefined, { baseline: [credit[0], 8] })!.outlook,
+    ).toEqual({ kind: "lasts" });
+  });
+
+  it("says nothing in the first three percent after the clearing", () => {
+    const soon = credit[0] + 2 * HOUR;
+    expect(windowPace(weekly(1), soon, undefined, { baseline: credit })).toBeNull();
+    expect(windowPace(weekly(1), soon)).not.toBeNull();
+  });
+
+  it("ignores a baseline that is not inside the window", () => {
+    const before: LimitReading = [at("2026-10-30T00:00:00Z"), 0];
+    const after: LimitReading = [at("2026-11-10T00:00:00Z"), 0];
+    expect(windowPace(weekly(10), thursdayNoon, undefined, { baseline: before })).toEqual(
+      windowPace(weekly(10), thursdayNoon),
+    );
+    expect(windowPace(weekly(10), thursdayNoon, undefined, { baseline: after })).toEqual(
+      windowPace(weekly(10), thursdayNoon),
+    );
+  });
+
+  it("is counted in schedule time from the clearing", () => {
+    const friday: LimitReading = [at("2026-11-06T00:00:00Z"), 0];
+    // Friday noon: half a counted day of the one left after the credit.
+    const pace = windowPace(weekly(30), at("2026-11-06T12:00:00Z"), weekdaysUtc, {
+      baseline: friday,
+    })!;
+    expect(pace.expectedUsedPercent).toBeCloseTo(50);
+  });
+});
+
+describe("pace against the usual pattern", () => {
+  const busyWeekdays = { 1: 100, 2: 100, 3: 100, 4: 100, 5: 100, 6: 0, 7: 0 } as const;
+  const everyDayUtc: LimitSchedule = { days: [1, 2, 3, 4, 5, 6, 7], timeZone: "UTC" };
+  const wednesdayNoon = at("2026-11-04T12:00:00Z");
+
+  it("expects use on the days it usually happens, not evenly", () => {
+    // The weekend carries no weight, so by Wednesday noon half the pattern is done though only 2.5 of 7 days are.
+    const usual = windowPace(weekly(50), wednesdayNoon, everyDayUtc, { weights: busyWeekdays })!;
+    expect(usual).toMatchObject({ reference: "pattern", state: "on" });
+    expect(usual.expectedUsedPercent).toBeCloseTo(50);
+    const even = windowPace(weekly(50), wednesdayNoon, everyDayUtc)!;
+    expect(even).toMatchObject({ reference: "even", state: "ahead" });
+  });
+
+  it("judges whether the window lasts against the same line", () => {
+    const pace = windowPace(weekly(60), wednesdayNoon, everyDayUtc, { weights: busyWeekdays })!;
+    expect(paceLabel(pace)).toBe("10% in deficit");
+    // 60% by the middle of Wednesday leaves the other 40 until four on Friday morning.
+    expect(pace.outlook).toEqual({ kind: "runsOut", inMs: expect.closeTo(40 * HOUR, -3) });
+    expect(
+      windowPace(weekly(40), wednesdayNoon, everyDayUtc, { weights: busyWeekdays })!.outlook,
+    ).toEqual({
+      kind: "lasts",
+    });
+  });
+
+  it("falls back to even spending when the pattern puts nothing on the days that count", () => {
+    const weekendsOnly = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 100, 7: 100 } as const;
+    const pace = windowPace(weekly(50), wednesdayNoon, weekdaysUtc, { weights: weekendsOnly })!;
+    expect(pace.reference).toBe("even");
+    expect(pace.expectedUsedPercent).toBeCloseTo(50);
+  });
+
+  it("follows the pattern from a clearing, and pools accounts on their own lines", () => {
+    const credit: LimitReading = [at("2026-11-03T00:00:00Z"), 0];
+    const pace = windowPace(weekly(25), wednesdayNoon, everyDayUtc, {
+      weights: busyWeekdays,
+      baseline: credit,
+    })!;
+    // From Tuesday: 1.5 of the 4 weighted days that remain.
+    expect(pace.expectedUsedPercent).toBeCloseTo((1.5 / 4) * 100);
+    const pooled = pooledPace(
+      [
+        { window: weekly(50), schedule: everyDayUtc, weights: busyWeekdays },
+        { window: weekly(50), schedule: everyDayUtc },
+      ],
+      wednesdayNoon,
+    )!;
+    expect(pooled.reference).toBe("even");
+    expect(pooled.expectedUsedPercent).toBeCloseTo((50 + (2.5 / 7) * 100) / 2);
+    expect(
+      pooledPace(
+        [{ window: weekly(50), schedule: everyDayUtc, weights: busyWeekdays }],
+        wednesdayNoon,
+      )!.reference,
+    ).toBe("pattern");
   });
 });

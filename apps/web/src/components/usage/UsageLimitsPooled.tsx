@@ -55,12 +55,15 @@ import { BurnDownDisclosure } from "./UsageLimitBurnDown";
 import { LimitGroupSections, useLimitPools } from "./UsageLimitGroupSections";
 import { useUsageLimitGroups } from "./usageLimitGroupPreferences";
 import {
-  LimitGroupsContext,
+  LimitPaceContext,
+  PACE_REFERENCE_NAME,
   PaceBadge,
   PaceText,
-  useLimitSchedule,
   usePoolPace,
+  useWindowPaceInputs,
 } from "./UsageLimitPace";
+import { useDailyTokens } from "./usageLimitDailyTokens";
+import { useUsageLimitHistory } from "./usageLimitHistoryStore";
 import { UseTodayCard } from "./UseTodayList";
 
 function accountInitials(email: string): string {
@@ -165,8 +168,8 @@ function SegmentPopover({
 }) {
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const remaining = remainingPercent(window);
-  const schedule = useLimitSchedule(account);
-  const pace = windowPace(window, now, schedule);
+  const { schedule, detail } = useWindowPaceInputs(account, window, now);
+  const pace = windowPace(window, now, schedule, detail);
   const outlook = pace ? paceOutlook(pace) : null;
   const resetsIn = formatResetsIn(window, now);
   const where =
@@ -213,6 +216,7 @@ function SegmentPopover({
           <Row label="Expected">{Math.round(pace.expectedUsedPercent)}% used by now</Row>
         ) : null}
         {outlook ? <Row label="Outlook">{outlook}</Row> : null}
+        {pace ? <Row label="Against">{PACE_REFERENCE_NAME[pace.reference]}</Row> : null}
         {schedule && limitSchedulePreset(schedule) !== "everyDay" ? (
           <Row label="Schedule">{describeLimitSchedule(schedule)}</Row>
         ) : null}
@@ -368,8 +372,8 @@ function SegmentTriggers({
   const popover = use(SegmentPopoverContext) ?? undefined;
   const payload: SegmentPayload = { account, window, reset, redeem };
   const remaining = remainingPercent(window);
-  const schedule = useLimitSchedule(account);
-  const timeLeft = scheduledPaceRemaining(window, now, schedule);
+  const { schedule, detail } = useWindowPaceInputs(account, window, now);
+  const timeLeft = scheduledPaceRemaining(window, now, schedule, detail);
   const [segmentRef, paceMark] = usePaceMark(timeLeft);
   const resetsIn = formatResetsIn(window, now);
   const credits = account.limits.resetCredits?.availableCount ?? 0;
@@ -592,7 +596,7 @@ function PoolWindowCard({
       {description ? (
         <p className="text-xs text-muted-foreground md:col-span-2">{description}</p>
       ) : null}
-      <BurnDownDisclosure pool={pool} color={color} now={now} />
+      <BurnDownDisclosure pool={pool} color={color} />
     </div>
   );
 }
@@ -640,10 +644,12 @@ export function PoolSection({
 
 export function UsageLimitsPooled(props: Parameters<typeof UsageLimitsPooledBody>[0]) {
   const [groups] = useUsageLimitGroups();
+  const history = useUsageLimitHistory();
+  const dailyTokens = useDailyTokens(props.now);
   return (
-    <LimitGroupsContext value={groups}>
+    <LimitPaceContext value={{ groups, history, dailyTokens }}>
       <UsageLimitsPooledBody {...props} />
-    </LimitGroupsContext>
+    </LimitPaceContext>
   );
 }
 

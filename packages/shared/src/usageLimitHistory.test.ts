@@ -1,4 +1,4 @@
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { EnvironmentId, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -15,8 +15,9 @@ import {
   recordLimitSamples,
   type LimitHistory,
   type LimitSample,
+  windowBaseline,
 } from "./usageLimitHistory.ts";
-import type { LimitAccount } from "./usageLimits.ts";
+import { type LimitAccount, collectLimitAccounts } from "./usageLimits.ts";
 
 const at = (iso: string) => Date.parse(iso);
 const HOUR = 3_600_000;
@@ -315,5 +316,126 @@ describe("past windows", () => {
 
   it("has no average without windows", () => {
     expect(averageUtilization([])).toBeNull();
+  });
+});
+
+describe("two workspaces under one email", () => {
+  const checkedAt = "2026-11-03T10:00:00.000Z";
+  const login = (instanceId: string, workspaceId: string, usedPercent: number) => ({
+    instanceId: ProviderInstanceId.make(instanceId),
+    driver: ProviderDriverKind.make("codex"),
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready" as const,
+    auth: { status: "authenticated" as const, email: "same@example.com", workspaceId },
+    checkedAt,
+    models: [],
+    slashCommands: [],
+    skills: [],
+    usageLimits: {
+      checkedAt,
+      windows: [
+        {
+          id: "secondary",
+          kind: "weekly" as const,
+          label: "Weekly",
+          usedPercent,
+          windowDurationMins: 10_080,
+          resetsAt: "2026-11-09T00:00:00.000Z",
+        },
+      ],
+    },
+  });
+  const accounts = collectLimitAccounts(
+    new Map([
+      [
+        EnvironmentId.make("desk"),
+        {
+          entry: { target: { label: "Desk" } },
+          serverConfig: {
+            providers: [login("business", "ws-business", 8), login("personal", "ws-plus", 26)],
+          },
+        },
+      ],
+    ]),
+  );
+
+  it("are read as two series, so neither reading is lost", () => {
+    const samples = limitSamples(accounts, at("2026-11-03T10:05:00Z"));
+    expect(new Set(samples.map((sample) => sample.series)).size).toBe(2);
+    const history = recordLimitSamples(NO_LIMIT_HISTORY, samples);
+    expect(
+      Object.values(history)
+        .map((instances) => instances[0]!.readings[0]![1])
+        .sort((left, right) => left - right),
+    ).toEqual([8, 26]);
+  });
+
+  it("keep their series whichever environment reports them", () => {
+    const named = (list: readonly LimitAccount[]) =>
+      limitSamples(list, at("2026-11-03T10:05:00Z"))
+        .map((sample) => sample.series)
+        .sort();
+    expect(named([...accounts].reverse())).toEqual(named(accounts));
+  });
+});
+
+describe("a window cleared before its reset", () => {
+  const at0 = monday + 2 * DAY;
+
+  it("starts a new instance whose baseline is the first reading after the clearing", () => {
+    const history = record(
+      NO_LIMIT_HISTORY,
+      sample(HOUR, 60),
+      sample(at0 - monday, 0),
+      sample(at0 - monday + DAY, 12),
+    );
+    expect(history[series]).toEqual([
+      { resetsAt: reset, from: monday + HOUR, readings: [[monday + HOUR, 60]] },
+      {
+        resetsAt: reset,
+        from: at0,
+        baseline: [at0, 0],
+        readings: [
+          [at0, 0],
+          [at0 + DAY, 12],
+        ],
+      },
+    ]);
+  });
+
+  it("keeps whatever the window already held when it is first seen cleared, not zero", () => {
+    const history = record(NO_LIMIT_HISTORY, sample(HOUR, 60), sample(2 * HOUR, 5));
+    expect(history[series]![1]!.baseline).toEqual([monday + 2 * HOUR, 5]);
+  });
+
+  it("has no baseline when the reset moved, when the first reading is mid-window, or when it rolled over", () => {
+    const moved = record(NO_LIMIT_HISTORY, sample(HOUR, 60), sample(2 * HOUR, 0, reset + WEEK));
+    expect(moved[series]![1]!.baseline).toBeUndefined();
+    expect(record(NO_LIMIT_HISTORY, sample(HOUR, 30))[series]![0]!.baseline).toBeUndefined();
+    const rolled = record(NO_LIMIT_HISTORY, sample(HOUR, 90), sample(WEEK, 1, reset + WEEK));
+    expect(rolled[series]![1]!.baseline).toBeUndefined();
+  });
+
+  it("is found for the instance whose reset it shares, and for no other", () => {
+    const history = record(NO_LIMIT_HISTORY, sample(HOUR, 60), sample(DAY, 0));
+    const instances = history[series];
+    expect(windowBaseline(instances, reset)).toEqual([monday + DAY, 0]);
+    expect(windowBaseline(instances, reset + 4_000)).toEqual([monday + DAY, 0]);
+    expect(windowBaseline(instances, reset + WEEK)).toBeUndefined();
+    expect(windowBaseline(undefined, reset)).toBeUndefined();
+    // A window that rolled over since is not the one that was cleared.
+    expect(
+      windowBaseline(record(history, sample(WEEK, 2, reset + WEEK))[series], reset),
+    ).toBeUndefined();
+  });
+
+  it("keeps its baseline through pruning", () => {
+    const cleared = record(NO_LIMIT_HISTORY, sample(HOUR, 60), sample(DAY, 0), sample(2 * DAY, 9));
+    const pruned = pruneLimitHistory(cleared, monday + 200 * DAY);
+    expect(pruned[series]).toBeUndefined();
+    const young = pruneLimitHistory(cleared, monday + 3 * DAY);
+    expect(young[series]![1]!.baseline).toEqual([monday + DAY, 0]);
   });
 });

@@ -33,17 +33,22 @@ function accountEmail(account: LimitAccount): string | undefined {
   return account.email?.trim().toLowerCase() || undefined;
 }
 
-/**
- * The identity an assignment is stored under. It follows the way accounts merge
- * across environments (email, else credential), so every environment names a
- * subscription the same way. A new key, or a gained email, is a new account.
- */
-export function limitSubscriptionId(account: LimitAccount): string {
+/** Before accounts carried an identity: the login, with nothing to tell workspaces apart. */
+function legacyLimitSubscriptionId(account: LimitAccount): string {
   const email = accountEmail(account);
   if (email) return `${account.driver}:${email}`;
   return account.limits.credentialFingerprint
     ? `${account.driver}:credential:${account.limits.credentialFingerprint}`
     : account.key;
+}
+
+/**
+ * The identity an assignment is stored under. It is the way accounts merge across
+ * environments (login and workspace, else credential), so every environment names
+ * a subscription the same way. A new key, or a gained email, is a new account.
+ */
+export function limitSubscriptionId(account: LimitAccount): string {
+  return account.identity ?? legacyLimitSubscriptionId(account);
 }
 
 function compareNames(left: string, right: string): number {
@@ -190,4 +195,43 @@ export function setLimitSchedule(
   const schedules = schedule === null ? rest : { ...rest, [key]: schedule };
   const { schedules: _schedules, ...others } = state;
   return Object.keys(schedules).length > 0 ? { ...others, schedules } : others;
+}
+
+/**
+ * Gives each account the group and schedule stored under its login before accounts
+ * told workspaces apart: workspaces under one email each get a copy, so they can
+ * then differ. Choices already made stay, as does a key another account goes by.
+ */
+export function migrateLegacyAccountKeys(
+  state: LimitGroupState,
+  accounts: readonly LimitAccount[],
+): LimitGroupState {
+  const own = new Set(accounts.map(limitSubscriptionId));
+  const assignments = { ...state.assignments };
+  const schedules = { ...state.schedules };
+  const movedAssignments = new Set<string>();
+  const movedSchedules = new Set<string>();
+  for (const account of accounts) {
+    const id = limitSubscriptionId(account);
+    const legacy = legacyLimitSubscriptionId(account);
+    if (legacy === id) continue;
+    const group = assignments[legacy];
+    if (group !== undefined && assignments[id] === undefined) {
+      assignments[id] = group;
+      movedAssignments.add(legacy);
+    }
+    const schedule = schedules[limitAccountScheduleKey(legacy)];
+    if (schedule !== undefined && schedules[limitAccountScheduleKey(id)] === undefined) {
+      schedules[limitAccountScheduleKey(id)] = schedule;
+      movedSchedules.add(limitAccountScheduleKey(legacy));
+    }
+  }
+  if (movedAssignments.size === 0 && movedSchedules.size === 0) return state;
+  for (const legacy of movedAssignments) if (!own.has(legacy)) delete assignments[legacy];
+  for (const key of movedSchedules)
+    if (!own.has(key.slice("account:".length))) delete schedules[key];
+  const { schedules: _before, ...others } = state;
+  return Object.keys(schedules).length > 0
+    ? { ...others, assignments, schedules }
+    : { ...others, assignments };
 }

@@ -36,6 +36,13 @@ const DAY_LABELS: Record<LimitWeekday, { readonly short: string; readonly full: 
   7: { short: "Sun", full: "Sunday" },
 };
 
+const PROBLEM_TEXT = {
+  days: "Pick at least one day. A schedule with no days would count nothing.",
+  hours:
+    "The start and end can't be the same time, as that would count nothing or everything. To count the whole day, turn hours off.",
+  zone: "That is not a time zone name, such as Europe/Berlin.",
+} as const;
+
 const clock = (minutes: number) =>
   `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
 
@@ -55,14 +62,16 @@ function CustomSchedule({
   readonly schedule: LimitSchedule;
   readonly onChange: (schedule: LimitSchedule) => void;
 }) {
-  const [problem, setProblem] = useState<"hours" | "zone" | null>(null);
+  const [problem, setProblem] = useState<"days" | "hours" | "zone" | null>(null);
   const hours = schedule.hours;
+  const overnight = hours !== undefined && hours.end < hours.start;
   const apply = (next: LimitSchedule) => {
     const valid = normalizeLimitSchedule(next);
     if (valid) onChange(valid);
   };
   const setHours = (start: number, end: number) => {
-    if (end <= start) {
+    // The same time twice, or midnight to midnight, counts nothing or everything, not a span.
+    if (start === end || (start === 0 && end === 24 * 60)) {
       setProblem("hours");
       return;
     }
@@ -78,7 +87,12 @@ function CustomSchedule({
         value={schedule.days.map(String)}
         onValueChange={(next) => {
           const days = LIMIT_WEEKDAYS.filter((day) => next.includes(String(day)));
-          if (days.length > 0) apply({ ...schedule, days });
+          if (days.length === 0) {
+            setProblem("days");
+            return;
+          }
+          setProblem(null);
+          apply({ ...schedule, days });
         }}
       >
         {LIMIT_WEEKDAYS.map((day) => (
@@ -159,11 +173,15 @@ function CustomSchedule({
           />
         </div>
       </label>
+      {overnight && problem === null ? (
+        <p className="text-xs text-muted-foreground">
+          Runs overnight: from {clock(hours.start)} on each day above to {clock(hours.end)} the next
+          morning.
+        </p>
+      ) : null}
       {problem === null ? null : (
         <p role="alert" className="text-xs text-destructive-foreground">
-          {problem === "zone"
-            ? "That is not a time zone name, such as Europe/Berlin."
-            : "The end must be after the start."}
+          {PROBLEM_TEXT[problem]}
         </p>
       )}
     </div>
