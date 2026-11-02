@@ -6,6 +6,7 @@ import {
   jiraWorktreeBranchFor,
   nextStepForThreadStart,
   registerJiraThreadStart,
+  startsInWorktree,
   type JiraThreadStart,
 } from "./jiraThreadStarts";
 
@@ -66,4 +67,21 @@ describe("started threads on this device", () => {
     forgetJiraThreadStart(start.threadId);
     expect(jiraWorktreeBranchFor(start.threadId)).toEqual({});
   });
+});
+
+describe("startsInWorktree", () => {
+  it.each([
+    { isRepository: true, choice: null, expected: true },
+    { isRepository: true, choice: true, expected: true },
+    { isRepository: true, choice: false, expected: false },
+    { isRepository: false, choice: null, expected: false },
+    { isRepository: false, choice: true, expected: false },
+    { isRepository: null, choice: null, expected: false },
+    { isRepository: null, choice: true, expected: false },
+  ])(
+    "repository $isRepository, choice $choice: $expected",
+    ({ isRepository, choice, expected }) => {
+      expect(startsInWorktree({ isRepository, choice })).toBe(expected);
+    },
+  );
 });

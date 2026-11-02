@@ -95,3 +95,15 @@ export function nextStepForThreadStart(
   const named = extractIssueKeys({ title: shell.title, branch: null }, project);
   return named.includes(start.issueKey) ? "done" : "rename";
 }
+
+/**
+ * Whether a thread started from an issue gets its own worktree: whenever the project is known to
+ * be a Git repository, unless the person turned it off. The branch then carries the issue key,
+ * which an automatic title refresh cannot drop.
+ */
+export function startsInWorktree(input: {
+  readonly isRepository: boolean | null;
+  readonly choice: boolean | null;
+}): boolean {
+  return input.isRepository === true && (input.choice ?? true);
+}
