@@ -88,3 +88,22 @@ export function unusedBranchName(name: string, taken: ReadonlySet<string>): stri
     if (!taken.has(candidate)) return candidate;
   }
 }
+
+/** The branch names a repository already has, remote ones by the name a local branch would take. */
+export function takenBranchNames(
+  refs: ReadonlyArray<{
+    readonly name: string;
+    readonly isRemote?: boolean | undefined;
+    readonly remoteName?: string | undefined;
+  }>,
+): ReadonlySet<string> {
+  return new Set(
+    refs.map((ref) =>
+      ref.isRemote === true &&
+      ref.remoteName !== undefined &&
+      ref.name.startsWith(`${ref.remoteName}/`)
+        ? ref.name.slice(ref.remoteName.length + 1)
+        : ref.name,
+    ),
+  );
+}

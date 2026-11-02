@@ -24,6 +24,7 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { threadEnvironment } from "../../state/threads";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
+import { planJiraFanout } from "../jira/jiraThreadStarts";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
   boundAttachmentIds,
@@ -147,8 +148,9 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
           clearedDraftSnapshot &&
         appAtomRegistry.get(fanoutSelectionsAtom) === submittedSelections;
       setThreadError(threadId, null);
+      const jiraFanout = planJiraFanout(threadId, targets.length);
       const starts = Promise.all(
-        targets.map(async (target) => {
+        targets.map(async (target, index) => {
           const started = await startFanoutThread({
             retryKey: JSON.stringify([
               routeThreadKey,
@@ -191,6 +193,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                       baseBranch: branch,
                       requireWorktree: true,
                       ...(startFromOrigin ? { startFromOrigin: true } : {}),
+                      ...jiraFanout.adopt(index, targetThreadId),
                     },
                     runSetupScript: true,
                   },
@@ -212,6 +215,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
       resetLocalDispatch();
       releasedComposer = true;
       await starts;
+      if (failedSelections.length === 0) jiraFanout.finish();
       if (startedCount > 0) {
         toastManager.add(
           stackedThreadToast({

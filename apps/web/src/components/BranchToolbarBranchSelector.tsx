@@ -763,6 +763,14 @@ export function BranchToolbarBranchSelector({
             onActed={() => branchStatusQuery.refresh()}
           />
         ) : null}
+        {displayMode === "panel" ? (
+          <JiraThreadChip
+            link={jiraLink}
+            thread={serverThread}
+            panel
+            render={<ThreadDetailsControl />}
+          />
+        ) : null}
       </div>
     </BranchPicker>
   );
