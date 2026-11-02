@@ -1833,6 +1833,12 @@ describe("UsageService", () => {
           priced: { providerID: "ollama-cloud", modelID: "gpt-oss:120b", cost: 0.05 },
           unlisted: { providerID: "ollama-cloud", modelID: "mystery:7b", cost: 0.02 },
           elsewhere: { providerID: "zai-coding-plan", modelID: "gpt-oss-120b" },
+          openRouterReported: {
+            providerID: "openrouter",
+            modelID: "anthropic/claude-sonnet-4.5",
+            cost: 0.07,
+          },
+          openRouterUnreported: { providerID: "openrouter", modelID: "openai/gpt-oss-120b" },
         };
         yield* Effect.promise(async () => {
           await NodeFSP.mkdir(directory, { recursive: true });
@@ -1891,6 +1897,11 @@ describe("UsageService", () => {
         assert.strictEqual(bucket("ollama-cloud/mystery:7b")?.costUsd, 0.02);
         // The market rates do not reach another provider's model of the same name.
         assert.strictEqual(bucket("gpt-oss-120b")?.costSource, "unpriced");
+        // Nor to OpenRouter's: what OpenCode recorded stands, and a model it left unpriced stays so,
+        // though the market prices that model for Ollama Cloud.
+        assert.strictEqual(bucket("anthropic/claude-sonnet-4.5")?.costSource, "providerReported");
+        assert.strictEqual(bucket("anthropic/claude-sonnet-4.5")?.costUsd, 0.07);
+        assert.strictEqual(bucket("openai/gpt-oss-120b")?.costSource, "unpriced");
         assert.strictEqual(summary.pricing.knownModels, 1);
       }).pipe(Effect.scoped),
   );

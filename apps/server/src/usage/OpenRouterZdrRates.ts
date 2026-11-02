@@ -40,7 +40,7 @@ const encodeZdrCache = Schema.encodeEffect(Schema.fromJsonString(ZdrCacheFile));
 export class OpenRouterZdrRates extends Context.Service<
   OpenRouterZdrRates,
   {
-    /** The rates held now. Never waits: a missing or stale list is fetched in the background. */
+    /** The rates held now. Never waits; the first call starts keeping the list fresh in the background. */
     readonly current: Effect.Effect<RateTable>;
     /** Fetches the list now if it is missing or a day old, and waits for the attempt. */
     readonly refresh: Effect.Effect<void>;
@@ -119,16 +119,31 @@ export const make = Effect.gen(function* () {
 
   const refresh = lock.withPermit(load());
 
+  // How long until the list is next due: a day after it was fetched, or a backoff after a failure.
+  const dueInMs = (now: number) => {
+    const dueAtMs =
+      lastFailedAtMs !== null
+        ? lastFailedAtMs + ZDR_RETRY_FLOOR_MS
+        : fetchedAtMs !== null
+          ? fetchedAtMs + ZDR_TTL_MS
+          : now + ZDR_RETRY_FLOOR_MS;
+    return Math.min(Math.max(dueAtMs - now, 1_000), ZDR_TTL_MS);
+  };
+
+  // Once something has asked for the rates they keep themselves: they load when missing and again
+  // when a day old, and a failure is tried again after its backoff, whoever else asks or not.
   const scope = yield* Effect.scope;
-  let refreshing = false;
+  const upkeep = Effect.forever(
+    refresh.pipe(
+      Effect.andThen(Clock.currentTimeMillis),
+      Effect.flatMap((now) => Effect.sleep(dueInMs(now))),
+    ),
+  );
+  let keepingUp = false;
   const current = Effect.gen(function* () {
-    const now = yield* Clock.currentTimeMillis;
-    if (!refreshing && !isFresh(now)) {
-      refreshing = true;
-      yield* refresh.pipe(
-        Effect.ensuring(Effect.sync(() => void (refreshing = false))),
-        Effect.forkIn(scope),
-      );
+    if (!keepingUp) {
+      keepingUp = true;
+      yield* Effect.forkIn(upkeep, scope);
     }
     return yield* SubscriptionRef.get(held);
   });

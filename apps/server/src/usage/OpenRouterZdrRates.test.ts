@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -35,6 +36,8 @@ function openRouter() {
   const state = {
     online: true,
     gate: undefined as Deferred.Deferred<void> | undefined,
+    /** Each request, in the order it arrives; a test makes one to wait for them. */
+    arrivals: undefined as Queue.Queue<HttpClientRequest.HttpClientRequest> | undefined,
     requests: [] as HttpClientRequest.HttpClientRequest[],
   };
   const layer = Layer.mergeAll(
@@ -44,6 +47,7 @@ function openRouter() {
       HttpClient.make((request) =>
         Effect.gen(function* () {
           state.requests.push(request);
+          if (state.arrivals) Queue.offerUnsafe(state.arrivals, request);
           if (state.gate) yield* Deferred.await(state.gate);
           return HttpClientResponse.fromWeb(
             request,
@@ -158,6 +162,46 @@ describe("OpenRouterZdrRates", () => {
       yield* rates.refresh;
       assert.strictEqual(state.requests.length, 2);
       assert.isTrue((yield* firstLoaded(rates))?.has(KEY));
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("retries a failed fetch after its backoff, with nobody asking again", () => {
+    const { state, layer } = openRouter();
+    state.online = false;
+    return Effect.gen(function* () {
+      state.arrivals = yield* Queue.unbounded<HttpClientRequest.HttpClientRequest>();
+      const rates = yield* OpenRouterZdrRates.make;
+
+      // One call starts the upkeep; the failure that follows is not a reason to ask again.
+      assert.strictEqual((yield* rates.current).size, 0);
+      yield* Queue.take(state.arrivals);
+      state.online = true;
+      yield* TestClock.adjust("10 minutes");
+      yield* Queue.take(state.arrivals);
+
+      assert.isTrue((yield* firstLoaded(rates))?.has(KEY));
+      yield* rates.refresh;
+      assert.strictEqual(state.requests.length, 2);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("refreshes a day-old list on its own", () => {
+    const { state, layer } = openRouter();
+    return Effect.gen(function* () {
+      state.arrivals = yield* Queue.unbounded<HttpClientRequest.HttpClientRequest>();
+      const rates = yield* OpenRouterZdrRates.make;
+
+      yield* rates.current;
+      yield* Queue.take(state.arrivals);
+      assert.isTrue((yield* firstLoaded(rates))?.has(KEY));
+      yield* rates.refresh;
+
+      yield* TestClock.adjust("23 hours");
+      assert.strictEqual(state.requests.length, 1);
+      yield* TestClock.adjust("1 hour");
+      yield* Queue.take(state.arrivals);
+      yield* rates.refresh;
+      assert.strictEqual(state.requests.length, 2);
     }).pipe(Effect.provide(layer));
   });
 
