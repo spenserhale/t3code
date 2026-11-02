@@ -4,6 +4,8 @@ import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled"
 export type ThreadActionMenuId =
   | "find"
   | "new-thread-on-branch"
+  | "continue-on"
+  | `continue-on:${string}`
   | "filter-by-project"
   | "turn-into-project"
   | "project-settings"
@@ -91,6 +93,12 @@ export interface ThreadActionMenuState {
     readonly titleRegeneration: boolean;
   };
   readonly snoozePresets: ReadonlyArray<SnoozePreset>;
+  /** The other machines the thread can continue on; the submenu is left out when there are none. */
+  readonly continueOn?: ReadonlyArray<{
+    readonly environmentId: string;
+    readonly label: string;
+    readonly disabled: boolean;
+  }>;
   /** Guest links need their own grant, so the caller checks it instead of `canOperate`. */
   readonly canShareWithGuest?: boolean;
   /** A No project thread with its own folder, on a server that can promote it. */
@@ -126,6 +134,20 @@ export function buildThreadActionMenuItems(
             id: "new-thread-on-branch" as const,
             label: `New thread on ${state.branch}`,
             icon: "message-square-plus",
+          },
+        ]
+      : []),
+    ...(state.continueOn !== undefined && state.continueOn.length > 0
+      ? [
+          {
+            id: "continue-on" as const,
+            label: "Continue on…",
+            icon: "git-branch",
+            children: state.continueOn.map((choice) => ({
+              id: `continue-on:${choice.environmentId}` as const,
+              label: choice.label,
+              disabled: choice.disabled,
+            })),
           },
         ]
       : []),

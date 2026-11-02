@@ -52,6 +52,7 @@ import {
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
+  ArrowRightLeftIcon,
   BugIcon,
   ChartNoAxesColumnIcon,
   CheckIcon,
@@ -231,6 +232,8 @@ import { ProjectFilePicker } from "./files/ProjectFilePicker";
 import { openLinkPullRequestDialog } from "./pullRequest/LinkPullRequestDialog";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
 import { openGuestShareDialog } from "./chat/guestShareDialogState";
+import { openContinueOnMachine } from "./continueOnMachineState";
+import { readContinueOnChoices } from "../lib/handoffMachines";
 import { ProjectContentSearchDialog } from "./search/ProjectContentSearchDialog";
 import { settingsForThisPlatform, SETTINGS_SECTION_LABELS } from "./settings/settingsSearch";
 import { primaryServerKeybindingsAtom } from "../state/server";
@@ -1395,6 +1398,30 @@ function OpenCommandPaletteDialog(props: {
         openGuestShareDialog(threadRef);
       },
     });
+  }
+
+  if (activeThread !== null) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    if (readContinueOnChoices(threadRef).length > 0) {
+      actionItems.push({
+        kind: "action",
+        value: "action:continue-on-machine",
+        searchTerms: [
+          "continue",
+          "hand off",
+          "handoff",
+          "move",
+          "transfer",
+          "machine",
+          "environment",
+        ],
+        title: "Continue on another machine",
+        icon: <ArrowRightLeftIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          openContinueOnMachine({ threadRef, targetEnvironmentId: null });
+        },
+      });
+    }
   }
 
   if (activeThread !== null) {
