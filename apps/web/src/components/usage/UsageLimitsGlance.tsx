@@ -9,6 +9,7 @@ import { providerClients } from "../settings/providerDriverMeta";
 import { InlineButton } from "../ui/button";
 import { LimitGroupName, useCarriedLimitGroups } from "./UsageLimitGroupSections";
 import { AccountAvatar } from "./UsageLimitsPooled";
+import { UseTodayGlance } from "./UseTodayList";
 
 /**
  * What is left on each subscription, sized for a popover: one row per account
@@ -43,6 +44,7 @@ export function UsageLimitsGlance({
           <span className="text-2xs text-muted-foreground tabular-nums">{checked}</span>
         ) : null}
       </div>
+      <UseTodayGlance />
       <div className="grid min-h-0 grid-cols-[auto_minmax(0,1fr)_auto_auto_auto_auto] items-center gap-x-2 gap-y-1 overflow-y-auto">
         {sections.map(({ group, rows }) => (
           <Fragment key={group?.key ?? "all"}>

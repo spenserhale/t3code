@@ -78,7 +78,7 @@ import {
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
-import { UsageLimitGroupsButton } from "./UsageLimitGroupsDialog";
+import { UsageLimitControls } from "./UsageLimitControls";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart } from "./UsageProviderChart";
@@ -380,7 +380,7 @@ export function UsagePage() {
   const metricOptionLabel = METRIC_OPTIONS.find((option) => option.value === metric)?.label;
   // First in its row, so the controls after it stay put when Limits opens.
   const limitGroupsButton = showingLimits ? (
-    <UsageLimitGroupsButton
+    <UsageLimitControls
       selectedEnvironmentIds={selectedEnvironmentIds}
       hiddenProviders={hiddenProviders}
       now={limitsNow}

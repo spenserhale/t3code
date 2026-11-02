@@ -52,6 +52,7 @@ import {
   formatResetsIn,
   resetCreditChoices,
 } from "@t3tools/shared/usageLimitsCopy";
+import { BurnDownDisclosure } from "./UsageLimitBurnDown";
 import { LimitGroupSections, useLimitPools } from "./UsageLimitGroupSections";
 import { useUsageLimitGroups } from "./usageLimitGroupPreferences";
 import {
@@ -61,6 +62,7 @@ import {
   useLimitSchedule,
   usePoolPace,
 } from "./UsageLimitPace";
+import { UseTodayCard } from "./UseTodayList";
 
 function accountInitials(email: string): string {
   const [local = "", domain = ""] = email.split("@");
@@ -117,7 +119,7 @@ export function AccountAvatar({
   return account.email ? <AccountChip email={account.email} /> : null;
 }
 
-function AccountName({
+export function AccountName({
   account,
   className,
 }: {
@@ -664,6 +666,7 @@ function PoolWindowCard({
       {description ? (
         <p className="text-xs text-muted-foreground md:col-span-2">{description}</p>
       ) : null}
+      <BurnDownDisclosure pool={pool} color={color} now={now} />
     </div>
   );
 }
@@ -738,6 +741,7 @@ function UsageLimitsPooledBody({
   const externalLinks = collectExternalUsageLinks(presentations, m);
   return (
     <div className="flex flex-col gap-8">
+      <UseTodayCard />
       {pools.length === 0 &&
       notices.length === 0 &&
       externalLinks.length === 0 &&

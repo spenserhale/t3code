@@ -143,7 +143,7 @@ function windowTag(
  * counted time, with the threshold left and forecast unused, while the
  * account's schedule is in session.
  */
-export function useItOrLoseIt(input: UseItInput): readonly UseItItem[] {
+export function windowsToUseToday(input: UseItInput): readonly UseItItem[] {
   const { accounts, groups, settings, history, now } = input;
   const items: UseItItem[] = [];
   for (const account of accounts) {
@@ -259,6 +259,24 @@ export function pruneReminderState(state: ReminderState, now: number): ReminderS
 }
 
 export const REMINDER_TITLE = "Use it or lose it";
+
+export type ReminderChannel = "toast" | "system";
+
+/**
+ * Where a reminder can go now, by the rules thread notifications follow: a
+ * toast while the app has focus and in-app notifications are on, a system
+ * notification while it does not and those are on and permitted. Null means
+ * nowhere right now, so the reminder is kept for a later look.
+ */
+export function reminderChannel(input: {
+  readonly focused: boolean;
+  readonly inAppEnabled: boolean;
+  readonly systemEnabled: boolean;
+  readonly systemPermitted: boolean;
+}): ReminderChannel | null {
+  if (input.focused) return input.inAppEnabled ? "toast" : null;
+  return input.systemEnabled && input.systemPermitted ? "system" : null;
+}
 
 /** `Claude (Work), Weekly: 45% left, resets in 18h 35m`. Emails are never printed. */
 function reminderLine(

@@ -67,6 +67,7 @@ export type ForecastNote =
   | "trendNeedsReadings"
   | "tooEarly"
   | "noReset"
+  | "outsideSchedule"
   | "ended";
 
 export interface ForecastOutcome {
@@ -290,7 +291,9 @@ function recentTrend(
 export function forecastWindow(input: ForecastInput): ForecastOutcome {
   const { window, now, schedule, algorithm } = input;
   const timed = timedWindow(window, schedule);
-  if (timed === null) return { forecast: null, note: "noReset" };
+  if (timed === null) {
+    return { forecast: null, note: windowSpan(window) === null ? "noReset" : "outsideSchedule" };
+  }
   if (timed.span.end <= now) return { forecast: null, note: "ended" };
   let note: ForecastNote | null = null;
   if (algorithm === "weekday") {
