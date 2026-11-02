@@ -113,14 +113,15 @@ function addTotals(left: UsageTokenTotals, right: UsageTokenTotals): UsageTokenT
   };
 }
 
-/** Collapses rows that name the same model. */
+/** Collapses rows that name the same model; two providers' models of one name stay apart. */
 function mergeModelRows(rows: readonly ModelUsageRow[]): readonly ModelUsageRow[] {
   const byModel = new Map<string, ModelUsageRow>();
   for (const row of rows) {
-    const previous = byModel.get(row.model);
+    const key = `${row.qualifiedModel ?? ""}\0${row.model}`;
+    const previous = byModel.get(key);
     byModel.set(
-      row.model,
-      previous ? { model: row.model, totals: addTotals(previous.totals, row.totals) } : row,
+      key,
+      previous ? { ...previous, totals: addTotals(previous.totals, row.totals) } : row,
     );
   }
   return [...byModel.values()];
@@ -178,15 +179,16 @@ export function recordedTurns(records: ThreadUsageRecords): readonly RecordedTur
 
 /** Prices a run the way the usage breakdown prices the same tokens. */
 export function priceTurn(turn: RecordedTurn, rates: UsageRates): ThreadTurnUsage {
-  // A model reports and prices under its provider-qualified id when the rates have one, else the
-  // bare id. A mapped model reports and prices as its target, as usage buckets do.
+  // A model reports and prices under its provider-qualified id when a mapping, a custom price or
+  // a rate knows it, else under the bare id. A mapped model reports and prices as its target, as
+  // usage buckets do.
+  const known = (id: string) =>
+    rates.aliases.has(id) || rates.overrides.has(id.trim()) || lookupRate(rates.table, id) !== null;
   const rows = mergeModelRows(
-    turn.models.map((row) => {
-      const model =
-        row.qualifiedModel !== undefined && lookupRate(rates.table, row.qualifiedModel) !== null
-          ? row.qualifiedModel
-          : row.model;
-      return { ...row, model: rates.aliases.get(model) ?? model };
+    turn.models.map(({ model, qualifiedModel, totals }) => {
+      const reported =
+        qualifiedModel !== undefined && known(qualifiedModel) ? qualifiedModel : model;
+      return { model: rates.aliases.get(reported) ?? reported, totals };
     }),
   );
   const models = rows.map((row): ThreadUsageModel => {

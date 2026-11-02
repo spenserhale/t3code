@@ -324,6 +324,107 @@ describe("priceTurn", () => {
     ]);
   });
 
+  it("keeps the provider-qualified model when a run's provider turns add up", () => {
+    // A steer or a retry makes a second provider turn of the same run.
+    const turns = recordedTurns(
+      records(
+        {
+          runs: [{ id: RunId.make("run"), modelSelection: selection("acme/shared-model") }],
+          attempts: [{ id: RunAttemptId.make("attempt"), runId: RunId.make("run") }],
+          providerTurns: [
+            providerTurn(
+              "turn-1",
+              "attempt",
+              "2026-10-05T10:00:00.000Z",
+              usage(1_000_000, 1_000_000),
+            ),
+            providerTurn(
+              "turn-2",
+              "attempt",
+              "2026-10-05T10:05:00.000Z",
+              usage(1_000_000, 1_000_000),
+            ),
+          ],
+        },
+        opencode,
+      ),
+    );
+    expect(turns).toHaveLength(1);
+    expect(priceTurn(turns[0]!, noRates).models).toEqual([
+      expect.objectContaining({ model: "acme/shared-model", costUsd: 8, totalTokens: 4_000_000 }),
+    ]);
+  });
+
+  it("keeps two providers' models of one name apart as a run's provider turns add up", () => {
+    const thread = (id: string, model: string) => ({
+      id: ProviderThreadId.make(id),
+      driver: opencode,
+      nativeMetadata: { modelSelection: selection(model) },
+    });
+    const turns = recordedTurns(
+      records(
+        {
+          attempts: [{ id: RunAttemptId.make("attempt"), runId: RunId.make("run") }],
+          providerThreads: [
+            thread("provider-thread", "acme/shared-model"),
+            thread("other-thread", "other/shared-model"),
+          ],
+          providerTurns: [
+            providerTurn(
+              "turn-1",
+              "attempt",
+              "2026-10-05T10:00:00.000Z",
+              usage(1_000_000, 1_000_000),
+            ),
+            {
+              ...providerTurn(
+                "turn-2",
+                "attempt",
+                "2026-10-05T10:05:00.000Z",
+                usage(1_000_000, 1_000_000),
+              ),
+              providerThreadId: ProviderThreadId.make("other-thread"),
+            },
+          ],
+        },
+        opencode,
+      ),
+    );
+    expect(turns).toHaveLength(1);
+    // acme's is priced apart; other's has no price of its own, so it is the bare model.
+    expect(priceTurn(turns[0]!, noRates).models).toEqual([
+      expect.objectContaining({ model: "acme/shared-model", costUsd: 4 }),
+      expect.objectContaining({ model: "shared-model", costUsd: 6 }),
+    ]);
+  });
+
+  it("honours a custom price or a mapping saved for a qualified model the rates do not list", () => {
+    const unlisted = (rates: Parameters<typeof priceTurn>[1]) =>
+      priceTurn(turn("ollama-cloud/unlisted-model", opencode), rates).models;
+    const overrides = createOverrideRateTable({
+      "ollama-cloud/unlisted-model": {
+        inputCostPerMillionTokens: 1.5,
+        outputCostPerMillionTokens: 1.5,
+      },
+    });
+    expect(unlisted({ ...noRates, overrides })).toEqual([
+      expect.objectContaining({
+        model: "ollama-cloud/unlisted-model",
+        costUsd: 3,
+        costSource: "modelPriced",
+        customPrice: true,
+      }),
+    ]);
+    const aliases = new Map([["ollama-cloud/unlisted-model", "mapped-target"]]);
+    expect(unlisted({ ...noRates, aliases })).toEqual([
+      expect.objectContaining({ model: "mapped-target", costUsd: 4 }),
+    ]);
+    // Neither saved: the bare model, which the rates do not list either.
+    expect(unlisted(noRates)).toEqual([
+      expect.objectContaining({ model: "unlisted-model", costSource: "unpriced" }),
+    ]);
+  });
+
   it("leaves a driver that does not qualify its models as it was", () => {
     // Claude and Codex keep their ids whole, so the rates see the id they always saw.
     for (const driver of [claude, codex]) {
