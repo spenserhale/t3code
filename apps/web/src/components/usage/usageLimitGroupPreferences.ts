@@ -1,4 +1,5 @@
 import { NO_LIMIT_GROUPS, type LimitGroupState } from "@t3tools/shared/usageLimitGroups";
+import { normalizeLimitSchedule, type LimitSchedule } from "@t3tools/shared/usageLimitSchedule";
 import * as Schema from "effect/Schema";
 
 import {
@@ -12,11 +13,25 @@ const STORAGE_KEY = "t3code:usage-limit-groups:v1";
 const UsageLimitGroupsSchema = Schema.Struct({
   enabled: Schema.Boolean,
   assignments: Schema.Record(Schema.String, Schema.String),
+  schedules: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 });
+type StoredGroups = typeof UsageLimitGroupsSchema.Type;
+
+/** Keeps the schedules that are still valid; a bad one never costs the assignments beside it. */
+function withSchedules(stored: StoredGroups): LimitGroupState {
+  const schedules: Record<string, LimitSchedule> = {};
+  for (const [key, value] of Object.entries(stored.schedules ?? {})) {
+    const schedule = normalizeLimitSchedule(value);
+    if (schedule) schedules[key] = schedule;
+  }
+  const { schedules: _stored, ...rest } = stored;
+  return Object.keys(schedules).length > 0 ? { ...rest, schedules } : rest;
+}
 
 export function readUsageLimitGroups(): LimitGroupState {
   try {
-    return getLocalStorageItem(STORAGE_KEY, UsageLimitGroupsSchema) ?? NO_LIMIT_GROUPS;
+    const stored = getLocalStorageItem(STORAGE_KEY, UsageLimitGroupsSchema);
+    return stored === null ? NO_LIMIT_GROUPS : withSchedules(stored);
   } catch (error) {
     console.error("Could not read Limits groups.", error);
     return NO_LIMIT_GROUPS;
@@ -40,5 +55,5 @@ export function updateUsageLimitGroups(change: (groups: LimitGroupState) => Limi
 /** The saved groups, following changes made in this or any other window. */
 export function useUsageLimitGroups() {
   const [groups] = useLocalStorage(STORAGE_KEY, NO_LIMIT_GROUPS, UsageLimitGroupsSchema);
-  return [groups, updateUsageLimitGroups] as const;
+  return [withSchedules(groups), updateUsageLimitGroups] as const;
 }
