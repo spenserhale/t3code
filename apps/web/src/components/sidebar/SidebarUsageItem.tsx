@@ -13,12 +13,9 @@ import { UsageLimitsGlance } from "../usage/UsageLimitsGlance";
 import { readUsagePagePreferences, saveUsagePagePreferences } from "../usage/usagePagePreferences";
 
 /**
- * The sidebar's Usage button. Pressing it opens Usage. While a subscription
- * reports limits, resting the pointer on it or focusing it with the keyboard
- * shows what is left on each one in place of the button's name, from what the
- * servers last pushed: showing it never asks them to check again. The button
- * stays mounted either way, so focus and a press under way survive an account
- * starting or stopping to report.
+ * The sidebar's Usage button. A press opens Usage; resting on it shows what is left on
+ * each subscription, from the servers' last push, never asking them to check. The
+ * button stays mounted as accounts come and go.
  */
 export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) {
   const gt = useGT();
@@ -31,6 +28,7 @@ export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) 
   const glancePopupRef = useRef<HTMLDivElement>(null);
   const triggerId = useId();
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- opens or closes the glance popover handle as accounts start or stop reporting, keeping keyboard focus in step
   useEffect(() => {
     if (!showGlance) {
       glanceHandle.close();
@@ -140,7 +138,7 @@ export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) 
             ref={glancePopupRef}
             side="top"
             tooltipStyle
-            width="md"
+            width="lg"
           >
             <UsageLimitsGlance
               accounts={accounts}
