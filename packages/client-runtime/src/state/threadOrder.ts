@@ -46,34 +46,32 @@ function scheduledWakeAt(thread: ThreadSnoozeShell, now: string): string | null 
   return threadRaisedHandWhileSnoozed(thread) ? null : threadWokeAt(thread, { now });
 }
 
-// Past the deadline, or woken by a request or failure. A manual unsnooze, a
-// guest message and a subagent request leave no time on the shell.
+// The shell dates a wake when the deadline passed, or a request or failure came
+// after the snooze began. A cleared snooze (manual unsnooze, drag) and guest or
+// subagent requests leave no time, however old the thread's last failure is.
 function shellDatesWake(thread: ThreadSnoozeShell, now: string): boolean {
+  if (thread.snoozedUntil == null) return false;
   if (!threadRaisedHandWhileSnoozed(thread)) return threadWokeAt(thread, { now }) !== null;
-  return thread.source?.pendingRuntimeRequest != null || thread.latestRun?.status === "failed";
+  if (thread.source?.pendingRuntimeRequest != null) return true;
+  const failedAt = thread.latestRun?.status === "failed" ? thread.latestRun.completedAt : null;
+  return (
+    failedAt != null &&
+    (thread.snoozedAt == null || Date.parse(failedAt) > Date.parse(thread.snoozedAt))
+  );
 }
 
 export interface InboxOrderOptions<T> {
   readonly now: string;
   /** Lower ranks list first; only the "status" order reads it. */
   readonly statusRank?: (thread: T) => number;
-  /**
-   * When this client saw the thread stop working or ask. Read only for requests
-   * the shell cannot date.
-   */
-  readonly returnedAt?: (thread: T) => number | undefined;
-  /** When this client saw a snooze end that left no wake time on the shell. */
-  readonly wokeAt?: (thread: T) => number | undefined;
+  /** When this client saw a status change the shell does not date. */
+  readonly changedAt?: (thread: T) => number | undefined;
 }
 
 function lastStatusChangeTimestamp<T extends InboxOrderThreadInput>(
   thread: T,
   options: InboxOrderOptions<T>,
 ): number {
-  // Runtime requests date themselves, and so do runs. Guest and subagent
-  // requests do not, so only they fall back to what this client observed.
-  const undatedRequest =
-    thread.pendingSubagentRequest != null || (thread.pendingGuestMessageCount ?? 0) > 0;
   return Math.max(
     latestTimestamp(
       thread.createdAt,
@@ -84,8 +82,7 @@ function lastStatusChangeTimestamp<T extends InboxOrderThreadInput>(
       scheduledWakeAt(thread, options.now),
     ),
     requestTimestamp(thread),
-    options.wokeAt?.(thread) ?? 0,
-    undatedRequest ? (options.returnedAt?.(thread) ?? 0) : 0,
+    options.changedAt?.(thread) ?? 0,
   );
 }
 
@@ -128,49 +125,94 @@ export function sortInboxThreadsByOrder<T extends InboxOrderThreadInput>(
   return keyed.map(({ thread }) => thread);
 }
 
+/** Where the tracker keeps what it dated, so it survives a reload. Keys are `environment:thread`. */
+export interface InboxChangeStore {
+  readonly load: () => Readonly<Record<string, number>>;
+  readonly save: (changes: Readonly<Record<string, number>>) => void;
+}
+
+export interface InboxChangeTrackerOptions {
+  readonly store?: InboxChangeStore;
+  readonly maxEntries?: number;
+  readonly maxAgeMs?: number;
+}
+
+const DEFAULT_MAX_ENTRIES = 500;
+const DEFAULT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
+
 /**
- * Remembers when this client saw a snooze end that the shell does not date: a
- * manual unsnooze, a drag out of Snoozed, a guest message or a subagent request.
- * Keep one at module scope; call `observe` when the shells change, or with null
- * to stop.
+ * Dates the status changes the shell leaves undated: a snooze that ended with no
+ * deadline, request or failure to show for it, and a guest or subagent request
+ * appearing. Its history is bounded and outlives `observe(null)`, which only
+ * forgets what was last seen. Keep one at module scope.
  */
-export function createInboxWakeTracker() {
+export function createInboxChangeTracker(options: InboxChangeTrackerOptions = {}) {
+  const { store, maxEntries = DEFAULT_MAX_ENTRIES, maxAgeMs = DEFAULT_MAX_AGE_MS } = options;
   const keyOf = (thread: ThreadKeyInput) => `${thread.environmentId}:${thread.id}`;
-  const snoozed = new Map<string, boolean>();
-  const wakes = new Map<string, number>();
+  const seen = new Map<string, { asleep: boolean; guest: boolean; subagent: boolean }>();
+  let changes: Map<string, number> | undefined;
+  const history = () => {
+    if (changes === undefined) {
+      changes = new Map();
+      for (const [key, at] of Object.entries(store?.load() ?? {})) {
+        if (Number.isFinite(at)) changes.set(key, at);
+      }
+    }
+    return changes;
+  };
+  const persist = (atMs: number) => {
+    const map = history();
+    for (const [key, at] of map) {
+      if (at < atMs - maxAgeMs) map.delete(key);
+    }
+    const excess = map.size - maxEntries;
+    if (excess > 0) {
+      for (const [key] of [...map].sort((a, b) => a[1] - b[1]).slice(0, excess)) {
+        map.delete(key);
+      }
+    }
+    store?.save(Object.fromEntries(map));
+  };
   return {
+    /** Call when the shells change, or with null while the order does not need it. */
     observe(threads: readonly (ThreadKeyInput & ThreadSnoozeShell)[] | null, now: string): void {
       if (threads === null) {
-        snoozed.clear();
-        wakes.clear();
+        seen.clear();
         return;
       }
       const nowMs = Date.parse(now);
       const present = new Set<string>();
+      let stamped = false;
       for (const thread of threads) {
         const key = keyOf(thread);
         present.add(key);
         const asleep = effectiveSnoozed(thread, { now });
+        const guest = (thread.pendingGuestMessageCount ?? 0) > 0;
+        const subagent = thread.pendingSubagentRequest != null;
+        const before = seen.get(key);
         if (
-          snoozed.get(key) === true &&
-          !asleep &&
+          before !== undefined &&
           Number.isFinite(nowMs) &&
-          !shellDatesWake(thread, now)
+          ((before.asleep && !asleep && !shellDatesWake(thread, now)) ||
+            (guest && !before.guest) ||
+            (subagent && !before.subagent))
         ) {
-          wakes.set(key, nowMs);
+          history().set(key, nowMs);
+          stamped = true;
         }
-        snoozed.set(key, asleep);
+        seen.set(key, { asleep, guest, subagent });
       }
-      for (const map of [snoozed, wakes]) {
-        for (const key of map.keys()) {
-          if (!present.has(key)) map.delete(key);
-        }
+      for (const key of seen.keys()) {
+        if (!present.has(key)) seen.delete(key);
       }
+      if (stamped) persist(nowMs);
     },
     /** For a wake the user causes here, so the order need not wait for the server to confirm it. */
     noteWake(thread: ThreadKeyInput, atMs: number): void {
-      wakes.set(keyOf(thread), atMs);
+      if (!Number.isFinite(atMs)) return;
+      history().set(keyOf(thread), atMs);
+      persist(atMs);
     },
-    wokeAt: (thread: ThreadKeyInput): number | undefined => wakes.get(keyOf(thread)),
+    changedAt: (thread: ThreadKeyInput): number | undefined => history().get(keyOf(thread)),
   };
 }
