@@ -60,6 +60,12 @@ export const JiraComment = Schema.Struct({
 });
 export type JiraComment = typeof JiraComment.Type;
 
+/** A rich-text field the site named, such as "Acceptance criteria", converted to Markdown. */
+const JiraTextField = Schema.Struct({
+  name: Schema.String,
+  markdown: Schema.String,
+});
+
 export const JiraIssueDetail = Schema.Struct({
   ...JiraIssueSummary.fields,
   reporter: Schema.NullOr(JiraUser),
@@ -67,6 +73,8 @@ export const JiraIssueDetail = Schema.Struct({
   labels: Schema.Array(Schema.String),
   /** Jira's rich text, converted to Markdown. */
   descriptionMarkdown: Schema.String,
+  /** Left out when the site has no such field or the issue leaves it empty. */
+  acceptanceCriteria: Schema.optionalKey(Schema.Array(JiraTextField)),
   /** The newest comments, oldest first. */
   comments: Schema.Array(JiraComment),
   commentCount: NonNegativeInt,
@@ -82,6 +90,10 @@ export const JiraSearchPreset = Schema.Literals([
 ]);
 export type JiraSearchPreset = typeof JiraSearchPreset.Type;
 
+/** The order a person picks; each reads best-first. Without one the preset's own order applies. */
+export const JiraSearchSort = Schema.Literals(["updated", "created", "priority", "key"]);
+export type JiraSearchSort = typeof JiraSearchSort.Type;
+
 export const JIRA_SEARCH_MAX_PAGE_SIZE = 100;
 const JIRA_LOOKUP_MAX_KEYS = 200;
 export const JIRA_COMMENT_MAX_LENGTH = 32_000;
@@ -93,6 +105,7 @@ export const JiraSearchInput = Schema.Struct({
   projectKeys: Schema.optionalKey(Schema.Array(Schema.String)),
   statusCategories: Schema.optionalKey(Schema.Array(JiraStatusCategoryFilter)),
   text: Schema.optionalKey(Schema.String),
+  sort: Schema.optionalKey(JiraSearchSort),
   pageToken: Schema.optionalKey(Schema.String),
   pageSize: Schema.optionalKey(PositiveInt),
 });
@@ -209,6 +222,7 @@ export const JiraRequestOperation = Schema.Literals([
   "credentials",
   "verifyAccount",
   "listProjects",
+  "listFields",
   "search",
   "getIssue",
   "listTransitions",

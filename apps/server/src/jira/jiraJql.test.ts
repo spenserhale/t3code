@@ -73,6 +73,39 @@ describe("buildJql", () => {
   });
 });
 
+describe("buildJql sorting", () => {
+  it.each([
+    ["updated", "ORDER BY updated DESC"],
+    ["created", "ORDER BY created DESC"],
+    ["priority", "ORDER BY priority DESC, updated DESC"],
+    ["key", "ORDER BY key ASC"],
+  ] as const)("orders by %s in place of the preset's own ordering", (sort, order) => {
+    assert.strictEqual(
+      query({ preset: "sprint", sort }),
+      `assignee = currentUser() AND sprint in openSprints() ${order}`,
+    );
+  });
+
+  it("replaces a custom query's ordering and keeps its conditions", () => {
+    assert.strictEqual(
+      query({
+        preset: "custom",
+        jql: "labels = urgent order by created",
+        sort: "key",
+        projectKeys: ["OPS"],
+      }),
+      '(labels = urgent) AND project in ("OPS") ORDER BY key ASC',
+    );
+  });
+
+  it("leaves the ordering alone when no sort is chosen", () => {
+    assert.strictEqual(
+      query({ preset: "reported" }),
+      "reporter = currentUser() ORDER BY created DESC",
+    );
+  });
+});
+
 describe("splitOrderBy", () => {
   it("does not split inside quoted text", () => {
     assert.deepStrictEqual(splitOrderBy('summary ~ "sort order by name" ORDER BY created'), {

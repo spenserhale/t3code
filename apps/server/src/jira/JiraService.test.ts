@@ -43,6 +43,7 @@ const fakeClient = (partial: Partial<JiraClient.JiraClient["Service"]>) =>
   JiraClient.JiraClient.of({
     myself: die("myself"),
     listProjects: die("listProjects"),
+    listAcceptanceCriteriaFields: () => Effect.succeed([]),
     searchIssues: die("searchIssues"),
     getIssue: die("getIssue"),
     getIssueSummary: die("getIssueSummary"),
@@ -236,6 +237,7 @@ it.effect("moving an issue refreshes what lists, chips and the detail knew about
     }),
   );
   const searchIssues = vi.fn(() => Effect.succeed(page(issue("PROJ-1", status))));
+  const getIssueSummary = vi.fn(() => Effect.succeed(issue("PROJ-1", status)));
   const transition = vi.fn(() => {
     status = "In Review";
     return Effect.void;
@@ -265,7 +267,11 @@ it.effect("moving an issue refreshes what lists, chips and the detail knew about
       (yield* jira.lookupIssues({ keys: ["PROJ-1"] })).issues[0]?.status.name,
       "In Review",
     );
-  }).pipe(Effect.provide(serviceLayer(fakeClient({ getIssue, searchIssues, transition }))));
+  }).pipe(
+    Effect.provide(
+      serviceLayer(fakeClient({ getIssue, getIssueSummary, searchIssues, transition })),
+    ),
+  );
 });
 
 it.effect("sends a comment as ADF and drops the cached detail so the new comment shows", () => {
@@ -367,4 +373,199 @@ it.effect("lists projects once for ten minutes", () => {
     yield* jira.listProjects;
     assert.strictEqual(listProjects.mock.calls.length, 2);
   }).pipe(Effect.provide(serviceLayer(fakeClient({ listProjects }))));
+});
+
+const detailOf = (key: string) => ({
+  ...issue(key),
+  reporter: null,
+  createdAt: "",
+  labels: [],
+  descriptionMarkdown: "",
+  comments: [],
+  commentCount: 0,
+});
+
+it.effect(
+  "reads the site's acceptance criteria fields along with each issue, finding them once",
+  () => {
+    const field = { id: "customfield_10050", name: "Acceptance Criteria" };
+    const listAcceptanceCriteriaFields = vi.fn(() => Effect.succeed([field]));
+    const getIssue = vi.fn(
+      (
+        _credential: JiraClient.JiraCredential,
+        key: string,
+        _fields: ReadonlyArray<{ readonly id: string; readonly name: string }>,
+      ) => Effect.succeed(detailOf(key)),
+    );
+    return Effect.gen(function* () {
+      const jira = yield* JiraService.JiraService;
+      yield* jira.getIssue({ key: "PROJ-1" });
+      yield* jira.getIssue({ key: "PROJ-2" });
+      assert.deepStrictEqual(getIssue.mock.calls[0]?.[2], [field]);
+      assert.deepStrictEqual(getIssue.mock.calls[1]?.[2], [field]);
+      assert.strictEqual(listAcceptanceCriteriaFields.mock.calls.length, 1);
+      yield* TestClock.adjust("11 minutes");
+      yield* jira.getIssue({ key: "PROJ-3" });
+      assert.strictEqual(listAcceptanceCriteriaFields.mock.calls.length, 2);
+    }).pipe(Effect.provide(serviceLayer(fakeClient({ getIssue, listAcceptanceCriteriaFields }))));
+  },
+);
+
+it.effect(
+  "still shows an issue when the field list cannot be read, and asks again next time",
+  () => {
+    let calls = 0;
+    const listAcceptanceCriteriaFields = vi.fn(() =>
+      ++calls === 1
+        ? Effect.fail(new JiraRequestError({ operation: "listFields", status: 500 }))
+        : Effect.succeed([{ id: "customfield_10050", name: "Acceptance Criteria" }]),
+    );
+    const getIssue = vi.fn(
+      (
+        _credential: JiraClient.JiraCredential,
+        key: string,
+        _fields: ReadonlyArray<{ readonly id: string; readonly name: string }>,
+      ) => Effect.succeed(detailOf(key)),
+    );
+    return Effect.gen(function* () {
+      const jira = yield* JiraService.JiraService;
+      assert.strictEqual((yield* jira.getIssue({ key: "PROJ-1" })).key, "PROJ-1");
+      assert.deepStrictEqual(getIssue.mock.calls[0]?.[2], []);
+      yield* jira.getIssue({ key: "PROJ-2" });
+      assert.strictEqual(getIssue.mock.calls[1]?.[2].length, 1);
+    }).pipe(Effect.provide(serviceLayer(fakeClient({ getIssue, listAcceptanceCriteriaFields }))));
+  },
+);
+
+it.effect("follows the continuation token until a batch lookup has every issue", () => {
+  const searchIssues = vi.fn(
+    (_credential: JiraClient.JiraCredential, request: JiraClient.JiraSearchRequest) =>
+      Effect.succeed(
+        request.pageToken === undefined
+          ? { issues: [issue("PROJ-1"), issue("PROJ-2")], nextPageToken: "t2" }
+          : request.pageToken === "t2"
+            ? { issues: [issue("PROJ-3")], nextPageToken: "t3" }
+            : { issues: [issue("PROJ-4")], nextPageToken: null },
+      ),
+  );
+  return Effect.gen(function* () {
+    const jira = yield* JiraService.JiraService;
+    const result = yield* jira.lookupIssues({ keys: ["PROJ-1", "PROJ-2", "PROJ-3", "PROJ-4"] });
+    assert.deepStrictEqual(
+      result.issues.map((found) => found.key),
+      ["PROJ-1", "PROJ-2", "PROJ-3", "PROJ-4"],
+    );
+    assert.deepStrictEqual(
+      searchIssues.mock.calls.map((call) => call[1].pageToken),
+      [undefined, "t2", "t3"],
+    );
+  }).pipe(Effect.provide(serviceLayer(fakeClient({ searchIssues }))));
+});
+
+it.effect("stops following continuation tokens that never end", () => {
+  const searchIssues = vi.fn(() =>
+    Effect.succeed({ issues: [issue("PROJ-1")], nextPageToken: "again" }),
+  );
+  return Effect.gen(function* () {
+    const jira = yield* JiraService.JiraService;
+    const result = yield* jira.lookupIssues({ keys: ["PROJ-1"] });
+    assert.deepStrictEqual(
+      result.issues.map((found) => found.key),
+      ["PROJ-1"],
+    );
+    assert.isAtMost(searchIssues.mock.calls.length, 20);
+  }).pipe(Effect.provide(serviceLayer(fakeClient({ searchIssues }))));
+});
+
+it.effect("answers a move from the issue itself, and keeps its status over a lagging index", () => {
+  const stale = (updatedAt: string, status: string) => ({ ...issue("PROJ-1", status), updatedAt });
+  let indexed = stale("2026-11-01T09:30:00.000Z", "To Do");
+  const searchIssues = vi.fn(() => Effect.succeed(page(indexed)));
+  const getIssueSummary = vi.fn(() =>
+    Effect.succeed(stale("2026-11-01T09:31:00.000Z", "In Review")),
+  );
+  const transition = vi.fn(() => Effect.void);
+  return Effect.gen(function* () {
+    const jira = yield* JiraService.JiraService;
+    const moved = yield* jira.transition({ key: "PROJ-1", transitionId: "31" });
+    assert.strictEqual(moved.status.name, "In Review");
+    assert.strictEqual(getIssueSummary.mock.calls.length, 1);
+    assert.strictEqual(searchIssues.mock.calls.length, 0);
+
+    // The search index has not seen the move yet and still reports the old status.
+    assert.strictEqual(
+      (yield* jira.lookupIssues({ keys: ["PROJ-1"] })).issues[0]?.status.name,
+      "In Review",
+    );
+    assert.strictEqual(
+      (yield* jira.search({ preset: "assigned" })).issues[0]?.status.name,
+      "In Review",
+    );
+
+    // Once the index catches up, what it says wins again.
+    indexed = stale("2026-11-01T09:32:00.000Z", "Done");
+    yield* jira.refresh;
+    assert.strictEqual(
+      (yield* jira.lookupIssues({ keys: ["PROJ-1"] })).issues[0]?.status.name,
+      "Done",
+    );
+  }).pipe(Effect.provide(serviceLayer(fakeClient({ searchIssues, getIssueSummary, transition }))));
+});
+
+it.effect("forgets a move after two minutes, when the index has certainly caught up", () => {
+  let indexed: JiraIssueSummary = {
+    ...issue("PROJ-1", "To Do"),
+    updatedAt: "2026-11-01T09:30:00.000Z",
+  };
+  const searchIssues = vi.fn(() => Effect.succeed(page(indexed)));
+  const getIssueSummary = vi.fn(() =>
+    Effect.succeed({ ...issue("PROJ-1", "In Review"), updatedAt: "2026-11-01T09:31:00.000Z" }),
+  );
+  return Effect.gen(function* () {
+    const jira = yield* JiraService.JiraService;
+    yield* jira.transition({ key: "PROJ-1", transitionId: "31" });
+    yield* TestClock.adjust("3 minutes");
+    assert.strictEqual(
+      (yield* jira.lookupIssues({ keys: ["PROJ-1"] })).issues[0]?.status.name,
+      "To Do",
+    );
+  }).pipe(
+    Effect.provide(
+      serviceLayer(fakeClient({ searchIssues, getIssueSummary, transition: () => Effect.void })),
+    ),
+  );
+});
+
+it.effect("refreshing drops everything kept, so the next ask reaches Jira", () => {
+  const searchIssues = vi.fn(() => Effect.succeed(page(issue("PROJ-1"))));
+  const listProjects = vi.fn(() => Effect.succeed([{ key: "PROJ", name: "Platform" }]));
+  return Effect.gen(function* () {
+    const jira = yield* JiraService.JiraService;
+    yield* jira.search({ preset: "assigned" });
+    yield* jira.lookupIssues({ keys: ["PROJ-1"] });
+    yield* jira.listProjects;
+    assert.strictEqual(searchIssues.mock.calls.length, 2);
+    yield* jira.refresh;
+    yield* jira.search({ preset: "assigned" });
+    yield* jira.lookupIssues({ keys: ["PROJ-1"] });
+    yield* jira.listProjects;
+    assert.strictEqual(searchIssues.mock.calls.length, 4);
+    assert.strictEqual(listProjects.mock.calls.length, 2);
+  }).pipe(Effect.provide(serviceLayer(fakeClient({ searchIssues, listProjects }))));
+});
+
+it.effect("searches in the order the person chose", () => {
+  const searchIssues = vi.fn(
+    (_credential: JiraClient.JiraCredential, _request: JiraClient.JiraSearchRequest) =>
+      Effect.succeed(page(issue("PROJ-1"))),
+  );
+  return Effect.gen(function* () {
+    const jira = yield* JiraService.JiraService;
+    const result = yield* jira.search({ preset: "assigned", sort: "priority" });
+    assert.strictEqual(
+      result.jql,
+      "assignee = currentUser() AND resolution = Unresolved ORDER BY priority DESC, updated DESC",
+    );
+    assert.strictEqual(searchIssues.mock.calls[0]?.[1].jql, result.jql);
+  }).pipe(Effect.provide(serviceLayer(fakeClient({ searchIssues }))));
 });

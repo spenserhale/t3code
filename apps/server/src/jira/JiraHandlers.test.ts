@@ -25,6 +25,8 @@ it.effect("answers as not set up when the runtime has no Jira service", () =>
       body: "hello",
     }).pipe(Effect.flip);
     assert.strictEqual(comment._tag, "JiraNotConfiguredError");
+    // Nothing is kept, so there is nothing to forget and nothing to report.
+    yield* handlers[WS_METHODS.jiraRefresh]({});
   }),
 );
 
@@ -40,6 +42,7 @@ it.effect.each([
   const client = JiraClient.JiraClient.of({
     myself: unexpected,
     listProjects: unexpected,
+    listAcceptanceCriteriaFields: () => Effect.succeed([]),
     searchIssues: unexpected,
     getIssue: () => Effect.fail(failure),
     getIssueSummary: unexpected,

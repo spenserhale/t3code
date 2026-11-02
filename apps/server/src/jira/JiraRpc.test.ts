@@ -45,6 +45,7 @@ const detail = {
   createdAt: "2026-10-20T08:00:00.000+0000",
   labels: ["auth"],
   descriptionMarkdown: "Users bounce back to login.",
+  acceptanceCriteria: [{ name: "Acceptance Criteria", markdown: "- Redirect works." }],
   comments: [
     {
       id: "9001",
@@ -80,6 +81,7 @@ const serve = (
         return Effect.succeed({ accountId: "acc-1", displayName: "Sam Rivera" });
       },
       listProjects: () => Effect.succeed([{ key: "PROJ", name: "Platform" }]),
+      listAcceptanceCriteriaFields: () => Effect.succeed([]),
       searchIssues: () => Effect.succeed({ issues: [issue], nextPageToken: "next" }),
       getIssue: () => Effect.succeed(detail),
       getIssueSummary: die,
@@ -179,6 +181,17 @@ it.effect("sends every Jira answer and error over the wire and reads it back unc
       const read = yield* wireRoundTrip(schemasOf(WS_METHODS.jiraSearch).error, failure);
       assert.deepStrictEqual(read, failure);
     }
+    const search = { preset: "sprint", sort: "priority", text: "login" };
+    assert.deepStrictEqual(
+      yield* wireRoundTrip(schemasOf(WS_METHODS.jiraSearch).payload, search),
+      search,
+    );
+    // A detail from a server that has no such field still reads.
+    const { acceptanceCriteria: _omitted, ...plain } = detail;
+    assert.deepStrictEqual(
+      yield* wireRoundTrip(schemasOf(WS_METHODS.jiraGetIssue).success, plain),
+      plain,
+    );
     const input = yield* wireRoundTrip(schemasOf(WS_METHODS.jiraConfigure).payload, {
       siteUrl: "acme.atlassian.net",
       email: "sam@example.com",
@@ -229,6 +242,7 @@ it.effect("carries a connection and every kind of answer across the wire", () =>
       [issue],
     );
     yield* rpc[WS_METHODS.jiraAddComment]({ key: "PROJ-12", body: "Linked" });
+    yield* rpc[WS_METHODS.jiraRefresh]({});
     yield* rpc[WS_METHODS.jiraDisconnect]({});
     assert.deepStrictEqual(yield* rpc[WS_METHODS.jiraStatus]({}), { configured: false });
   }).pipe(Effect.scoped),

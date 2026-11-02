@@ -8,7 +8,6 @@
 import {
   JIRA_SEARCH_MAX_PAGE_SIZE,
   JiraNotConfiguredError,
-  JiraNotFoundError,
   JiraRequestError,
   type JiraAddCommentInput,
   type JiraComment,
@@ -30,18 +29,21 @@ import {
 } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
 import * as Cache from "effect/Cache";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
+import * as Ref from "effect/Ref";
 
 import { JiraClient, type JiraCredential } from "./JiraClient.ts";
 import { JiraCredentials } from "./JiraCredentials.ts";
 import { plainTextToAdf } from "./jiraAdf.ts";
-import { normalizeSiteUrl } from "./jiraApi.ts";
+import { normalizeSiteUrl, type JiraFieldRef } from "./jiraApi.ts";
 import { buildJql, jqlForKeys } from "./jiraJql.ts";
 
 const SEARCH_CACHE_TTL = Duration.seconds(30);
@@ -50,6 +52,11 @@ const LOOKUP_CACHE_TTL = Duration.seconds(60);
 const TRANSITIONS_CACHE_TTL = Duration.seconds(15);
 const PROJECTS_CACHE_TTL = Duration.minutes(10);
 const ACCOUNT_CACHE_TTL = Duration.minutes(5);
+const FIELDS_CACHE_TTL = Duration.minutes(10);
+/** Jira's search index can trail an edit by a few seconds; two minutes is far longer than it ever does. */
+const SETTLED_TTL_MILLIS = Duration.toMillis(Duration.minutes(2));
+/** A lookup chunk is a page or two; this only stops a continuation token that never ends. */
+const MAX_LOOKUP_PAGES = 20;
 const DEFAULT_PAGE_SIZE = 50;
 /** `key in (...)` stays well inside Jira's query length for this many keys. */
 const LOOKUP_CHUNK_SIZE = 50;
@@ -73,6 +80,8 @@ export class JiraService extends Context.Service<
     readonly transition: (input: JiraTransitionInput) => Effect.Effect<JiraIssueSummary, JiraError>;
     readonly addComment: (input: JiraAddCommentInput) => Effect.Effect<JiraComment, JiraError>;
     readonly lookupIssues: (input: JiraLookupInput) => Effect.Effect<JiraLookupResult, JiraError>;
+    /** Forgets everything kept, so the next ask reaches Jira. */
+    readonly refresh: Effect.Effect<void>;
   }
 >()("t3/jira/JiraService") {}
 
@@ -102,6 +111,14 @@ const makeTtlCache = <I, A>(options: {
 const invalidRequest = (operation: "verifyAccount" | "search", detail: string) =>
   new JiraRequestError({ operation, detail });
 
+interface SettledIssue {
+  readonly issue: JiraIssueSummary;
+  readonly until: number;
+}
+
+const epochOf = (value: string): number =>
+  Option.match(DateTime.make(value), { onNone: () => Number.NaN, onSome: DateTime.toEpochMillis });
+
 const make = Effect.gen(function* () {
   const client = yield* JiraClient;
   const credentials = yield* JiraCredentials;
@@ -114,6 +131,58 @@ const make = Effect.gen(function* () {
       }),
     ),
   );
+
+  // Issues this service just moved, as Jira's own record of them. The search index catches up
+  // later, and until it does a list or chip built from it would show the old status.
+  const settled = yield* Ref.make<ReadonlyMap<string, SettledIssue>>(new Map());
+
+  const settle = (issue: JiraIssueSummary) =>
+    Clock.currentTimeMillis.pipe(
+      Effect.flatMap((now) =>
+        Ref.update(settled, (current) => {
+          const next = new Map([...current].filter(([, kept]) => kept.until > now));
+          return next.set(issue.key, { issue, until: now + SETTLED_TTL_MILLIS });
+        }),
+      ),
+    );
+
+  /** The settled record stands in for an index answer that is older than it. */
+  const withSettled = Effect.fn("JiraService.withSettled")(function* (
+    issues: ReadonlyArray<JiraIssueSummary>,
+  ) {
+    const current = yield* Ref.get(settled);
+    if (current.size === 0) return issues;
+    const now = yield* Clock.currentTimeMillis;
+    return issues.map((found) => {
+      const kept = current.get(found.key);
+      return kept !== undefined &&
+        kept.until > now &&
+        epochOf(kept.issue.updatedAt) > epochOf(found.updatedAt)
+        ? kept.issue
+        : found;
+    });
+  });
+
+  /** Every page of a query, for answers that must be complete. */
+  const searchAllPages = Effect.fn("JiraService.searchAllPages")(function* (
+    credential: JiraCredential,
+    jql: string,
+    pageSize: number,
+  ) {
+    const found = new Map<string, JiraIssueSummary>();
+    let pageToken: string | undefined;
+    for (let pages = 0; pages < MAX_LOOKUP_PAGES; pages += 1) {
+      const page = yield* client.searchIssues(credential, {
+        jql,
+        pageSize,
+        ...(pageToken === undefined ? {} : { pageToken }),
+      });
+      for (const issue of page.issues) found.set(issue.key, issue);
+      if (page.nextPageToken === null) break;
+      pageToken = page.nextPageToken;
+    }
+    return [...found.values()];
+  });
 
   /** Whole lists of keys that a single `key in (...)` query could not answer fall back to one by one. */
   const lookupOneByOne = (credential: JiraCredential, keys: ReadonlyArray<string>) =>
@@ -138,16 +207,14 @@ const make = Effect.gen(function* () {
     timeToLive: LOOKUP_CACHE_TTL,
     lookup: Effect.fn("JiraService.lookupChunk")(function* (keys: ReadonlyArray<string>) {
       const credential = yield* requireCredential;
-      return yield* client
-        .searchIssues(credential, { jql: jqlForKeys(keys), pageSize: keys.length })
-        .pipe(
-          Effect.map((page) => page.issues),
-          // One key Jira does not know makes the whole query invalid.
-          Effect.catchTags({
-            JiraRequestError: (error) =>
-              error.status === 400 ? lookupOneByOne(credential, keys) : Effect.fail(error),
-          }),
-        );
+      const found = yield* searchAllPages(credential, jqlForKeys(keys), keys.length).pipe(
+        // One key Jira does not know makes the whole query invalid.
+        Effect.catchTags({
+          JiraRequestError: (error) =>
+            error.status === 400 ? lookupOneByOne(credential, keys) : Effect.fail(error),
+        }),
+      );
+      return yield* withSettled(found);
     }),
   });
 
@@ -160,11 +227,22 @@ const make = Effect.gen(function* () {
       readonly pageToken: string | null;
     }) {
       const credential = yield* requireCredential;
-      return yield* client.searchIssues(credential, {
+      const page = yield* client.searchIssues(credential, {
         jql: request.jql,
         pageSize: request.pageSize,
         ...(request.pageToken === null ? {} : { pageToken: request.pageToken }),
       });
+      return { ...page, issues: yield* withSettled(page.issues) };
+    }),
+  });
+
+  const fieldsCache = yield* makeTtlCache({
+    capacity: 1,
+    timeToLive: FIELDS_CACHE_TTL,
+    lookup: Effect.fn("JiraService.acceptanceCriteriaFields")(function* (
+      _request: Record<string, never>,
+    ) {
+      return yield* client.listAcceptanceCriteriaFields(yield* requireCredential);
     }),
   });
 
@@ -172,7 +250,12 @@ const make = Effect.gen(function* () {
     capacity: 100,
     timeToLive: DETAIL_CACHE_TTL,
     lookup: Effect.fn("JiraService.issueDetail")(function* (request: { readonly key: string }) {
-      return yield* client.getIssue(yield* requireCredential, request.key);
+      const credential = yield* requireCredential;
+      // Without the extra fields the issue still shows; the fields are looked for again next time.
+      const extraFields = yield* fieldsCache
+        .get({})
+        .pipe(Effect.orElseSucceed((): ReadonlyArray<JiraFieldRef> => []));
+      return yield* client.getIssue(credential, request.key, extraFields);
     }),
   });
 
@@ -210,6 +293,7 @@ const make = Effect.gen(function* () {
       transitionsCache.invalidateAll,
       projectsCache.invalidateAll,
       accountCache.invalidateAll,
+      fieldsCache.invalidateAll,
     ],
     { discard: true },
   );
@@ -305,10 +389,12 @@ const make = Effect.gen(function* () {
   });
 
   const transition = Effect.fn("JiraService.transition")(function* (input: JiraTransitionInput) {
-    yield* client.transition(yield* requireCredential, input.key, input.transitionId);
+    const credential = yield* requireCredential;
+    yield* client.transition(credential, input.key, input.transitionId);
+    // The issue itself is current at once; the search index is not, so it is not asked here.
+    const issue = yield* client.getIssueSummary(credential, input.key);
+    yield* settle(issue);
     yield* forgetIssue(input.key);
-    const [issue] = yield* lookupCache.get([input.key]);
-    if (issue === undefined) return yield* new JiraNotFoundError({ key: input.key });
     return issue;
   });
 
@@ -333,6 +419,7 @@ const make = Effect.gen(function* () {
     transition,
     addComment,
     lookupIssues,
+    refresh: forgetEverything,
   });
 });
 
