@@ -39,6 +39,8 @@ import type {
   TranscriptUsageFormat,
   UsageRecord,
 } from "@t3tools/provider-core/server/usage";
+import { OpenRouterZdrRates } from "./OpenRouterZdrRates.ts";
+import { withMarketRates, withoutCatalogCost } from "./openRouterZdr.ts";
 import { canonicalModelFilter, resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
@@ -156,6 +158,13 @@ export const make = Effect.gen(function* () {
   const hostEnvironment = yield* HostProcess.Environment;
   const hostname = yield* HostProcess.Hostname;
   const readerContext = yield* Effect.context<BuiltInUsageReadersEnv>();
+  // Optional, so a runtime without it prices Ollama Cloud's models from the LiteLLM table alone.
+  const readMarketRates = (yield* Effect.serviceOption(OpenRouterZdrRates)).pipe(
+    Option.match({
+      onNone: () => Effect.succeed<RateTable>(new Map()),
+      onSome: (market) => market.rates,
+    }),
+  );
 
   const fileCache: ScanCache = new Map();
   // Reads from concurrent windows can still hold the original record after it is corrected.
@@ -707,12 +716,13 @@ export const make = Effect.gen(function* () {
 
     const retentionCutoffMs = startedAtMs - CACHE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
-    const [, scannedDirs] = yield* Effect.all(
+    const [, scannedDirs, marketRates] = yield* Effect.all(
       [
         ensureRates(false),
         collectDirs(windowStartMs, settings, retentionCutoffMs, input.awaitRefresh === true),
+        readMarketRates,
       ],
-      { concurrency: 2 },
+      { concurrency: 3 },
     );
 
     const aggregator = new UsageAggregator({
@@ -721,7 +731,7 @@ export const make = Effect.gen(function* () {
       untilDay: input.untilDay,
       resolution: input.resolution ?? "day",
       ...hourlyWindow,
-      rates,
+      rates: withMarketRates(rates, marketRates),
       priceOverrides: createOverrideRateTable(settings.usagePriceOverrides),
       modelAliases: resolveModelAliases(settings.usageModelAliases),
       ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
@@ -815,7 +825,7 @@ export const make = Effect.gen(function* () {
         scannedFiles += 1;
         const eventOccurrences = new Map<string, number>();
         for (const rawRecord of file.records) {
-          const record = correctedRecord(rawRecord);
+          const record = withoutCatalogCost(correctedRecord(rawRecord), marketRates);
           let usageRecord = record;
           if (
             sharedSessionProviders.has(record.provider) &&
