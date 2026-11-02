@@ -1,13 +1,13 @@
 import { useAtomValue } from "@effect/atom-react";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { availableScratchWorkspaceRoot } from "@t3tools/client-runtime/operations/projects";
-import { selectProjectGroupingSettings } from "@t3tools/client-runtime/state/project-grouping";
 import type { EnvironmentPresentationWithProviders } from "@t3tools/client-runtime/state/presentation";
 import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
 import {
   assessHandoffMachines,
   type HandoffEnvironment,
   type HandoffMachine,
+  type HandoffSourceAccess,
 } from "@t3tools/client-runtime/thread-machine-handoff";
 import {
   AuthOrchestrationOperateScope,
@@ -16,7 +16,6 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 
-import { getClientSettings } from "../hooks/useSettings";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { readProject, readProjects, readThreadShell } from "../state/entities";
 import { environmentPresentations } from "../state/presentation";
@@ -46,6 +45,7 @@ function toHandoffEnvironments(
       connected,
       canOperate: can.operate(environmentId),
       canAddProject: connected && can.sourceControl(environmentId),
+      canSourceControl: connected && can.sourceControl(environmentId),
       scratchAvailable:
         availableScratchWorkspaceRoot(presentation.connection.phase, serverConfig) !== null,
       providers: serverConfig?.providers ?? [],
@@ -64,6 +64,24 @@ export function useHandoffEnvironments(): ReadonlyArray<HandoffEnvironment> {
     operate: (environmentId) => operate.has(environmentId),
     sourceControl: (environmentId) => sourceControl.has(environmentId),
   });
+}
+
+/** What this connection may do on the thread's own machine, which a handoff changes there. */
+export function useHandoffSourceAccess(environmentId: EnvironmentId): HandoffSourceAccess {
+  const environments = [{ environmentId }];
+  const operate = useEnvironmentsWithScope(environments, AuthOrchestrationOperateScope);
+  const sourceControl = useEnvironmentsWithScope(environments, AuthSourceControlWriteScope);
+  return {
+    canOperate: operate.has(environmentId),
+    canSourceControl: sourceControl.has(environmentId),
+  };
+}
+
+function readHandoffSourceAccess(environmentId: EnvironmentId): HandoffSourceAccess {
+  return {
+    canOperate: readEnvironmentScope(environmentId, AuthOrchestrationOperateScope),
+    canSourceControl: readEnvironmentScope(environmentId, AuthSourceControlWriteScope),
+  };
 }
 
 function readHandoffEnvironments(): ReadonlyArray<HandoffEnvironment> {
@@ -111,7 +129,17 @@ export function readContinueOnChoices(threadRef: ScopedThreadRef): ReadonlyArray
   return assessHandoffMachines({
     source,
     projects: readProjects(),
-    settings: selectProjectGroupingSettings(getClientSettings()),
     environments: readHandoffEnvironments(),
   }).map(continueOnChoiceOf);
+}
+
+/**
+ * Whether to offer the handoff outside the thread menu, which disables it for a connection that
+ * cannot change the thread: the same grant on the thread's machine, and a machine to go to.
+ */
+export function canOfferContinueOn(threadRef: ScopedThreadRef): boolean {
+  return (
+    readHandoffSourceAccess(threadRef.environmentId).canOperate &&
+    readContinueOnChoices(threadRef).some((choice) => !choice.disabled)
+  );
 }

@@ -49,10 +49,15 @@ side lists and revokes it in Sharing & access like any other session, and owns i
 
 Continuing a thread on another machine is the client's work, not a link between servers. The source
 pushes a WIP commit to a branch of the shared remote, the client reads the conversation as a
-transcript, and it opens a draft in the target's member of the same project group. The thread, its
-provider session and its checkpoints stay on the source. Nothing on the servers ties the two
-threads, so the client remembers the draft's source and settles it once the first message is on the
-target ([`threadMachineHandoffSettle`](../../apps/web/src/lib/threadMachineHandoffSettle.ts)).
+transcript, makes a worktree on the same branch from the target's checkout of the same repository
+(found by repository identity and place in it, not by the sidebar's grouping), and opens a draft in
+it. The thread, its provider session and its checkpoints stay on the source. Nothing on the servers
+ties the two threads, so the client remembers the draft's source and settles it once the first
+message is on the target
+([`threadMachineHandoffSettle`](../../apps/web/src/lib/threadMachineHandoffSettle.ts)). The
+target's worktree is made when the handoff runs, not on the first send, because the launch path has
+one ref for both the start point and the branch a pull request compares with, and cannot track a
+branch of the same name.
 
 ## Hosted web is a client
 

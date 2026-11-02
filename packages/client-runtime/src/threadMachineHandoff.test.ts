@@ -10,13 +10,16 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   assessHandoffMachines,
   buildHandoffNote,
+  collectHandoffBranchNames,
   explainHandoffGitFailure,
   handoffCommitMessage,
+  isSameHandoffCode,
   listHandoffSteps,
   pickHandoffBranchName,
   planThreadMachineHandoff,
-  resolveHandoffDraftBase,
+  resolveHandoffComparisonBase,
   resolveHandoffModelSelection,
+  resolveHandoffPushed,
   type HandoffEnvironment,
   type HandoffGitStatus,
   type HandoffMachineStatus,
@@ -24,16 +27,10 @@ import {
   type HandoffThread,
 } from "./threadMachineHandoff.ts";
 import type { EnvironmentProject } from "./state/models.ts";
-import type { ProjectGroupingSettings } from "./state/projectGrouping.ts";
 
 const laptop = EnvironmentId.make("laptop");
 const server = EnvironmentId.make("server");
 const claude = ProviderInstanceId.make("claudeAgent");
-
-const settings: ProjectGroupingSettings = {
-  sidebarProjectGroupingMode: "repository",
-  sidebarProjectGroupingOverrides: {},
-};
 
 const repositoryIdentity = {
   canonicalKey: "github.com/t3tools/t3code",
@@ -55,7 +52,7 @@ function project(
     id: ProjectId.make(id),
     title: id,
     workspaceRoot: `/work/${id}`,
-    repositoryIdentity,
+    repositoryIdentity: { ...repositoryIdentity, rootPath: `/work/${id}` },
     defaultModelSelection: null,
     scripts: [],
     createdAt: "2026-07-01T00:00:00.000Z",
@@ -86,6 +83,7 @@ function environment(
     connected: true,
     canOperate: true,
     canAddProject: true,
+    canSourceControl: true,
     scratchAvailable: true,
     providers: [providerOf()],
     maxFileBytes: 10_000_000,
@@ -106,13 +104,14 @@ const targetCheckout = project(server, "target");
 function git(overrides: Partial<HandoffGitStatus> = {}): HandoffGitStatus {
   return {
     isRepo: true,
-    hasPrimaryRemote: true,
     refName: "feature/login",
     isDefaultRef: false,
+    defaultBranchKnown: true,
     hasWorkingTreeChanges: false,
     workingTree: { files: [] },
     hasUpstream: true,
     aheadCount: 0,
+    branchChanges: { baseRef: "origin/main" },
     ...overrides,
   };
 }
@@ -128,6 +127,7 @@ function plan(overrides: Partial<Parameters<typeof planThreadMachineHandoff>[0]>
     machine: machineWith(targetCheckout),
     git: git(),
     existingBranchNames: [],
+    sourceAccess: { canOperate: true, canSourceControl: true },
     ...overrides,
   });
 }
@@ -142,7 +142,7 @@ describe("assessHandoffMachines", () => {
     environments: ReadonlyArray<HandoffEnvironment>,
     projects: ReadonlyArray<EnvironmentProject>,
     from: EnvironmentProject = source,
-  ) => assessHandoffMachines({ source: from, projects, settings, environments });
+  ) => assessHandoffMachines({ source: from, projects, environments });
 
   it("finds the other machine's checkout of the same repository and skips the source's own machine", () => {
     const result = assess(
@@ -187,6 +187,74 @@ describe("assessHandoffMachines", () => {
     expect(
       assess([environment(server, { scratchAvailable: false })], [local], local)[0]?.status,
     ).toEqual({ kind: "unavailable", reason: "no-folder" });
+  });
+
+  describe("picking the project on the machine", () => {
+    const inRepository = (
+      environmentId: EnvironmentId,
+      id: string,
+      relativePath: string,
+      identity: Partial<NonNullable<EnvironmentProject["repositoryIdentity"]>> = {},
+    ) =>
+      project(environmentId, id, {
+        workspaceRoot: relativePath === "" ? `/repo/${id}` : `/repo/${id}/${relativePath}`,
+        repositoryIdentity: { ...repositoryIdentity, rootPath: `/repo/${id}`, ...identity },
+      });
+    const statusOn = (projects: ReadonlyArray<EnvironmentProject>, from: EnvironmentProject) =>
+      assess([environment(server)], [from, ...projects], from)[0]?.status;
+
+    it("matches the repository whatever the sidebar's grouping, and the project's place in it", () => {
+      const app = inRepository(laptop, "app-here", "packages/app");
+      const root = inRepository(server, "root", "");
+      const otherApp = inRepository(server, "app-there", "packages/app");
+      const lib = inRepository(server, "lib-there", "packages/lib");
+      expect(statusOn([root, otherApp, lib], app)).toEqual({ kind: "ready", project: otherApp });
+    });
+
+    it("does not stand in the repository's root for a subproject it lacks", () => {
+      const app = inRepository(laptop, "app-here", "packages/app");
+      expect(statusOn([inRepository(server, "root", "")], app)).toEqual({
+        kind: "needs-project",
+        canAdd: true,
+      });
+    });
+
+    it("asks which one when the machine has several checkouts in the same place", () => {
+      const first = inRepository(server, "first", "");
+      const second = inRepository(server, "second", "");
+      expect(statusOn([first, second], source)).toEqual({
+        kind: "choose",
+        projects: [first, second],
+      });
+    });
+
+    it("takes the only candidate when a path cannot be worked out", () => {
+      const noRoot = project(server, "no-root", {
+        repositoryIdentity: { ...repositoryIdentity },
+      });
+      expect(statusOn([noRoot], source)).toEqual({ kind: "ready", project: noRoot });
+      expect(statusOn([noRoot, inRepository(server, "second", "")], source)?.kind).toBe("choose");
+      expect(statusOn([noRoot, inRepository(server, "other", "packages/other")], source)).toEqual({
+        kind: "ready",
+        project: noRoot,
+      });
+    });
+
+    it("looks for the repository the push goes to: a fork's own origin", () => {
+      const fork = inRepository(laptop, "fork-here", "", {
+        canonicalKey: "github.com/t3tools/t3code",
+        origin: { canonicalKey: "github.com/me/t3code" },
+      });
+      const forkThere = inRepository(server, "fork-there", "", {
+        canonicalKey: "github.com/me/t3code",
+      });
+      const upstreamThere = inRepository(server, "upstream-there", "");
+      expect(statusOn([upstreamThere], fork)?.kind).toBe("needs-project");
+      expect(statusOn([upstreamThere, forkThere], fork)).toEqual({
+        kind: "ready",
+        project: forkThere,
+      });
+    });
   });
 });
 
@@ -234,6 +302,43 @@ describe("planThreadMachineHandoff", () => {
     expect(plan({ git: null })).toMatchObject({ kind: "blocked", reason: "git-loading" });
   });
 
+  it("waits for a project to be chosen when the machine has several", () => {
+    const choose = { environment: environment(server), status: { kind: "choose", projects: [] } };
+    expect(plan({ machine: choose as never })).toMatchObject({
+      kind: "blocked",
+      reason: "choose-project",
+    });
+  });
+
+  it("needs the source's grants: to change the thread, and to commit and push", () => {
+    expect(plan({ sourceAccess: { canOperate: false, canSourceControl: true } })).toMatchObject({
+      kind: "blocked",
+      reason: "source-read-only",
+    });
+    const changes = git({ hasWorkingTreeChanges: true, workingTree: { files: [{ path: "a" }] } });
+    expect(
+      plan({ git: changes, sourceAccess: { canOperate: true, canSourceControl: false } }),
+    ).toMatchObject({ kind: "blocked", reason: "source-no-source-control" });
+    const local = project(laptop, "local", { repositoryIdentity: null });
+    expect(
+      plan({
+        source: local,
+        machine: machineWith(null),
+        git: null,
+        sourceAccess: { canOperate: true, canSourceControl: false },
+      }).kind,
+    ).toBe("ready");
+  });
+
+  it("needs the target's grant to make a worktree, but only when code travels", () => {
+    const noGrant = machineWith(targetCheckout, environment(server, { canSourceControl: false }));
+    expect(plan({ machine: noGrant, git: git({ aheadCount: 1 }) })).toMatchObject({
+      kind: "blocked",
+      reason: "machine-no-source-control",
+    });
+    expect(plan({ machine: noGrant, git: git({ isRepo: false }) }).kind).toBe("ready");
+  });
+
   it("commits the changes on the thread's own branch and pushes it", () => {
     const result = ready(
       plan({
@@ -249,11 +354,13 @@ describe("planThreadMachineHandoff", () => {
       branch: "feature/login",
       createBranch: false,
       commit: { fileCount: 3, message: "WIP: hand off to Server" },
+      comparisonBase: "origin/main",
     });
     expect(result.target).toMatchObject({
       environmentId: server,
       label: "Server",
-      remoteName: "origin",
+      cwd: "/work/target",
+      identity: targetCheckout.repositoryIdentity,
     });
   });
 
@@ -263,6 +370,7 @@ describe("planThreadMachineHandoff", () => {
       branch: "feature/login",
       createBranch: false,
       commit: null,
+      comparisonBase: "origin/main",
     });
   });
 
@@ -279,6 +387,7 @@ describe("planThreadMachineHandoff", () => {
       branch: "handoff/fix-the-flaky-login-test",
       createBranch: true,
       commit: { fileCount: 1, message: "WIP: hand off to Server" },
+      comparisonBase: "origin/main",
     });
     expect(
       ready(
@@ -305,6 +414,19 @@ describe("planThreadMachineHandoff", () => {
     },
   );
 
+  it("branches off whenever the default branch is unknown, whatever the branch is called", () => {
+    const develop = git({ refName: "develop", defaultBranchKnown: false, aheadCount: 1 });
+    expect(ready(plan({ git: develop })).code).toMatchObject({
+      createBranch: true,
+      branch: "handoff/fix-the-flaky-login-test",
+    });
+    const known = git({ refName: "develop", defaultBranchKnown: true, aheadCount: 1 });
+    expect(ready(plan({ git: known })).code).toMatchObject({
+      createBranch: false,
+      branch: "develop",
+    });
+  });
+
   it("carries nothing from a default branch that has no work on it", () => {
     expect(ready(plan({ git: git({ refName: "main", isDefaultRef: true }) })).code).toEqual({
       kind: "none",
@@ -326,11 +448,17 @@ describe("planThreadMachineHandoff", () => {
     });
   });
 
-  it("hands over only the conversation when there is no remote to carry code through", () => {
-    expect(ready(plan({ git: git({ hasPrimaryRemote: false }) })).code).toEqual({
-      kind: "none",
-      reason: "no-remote",
+  it("carries code through whichever remote the project has, origin or not", () => {
+    const viaGithub = project(laptop, "source", {
+      repositoryIdentity: {
+        ...repositoryIdentity,
+        locator: { ...repositoryIdentity.locator, remoteName: "github" },
+      },
     });
+    expect(ready(plan({ source: viaGithub, git: git({ aheadCount: 1 }) })).code.kind).toBe("carry");
+  });
+
+  it("hands over only the conversation when the checkout is not a repository", () => {
     expect(ready(plan({ git: git({ isRepo: false }) })).code).toEqual({
       kind: "none",
       reason: "not-a-repo",
@@ -349,24 +477,6 @@ describe("planThreadMachineHandoff", () => {
       kind: "none",
       reason: "scratch",
     });
-  });
-
-  it("names the remote the way the machine's project locates its repository", () => {
-    const viaUpstream = project(server, "target", {
-      repositoryIdentity: {
-        ...repositoryIdentity,
-        locator: { ...repositoryIdentity.locator, remoteName: "github" },
-      },
-    });
-    expect(ready(plan({ machine: machineWith(viaUpstream) })).target.remoteName).toBe("github");
-    const fork = project(server, "target", {
-      repositoryIdentity: {
-        ...repositoryIdentity,
-        locator: { ...repositoryIdentity.locator, remoteName: "upstream" },
-        origin: { canonicalKey: "github.com/me/t3code" },
-      },
-    });
-    expect(ready(plan({ machine: machineWith(fork) })).target.remoteName).toBe("origin");
   });
 
   it("attaches the conversation only where files are accepted", () => {
@@ -433,27 +543,133 @@ describe("handoffCommitMessage", () => {
   });
 });
 
-describe("resolveHandoffDraftBase", () => {
+describe("resolveHandoffPushed", () => {
   const carry = ready(plan({ git: git({ aheadCount: 1 }) }));
-
-  it("bases the worktree on the branch that was pushed, through the machine's own remote", () => {
-    expect(resolveHandoffDraftBase(carry, "origin/handoff/fix-login")).toBe(
-      "origin/handoff/fix-login",
+  const withIdentities = (
+    sourceIdentity: Partial<NonNullable<EnvironmentProject["repositoryIdentity"]>>,
+    targetIdentity: Partial<NonNullable<EnvironmentProject["repositoryIdentity"]>>,
+  ) =>
+    ready(
+      plan({
+        source: project(laptop, "source", {
+          repositoryIdentity: { ...repositoryIdentity, ...sourceIdentity },
+        }),
+        machine: machineWith(
+          project(server, "target", {
+            repositoryIdentity: { ...repositoryIdentity, ...targetIdentity },
+          }),
+        ),
+        git: git({ aheadCount: 1 }),
+      }),
     );
-    const github = {
-      ...carry,
-      target: { ...carry.target, remoteName: "github" },
+  const github = (remoteName: string) => ({
+    locator: { ...repositoryIdentity.locator, remoteName },
+  });
+
+  it("continues the branch that was pushed, through the machine's own name for that remote", () => {
+    expect(resolveHandoffPushed(carry, "origin/handoff/fix-login")).toEqual({
+      ok: true,
+      branch: "handoff/fix-login",
+      sourceRemote: "origin",
+      remote: "origin",
+      remoteRef: "origin/handoff/fix-login",
+    });
+    const named = withIdentities(github("origin"), github("github"));
+    expect(resolveHandoffPushed(named, "origin/feature/login")).toMatchObject({
+      ok: true,
+      remote: "github",
+      remoteRef: "github/feature/login",
+    });
+  });
+
+  it("follows a fork's own origin, on both sides", () => {
+    const fork = {
+      locator: { ...repositoryIdentity.locator, remoteName: "upstream" },
+      origin: { canonicalKey: "github.com/me/t3code" },
     };
-    expect(resolveHandoffDraftBase(github, "origin/handoff/fix-login")).toBe(
-      "github/handoff/fix-login",
+    const forkPlan = withIdentities(fork, {
+      canonicalKey: "github.com/me/t3code",
+      locator: { ...repositoryIdentity.locator, remoteName: "origin" },
+    });
+    expect(resolveHandoffPushed(forkPlan, "origin/feature")).toMatchObject({
+      ok: true,
+      remote: "origin",
+    });
+    // The upstream remote is the other repository: the machine's origin is not it.
+    expect(resolveHandoffPushed(forkPlan, "upstream/feature")).toMatchObject({ ok: false });
+  });
+
+  it("refuses a remote it cannot match to the machine's repository", () => {
+    const result = resolveHandoffPushed(carry, "publish/feature");
+    expect(result).toMatchObject({ ok: false });
+    expect(result.ok ? "" : result.message).toContain("publish");
+    const elsewhere = withIdentities({}, { canonicalKey: "github.com/other/repo" });
+    expect(resolveHandoffPushed(elsewhere, "origin/feature")).toMatchObject({ ok: false });
+  });
+
+  it("has no branch when nothing was pushed or no code was planned", () => {
+    expect(resolveHandoffPushed(carry, undefined)).toMatchObject({ ok: false });
+    expect(resolveHandoffPushed(carry, "origin/")).toMatchObject({ ok: false });
+    const none = ready(plan({ git: git({ isRepo: false }) }));
+    expect(resolveHandoffPushed(none, "origin/main")).toMatchObject({ ok: false });
+  });
+});
+
+describe("resolveHandoffComparisonBase", () => {
+  const pushed = {
+    ok: true,
+    branch: "b",
+    sourceRemote: "origin",
+    remote: "github",
+    remoteRef: "github/b",
+  } as const;
+
+  it("renames the remote in the base the way the target machine knows it", () => {
+    expect(resolveHandoffComparisonBase("origin/main", pushed)).toBe("github/main");
+    expect(resolveHandoffComparisonBase("main", pushed)).toBe("main");
+    expect(resolveHandoffComparisonBase(null, pushed)).toBeNull();
+  });
+});
+
+describe("isSameHandoffCode", () => {
+  const code = (overrides: Partial<Parameters<typeof git>[0]> = {}) =>
+    ready(plan({ git: git({ aheadCount: 1, ...overrides }) })).code;
+
+  it("is the same work when the branch, the new branch and the commit are", () => {
+    expect(isSameHandoffCode(code(), code())).toBe(true);
+    const changed = { hasWorkingTreeChanges: true, workingTree: { files: [{ path: "a" }] } };
+    expect(isSameHandoffCode(code(changed), code({ ...changed, workingTree: { files: [] } }))).toBe(
+      true,
     );
   });
 
-  it("has no base when nothing was pushed or no code was planned", () => {
-    expect(resolveHandoffDraftBase(carry, undefined)).toBeNull();
-    expect(resolveHandoffDraftBase(carry, "origin/")).toBeNull();
-    const none = ready(plan({ git: git({ hasPrimaryRemote: false }) }));
-    expect(resolveHandoffDraftBase(none, "origin/main")).toBeNull();
+  it("is not when the checkout moved to another branch or its changes appeared or went", () => {
+    expect(isSameHandoffCode(code(), code({ refName: "other" }))).toBe(false);
+    expect(isSameHandoffCode(code(), code({ refName: "main", isDefaultRef: true }))).toBe(false);
+    expect(
+      isSameHandoffCode(
+        code(),
+        code({ hasWorkingTreeChanges: true, workingTree: { files: [{ path: "a" }] } }),
+      ),
+    ).toBe(false);
+    expect(isSameHandoffCode(code(), { kind: "none", reason: "scratch" })).toBe(false);
+  });
+});
+
+describe("collectHandoffBranchNames", () => {
+  it("lists local names and the remote ones without their remote", () => {
+    expect(
+      collectHandoffBranchNames([
+        { name: "handoff" },
+        { name: "origin/handoff-2/x", isRemote: true, remoteName: "origin" },
+        { name: "team/handoff/y", isRemote: true, remoteName: "team" },
+      ]),
+    ).toEqual(["handoff", "handoff-2/x", "handoff/y"]);
+  });
+
+  it("makes the picker step aside for a branch named handoff, wherever it was listed", () => {
+    const names = collectHandoffBranchNames([{ name: "handoff" }]);
+    expect(pickHandoffBranchName("Fix login", names)).toBe("handoff-2/fix-login");
   });
 });
 
@@ -463,8 +679,8 @@ describe("buildHandoffNote", () => {
     title: "Fix the flaky login test",
     sourceLabel: "Laptop",
     code: carry,
-    pushedBase: "origin/feature/login",
-    threadLink: "https://app.t3.codes/laptop/thread-1",
+    remoteRef: "origin/feature/login",
+    threadLink: "<t3-thread://v2/laptop/thread-1>",
     transcriptAttached: true,
   };
 
@@ -473,8 +689,8 @@ describe("buildHandoffNote", () => {
       [
         'Continuing "Fix the flaky login test", handed off from Laptop.',
         "",
-        "- The worktree starts from `origin/feature/login`, which includes a WIP commit of the uncommitted changes.",
-        "- Source thread: https://app.t3.codes/laptop/thread-1",
+        "- The worktree continues `feature/login`, which tracks `origin/feature/login` and includes a WIP commit of the uncommitted changes.",
+        "- Source thread: <t3-thread://v2/laptop/thread-1>",
         "- The conversation so far is attached for reference.",
         "",
         "",
@@ -488,7 +704,9 @@ describe("buildHandoffNote", () => {
       code: { ...base.code, commit: null } as typeof carry,
       threadLink: null,
     });
-    expect(note).toContain("- The worktree starts from `origin/feature/login`.");
+    expect(note).toContain(
+      "- The worktree continues `feature/login`, which tracks `origin/feature/login`.",
+    );
     expect(note).not.toContain("Source thread");
   });
 
@@ -497,10 +715,10 @@ describe("buildHandoffNote", () => {
       buildHandoffNote({
         ...base,
         code: { kind: "none", reason: "no-remote" },
-        pushedBase: null,
+        remoteRef: null,
       }),
     ).toContain("- No code was carried over: the project has no git remote.");
-    expect(buildHandoffNote({ ...base, pushedBase: null })).toContain(
+    expect(buildHandoffNote({ ...base, remoteRef: null })).toContain(
       "No code was carried over: the branch has no changes to carry.",
     );
   });
@@ -532,16 +750,22 @@ describe("listHandoffSteps", () => {
           workingTree: { files: [{ path: "a.ts" }] },
         }),
       }),
-    ).toEqual(["conversation", "branch", "commit", "push", "draft"]);
+    ).toEqual(["conversation", "branch", "commit", "push", "fetch", "worktree", "draft"]);
   });
 
   it("skips the commit when everything is committed, and the branch when it exists", () => {
-    expect(steps({ git: git({ aheadCount: 1 }) })).toEqual(["conversation", "push", "draft"]);
+    expect(steps({ git: git({ aheadCount: 1 }) })).toEqual([
+      "conversation",
+      "push",
+      "fetch",
+      "worktree",
+      "draft",
+    ]);
   });
 
   it("is only the draft when no code travels and the machine takes no files", () => {
     const machine = machineWith(targetCheckout, environment(server, { maxFileBytes: null }));
-    expect(steps({ machine, git: git({ hasPrimaryRemote: false }) })).toEqual(["draft"]);
+    expect(steps({ machine, git: git({ isRepo: false }) })).toEqual(["draft"]);
   });
 });
 
