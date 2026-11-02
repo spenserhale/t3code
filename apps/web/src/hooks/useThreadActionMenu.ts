@@ -1,5 +1,6 @@
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { handleContinueOnMenuAction } from "../components/continueOnMachineState";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
 import { openGuestShareDialog } from "../components/chat/guestShareDialogState";
 import {
@@ -29,6 +30,7 @@ import { titleRegenerationToast } from "../components/threadTitleRegenerationToa
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { copyThreadReference } from "../lib/copyThreadReference";
 import { m } from "../i18n/messages";
+import { readContinueOnChoices } from "../lib/handoffMachines";
 import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import { threadEnvironment } from "../state/threads";
 import { threadTriagePermitted, useOrchestrationCommand } from "../state/use-orchestration-command";
@@ -152,6 +154,7 @@ export function useThreadActionMenu(input: {
       snoozePresets,
       canShareWithGuest,
       canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+      continueOn: readContinueOnChoices(threadRef),
     });
     const run = async (action: ThreadActionMenuId) => {
       const api = readLocalApi();
@@ -185,6 +188,7 @@ export function useThreadActionMenu(input: {
         }
         return;
       }
+      if (handleContinueOnMenuAction(action, threadRef)) return;
       const reportFailure = async (
         title: string,
         run: () => Promise<AtomCommandResult<unknown, unknown>>,

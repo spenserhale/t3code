@@ -45,6 +45,15 @@ side lists and revokes it in Sharing & access like any other session, and owns i
   [`PeerThreadRelay`](../../apps/server/src/peer/PeerThreadRelay.ts) proxies the same stream format
   read-only so there is no second transcript schema to maintain.
 
+## Continuing a thread on another machine
+
+Continuing a thread on another machine is the client's work, not a link between servers. The source
+pushes a WIP commit to a branch of the shared remote, the client reads the conversation as a
+transcript, and it opens a draft in the target's member of the same project group. The thread, its
+provider session and its checkpoints stay on the source. Nothing on the servers ties the two
+threads, so the client remembers the draft's source and settles it once the first message is on the
+target ([`threadMachineHandoffSettle`](../../apps/web/src/lib/threadMachineHandoffSettle.ts)).
+
 ## Hosted web is a client
 
 The hosted web app stores its connection catalog in the browser and connects directly to each

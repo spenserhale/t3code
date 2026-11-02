@@ -39,6 +39,29 @@ While enabled, Active is sorted by most recent return (manual reordering is paus
 
 Enable **Settings → Labs → Boring sidebar (group by project)** on web/desktop (per device) to group active threads into collapsible project folders. Pinned threads stay above; Snoozed and Settled stay below. In this mode, the Working section and sidebar drag-reordering are disabled (dragging a thread onto the composer still works).
 
+## Continue on another machine
+
+Hand a thread to another machine you have connected. Open the thread's menu in the header or on
+its sidebar row, pick **Continue on…**, and choose the machine. The command palette has
+**Continue on another machine** for the open thread. This is available on web and desktop.
+
+T3 Code commits the thread's uncommitted changes as `WIP: hand off to <machine>`, pushes the
+branch, and opens a draft on the other machine: in the same project, on a new worktree that starts
+from that branch, with the conversation attached as a file and a short note naming the thread, the
+machine and the branch. Add your instructions and send. The original thread settles when you send
+the first message there; **Undo** in the toast, or **Un-settle** on the thread, reverses that.
+
+- From the default branch, the work goes to a new `handoff/<thread title>` branch first. The
+  default branch is never pushed.
+- The other machine needs the same project. If it does not have it yet, the dialog offers **Add
+  project to** that machine.
+- A project without a git remote, or a thread without a project, hands over only the conversation,
+  into a thread without a project on the other machine.
+- The thread must not be working or waiting on an approval. If the remote has newer commits on
+  the branch, the push is refused and the dialog says so; pull, then hand off again.
+- The conversation is a copy. The thread, its provider session and its checkpoints stay where they
+  were, and the new thread starts a fresh provider session.
+
 ## Settle, snooze, and archive
 
 | Action      | When to use          | Effect                                                                                                                                         |

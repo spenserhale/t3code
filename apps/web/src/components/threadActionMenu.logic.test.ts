@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildThreadActionMenuItems, type ThreadActionMenuState } from "./threadActionMenu.logic";
+import {
+  buildThreadActionMenuItems,
+  threadActionRequiresOperate,
+  type ThreadActionMenuState,
+} from "./threadActionMenu.logic";
 
 const baseState: ThreadActionMenuState = {
   canOperate: true,
@@ -87,5 +91,35 @@ describe("buildThreadActionMenuItems", () => {
   it("disables only rename where no inline title editor exists", () => {
     const items = buildThreadActionMenuItems({ ...baseState, canRename: false });
     expect(items.filter((item) => item.disabled).map((item) => item.id)).toEqual(["rename"]);
+  });
+
+  it("lists the machines a thread can continue on, and omits the submenu with none", () => {
+    const continueOn = [
+      { environmentId: "laptop", label: "Laptop", disabled: false },
+      { environmentId: "server", label: "Server (offline)", disabled: true },
+    ];
+    const submenu = buildThreadActionMenuItems({ ...baseState, continueOn }).find(
+      (item) => item.id === "continue-on",
+    );
+    expect(submenu?.children?.map(({ id, label, disabled }) => ({ id, label, disabled }))).toEqual([
+      { id: "continue-on:laptop", label: "Laptop", disabled: false },
+      { id: "continue-on:server", label: "Server (offline)", disabled: true },
+    ]);
+    for (const state of [baseState, { ...baseState, continueOn: [] }]) {
+      expect(buildThreadActionMenuItems(state).some((item) => item.id === "continue-on")).toBe(
+        false,
+      );
+    }
+  });
+
+  it("keeps a read-only connection from handing a thread off", () => {
+    const submenu = buildThreadActionMenuItems({
+      ...baseState,
+      canOperate: false,
+      continueOn: [{ environmentId: "laptop", label: "Laptop", disabled: false }],
+    }).find((item) => item.id === "continue-on");
+    expect(submenu?.disabled).toBe(true);
+    expect(submenu?.children?.every((child) => child.disabled)).toBe(true);
+    expect(threadActionRequiresOperate("continue-on:laptop")).toBe(true);
   });
 });
