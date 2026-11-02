@@ -22,6 +22,7 @@ import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
@@ -184,6 +185,33 @@ it.effect("resends a file manager reveal kind that missed the snapshot", () =>
     assert.equal(late?.type, "snapshot");
     if (late?.type === "snapshot") {
       assert.equal(late.config.shellRevealInFileManagerKind, "file-explorer");
+    }
+  }),
+);
+
+it.effect("resends the config when a setting moves the new projects folder", () =>
+  Effect.gen(function* () {
+    const events = yield* withLateEditorConfig(
+      snapshotConfig({ newProjectsRoot: "/data/projects" }),
+      Stream.make(
+        settingsUpdated({ newProjectsDirectory: "", defaultAutoPull: true }),
+        settingsUpdated({ newProjectsDirectory: "/work/projects" }),
+      ),
+      {
+        resolveAvailableEditors: () => Effect.succeed([]),
+        // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
+        resolveFileManagerRevealKind: () => Effect.succeed(undefined),
+      },
+      (directory) => (directory === "" ? "/data/projects" : directory),
+    ).pipe(Stream.runCollect);
+
+    const [unmoved, moved] = Array.from(events);
+    assert.equal(events.length, 2);
+    assert.equal(unmoved?.type, "settingsUpdated");
+    assert.equal(moved?.type, "snapshot");
+    if (moved?.type === "snapshot") {
+      assert.equal(moved.config.newProjectsRoot, "/work/projects");
+      assert.deepEqual(moved.config.settings, { newProjectsDirectory: "/work/projects" } as never);
     }
   }),
 );
@@ -887,6 +915,118 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
     ),
     Effect.scoped,
   ),
+);
+
+it.effect(
+  "tells a subscribed client where new projects go, and again when a setting moves them",
+  () =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const path = yield* Path.Path;
+      const responses = yield* Queue.unbounded<ServerConfigStreamEvent>();
+      const configRpcServices = Layer.mergeAll(
+        layerUnusedConfigRpcServices,
+        Layer.mock(ExternalLauncher.ExternalLauncher)({
+          resolveAvailableEditors: () => Effect.succeed([]),
+          // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
+          resolveFileManagerRevealKind: () => Effect.succeed(undefined),
+        }),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed([]),
+          streamChanges: Stream.never,
+        }),
+        Layer.mock(UsageLimitSources.UsageLimitSources)({ streamChanges: Stream.make([]) }),
+        Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
+          resolveTargets: () => Effect.succeed([]),
+        }),
+        Layer.mock(DirectEndpoints.DirectEndpoints)({ resolve: () => Effect.succeed([]) }),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          scratchRoot: Effect.succeedNone,
+          namedProjectsRoot: process.cwd(),
+        }),
+        Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+        Layer.mock(ServerEnvironment.ServerEnvironment)({
+          getDescriptor: Effect.succeed({
+            environmentId: EnvironmentId.make("config-test"),
+            label: "Config test",
+            platform: { os: "linux", arch: "x64" },
+            serverVersion: "0.0.0",
+            capabilities: { repositoryIdentity: false },
+          }),
+        }),
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+          getDescriptor: () =>
+            Effect.succeed({
+              policy: "loopback-browser",
+              bootstrapMethods: [],
+              sessionMethods: ["browser-session-cookie"],
+              sessionCookieName: "config-test-session",
+            }),
+        }),
+      );
+      const server = yield* RpcServer.makeNoSerialization(
+        RpcGroup.make(WsSubscribeServerConfigRpc),
+        {
+          ...WS_RPC_SERVER_OPTIONS,
+          onFromServer: (response) =>
+            response._tag === "Chunk"
+              ? Effect.forEach(response.values, (event) => Queue.offer(responses, event), {
+                  discard: true,
+                })
+              : Effect.void,
+        },
+      ).pipe(
+        Effect.provide(
+          layerWsRpc(
+            {
+              sessionId: AuthSessionId.make("config-test"),
+              subject: "config-test",
+              method: "browser-session-cookie",
+              scopes: [],
+            },
+            {},
+            yield* ServerBrowser.ServerBrowser,
+            () => Effect.void,
+          ).pipe(Layer.provide(configRpcServices)),
+        ),
+      );
+      const requestId = RpcMessage.RequestId("config");
+      const firstFolder = path.resolve("first-projects");
+      const movedFolder = path.resolve("moved-projects");
+
+      yield* settings.updateSettings({ newProjectsDirectory: firstFolder });
+      yield* server.write(0, {
+        _tag: "Request",
+        id: requestId,
+        tag: WS_METHODS.subscribeServerConfig,
+        payload: {},
+        headers: Headers.empty,
+      });
+      const snapshot = yield* Queue.take(responses);
+      if (snapshot.type !== "snapshot") return yield* Effect.die("Missing initial snapshot");
+      assert.equal(snapshot.config.newProjectsRoot, firstFolder);
+      yield* server.write(0, { _tag: "Ack", requestId });
+
+      yield* settings.updateSettings({ defaultAutoPull: true });
+      assert.equal((yield* Queue.take(responses)).type, "settingsUpdated");
+      yield* server.write(0, { _tag: "Ack", requestId });
+
+      yield* settings.updateSettings({ newProjectsDirectory: movedFolder });
+      const moved = yield* Queue.take(responses);
+      if (moved.type !== "snapshot") return yield* Effect.die("Expected a resent snapshot");
+      assert.equal(moved.config.newProjectsRoot, movedFolder);
+      assert.equal(moved.config.settings.newProjectsDirectory, movedFolder);
+      yield* server.write(0, { _tag: "Interrupt", requestId, interruptors: [] });
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.fresh(layerConfigSources),
+          Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
+          Layer.mock(ServerBrowser.ServerBrowser)({}),
+        ),
+      ),
+      Effect.scoped,
+    ),
 );
 
 // Compaction keeps the oldest and newest event per message, so a cursor older

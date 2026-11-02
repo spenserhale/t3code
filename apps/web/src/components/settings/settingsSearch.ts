@@ -644,6 +644,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["base directory folder browser path home"],
   },
   {
+    id: "new-projects-folder",
+    title: "New projects go in",
+    to: "/settings/threads",
+    scope: "environment-defaults",
+    searchTerms: ["new project folder directory path location clone projects home"],
+  },
+  {
     id: "unpin-confirmation",
     title: "Unpin confirmation",
     to: "/settings/general",

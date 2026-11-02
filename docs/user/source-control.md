@@ -136,7 +136,9 @@ To start from nothing, choose **New project** in the command palette (`Cmd/Ctrl+
 repository in `~/.t3/projects` (the `projects` folder of your T3 data directory) with a README,
 an icon, and a first commit, then opens a new thread in it. Until the project has a thread, new
 threads work in its folder, even when your default is a new worktree. The folder is named after the project,
-like `pinball-stats` for "Pinball Stats". Turn on **Create private repository on GitHub** to also
+like `pinball-stats` for "Pinball Stats". To create new projects somewhere else, set **Settings →
+Threads → New projects go in** to an absolute path, or one starting with `~/`. The setting is per
+machine, so each environment can use its own folder. Turn on **Create private repository on GitHub** to also
 publish it. If Git has no name or email on that machine, the project is created without the
 first commit.
 

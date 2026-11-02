@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { CommandId, ProjectId, ThreadId, VcsProcessSpawnError } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -87,6 +88,7 @@ const withScratch = <A, E>(
     E,
     | ManagedProjectFolders.ManagedProjectFolders
     | ProjectService.ProjectService
+    | ServerSettings.ServerSettingsService
     | NodeServices.NodeServices
     | Scope.Scope
   >,
@@ -377,6 +379,44 @@ it.effect("starts a named project as a committed repository, and suffixes a take
           "main",
         );
         assert.equal(yield* gitOutput(first.workspaceRoot, ["status", "--porcelain"]), "");
+      }),
+    ),
+  ),
+);
+
+it.effect("puts a named project in the folder the setting names, read at each creation", () =>
+  withScratch(({ baseDir }) =>
+    withGitEnv(
+      TEST_IDENTITY,
+      Effect.gen(function* () {
+        const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const create = (name: string) => folders.createNamedProject({ name });
+
+        const configured = path.join(baseDir, "elsewhere", "nested");
+        yield* settings.updateSettings({ newProjectsDirectory: configured });
+        const first = yield* create("Pinball Stats");
+        assert.equal(first.workspaceRoot, path.join(configured, "pinball-stats"));
+        assert.isTrue(yield* fileSystem.exists(path.join(first.workspaceRoot, "README.md")));
+
+        yield* settings.updateSettings({ newProjectsDirectory: "~/code" });
+        const viaHome = yield* create("Pinball Stats").pipe(
+          Effect.provideService(HostProcess.HomeDirectory, baseDir),
+        );
+        assert.equal(viaHome.workspaceRoot, path.join(baseDir, "code", "pinball-stats"));
+
+        yield* settings.updateSettings({ newProjectsDirectory: "" });
+        const byDefault = yield* create("Pinball Stats");
+        assert.equal(
+          byDefault.workspaceRoot,
+          path.join(folders.namedProjectsRoot, "pinball-stats"),
+        );
+
+        yield* settings.updateSettings({ newProjectsDirectory: "relative/projects" });
+        const ignored = yield* create("Another");
+        assert.equal(ignored.workspaceRoot, path.join(folders.namedProjectsRoot, "another"));
       }),
     ),
   ),
