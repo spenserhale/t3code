@@ -68,6 +68,8 @@ import { ComposerControl } from "./chat/ComposerControl";
 import { MiddleTruncate } from "./ui/middle-truncate";
 import { BranchPicker, BranchPickerRefItem } from "./BranchPicker";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { JiraThreadChip } from "./jira/JiraThreadChip";
+import { useThreadJiraLink } from "../state/jira";
 
 export interface BranchToolbarBranchSelectorHandle {
   open: () => void;
@@ -134,6 +136,7 @@ export function BranchToolbarBranchSelector({
   });
   const threadRef = scopeThreadRef(environmentId, threadId);
   const serverThread = useQuietThreadShell(threadRef);
+  const jiraLink = useThreadJiraLink(serverThread);
   const serverSession = serverThread?.runtime ?? null;
   const draftThread = useComposerDraftStore((store) =>
     draftId ? store.getDraftSession(draftId) : store.getDraftThreadByRef(threadRef),
@@ -697,6 +700,13 @@ export function BranchToolbarBranchSelector({
             onOpenPullRequest={(event, targetUrl = prUrl) => {
               if (targetUrl) openPrLink(event, targetUrl);
             }}
+          />
+        ) : null}
+        {displayMode !== "panel" ? (
+          <JiraThreadChip
+            link={jiraLink}
+            thread={serverThread}
+            render={<ComposerControl size="xs" />}
           />
         ) : null}
         <span
