@@ -6,9 +6,11 @@ import { useId, useState } from "react";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { useEnvironments } from "~/state/environments";
+import { useEnvironmentQuery } from "~/state/query";
 import { readThreadShells, useProjects } from "~/state/entities";
 import { jiraReadTransitions, jiraTransition } from "~/state/jira";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { vcsEnvironment } from "~/state/vcs";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -25,7 +27,7 @@ import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
 import { issueBranchName, issueThreadTitle, unusedBranchName } from "./jiraIssueKeys";
 import { transitionToStatus, useJiraPreferences } from "./jiraPreferences";
-import { registerJiraThreadStart } from "./jiraThreadStarts";
+import { registerJiraThreadStart, startsInWorktree } from "./jiraThreadStarts";
 import { issueThreadPrompt } from "./jiraThreadText";
 
 export function JiraStartThreadDialog({
@@ -73,7 +75,16 @@ export function JiraStartThreadDialog({
       ? `${project.title} · ${environmentLabels.get(project.environmentId) ?? project.environmentId}`
       : project.title;
 
-  const newWorktree = worktreeChoice ?? preferences.newWorktree;
+  const repository = useEnvironmentQuery(
+    open && selected !== undefined
+      ? vcsEnvironment.status({
+          environmentId: selected.environmentId,
+          input: { cwd: selected.workspaceRoot, includeRemote: false },
+        })
+      : null,
+  );
+  const isRepository = repository.data === null ? null : repository.data.isRepo;
+  const newWorktree = startsInWorktree({ isRepository, choice: worktreeChoice });
   const branch = unusedBranchName(
     issueBranchName(issue.key, issue.summary),
     new Set(readThreadShells().flatMap((shell) => (shell.branch === null ? [] : [shell.branch]))),
@@ -117,7 +128,6 @@ export function JiraStartThreadDialog({
       branch: newWorktree ? branch : null,
     });
     updatePreferences({
-      newWorktree,
       projects: {
         ...preferences.projects,
         [issue.projectKey]: { environmentId: selected.environmentId, projectId: selected.id },
@@ -211,13 +221,24 @@ export function JiraStartThreadDialog({
               <div className="flex min-w-0 flex-col gap-0.5">
                 <Label htmlFor={`${id}-worktree`}>New worktree</Label>
                 <p className="text-muted-foreground text-xs">
-                  Works on its own branch, <span className="font-mono">{branch}</span>, apart from
-                  the project's checkout.
+                  {isRepository === true ? (
+                    <>
+                      Works on its own branch, <span className="font-mono">{branch}</span>, which
+                      keeps the thread linked to the issue.
+                    </>
+                  ) : isRepository === false ? (
+                    "This project is not a Git repository, so it has no worktrees. The thread is linked through its title."
+                  ) : repository.error === null ? (
+                    "Checking the project..."
+                  ) : (
+                    "Could not tell whether this project is a Git repository."
+                  )}
                 </p>
               </div>
               <Switch
                 id={`${id}-worktree`}
                 checked={newWorktree}
+                disabled={isRepository !== true}
                 onCheckedChange={setWorktreeChoice}
                 aria-label="New worktree"
               />

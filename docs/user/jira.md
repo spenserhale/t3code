@@ -30,11 +30,14 @@ open it in Jira, or copy its key.
 
 A thread is linked to an issue when its title or its branch name contains the issue key, and the key
 belongs to a project on your Jira site. Nothing else is stored, so `GPT-4` or `UTF-8` never match.
+A thread without a worktree is linked only through its title, an automatic title refresh can drop
+the key, and **Link thread** restores it.
 
 - **Start thread** opens a new thread in a project you choose (the one you used last for that Jira
-  project is preselected), with the key, summary, link, and description in the composer. Turn on
-  **New worktree** to work on a branch named after the key, such as
-  `PROJ-123-fix-login-redirect`. Once the first message has been sent, the thread is titled
+  project is preselected), with the key, summary, link, and description in the composer. **New
+  worktree** is on whenever the project is a Git repository, so the work happens on a branch named
+  after the key, such as `PROJ-123-fix-login-redirect`; turn it off to work in the project's own
+  checkout. Once the first message has been sent, the thread is titled
   `PROJ-123: Fix login redirect`.
 - **Link thread** puts the key at the front of an existing thread's title. The unlink button next to a
   linked thread takes it off again.
