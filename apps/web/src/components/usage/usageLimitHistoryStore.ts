@@ -23,6 +23,7 @@ const HistorySchema = Schema.Record(
     Schema.Struct({
       resetsAt: Schema.Number,
       from: Schema.Number,
+      baseline: Schema.optional(Schema.Tuple([Schema.Number, Schema.Number])),
       readings: Schema.Array(Schema.Tuple([Schema.Number, Schema.Number])),
     }),
   ),

@@ -85,7 +85,8 @@ function RemindersDialog({ onOpenChange }: { readonly onOpenChange: (open: boole
             <span className="flex flex-col">
               <span>At least this much left</span>
               <span className="text-xs text-muted-foreground">
-                And at least this much on course to go unused, when a forecast can be made.
+                And the forecast must say at least this much will go unused. A window that cannot be
+                forecast yet is left out.
               </span>
             </span>
             <span className="flex w-20 shrink-0 items-center gap-1">

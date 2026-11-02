@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off -- Instants are listed from fixed epochs.
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -9,6 +10,7 @@ import {
   isLimitActiveAt,
   limitActiveDayMs,
   limitDayKey,
+  limitDaysBetween,
   limitSchedulePreset,
   limitTimeline,
   limitWeekdayAt,
@@ -245,9 +247,10 @@ describe("normalizeLimitSchedule", () => {
       hours: { start: 540, end: 1020 },
       timeZone: "Europe/Berlin",
     });
-    expect(normalizeLimitSchedule({ days: [1, 2], hours: { start: 600, end: 600 } })).toEqual({
-      days: [1, 2],
-    });
+    // A span of no length counts nothing, so there is no schedule to keep.
+    expect(
+      normalizeLimitSchedule({ days: [1, 2], hours: { start: 600, end: 600 } }),
+    ).toBeUndefined();
     expect(normalizeLimitSchedule({ days: [1], hours: { start: 0, end: 1440 } })).toEqual({
       days: [1],
     });
@@ -288,5 +291,187 @@ describe("describing schedules", () => {
   ] as const)("%j reads %s as the %s preset", (schedule, text, preset) => {
     expect(describeLimitSchedule(schedule as LimitSchedule | undefined)).toBe(text);
     expect(limitSchedulePreset(schedule as LimitSchedule | undefined)).toBe(preset);
+  });
+});
+
+describe("overnight hours", () => {
+  const nights: LimitSchedule = {
+    days: [1],
+    hours: { start: 22 * 60, end: 6 * 60 },
+    timeZone: "UTC",
+  };
+
+  it("are kept when the end is earlier than the start, with midnight read as the end of the day", () => {
+    expect(normalizeLimitSchedule({ days: [1], hours: { start: 1320, end: 360 } })).toEqual({
+      days: [1],
+      hours: { start: 1320, end: 360 },
+    });
+    expect(normalizeLimitSchedule({ days: [1], hours: { start: 1320, end: 0 } })).toEqual({
+      days: [1],
+      hours: { start: 1320, end: 1440 },
+    });
+    expect(normalizeLimitSchedule({ days: [1], hours: { start: 0, end: 0 } })).toBeUndefined();
+    expect(normalizeLimitSchedule({ days: [1], hours: { start: 1440, end: 60 } })).toEqual({
+      days: [1],
+    });
+  });
+
+  it("belong to the day they begin on and run into the next morning", () => {
+    const timeline = limitTimeline(nights, at("2026-11-02T00:00:00Z"), at("2026-11-05T00:00:00Z"));
+    expect(timeline.total).toBe(8 * HOUR);
+    expect(timeline.massBefore(at("2026-11-02T22:00:00Z"))).toBe(0);
+    expect(timeline.massBefore(at("2026-11-03T02:00:00Z"))).toBe(4 * HOUR);
+    expect(timeline.massBefore(at("2026-11-04T00:00:00Z"))).toBe(8 * HOUR);
+    expect(isLimitActiveAt(nights, at("2026-11-02T21:59:00Z"))).toBe(false);
+    expect(isLimitActiveAt(nights, at("2026-11-02T22:00:00Z"))).toBe(true);
+    expect(isLimitActiveAt(nights, at("2026-11-03T03:00:00Z"))).toBe(true);
+    expect(isLimitActiveAt(nights, at("2026-11-03T06:00:00Z"))).toBe(false);
+    // Tuesday night is not counted, so Wednesday morning is not either.
+    expect(isLimitActiveAt(nights, at("2026-11-04T03:00:00Z"))).toBe(false);
+  });
+
+  it("count the part of a night that a window opens in the middle of", () => {
+    const timeline = limitTimeline(nights, at("2026-11-03T03:00:00Z"), at("2026-11-03T12:00:00Z"));
+    expect(timeline.total).toBe(3 * HOUR);
+    expect(timeline.timeAtMass(HOUR)).toBe(at("2026-11-03T04:00:00Z"));
+  });
+
+  it("weigh the night by the day it begins on", () => {
+    const weight = (day: number) => (day === 1 ? 5 : 100);
+    const timeline = limitTimeline(
+      nights,
+      at("2026-11-02T00:00:00Z"),
+      at("2026-11-04T00:00:00Z"),
+      weight,
+    );
+    expect(timeline.total).toBe(5);
+  });
+
+  it("measure a counted day by its hours", () => {
+    expect(limitActiveDayMs(nights)).toBe(8 * HOUR);
+    expect(describeLimitSchedule(nights)).toBe("Mon, 22:00 to 6:00 (UTC)");
+  });
+});
+
+describe("counting and the delivery gate", () => {
+  const MINUTE = 60_000;
+  // Walks a range a minute at a time: the schedule must be in session exactly when time is counted.
+  const compare = (schedule: LimitSchedule, from: string, to: string) => {
+    const start = at(from);
+    const end = at(to);
+    const timeline = limitTimeline(schedule, start, end);
+    const disagreements: string[] = [];
+    let inSession = 0;
+    for (let instant = start; instant < end; instant += MINUTE) {
+      const active = isLimitActiveAt(schedule, instant);
+      const counted = timeline.massBefore(instant + MINUTE) - timeline.massBefore(instant);
+      if (active !== (counted === MINUTE)) disagreements.push(new Date(instant).toISOString());
+      if (active) inSession += 1;
+    }
+    return { disagreements, inSession, counted: timeline.total / MINUTE };
+  };
+  const newYork = "America/New_York";
+
+  it("agree inside the hour a clock change skips", () => {
+    const schedule: LimitSchedule = {
+      days: [7],
+      hours: { start: 150, end: 240 },
+      timeZone: newYork,
+    };
+    // 02:30 does not exist on 8 March; counting starts when the clock reaches 03:30.
+    expect(compare(schedule, "2026-03-08T04:00:00Z", "2026-03-09T05:00:00Z")).toEqual({
+      disagreements: [],
+      inSession: 30,
+      counted: 30,
+    });
+    expect(isLimitActiveAt(schedule, at("2026-03-08T07:10:00Z"))).toBe(false); // 03:10
+    expect(isLimitActiveAt(schedule, at("2026-03-08T07:30:00Z"))).toBe(true); // 03:30
+  });
+
+  it("agree inside the hour a clock change repeats", () => {
+    const schedule: LimitSchedule = {
+      days: [7],
+      hours: { start: 90, end: 150 },
+      timeZone: newYork,
+    };
+    // 01:30 comes twice on 1 November; counting runs from the first until 02:30 on the second pass.
+    expect(compare(schedule, "2026-11-01T03:00:00Z", "2026-11-02T06:00:00Z")).toEqual({
+      disagreements: [],
+      inSession: 120,
+      counted: 120,
+    });
+    expect(isLimitActiveAt(schedule, at("2026-11-01T05:10:00Z"))).toBe(false); // 01:10 EDT
+    expect(isLimitActiveAt(schedule, at("2026-11-01T05:30:00Z"))).toBe(true); // 01:30 EDT
+    expect(isLimitActiveAt(schedule, at("2026-11-01T06:10:00Z"))).toBe(true); // 01:10 EST
+  });
+
+  it("agree over the short and long days", () => {
+    const sunday: LimitSchedule = { days: [7], timeZone: newYork };
+    expect(compare(sunday, "2026-03-07T00:00:00Z", "2026-03-10T00:00:00Z")).toMatchObject({
+      disagreements: [],
+      counted: 23 * 60,
+    });
+    expect(compare(sunday, "2026-10-31T00:00:00Z", "2026-11-03T00:00:00Z")).toMatchObject({
+      disagreements: [],
+      counted: 25 * 60,
+    });
+  });
+
+  it("agree over a night that crosses a clock change", () => {
+    const saturdayNight: LimitSchedule = {
+      days: [6],
+      hours: { start: 22 * 60, end: 6 * 60 },
+      timeZone: newYork,
+    };
+    // 22:00 to 06:00 is eight hours on the clock, seven when 02:00 to 03:00 is skipped, nine when repeated.
+    expect(compare(saturdayNight, "2026-03-07T20:00:00Z", "2026-03-08T14:00:00Z")).toMatchObject({
+      disagreements: [],
+      counted: 7 * 60,
+    });
+    expect(compare(saturdayNight, "2026-10-31T20:00:00Z", "2026-11-01T14:00:00Z")).toMatchObject({
+      disagreements: [],
+      counted: 9 * 60,
+    });
+  });
+
+  it("agree on working hours in a zone with a half-hour offset", () => {
+    const india: LimitSchedule = { ...WORK_HOURS, timeZone: "Asia/Kolkata" };
+    expect(compare(india, "2026-11-01T18:00:00Z", "2026-11-03T00:00:00Z")).toMatchObject({
+      disagreements: [],
+      counted: 8 * 60,
+    });
+  });
+});
+
+describe("limitDaysBetween", () => {
+  it("lists the calendar days a stretch touches in the schedule's zone, each clipped to it", () => {
+    const utc: LimitSchedule = { days: [1], timeZone: "UTC" };
+    expect(limitDaysBetween(utc, at("2026-11-02T12:00:00Z"), at("2026-11-04T06:00:00Z"))).toEqual([
+      { day: "2026-11-02", from: at("2026-11-02T12:00:00Z"), to: at("2026-11-03T00:00:00Z") },
+      { day: "2026-11-03", from: at("2026-11-03T00:00:00Z"), to: at("2026-11-04T00:00:00Z") },
+      { day: "2026-11-04", from: at("2026-11-04T00:00:00Z"), to: at("2026-11-04T06:00:00Z") },
+    ]);
+    expect(limitDaysBetween(utc, at("2026-11-02T12:00:00Z"), at("2026-11-02T12:00:00Z"))).toEqual(
+      [],
+    );
+  });
+
+  it("gives a day a clock change shortens or lengthens its real length", () => {
+    const newYork: LimitSchedule = { days: [7], timeZone: "America/New_York" };
+    const lengths = (from: string, to: string) =>
+      limitDaysBetween(newYork, at(from), at(to)).map((entry) => [
+        entry.day,
+        (entry.to - entry.from) / HOUR,
+      ]);
+    expect(lengths("2026-03-07T05:00:00Z", "2026-03-10T04:00:00Z")).toEqual([
+      ["2026-03-07", 24],
+      ["2026-03-08", 23],
+      ["2026-03-09", 24],
+    ]);
+    expect(lengths("2026-10-31T04:00:00Z", "2026-11-03T05:00:00Z")).toEqual([
+      ["2026-10-31", 24],
+      ["2026-11-01", 25],
+      ["2026-11-02", 24],
+    ]);
   });
 });

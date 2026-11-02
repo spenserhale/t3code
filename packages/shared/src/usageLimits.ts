@@ -234,6 +234,8 @@ function accountKeyResolver(reports: Iterable<AccountReport>) {
 
 export interface LimitAccount {
   readonly key: string;
+  /** Which login and workspace this is, wherever it is reported; set by `collectLimitAccounts`. */
+  readonly identity?: string | undefined;
   readonly driver: ServerProvider["driver"];
   readonly displayName: string | null;
   readonly email: string | undefined;
@@ -374,7 +376,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       }
     }
   }
-  return [...accounts.values()];
+  return [...accounts].map(([identity, account]) => ({ ...account, identity }));
 }
 
 export function collectLimitNotices(presentations: LimitPresentations): readonly string[] {

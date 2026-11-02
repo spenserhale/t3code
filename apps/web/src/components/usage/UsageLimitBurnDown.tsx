@@ -1,25 +1,30 @@
 import {
   FORECAST_ALGORITHMS,
-  burnDownChart,
-  forecastSentence,
-  forecastWindow,
   type BurnDownChart,
+  type DailyBurn,
   type ForecastAlgorithm,
   type ForecastNote,
+  burnDownChart,
+  dailyBurn,
+  forecastSentence,
+  forecastWindow,
+  paceDetailFor,
 } from "@t3tools/shared/usageLimitForecast";
+import { resolveLimitSchedule } from "@t3tools/shared/usageLimitGroups";
 import {
+  type PastLimitWindow,
   averageUtilization,
   currentLimitInstance,
   limitSeriesKey,
   pastLimitWindows,
-  type PastLimitWindow,
 } from "@t3tools/shared/usageLimitHistory";
-import { resolveLimitSchedule } from "@t3tools/shared/usageLimitGroups";
-import { windowSpan } from "@t3tools/shared/usageLimitPace";
+import { paceLabel, windowPace, windowSpan } from "@t3tools/shared/usageLimitPace";
+import { resolveTimeZone } from "@t3tools/shared/usageLimitSchedule";
 import type { LimitPoolMember, LimitPoolWindow } from "@t3tools/shared/usageLimits";
 import { ChevronRightIcon } from "lucide-react";
 import { use, useState } from "react";
 
+import { useNowMinute } from "../../hooks/useNowMinute";
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { resolveHour12 } from "../../timestampFormat";
@@ -27,10 +32,7 @@ import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collaps
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { DailyTokensSync } from "./DailyTokensSync";
-import { useDailyTokens } from "./usageLimitDailyTokens";
-import { useUsageLimitHistory } from "./usageLimitHistoryStore";
-import { LimitGroupsContext } from "./UsageLimitPace";
+import { LimitPaceContext, PACE_REFERENCE_TEXT } from "./UsageLimitPace";
 import { FORECAST_ALGORITHM_LABELS, useReminderSettings } from "./usageLimitReminderPreferences";
 import { AccountName } from "./UsageLimitsPooled";
 
@@ -51,6 +53,10 @@ const NOTE_TEXT: Record<ForecastNote, string> = {
   outsideSchedule: "None of this window falls in its schedule, so there is nothing to forecast.",
   ended: "This window has reset. Refresh to read the new one.",
 };
+
+/** Shown when the usual pattern is not known, so the reference line is even spending. */
+const EVEN_REFERENCE_NOTE =
+  "No usual pattern yet: it needs 14 days of token use with this provider. The line is even spending.";
 
 const VIEW_WIDTH = 320;
 const VIEW_HEIGHT = 112;
@@ -99,7 +105,7 @@ function BurnDownPlot({
         />
       ))}
       <polyline
-        points={points(chart.ideal)}
+        points={points(chart.reference)}
         fill="none"
         stroke="currentColor"
         strokeWidth={1.25}
@@ -210,46 +216,150 @@ function PastWindows({
   );
 }
 
+function DailyBurnView({
+  days,
+  color,
+  timeZone,
+  windowDays,
+}: {
+  readonly days: readonly DailyBurn[];
+  readonly color: string;
+  readonly timeZone: string;
+  readonly windowDays: number;
+}) {
+  const todayAt = days.findIndex((entry) => entry.today);
+  const center = todayAt < 0 ? days.length - 1 : todayAt;
+  const first = Math.max(0, Math.min(center - 9, days.length - 14));
+  const shown = days.length <= 14 ? days : days.slice(first, first + 14);
+  const scale = Math.max(
+    1,
+    ...shown.flatMap((entry) => [entry.budgetPercent, entry.consumedPercent ?? 0]),
+  );
+  const name = new Intl.DateTimeFormat(undefined, {
+    timeZone,
+    ...(windowDays <= 8 ? { weekday: "short" } : { day: "numeric" }),
+  });
+  const full = new Intl.DateTimeFormat(undefined, {
+    timeZone,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+  const points = (value: number) => (Math.round(value * 10) / 10).toString();
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-xs text-muted-foreground">
+        Each day: points of the window used (bar) against what the line allows (mark)
+      </span>
+      <div
+        role="img"
+        aria-label={`Points used each day against what the line allows: ${shown
+          .map(
+            (entry) =>
+              `${full.format(entry.from)} ${entry.consumedPercent === null ? "no readings" : points(entry.consumedPercent)} of ${points(entry.budgetPercent)}`,
+          )
+          .join(", ")}`}
+        className="flex items-end gap-1"
+      >
+        {shown.map((entry) => {
+          const over =
+            entry.consumedPercent !== null && entry.consumedPercent > entry.budgetPercent + 0.5;
+          return (
+            <Tooltip key={entry.day}>
+              <TooltipTrigger
+                render={
+                  <div className="flex min-w-4 max-w-10 flex-1 flex-col items-center gap-0.5" />
+                }
+              >
+                <div className="relative h-10 w-full rounded-sm bg-muted">
+                  {entry.consumedPercent === null ? null : (
+                    <div
+                      className={cn("absolute inset-x-0 bottom-0 rounded-sm", over && "bg-warning")}
+                      style={{
+                        height: `${(entry.consumedPercent / scale) * 100}%`,
+                        ...(over ? {} : { backgroundColor: color }),
+                      }}
+                    />
+                  )}
+                  <div
+                    className="absolute inset-x-0 border-t-2 border-foreground/70"
+                    style={{ bottom: `${(entry.budgetPercent / scale) * 100}%` }}
+                  />
+                </div>
+                <span
+                  className={cn(
+                    "text-3xs text-muted-foreground tabular-nums",
+                    entry.today && "font-semibold text-foreground",
+                  )}
+                >
+                  {name.format(entry.from)}
+                </span>
+              </TooltipTrigger>
+              <TooltipPopup side="top">
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-foreground">{full.format(entry.from)}</span>
+                  <span className="text-muted-foreground">
+                    {entry.consumedPercent === null
+                      ? `No readings. The line allows ${points(entry.budgetPercent)} points.`
+                      : `Used ${points(entry.consumedPercent)} of ${points(entry.budgetPercent)} points`}
+                  </span>
+                  {entry.partial ? (
+                    <span className="text-muted-foreground">From the first reading of the day</span>
+                  ) : null}
+                </div>
+              </TooltipPopup>
+            </Tooltip>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function BurnDownPanel({
   members,
   kind,
   color,
-  now,
 }: {
   readonly members: readonly LimitPoolMember[];
   readonly kind: LimitPoolWindow["kind"];
   readonly color: string;
-  readonly now: number;
 }) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [settings, updateSettings] = useReminderSettings();
-  const history = useUsageLimitHistory();
-  const groups = use(LimitGroupsContext);
-  const tokens = useDailyTokens(now);
+  const { groups, history, dailyTokens } = use(LimitPaceContext);
+  // The page keeps the time it was opened or refreshed at; a chart left open must not.
+  const minute = useNowMinute();
+  const clock = Date.parse(`${minute}:00Z`);
   const hour12 = usePrimarySettings((current) => resolveHour12(current.timestampFormat));
   const { account, window } = members.find((m) => m.account.key === selectedKey) ?? members[0]!;
   const schedule = resolveLimitSchedule(groups, account);
+  const detail = paceDetailFor({ account, window, schedule, now: clock, history, dailyTokens });
   const series = limitSeriesKey(account, window);
   const outcome = forecastWindow({
     window,
-    now,
+    now: clock,
     schedule,
     algorithm: settings.algorithm,
     instances: history[series],
-    dailyTokens: tokens(account),
+    dailyTokens: dailyTokens(account),
   });
   const checkedAt = Date.parse(account.limits.checkedAt);
-  const chart = burnDownChart({
+  const reading = {
     window,
-    now,
-    checkedAt: Number.isFinite(checkedAt) ? checkedAt : now,
-    schedule,
-    instance: currentLimitInstance(history, series, now),
-    forecast: outcome.forecast,
-  });
+    checkedAt: Number.isFinite(checkedAt) ? checkedAt : clock,
+    instance: currentLimitInstance(history, series, clock),
+    ...detail,
+  };
+  const chart = burnDownChart({ ...reading, schedule, forecast: outcome.forecast });
   const span = windowSpan(window);
+  const days =
+    span !== null && span.end - span.start > 36 * 3_600_000
+      ? dailyBurn({ ...reading, schedule, now: clock })
+      : null;
+  const pace = windowPace(window, clock, schedule, detail);
   const past = span
-    ? pastLimitWindows(history, series, now, kind === "monthly" ? 6 : 8, span.end - span.start)
+    ? pastLimitWindows(history, series, clock, kind === "monthly" ? 6 : 8, span.end - span.start)
     : [];
   const timeFormat = new Intl.DateTimeFormat(undefined, {
     weekday: "short",
@@ -266,12 +376,12 @@ function BurnDownPanel({
     hour12,
   });
   const formatTime = (at: number) =>
-    at - now < 6 * 24 * 3_600_000 ? timeFormat.format(at) : dateTimeFormat.format(at);
+    at - clock < 6 * 24 * 3_600_000 ? timeFormat.format(at) : dateTimeFormat.format(at);
   const sentence = outcome.forecast ? forecastSentence(outcome.forecast, formatTime) : null;
   const note = outcome.note === null ? null : NOTE_TEXT[outcome.note];
+  const referenceName = chart?.referenceKind === "pattern" ? "Usual pattern" : "Even spending";
   return (
     <div className="flex flex-col gap-3 pt-3">
-      {settings.algorithm === "weekday" ? <DailyTokensSync /> : null}
       <div className="flex flex-wrap items-center justify-between gap-2">
         {members.length > 1 ? (
           <ToggleGroup
@@ -321,6 +431,11 @@ function BurnDownPanel({
         </Select>
       </div>
       {sentence ? <p className="text-sm font-medium text-foreground">{sentence}</p> : null}
+      {pace ? (
+        <p className="text-xs text-muted-foreground">
+          {paceLabel(pace)}. {PACE_REFERENCE_TEXT[pace.reference]}
+        </p>
+      ) : null}
       {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
       {chart ? (
         <div className="flex flex-col gap-1">
@@ -333,7 +448,7 @@ function BurnDownPanel({
             <div className="min-w-0 flex-1">
               <BurnDownPlot
                 chart={chart}
-                now={now}
+                now={clock}
                 color={color}
                 label={`Burn-down: ${window.label} has ${Math.max(0, Math.round(100 - window.usedPercent))}% left${sentence ? `. ${sentence}` : ""}`}
               />
@@ -354,7 +469,7 @@ function BurnDownPanel({
             </span>
             <span className="flex items-center gap-1">
               <span aria-hidden className="w-3 border-t border-dashed border-muted-foreground" />
-              Even spending
+              {referenceName}
             </span>
             <span className="flex items-center gap-1">
               <span
@@ -365,7 +480,18 @@ function BurnDownPanel({
               Forecast
             </span>
           </div>
+          {chart.referenceKind === "even" && detail.weights == null ? (
+            <p className="ps-10 text-3xs text-muted-foreground">{EVEN_REFERENCE_NOTE}</p>
+          ) : null}
         </div>
+      ) : null}
+      {days && span ? (
+        <DailyBurnView
+          days={days}
+          color={color}
+          timeZone={resolveTimeZone(schedule)}
+          windowDays={(span.end - span.start) / (24 * 3_600_000)}
+        />
       ) : null}
       <PastWindows windows={past} color={color} formatDay={(at) => dayFormat.format(at)} />
     </div>
@@ -373,26 +499,19 @@ function BurnDownPanel({
 }
 
 /**
- * The window's burn-down behind a disclosure: what was left, even spending to
- * compare it with, where it is heading, and how much past windows used. Charts
- * are per account, as each has its own reset and schedule.
+ * The window's burn-down behind a disclosure: what was left against the usual
+ * pattern, where it is heading, each day's use, and how much past windows used.
+ * Charts are per account, as each has its own reset and schedule.
  */
 export function BurnDownDisclosure({
   pool,
   color,
-  now,
 }: {
   readonly pool: LimitPoolWindow;
   readonly color: string;
-  readonly now: number;
 }) {
-  const [settings] = useReminderSettings();
-  const wanted =
-    pool.kind === "weekly" ||
-    pool.kind === "monthly" ||
-    (pool.kind === "session" && settings.includeSession);
   const members = pool.members.filter((member) => windowSpan(member.window) !== null);
-  if (!wanted || members.length === 0) return null;
+  if (pool.kind === "other" || members.length === 0) return null;
   return (
     <Collapsible className="md:col-span-2">
       <CollapsibleTrigger className="group flex items-center gap-1 rounded-sm text-xs font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
@@ -403,7 +522,7 @@ export function BurnDownDisclosure({
         Burn-down
       </CollapsibleTrigger>
       <CollapsiblePanel>
-        <BurnDownPanel members={members} kind={pool.kind} color={color} now={now} />
+        <BurnDownPanel members={members} kind={pool.kind} color={color} />
       </CollapsiblePanel>
     </Collapsible>
   );

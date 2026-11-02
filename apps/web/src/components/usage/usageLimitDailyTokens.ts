@@ -26,6 +26,20 @@ const MaybeDailyTokensSchema = Schema.NullOr(DailyTokensSchema);
 /** Older totals say little about the present, and the forecast should not lean on them. */
 const MAX_AGE_MS = 14 * 24 * 3_600_000;
 const REFRESH_AFTER_MS = 12 * 3_600_000;
+const RETRY_AFTER_MS = 30 * 60_000;
+
+/**
+ * Whether the token totals should be fetched: when there are none, or the ones
+ * kept are half a day old, and not again within half an hour of the last try.
+ */
+export function dailyTokensDue(input: {
+  readonly cachedAt: number | null;
+  readonly attemptedAt: number | null;
+  readonly now: number;
+}): boolean {
+  if (input.attemptedAt !== null && input.now - input.attemptedAt < RETRY_AFTER_MS) return false;
+  return input.cachedAt === null || input.now - input.cachedAt >= REFRESH_AFTER_MS;
+}
 
 function providerKindOf(account: LimitAccount): UsageProviderKind | undefined {
   return (Object.keys(PROVIDER_PRESENTATION) as UsageProviderKind[]).find(
@@ -74,19 +88,19 @@ export function useDailyTokens(now: number) {
   return (account: LimitAccount) => dailyTokensFor(stored, account, now);
 }
 
-/** Keeps the totals in the cache, rewriting only when they changed or have grown old. */
+/** When the cached totals were fetched; null where there are none. */
+export function readDailyTokensCachedAt(): number | null {
+  return read()?.at ?? null;
+}
+
+/** Keeps the fetched totals, dated now. */
 export function cacheDailyTokens(daily: readonly DailyTotals[], now: number): void {
-  const byProvider = dailyTokensByProvider(daily);
-  const before = read();
-  if (
-    before !== null &&
-    now - before.at < REFRESH_AFTER_MS &&
-    JSON.stringify(before.byProvider) === JSON.stringify(byProvider)
-  ) {
-    return;
-  }
   try {
-    setLocalStorageItem(STORAGE_KEY, { at: now, byProvider }, DailyTokensSchema);
+    setLocalStorageItem(
+      STORAGE_KEY,
+      { at: now, byProvider: dailyTokensByProvider(daily) },
+      DailyTokensSchema,
+    );
     dispatchLocalStorageChange(STORAGE_KEY);
   } catch (error) {
     console.error("Could not save daily token totals.", error);
