@@ -7,6 +7,8 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import type * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
 import * as ServerConfig from "../config.ts";
@@ -38,13 +40,12 @@ const encodeZdrCache = Schema.encodeEffect(Schema.fromJsonString(ZdrCacheFile));
 export class OpenRouterZdrRates extends Context.Service<
   OpenRouterZdrRates,
   {
-    /**
-     * Ollama Cloud's market rates once loaded: the list is fetched at most once a day, and a
-     * failed fetch keeps the rates already held. Empty when none could be fetched or read.
-     */
-    readonly rates: Effect.Effect<RateTable>;
-    /** The rates held now. Never waits; a missing or stale list loads in the background. */
+    /** The rates held now. Never waits: a missing or stale list is fetched in the background. */
     readonly current: Effect.Effect<RateTable>;
+    /** Fetches the list now if it is missing or a day old, and waits for the attempt. */
+    readonly refresh: Effect.Effect<void>;
+    /** The rates held now, then each new set as the service comes to hold it. */
+    readonly changes: Stream.Stream<RateTable>;
   }
 >()("t3/usage/OpenRouterZdrRates") {}
 
@@ -55,7 +56,6 @@ export const make = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
   const cachePath = path.join(config.stateDir, ZDR_CACHE_FILE_NAME);
 
-  let table: RateTable = new Map();
   let fetchedAtMs: number | null = null;
   let lastFailedAtMs: number | null = null;
   const lock = yield* Semaphore.make(1);
@@ -87,10 +87,11 @@ export const make = Effect.gen(function* () {
 
   // A local file, so read when the service is built: the rates are there before anyone asks.
   const cached = yield* readCache;
-  if (cached !== null && cached.prices.size > 0) {
-    table = buildMarketRates(cached.prices);
-    fetchedAtMs = cached.fetchedAtMs;
-  }
+  const usable = cached !== null && cached.prices.size > 0 ? cached : null;
+  fetchedAtMs = usable?.fetchedAtMs ?? null;
+  const held = yield* SubscriptionRef.make<RateTable>(
+    usable === null ? new Map() : buildMarketRates(usable.prices),
+  );
 
   const load = Effect.fn("OpenRouterZdrRates.load")(function* () {
     const now = yield* Clock.currentTimeMillis;
@@ -101,9 +102,9 @@ export const make = Effect.gen(function* () {
       lastFailedAtMs = now;
       return;
     }
-    table = buildMarketRates(prices);
     fetchedAtMs = now;
     lastFailedAtMs = null;
+    yield* SubscriptionRef.set(held, buildMarketRates(prices));
     yield* encodeZdrCache({
       version: 1,
       fetchedAtMs: now,
@@ -116,7 +117,7 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const rates = lock.withPermit(load()).pipe(Effect.map(() => table));
+  const refresh = lock.withPermit(load());
 
   const scope = yield* Effect.scope;
   let refreshing = false;
@@ -124,14 +125,14 @@ export const make = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     if (!refreshing && !isFresh(now)) {
       refreshing = true;
-      yield* rates.pipe(
+      yield* refresh.pipe(
         Effect.ensuring(Effect.sync(() => void (refreshing = false))),
         Effect.forkIn(scope),
       );
     }
-    return table;
+    return yield* SubscriptionRef.get(held);
   });
-  return OpenRouterZdrRates.of({ rates, current });
+  return OpenRouterZdrRates.of({ current, refresh, changes: SubscriptionRef.changes(held) });
 });
 
 export const layer = Layer.effect(OpenRouterZdrRates, make);

@@ -8,6 +8,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, type HttpClientRequest, HttpClientResponse } from "effect/http";
 
@@ -58,24 +59,33 @@ function openRouter() {
   return { state, layer };
 }
 
+/** The first set of rates the service holds that has any, waiting for it if need be. */
+const firstLoaded = (rates: OpenRouterZdrRates.OpenRouterZdrRates["Service"]) =>
+  rates.changes.pipe(
+    Stream.filter((table) => table.size > 0),
+    Stream.runHead,
+    Effect.map((table) => (table._tag === "Some" ? table.value : undefined)),
+  );
+
 describe("OpenRouterZdrRates", () => {
   it.effect(
     "fetches the list once a day, and prices Ollama Cloud's models from its medians",
     () => {
       const { state, layer } = openRouter();
       return Effect.gen(function* () {
-        const { rates } = yield* OpenRouterZdrRates.make;
-        const table = yield* rates;
+        const { current, refresh } = yield* OpenRouterZdrRates.make;
+        yield* refresh;
+        const table = yield* current;
         assert.closeTo(table.get(KEY)?.inputCostPerToken ?? 0, 2e-7, 1e-15);
         assert.closeTo(table.get(KEY)?.outputCostPerToken ?? 0, 5e-7, 1e-15);
         assert.strictEqual(state.requests[0]?.url, "https://openrouter.ai/api/v1/endpoints/zdr");
 
-        yield* rates;
+        yield* refresh;
         yield* TestClock.adjust("23 hours");
-        yield* rates;
+        yield* refresh;
         assert.strictEqual(state.requests.length, 1);
         yield* TestClock.adjust("1 hour");
-        yield* rates;
+        yield* refresh;
         assert.strictEqual(state.requests.length, 2);
       }).pipe(Effect.provide(layer));
     },
@@ -88,7 +98,7 @@ describe("OpenRouterZdrRates", () => {
       const path = yield* Path.Path;
       const config = yield* ServerConfig.ServerConfig;
 
-      yield* (yield* OpenRouterZdrRates.make).rates;
+      yield* (yield* OpenRouterZdrRates.make).refresh;
       const cached = decodeJson(
         yield* fileSystem.readFileString(path.join(config.stateDir, "openrouter-zdr-rates.json")),
       );
@@ -104,7 +114,7 @@ describe("OpenRouterZdrRates", () => {
         },
       });
 
-      const restarted = yield* (yield* OpenRouterZdrRates.make).rates;
+      const restarted = yield* (yield* OpenRouterZdrRates.make).current;
       assert.isTrue(restarted.has(KEY));
       assert.strictEqual(state.requests.length, 1);
     }).pipe(Effect.provide(layer));
@@ -115,27 +125,53 @@ describe("OpenRouterZdrRates", () => {
     () => {
       const { state, layer } = openRouter();
       return Effect.gen(function* () {
-        const { rates } = yield* OpenRouterZdrRates.make;
-        yield* rates;
+        const rates = yield* OpenRouterZdrRates.make;
+        yield* rates.refresh;
         state.online = false;
 
         yield* TestClock.adjust("25 hours");
-        assert.isTrue((yield* rates).has(KEY));
+        yield* rates.refresh;
         assert.strictEqual(state.requests.length, 2);
         yield* TestClock.adjust("9 minutes");
-        yield* rates;
+        yield* rates.refresh;
         assert.strictEqual(state.requests.length, 2);
 
         state.online = true;
         yield* TestClock.adjust("1 minute");
-        assert.isTrue((yield* rates).has(KEY));
+        yield* rates.refresh;
         assert.strictEqual(state.requests.length, 3);
         yield* TestClock.adjust("23 hours");
-        yield* rates;
+        yield* rates.refresh;
         assert.strictEqual(state.requests.length, 3);
+        assert.isTrue((yield* firstLoaded(rates))?.has(KEY));
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect("holds the rates it has through a failed fetch", () => {
+    const { state, layer } = openRouter();
+    return Effect.gen(function* () {
+      const rates = yield* OpenRouterZdrRates.make;
+      yield* rates.refresh;
+      state.online = false;
+      yield* TestClock.adjust("25 hours");
+      yield* rates.refresh;
+      assert.strictEqual(state.requests.length, 2);
+      assert.isTrue((yield* firstLoaded(rates))?.has(KEY));
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("has no rates, and no error, while the list is out of reach", () => {
+    const { state, layer } = openRouter();
+    state.online = false;
+    return Effect.gen(function* () {
+      const { current, refresh } = yield* OpenRouterZdrRates.make;
+      yield* refresh;
+      yield* refresh;
+      assert.strictEqual((yield* current).size, 0);
+      assert.strictEqual(state.requests.length, 1);
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect(
     "answers with what it holds at once, and loads a missing list behind the caller",
@@ -143,27 +179,18 @@ describe("OpenRouterZdrRates", () => {
       const { state, layer } = openRouter();
       return Effect.gen(function* () {
         state.gate = yield* Deferred.make<void>();
-        const { rates, current } = yield* OpenRouterZdrRates.make;
+        const rates = yield* OpenRouterZdrRates.make;
 
         // The fetch is held open, yet the answer comes: empty, with the load under way.
-        assert.strictEqual((yield* current).size, 0);
+        assert.strictEqual((yield* rates.current).size, 0);
         yield* Deferred.succeed(state.gate, undefined);
-        assert.isTrue((yield* rates).has(KEY));
+        assert.isTrue((yield* firstLoaded(rates))?.has(KEY));
+        // The background load goes on to write the cache; this waits for it to finish.
+        yield* rates.refresh;
 
-        assert.isTrue((yield* current).has(KEY));
+        assert.isTrue((yield* rates.current).has(KEY));
         assert.strictEqual(state.requests.length, 1);
       }).pipe(Effect.provide(layer));
     },
   );
-
-  it.effect("has no rates, and no error, while the list is out of reach", () => {
-    const { state, layer } = openRouter();
-    state.online = false;
-    return Effect.gen(function* () {
-      const { rates } = yield* OpenRouterZdrRates.make;
-      assert.strictEqual((yield* rates).size, 0);
-      assert.strictEqual((yield* rates).size, 0);
-      assert.strictEqual(state.requests.length, 1);
-    }).pipe(Effect.provide(layer));
-  });
 });

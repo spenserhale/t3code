@@ -139,10 +139,30 @@ export function buildMarketRates(prices: ZdrPrices): RateTable {
   return rates;
 }
 
+const MARKET_PREFIX = `${OLLAMA_CLOUD_PROVIDER_ID}/`;
+
+/**
+ * LiteLLM's rates with Ollama Cloud's added. A market rate answers to the id as OpenCode and
+ * Ollama spell it, `ollama-cloud/gpt-oss:120b`, as well as to its key, so a reader that has
+ * only that id prices with it. No other id reaches a market rate.
+ */
+class RatesWithMarket extends Map<string, ModelRate> {
+  override get(key: string) {
+    const rate = super.get(key);
+    return rate !== undefined || !key.startsWith(MARKET_PREFIX)
+      ? rate
+      : super.get(ollamaCloudRateModel(key.slice(MARKET_PREFIX.length)));
+  }
+
+  override has(key: string) {
+    return this.get(key) !== undefined;
+  }
+}
+
 // Immutable tables permit reusing one merged table, and its lookup cache, across scans.
 const merged = new WeakMap<RateTable, WeakMap<RateTable, RateTable>>();
 
-/** The LiteLLM rates plus Ollama Cloud's market rates, whose keys no other provider's models have. */
+/** The rates every reader prices with: LiteLLM's, plus the market's under `ollama-cloud/`. */
 export function withMarketRates(base: RateTable, market: RateTable): RateTable {
   if (market.size === 0) return base;
   let byMarket = merged.get(base);
@@ -152,7 +172,7 @@ export function withMarketRates(base: RateTable, market: RateTable): RateTable {
   }
   let table = byMarket.get(market);
   if (table === undefined) {
-    table = new Map([...base, ...market]);
+    table = new RatesWithMarket([...base, ...market]);
     byMarket.set(market, table);
   }
   return table;
@@ -163,10 +183,9 @@ export function withMarketRates(base: RateTable, market: RateTable): RateTable {
  * and not what the plan cost. Where a market rate exists it replaces that
  * estimate; a model with none keeps it.
  */
-export function withoutCatalogCost(record: UsageRecord, market: RateTable): UsageRecord {
-  return record.reportedCostUsd !== null &&
-    record.rateModel?.startsWith(`${OLLAMA_CLOUD_PROVIDER_ID}/`) === true &&
-    market.has(record.rateModel)
+export function withoutCatalogCost(record: UsageRecord, rates: RateTable): UsageRecord {
+  const model = record.rateModel ?? record.model;
+  return record.reportedCostUsd !== null && model.startsWith(MARKET_PREFIX) && rates.has(model)
     ? { ...record, reportedCostUsd: null }
     : record;
 }

@@ -158,7 +158,7 @@ describe("withMarketRates", () => {
     ]),
   );
 
-  it("prices Ollama Cloud's model at the market rate and nobody else's model of that name", () => {
+  it("prices Ollama Cloud's model at the market rate under the id its readers have", () => {
     const table = withMarketRates(litellm, market);
     const tokens = {
       uncachedInputTokens: 1000,
@@ -167,21 +167,39 @@ describe("withMarketRates", () => {
       outputTokens: 100,
       reasoningTokens: 0,
     };
-    const ollama = priceUsage(table, {
-      model: "ollama-cloud/gpt-oss:120b",
-      rateModel: ollamaCloudRateModel("gpt-oss:120b"),
-      totals: tokens,
-      speed: "standard",
-      reportedCostUsd: null,
-    });
-    assert.strictEqual(ollama.costSource, "modelPriced");
-    assert.closeTo(ollama.costUsd, 1000 * 1e-7 + 500 * 1e-8 + 100 * 4e-7, 1e-12);
+    // As OpenCode names it, as the usage page lists it, and as Ollama tags the cloud build.
+    for (const model of [
+      "ollama-cloud/gpt-oss:120b",
+      "ollama-cloud/gpt-oss-120b",
+      "Ollama-Cloud/GPT-OSS:120b-cloud",
+    ]) {
+      const priced = priceUsage(table, {
+        model,
+        totals: tokens,
+        speed: "standard",
+        reportedCostUsd: null,
+      });
+      assert.strictEqual(priced.costSource, "modelPriced");
+      assert.closeTo(priced.costUsd, 1000 * 1e-7 + 500 * 1e-8 + 100 * 4e-7, 1e-12);
+    }
+  });
 
-    // The same model, named by anyone else, is still unknown to the table.
-    for (const model of ["gpt-oss-120b", "gpt-oss:120b", "openai/gpt-oss-120b"]) {
+  it("offers a market rate under no other id, and adds nothing but Ollama Cloud's keys", () => {
+    const table = withMarketRates(litellm, market);
+    for (const model of [
+      "gpt-oss-120b",
+      "gpt-oss:120b",
+      "openai/gpt-oss-120b",
+      "zai/gpt-oss:120b",
+    ]) {
       assert.isNull(lookupRate(table, model));
     }
     assert.isNotNull(lookupRate(table, "claude-fable-5"));
+    assert.deepStrictEqual(
+      [...table.keys()].filter((key) => !litellm.has(key)),
+      ["ollama-cloud/gpt-oss-120b"],
+    );
+    assert.strictEqual(table.size, litellm.size + market.size);
   });
 
   it("builds a merged table once, and gives the base back when there is nothing to add", () => {
@@ -191,16 +209,18 @@ describe("withMarketRates", () => {
 });
 
 describe("withoutCatalogCost", () => {
-  const market = buildMarketRates(
-    new Map([
-      ["openai/gpt-oss-120b", { promptUsd: 1e-7, completionUsd: 4e-7, cacheReadUsd: null }],
-    ]),
+  const rates = withMarketRates(
+    new Map(),
+    buildMarketRates(
+      new Map([
+        ["openai/gpt-oss-120b", { promptUsd: 1e-7, completionUsd: 4e-7, cacheReadUsd: null }],
+      ]),
+    ),
   );
-  const record = (rateModel: string | undefined, reportedCostUsd: number | null): UsageRecord => ({
+  const record = (model: string, reportedCostUsd: number | null): UsageRecord => ({
     provider: "opencode",
     timestampMs: 0,
-    model: "model",
-    ...(rateModel === undefined ? {} : { rateModel }),
+    model,
     sessionId: "session",
     totals: {
       uncachedInputTokens: 1,
@@ -216,17 +236,17 @@ describe("withoutCatalogCost", () => {
 
   it("drops OpenCode's catalog estimate where a market rate prices the model", () => {
     assert.isNull(
-      withoutCatalogCost(record("ollama-cloud/gpt-oss-120b", 0.5), market).reportedCostUsd,
+      withoutCatalogCost(record("ollama-cloud/gpt-oss:120b", 0.5), rates).reportedCostUsd,
     );
   });
 
   it("keeps it for a model the market does not price, and for other providers' models", () => {
     for (const unchanged of [
-      record("ollama-cloud/qwen3-32b", 0.5),
-      record("gpt-oss-120b", 0.5),
-      record(undefined, 0.5),
+      record("ollama-cloud/qwen3:32b", 0.5),
+      record("gpt-oss:120b", 0.5),
+      record("ollama-cloud/gpt-oss:120b", null),
     ]) {
-      assert.strictEqual(withoutCatalogCost(unchanged, market), unchanged);
+      assert.strictEqual(withoutCatalogCost(unchanged, rates), unchanged);
     }
   });
 });
