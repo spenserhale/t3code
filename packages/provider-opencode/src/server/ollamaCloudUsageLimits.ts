@@ -25,7 +25,11 @@ import {
 } from "@t3tools/provider-core/server/usageLimits";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
-import { OllamaCloudValuation, type OllamaCloudModelUsage } from "./ollamaCloudMarket.ts";
+import {
+  OllamaCloudValuation,
+  type OllamaCloudModelUsage,
+  type OllamaCloudValueInput,
+} from "./ollamaCloudMarket.ts";
 import type { SubscriptionLimits } from "./zaiUsageLimits.ts";
 
 const API_ORIGIN = "https://ollama.com";
@@ -70,6 +74,7 @@ const UsageBucket = Schema.Struct({
   from: Schema.String,
   until: Schema.String,
   groups: ForwardCompatibleOptional(ForwardCompatibleArray(UsageGroup)),
+  remainder: ForwardCompatibleOptional(Schema.Struct({ usage_usd: number })),
 });
 const UsageResponse = Schema.Struct({ buckets: ForwardCompatibleArray(UsageBucket) });
 type UsageBuckets = typeof UsageResponse.Type.buckets;
@@ -173,12 +178,13 @@ function readIncluded(included: typeof BalanceResponse.Type.included): {
   };
 }
 
-/** Per-model usage of the buckets that overlap the period; the first one may straddle its start. */
-function periodModelUsage(
+/** Usage of the buckets that overlap the period; the first one may straddle its start. */
+function periodUsage(
   buckets: UsageBuckets,
   period: { readonly start: DateTime.Utc; readonly end: DateTime.Utc },
-): ReadonlyArray<OllamaCloudModelUsage> {
+): Pick<OllamaCloudValueInput, "models" | "remainderUsageUsd"> {
   const models = new Map<string, OllamaCloudModelUsage>();
+  let remainderUsageUsd = 0;
   for (const bucket of buckets) {
     const from = DateTime.make(bucket.from);
     const until = DateTime.make(bucket.until);
@@ -190,6 +196,7 @@ function periodModelUsage(
     ) {
       continue;
     }
+    remainderUsageUsd += bucket.remainder?.usage_usd ?? 0;
     for (const group of bucket.groups ?? []) {
       const previous = models.get(group.model);
       models.set(group.model, {
@@ -201,7 +208,7 @@ function periodModelUsage(
       });
     }
   }
-  return [...models.values()];
+  return { models: [...models.values()], remainderUsageUsd };
 }
 
 /** The key OpenCode stored for this account, else `OLLAMA_API_KEY`. */
@@ -296,9 +303,9 @@ export const makeOllamaCloudUsageLimits = Effect.fn("makeOllamaCloudUsageLimits"
       Option.isSome(valuation) && usedUsd > 0
         ? yield* readUsage(apiKey, fingerprint).pipe(
             Effect.map((buckets) =>
-              periodModelUsage(buckets, { start: pool.periodStart, end: pool.periodEnd }),
+              periodUsage(buckets, { start: pool.periodStart, end: pool.periodEnd }),
             ),
-            Effect.flatMap((models) => valuation.value.openRouterValueUsd({ usedUsd, models })),
+            Effect.flatMap((usage) => valuation.value.openRouterValueUsd({ usedUsd, ...usage })),
             Effect.timeout("5 seconds"),
             Effect.orElseSucceed(() => undefined),
           )

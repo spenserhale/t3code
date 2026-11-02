@@ -319,8 +319,9 @@ describe("Ollama Cloud credit value", () => {
       });
       assert.strictEqual(api.requests[1]?.headers["authorization"], "Bearer ollama-key");
       assert.deepStrictEqual(
-        market.inputs.map(({ usedUsd, models }) => ({
+        market.inputs.map(({ usedUsd, models, remainderUsageUsd }) => ({
           usedUsd: Number(usedUsd.toFixed(6)),
+          remainderUsageUsd: Number(remainderUsageUsd.toFixed(6)),
           models: models.map((entry) => ({
             ...entry,
             usageUsd: Number(entry.usageUsd.toFixed(6)),
@@ -329,6 +330,8 @@ describe("Ollama Cloud credit value", () => {
         [
           {
             usedUsd: 18.8,
+            // Only one bucket in the period has a remainder group.
+            remainderUsageUsd: 0.001,
             models: [
               {
                 model: "glm-5.3",
