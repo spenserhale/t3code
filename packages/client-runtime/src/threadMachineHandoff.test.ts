@@ -353,7 +353,7 @@ describe("planThreadMachineHandoff", () => {
       kind: "carry",
       branch: "feature/login",
       createBranch: false,
-      commit: { fileCount: 3, message: "WIP: hand off to Server" },
+      commit: { fileCount: 3, message: "WIP: hand off to Server", paths: ["a.ts", "b.ts", "c.ts"] },
       comparisonBase: "origin/main",
     });
     expect(result.target).toMatchObject({
@@ -386,7 +386,7 @@ describe("planThreadMachineHandoff", () => {
       kind: "carry",
       branch: "handoff/fix-the-flaky-login-test",
       createBranch: true,
-      commit: { fileCount: 1, message: "WIP: hand off to Server" },
+      commit: { fileCount: 1, message: "WIP: hand off to Server", paths: ["a.ts"] },
       comparisonBase: "origin/main",
     });
     expect(
@@ -635,12 +635,23 @@ describe("isSameHandoffCode", () => {
   const code = (overrides: Partial<Parameters<typeof git>[0]> = {}) =>
     ready(plan({ git: git({ aheadCount: 1, ...overrides }) })).code;
 
-  it("is the same work when the branch, the new branch and the commit are", () => {
+  it("is the same work when the branch, the new branch and the changed files are", () => {
     expect(isSameHandoffCode(code(), code())).toBe(true);
     const changed = { hasWorkingTreeChanges: true, workingTree: { files: [{ path: "a" }] } };
-    expect(isSameHandoffCode(code(changed), code({ ...changed, workingTree: { files: [] } }))).toBe(
-      true,
-    );
+    expect(isSameHandoffCode(code(changed), code(changed))).toBe(true);
+  });
+
+  it("is not when the set of changed files is not the one that was confirmed", () => {
+    const files = (...paths: ReadonlyArray<string>) => ({
+      hasWorkingTreeChanges: true,
+      workingTree: { files: paths.map((path) => ({ path })) },
+    });
+    const confirmed = code(files("a.ts"));
+    expect(isSameHandoffCode(confirmed, code(files("a.ts")))).toBe(true);
+    const twenty = Array.from({ length: 20 }, (_, index) => `file-${index}.ts`);
+    expect(isSameHandoffCode(confirmed, code(files("a.ts", ...twenty)))).toBe(false);
+    expect(isSameHandoffCode(confirmed, code(files("b.ts")))).toBe(false);
+    expect(isSameHandoffCode(code(files("a.ts", "b.ts")), code(files("b.ts", "a.ts")))).toBe(true);
   });
 
   it("is not when the checkout moved to another branch or its changes appeared or went", () => {

@@ -29,15 +29,22 @@ export interface ThreadMachineHandoffIo {
   readonly readConversation: () => Promise<File>;
   /** The plan as the checkout stands now, to see that the one shown still holds. */
   readonly replan: () => Promise<ThreadMachineHandoffPlan>;
+  /** The newest commit of the source's branch before anything is done to it, if it has one. */
+  readonly readTip: () => Promise<string | null>;
   readonly createBranch: (name: string) => Promise<void>;
   readonly commitAndPush: (input: {
     readonly commitMessage: string;
     readonly onPhase: (phase: "commit" | "push") => void;
-  }) => Promise<{ readonly upstreamBranch: string | undefined }>;
-  /** Puts the pushed branch on a worktree of the target machine, once it can see the branch. */
+  }) => Promise<{
+    readonly upstreamBranch: string | undefined;
+    /** The commit this made, when it made one. */
+    readonly commitSha: string | undefined;
+  }>;
+  /** Puts the pushed branch on a worktree of the target machine, holding the pushed commit. */
   readonly prepareTarget: (input: {
     readonly pushed: Extract<HandoffPushed, { ok: true }>;
     readonly comparisonBase: string | null;
+    readonly expectedCommit: string | null;
     readonly onPhase: (phase: "fetch" | "worktree") => void;
   }) => Promise<{ readonly worktreePath: string; readonly branch: string }>;
   readonly removeTargetWorktree: (path: string) => Promise<void>;
@@ -106,6 +113,8 @@ export async function runThreadMachineHandoff(input: {
           "The checkout changed since this was planned. Nothing was done; the steps shown now are updated.",
         );
       }
+      // What is pushed is this commit, or the one made on top of it.
+      const tip = await io.readTip();
       if (code.createBranch) {
         start("branch");
         await io.createBranch(code.branch);
@@ -131,6 +140,7 @@ export async function runThreadMachineHandoff(input: {
       const prepared = await io.prepareTarget({
         pushed,
         comparisonBase: resolveHandoffComparisonBase(code.comparisonBase, pushed),
+        expectedCommit: pushedTo.commitSha ?? tip,
         onPhase: start,
       });
       worktree = { path: prepared.worktreePath, branch: prepared.branch };

@@ -55,7 +55,7 @@ const carryOnNewBranch: HandoffCodePlan = {
   kind: "carry",
   branch: "handoff/fix-login",
   createBranch: true,
-  commit: { fileCount: 2, message: "WIP: hand off to Server" },
+  commit: { fileCount: 2, message: "WIP: hand off to Server", paths: ["a.ts", "b.ts"] },
   comparisonBase: "origin/main",
 };
 
@@ -75,6 +75,10 @@ function fakes(overrides: Partial<ThreadMachineHandoffIo> = {}, fresh?: ThreadMa
       calls.push("replan");
       return fresh ?? plans.get(io)!;
     },
+    readTip: async () => {
+      calls.push("read tip");
+      return "tip-before";
+    },
     createBranch: async (name) => {
       calls.push(`create branch ${name}`);
     },
@@ -82,10 +86,10 @@ function fakes(overrides: Partial<ThreadMachineHandoffIo> = {}, fresh?: ThreadMa
       calls.push(`commit and push "${commitMessage}"`);
       onPhase("commit");
       onPhase("push");
-      return { upstreamBranch: "origin/handoff/fix-login" };
+      return { upstreamBranch: "origin/handoff/fix-login", commitSha: "wip-commit" };
     },
-    prepareTarget: async ({ pushed, comparisonBase, onPhase }) => {
-      calls.push(`prepare ${pushed.remoteRef} from ${comparisonBase}`);
+    prepareTarget: async ({ pushed, comparisonBase, expectedCommit, onPhase }) => {
+      calls.push(`prepare ${pushed.remoteRef} from ${comparisonBase} for ${expectedCommit}`);
       onPhase("fetch");
       onPhase("worktree");
       return { worktreePath: "/worktrees/handoff", branch: pushed.branch };
@@ -128,9 +132,10 @@ describe("runThreadMachineHandoff", () => {
     expect(calls).toEqual([
       "read conversation",
       "replan",
+      "read tip",
       "create branch handoff/fix-login",
       'commit and push "WIP: hand off to Server"',
-      "prepare origin/handoff/fix-login from origin/main",
+      "prepare origin/handoff/fix-login from origin/main for wip-commit",
       "open draft",
     ]);
     expect(steps).toEqual([
@@ -167,6 +172,40 @@ describe("runThreadMachineHandoff", () => {
     expect(calls).toEqual(["read conversation", "replan"]);
   });
 
+  it("hands the target the commit it must hold: the one made, else the one already there", async () => {
+    const committed = fakes();
+    await run(plan(carryOnNewBranch), committed.io);
+    expect(committed.calls).toContain(
+      "prepare origin/handoff/fix-login from origin/main for wip-commit",
+    );
+
+    const pushedOnly = fakes({
+      commitAndPush: async () => ({
+        upstreamBranch: "origin/handoff/fix-login",
+        commitSha: undefined,
+      }),
+    });
+    await run(plan({ ...carryOnNewBranch, createBranch: false, commit: null }), pushedOnly.io);
+    expect(pushedOnly.calls).toContain(
+      "prepare origin/handoff/fix-login from origin/main for tip-before",
+    );
+  });
+
+  it("changes nothing when the source's current commit cannot be read", async () => {
+    const { io, calls } = fakes({
+      readTip: async () => {
+        throw new Error("This connection cannot read files.");
+      },
+    });
+    expect(await run(plan(carryOnNewBranch), io)).toMatchObject({
+      ok: false,
+      step: "branch",
+      message: "This connection cannot read files.",
+      leftLocalCommit: false,
+    });
+    expect(calls).toEqual(["read conversation", "replan"]);
+  });
+
   it("stops where the plan would now be blocked", async () => {
     const blocked: ThreadMachineHandoffPlan = {
       kind: "blocked",
@@ -183,19 +222,25 @@ describe("runThreadMachineHandoff", () => {
 
   it("continues the branch it pushed to the remote the machine knows it by, with that base", async () => {
     const { io, calls } = fakes({
-      commitAndPush: async () => ({ upstreamBranch: "fork/handoff/fix-login" }),
+      commitAndPush: async () => ({
+        upstreamBranch: "fork/handoff/fix-login",
+        commitSha: "wip-commit",
+      }),
     });
     const forked = plan(carryOnNewBranch, {
       sourceIdentity: { ...identity("fork"), canonicalKey: "github.com/t3tools/t3code" },
       target: { ...plan(carryOnNewBranch).target, identity: identity("github") },
     });
     await run(forked, io);
-    expect(calls).toContain("prepare github/handoff/fix-login from origin/main");
+    expect(calls).toContain("prepare github/handoff/fix-login from origin/main for wip-commit");
   });
 
   it("stops after a push to a remote it cannot match, with no worktree or draft", async () => {
     const { io, calls } = fakes({
-      commitAndPush: async () => ({ upstreamBranch: "publish/handoff/fix-login" }),
+      commitAndPush: async () => ({
+        upstreamBranch: "publish/handoff/fix-login",
+        commitSha: "wip-commit",
+      }),
     });
     const result = await run(plan(carryOnNewBranch), io);
     expect(result).toMatchObject({ ok: false, step: "push", leftLocalCommit: false });
@@ -253,9 +298,10 @@ describe("runThreadMachineHandoff", () => {
   it("pushes without a commit of its own when everything is committed", async () => {
     const { io, calls } = fakes();
     await run(plan({ ...carryOnNewBranch, createBranch: false, commit: null }), io);
-    expect(calls.slice(0, 3)).toEqual([
+    expect(calls.slice(0, 4)).toEqual([
       "read conversation",
       "replan",
+      "read tip",
       'commit and push "WIP: hand off to Server"',
     ]);
   });
@@ -292,7 +338,7 @@ describe("runThreadMachineHandoff", () => {
     });
     const result = await run(plan(carryOnNewBranch), io);
     expect(result).toMatchObject({ ok: false, step: "branch", leftLocalCommit: false });
-    expect(calls).toEqual(["read conversation", "replan"]);
+    expect(calls).toEqual(["read conversation", "replan", "read tip"]);
   });
 
   it("reports a commit that failed as nothing left behind, and opens no draft", async () => {
@@ -380,7 +426,9 @@ describe("runThreadMachineHandoff", () => {
   });
 
   it("stops when the push reported no branch, rather than guess one", async () => {
-    const { io, calls } = fakes({ commitAndPush: async () => ({ upstreamBranch: undefined }) });
+    const { io, calls } = fakes({
+      commitAndPush: async () => ({ upstreamBranch: undefined, commitSha: undefined }),
+    });
     expect(await run(plan(carryOnNewBranch), io)).toMatchObject({ ok: false, step: "push" });
     expect(calls).not.toContain("open draft");
   });

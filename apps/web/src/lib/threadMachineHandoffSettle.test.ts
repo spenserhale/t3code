@@ -239,9 +239,8 @@ describe("settling the source of a machine handoff", () => {
 });
 
 /** A draft as the handoff leaves it: the note as the prompt, the conversation attached. */
-function openHandoff(entry: PendingMachineHandoff = pending) {
+function putHandoffContent() {
   const drafts = useComposerDraftStore.getState();
-  drafts.setProjectDraftThreadId(projectRef, draftId, { threadId: reservedThread.threadId });
   drafts.setPrompt(draftId, `${note}\n\n`);
   drafts.addFiles(draftId, [
     {
@@ -253,6 +252,13 @@ function openHandoff(entry: PendingMachineHandoff = pending) {
       file: new File(["{}"], "thread.jsonl"),
     },
   ]);
+}
+
+function openHandoff(entry: PendingMachineHandoff = pending) {
+  useComposerDraftStore
+    .getState()
+    .setProjectDraftThreadId(projectRef, draftId, { threadId: reservedThread.threadId });
+  putHandoffContent();
   useThreadMachineHandoffStore.getState().remember(draftId, entry);
 }
 
@@ -388,6 +394,26 @@ describe("a draft that stops being the handoff", () => {
     drafts.setPrompt(draftId, `${note}\n\n`);
     h.rest();
     expect(remembered()).toBeDefined();
+  });
+
+  it("is let go once a restored draft is cleared, though it was sending before", () => {
+    const h = harness();
+    openHandoff();
+    h.rest();
+    const drafts = useComposerDraftStore.getState();
+    const draft = drafts.getDraftSession(draftId)!;
+    drafts.markDraftThreadPromoting(draftId);
+    drafts.clearComposerContent(draftId);
+    h.rest();
+    restoreFailedDraftThread(draftId, draft, ThreadId.make("thread-retried"));
+    putHandoffContent();
+    h.rest();
+    expect(remembered()).toBeDefined();
+
+    drafts.setPrompt(draftId, "Unrelated work");
+    drafts.removeFile(draftId, attachmentId);
+    h.rest();
+    expect(remembered()).toBeUndefined();
   });
 
   it("stays while a fan-out send has cleared the composer", () => {

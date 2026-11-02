@@ -71,7 +71,10 @@ export function startMachineHandoffSettling(input: {
       const draft = draftThreadsByThreadKey[draftId];
       if (draft === undefined) continue;
       seenLive.add(draftId);
+      // Only while it is sending: a failed send restores the draft, and it is then free to be
+      // used for something else.
       if (draft.promotedTo) seenPromoting.add(draftId);
+      else seenPromoting.delete(draftId);
       if (entry.sentAs !== undefined) continue;
       // A failed send can give the draft a new thread id; keep the saved one in step with it.
       const current = draft.promotedTo ?? scopeThreadRef(draft.environmentId, draft.threadId);
