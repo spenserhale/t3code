@@ -57,3 +57,5 @@ export function useUsageLimitGroups() {
   const [groups] = useLocalStorage(STORAGE_KEY, NO_LIMIT_GROUPS, UsageLimitGroupsSchema);
   return [withSchedules(groups), updateUsageLimitGroups] as const;
 }
+
+export const USAGE_LIMIT_GROUPS_STORAGE_KEY = STORAGE_KEY;
