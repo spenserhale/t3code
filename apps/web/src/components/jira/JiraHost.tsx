@@ -1,7 +1,15 @@
+import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { useEffect, useEffectEvent } from "react";
 
+import { useLiveRefresh } from "~/hooks/useLiveRefresh";
 import { useThreadShell } from "~/state/entities";
+import {
+  jiraConfiguredEnvironmentIdsAtom,
+  jiraLinkedThreadsAtom,
+  refreshJiraChips,
+} from "~/state/jira";
 import { threadEnvironment } from "~/state/threads";
 import { useOrchestrationCommand } from "~/state/use-orchestration-command";
 import { JiraCommentDialogHost } from "./JiraCommentDialog";
@@ -54,16 +62,32 @@ function WatchedThreadStart({ start }: { start: JiraThreadStart }) {
   return null;
 }
 
+/** Keeps one site's status chips current, only while the window is in view and in use. */
+function ChipRefresh({ environmentId }: { environmentId: EnvironmentId }) {
+  const linked = useAtomValue(jiraLinkedThreadsAtom(environmentId));
+  useLiveRefresh(() => refreshJiraChips(environmentId), {
+    enabled: linked.size > 0,
+    key: `jira-chips:${environmentId}`,
+    intervalMs: 60_000,
+  });
+  return null;
+}
+
 /**
  * Mounted for the life of the app: gives threads started from an issue their
- * `KEY: summary` title, and hosts the comment dialog the thread chips open.
+ * `KEY: summary` title, keeps the status chips current, and hosts the comment
+ * dialog the thread chips open.
  */
 export function JiraHost() {
   const starts = useJiraThreadStarts();
+  const configured = useAtomValue(jiraConfiguredEnvironmentIdsAtom);
   return (
     <>
       {starts.map((start) => (
         <WatchedThreadStart key={start.threadId} start={start} />
+      ))}
+      {configured.map((environmentId) => (
+        <ChipRefresh key={environmentId} environmentId={environmentId} />
       ))}
       <JiraCommentDialogHost />
     </>

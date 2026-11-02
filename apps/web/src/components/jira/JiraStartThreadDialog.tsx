@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, JiraIssueDetail } from "@t3tools/contracts";
@@ -5,10 +6,15 @@ import { useId, useState } from "react";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
+import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useEnvironments } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
-import { readThreadShells, useProjects } from "~/state/entities";
-import { jiraReadTransitions, jiraTransition } from "~/state/jira";
+import { useProjects } from "~/state/entities";
+import {
+  jiraConfiguredEnvironmentIdsAtom,
+  jiraReadTransitions,
+  jiraTransition,
+} from "~/state/jira";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { vcsEnvironment } from "~/state/vcs";
 import { Button } from "../ui/button";
@@ -25,12 +31,9 @@ import { Label } from "../ui/label";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
-import {
-  issueBranchName,
-  issueThreadTitle,
-  takenBranchNames,
-  unusedBranchName,
-} from "./jiraIssueKeys";
+import { threadUsesJiraSite } from "./jiraEnvironments";
+import { readExistingBranchNames } from "./jiraBranches";
+import { issueBranchName, issueThreadTitle, unusedBranchName } from "./jiraIssueKeys";
 import { transitionToStatus, useJiraPreferences } from "./jiraPreferences";
 import { pendingStartBranches, registerJiraThreadStart, threadStartPlan } from "./jiraThreadStarts";
 import { issueAskPrompt, issuePlanPrompt, issueThreadPrompt } from "./jiraThreadText";
@@ -91,7 +94,6 @@ export function JiraStartThreadDialog({
   const [preferences, updatePreferences] = useJiraPreferences();
   const readTransitions = useAtomCommand(jiraReadTransitions, { reportFailure: false });
   const transition = useAtomCommand(jiraTransition, { reportFailure: false });
-  const readRefs = useAtomCommand(vcsEnvironment.readRefs, { reportFailure: false });
   const [choice, setChoice] = useState<string | null>(null);
   const [worktreeChoice, setWorktreeChoice] = useState<boolean | null>(null);
   const [pending, setPending] = useState(false);
@@ -103,7 +105,13 @@ export function JiraStartThreadDialog({
     if (open) setWorktreeChoice(null);
   }
 
-  const available = projects.filter((project) => project.archivedAt == null);
+  // A thread's key is read on the Jira site of its own environment. A project on an environment
+  // with a Jira of its own would show this issue's key as that site's issue, so it is not offered.
+  const configured = useAtomValue(jiraConfiguredEnvironmentIdsAtom);
+  const unarchived = projects.filter((project) => project.archivedAt == null);
+  const available = unarchived.filter((project) =>
+    threadUsesJiraSite(project.environmentId, configured, jiraEnvironmentId),
+  );
   const remembered = preferences.projects[issue.projectKey];
   const projectKey = (project: { readonly environmentId: string; readonly id: string }) =>
     `${project.environmentId}:${project.id}`;
@@ -145,30 +153,29 @@ export function JiraStartThreadDialog({
   const freeBranch = async (project: {
     readonly environmentId: EnvironmentId;
     readonly workspaceRoot: string;
-  }) => {
-    const taken = new Set([
-      ...readThreadShells().flatMap((shell) => (shell.branch === null ? [] : [shell.branch])),
-      ...pendingStartBranches(),
-    ]);
-    const refs = await readRefs({
-      environmentId: project.environmentId,
-      input: {
-        cwd: project.workspaceRoot,
-        query: branchBase,
-        refKind: "all",
-        includeMatchingRemoteRefs: true,
-        refresh: true,
-        limit: 200,
-      },
-    });
-    // Without an answer from the repository the name is still checked against the threads.
-    if (refs._tag === "Success")
-      for (const name of takenBranchNames(refs.value.refs)) taken.add(name);
-    return unusedBranchName(branchBase, taken);
-  };
+  }) =>
+    unusedBranchName(
+      branchBase,
+      new Set([...(await readExistingBranchNames(project, branchBase)), ...pendingStartBranches()]),
+    );
+
+  const readsThisSite = (project: { readonly environmentId: EnvironmentId }) =>
+    threadUsesJiraSite(
+      project.environmentId,
+      appAtomRegistry.get(jiraConfiguredEnvironmentIdsAtom),
+      jiraEnvironmentId,
+    );
 
   const start = async () => {
     if (selected === undefined || pending || !plan.ready) return;
+    if (!readsThisSite(selected)) {
+      toastManager.add({
+        type: "error",
+        title: `${issue.key} cannot go to ${selected.title}`,
+        description: "Jira was set up or removed since the list was drawn. Pick the project again.",
+      });
+      return;
+    }
     setPending(true);
     const branch = plan.worktree ? await freeBranch(selected) : null;
     const prompt = copy.prompt(issue);
@@ -202,6 +209,16 @@ export function JiraStartThreadDialog({
       useComposerDraftStore
         .getState()
         .setDraftThreadContext(opened.draftId, { interactionMode: "plan" });
+    }
+    // Jira can change while the thread opens; a link made now could name another site's issue.
+    if (!readsThisSite(selected)) {
+      onOpenChange(false);
+      toastManager.add({
+        type: "warning",
+        title: `The thread was not linked to ${issue.key}`,
+        description: `Jira changed while it opened, so ${issue.key} would be read on another site.`,
+      });
+      return;
     }
     registerJiraThreadStart({
       environmentId: selected.environmentId,
@@ -272,7 +289,11 @@ export function JiraStartThreadDialog({
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={`${id}-project`}>Project</Label>
               {available.length === 0 ? (
-                <p className="text-muted-foreground text-sm">Add a project first.</p>
+                <p className="text-muted-foreground text-sm">
+                  {unarchived.length === 0
+                    ? "Add a project first."
+                    : `Other projects are on environments with a Jira of their own, which would read ${issue.key} as another site's issue. Add a project on ${environmentLabels.get(jiraEnvironmentId) ?? "the environment with this Jira"}.`}
+                </p>
               ) : (
                 <Select
                   value={selected === undefined ? null : projectKey(selected)}

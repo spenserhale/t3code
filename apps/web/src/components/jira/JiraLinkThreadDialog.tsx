@@ -29,7 +29,7 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { toastManager } from "../ui/toast";
-import { jiraEnvironmentForThread } from "./jiraEnvironments";
+import { threadUsesJiraSite } from "./jiraEnvironments";
 import { linkedThreadTitle } from "./jiraIssueKeys";
 
 const MAX_SHOWN = 40;
@@ -81,7 +81,7 @@ export function JiraLinkThreadDialog({
         shell.archivedAt === null &&
         shell.deletedAt === null &&
         changeable.has(shell.environmentId) &&
-        jiraEnvironmentForThread(shell.environmentId, configured) === jiraEnvironmentId &&
+        threadUsesJiraSite(shell.environmentId, configured, jiraEnvironmentId) &&
         !alreadyLinked.has(`${shell.environmentId}:${shell.id}`) &&
         (needle.length === 0 ||
           shell.title.toLowerCase().includes(needle) ||
