@@ -94,4 +94,44 @@ describe("providersFor", () => {
       expect(providersFor(providers, subscriber)[0]?.usageLimits?.subscriptions).toBeUndefined();
     }
   });
+
+  it("keeps a subscription's credit with its subscriptions, so only the clients that asked get it", () => {
+    const credit = {
+      allowanceUsd: 60,
+      balanceUsd: 41.2,
+      purchasedBalanceUsd: 25,
+      periodStart: "2026-08-15T09:30:00.000Z",
+      periodEnd: "2026-09-15T09:30:00.000Z",
+      planPriceUsd: 20,
+      openRouterValueUsd: 9.1,
+    };
+    const providers = [
+      provider({
+        usageLimits: {
+          checkedAt: "2026-09-03T11:00:00.000Z",
+          windows: [window],
+          subscriptions: [
+            {
+              id: "ollama-cloud",
+              label: "Ollama Cloud",
+              credentialFingerprint: "ollama-key",
+              checkedAt: "2026-09-03T11:00:00.000Z",
+              windowIds: ["five_hour"],
+              credit,
+            },
+          ],
+        },
+      }),
+    ];
+
+    expect(
+      providersFor(providers, { usageLimitSubscriptions: true })[0]?.usageLimits?.subscriptions?.[0]
+        ?.credit,
+    ).toEqual(credit);
+    for (const subscriber of [{}, { usageLimitSubscriptions: false }]) {
+      const sent = JSON.stringify(providersFor(providers, subscriber));
+      expect(sent).not.toContain("credit");
+      expect(sent).not.toContain("openRouterValueUsd");
+    }
+  });
 });
