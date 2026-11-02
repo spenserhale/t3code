@@ -153,13 +153,15 @@ have its own schedule. Pace and the burn-down below then count only the schedule
 account is not shown as behind on a Sunday. Schedules are saved on the device where you set them and
 apply whether or not grouping is on.
 
-T3 Code reads the last 90 days of token totals from your connected environments in the background
-and learns your usual pattern from them once a provider has two weeks of use (all of a provider's
-accounts count together). Pace is judged against that pattern, so a heavy Monday is not "ahead", and
-against even spending until the pattern is known. It reads as how far in reserve or in deficit an
-account is, what share the pattern would have used by now, and whether the window lasts until the
-reset or runs out. It is left out for the first few percent of a window. If a reset credit empties a
-window early, pace and the forecasts count from then.
+While Reminders are on, or a Burn-down is open, T3 Code reads the last 90 days of token totals from
+each connected environment in the background, and learns your usual pattern from them once a
+provider has two weeks of use (all of a provider's accounts count together). An environment that
+cannot be reached is asked again later while the others keep their totals. Pace is judged against
+that pattern, so a heavy Monday is not "ahead", and against even spending until the pattern is
+known. It reads as how far in reserve or in deficit an account is, what share the pattern would have
+used by now, and whether the window lasts until the reset or runs out. It is left out for the first
+few percent of a window. If a reset credit empties a window early, pace and the forecasts count from
+then.
 
 Each session, weekly and monthly window has a **Burn-down** below its bar. It charts what was left
 over the window against that line, forecasts where the window ends, shows how many points of the
