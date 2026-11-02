@@ -10,6 +10,7 @@ import {
   type ServerProviderSlashCommand,
   isProviderAvailable,
   type ServerProvider,
+  type ServerProviderUsageCredit,
   type ServerProviderUsageLimits,
   type ServerProviderUsageWindow,
   type UsageLimitSourceSnapshots,
@@ -242,6 +243,8 @@ export interface LimitAccount {
   readonly plan: string | undefined;
   /** The plan this is (`zai-coding-plan`) when its provider account holds several subscriptions. */
   readonly subscription?: string | undefined;
+  /** The credit pool of that subscription, when its plan has one. */
+  readonly credit?: ServerProviderUsageCredit | undefined;
   readonly accentColor: string | undefined;
   readonly environments: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -306,6 +309,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       displayName: previous.displayName ?? next.displayName,
       plan: planSources.get(key)?.plan ?? previous.plan ?? next.plan,
       subscription: previous.subscription ?? next.subscription,
+      credit: winner.credit ?? previous.credit ?? next.credit,
       accentColor: previous.accentColor ?? next.accentColor,
       environments,
       sourceLabel: environments.length > 0 ? null : (previous.sourceLabel ?? next.sourceLabel),

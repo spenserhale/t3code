@@ -180,6 +180,54 @@ describe("readOpenCodeUsage", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("keeps Ollama Cloud's models apart from other providers' of the same name", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "usage-reader-test-" });
+      const legacy = path.join(dir, "storage", "message", "session-1");
+      yield* fileSystem.makeDirectory(legacy, { recursive: true });
+      const messages = {
+        "v1-ollama": { providerID: "ollama-cloud", modelID: "gpt-oss:120b", cost: 0.5 },
+        "v2-ollama": { model: { id: "glm-5.3", providerID: "ollama-cloud" } },
+        zai: { providerID: "zai-coding-plan", modelID: "glm-5.3" },
+        unattributed: { modelID: "glm-5.3" },
+      };
+      for (const [id, fields] of Object.entries(messages)) {
+        yield* fileSystem.writeFileString(
+          path.join(legacy, `${id}.json`),
+          JSON.stringify({
+            id,
+            sessionID: "session-1",
+            role: "assistant",
+            time: { created: 1780000000000 },
+            tokens: { input: 100, output: 20 },
+            ...fields,
+          }),
+        );
+      }
+
+      const records = (yield* readOpenCodeUsage(dir, 0)).files.flatMap((file) => file.records);
+      const byId = new Map(records.map((record) => [record.dedupeKey, record] as const));
+      const identity = (id: string) => {
+        const record = byId.get(`opencode:${id}`);
+        return [record?.model, record?.rateModel, record?.reportedCostUsd];
+      };
+      assert.deepStrictEqual(identity("v1-ollama"), [
+        "ollama-cloud/gpt-oss:120b",
+        "ollama-cloud/gpt-oss-120b",
+        0.5,
+      ]);
+      assert.deepStrictEqual(identity("v2-ollama"), [
+        "ollama-cloud/glm-5.3",
+        "ollama-cloud/glm-5.3",
+        null,
+      ]);
+      assert.deepStrictEqual(identity("zai"), ["glm-5.3", undefined, null]);
+      assert.deepStrictEqual(identity("unattributed"), ["glm-5.3", undefined, null]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("never follows symlinks in the legacy OpenCode store", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

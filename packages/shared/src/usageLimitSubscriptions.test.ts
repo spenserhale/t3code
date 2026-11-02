@@ -161,6 +161,38 @@ describe("subscriptions of one provider account", () => {
     ]);
   });
 
+  it("gives a subscription's credit to its account, from the environment that read it last", () => {
+    const credit = {
+      allowanceUsd: 60,
+      balanceUsd: 50,
+      periodStart: "2026-08-15T09:30:00.000Z",
+      periodEnd: "2026-09-15T09:30:00.000Z",
+    };
+    const fresher = { ...credit, balanceUsd: 30, openRouterValueUsd: 4 };
+    const creditOf = (fleet: Record<string, ServerProvider>) =>
+      collectLimitAccounts(environments(fleet)).map((account) => [
+        account.displayName,
+        account.credit,
+      ]);
+
+    expect(
+      creditOf({
+        A: opencode({ subscriptions: [zai, { ...ollama, credit }] }),
+        B: opencode({ subscriptions: [zai, { ...ollama, checkedAt: later, credit: fresher }] }),
+      }),
+    ).toEqual([
+      ["Z.ai", undefined],
+      ["Ollama Cloud", fresher],
+    ]);
+    // The newest read had no credit to report, so the last one that did stands.
+    expect(
+      creditOf({
+        A: opencode({ subscriptions: [zai, { ...ollama, credit }] }),
+        B: opencode({ subscriptions: [zai, { ...ollama, checkedAt: later }] }),
+      })[1],
+    ).toEqual(["Ollama Cloud", credit]);
+  });
+
   it("offers reset credits on the subscription that banks them", () => {
     const resetCredits = { availableCount: 1, nextCreditId: "WEEK:22" };
     const accounts = collectLimitAccounts(

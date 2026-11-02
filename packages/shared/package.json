@@ -367,6 +367,10 @@
       "types": "./src/usageLimits.ts",
       "import": "./src/usageLimits.ts"
     },
+    "./usageCredit": {
+      "types": "./src/usageCredit.ts",
+      "import": "./src/usageCredit.ts"
+    },
     "./desktopAppControl": {
       "types": "./src/desktopAppControl.ts",
       "import": "./src/desktopAppControl.ts"
