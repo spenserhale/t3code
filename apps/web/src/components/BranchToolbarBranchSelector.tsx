@@ -925,6 +925,14 @@ export function BranchToolbarBranchSelector({
         {displayMode === "panel" ? (
           <ThreadDetailsIssueRows links={linkedIssues} threadRef={threadRef} />
         ) : null}
+        {displayMode === "panel" ? (
+          <JiraThreadChip
+            link={jiraLink}
+            thread={serverThread}
+            panel
+            render={<ThreadDetailsControl />}
+          />
+        ) : null}
       </div>
     </BranchPicker>
   );

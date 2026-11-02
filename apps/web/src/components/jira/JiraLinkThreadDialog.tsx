@@ -2,11 +2,19 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
+import {
+  AuthOrchestrationOperateScope,
+  type EnvironmentId,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import { useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
+import { useEnvironments } from "~/state/environments";
 import { useProjects, useThreadShells } from "~/state/entities";
+import { jiraConfiguredEnvironmentIdsAtom } from "~/state/jira";
+import { useEnvironmentsWithScope } from "~/state/session";
 import { threadEnvironment } from "~/state/threads";
 import { useOrchestrationCommand } from "~/state/use-orchestration-command";
 import { Button } from "../ui/button";
@@ -21,20 +29,26 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { toastManager } from "../ui/toast";
+import { jiraEnvironmentForThread } from "./jiraEnvironments";
 import { linkedThreadTitle } from "./jiraIssueKeys";
 
 const MAX_SHOWN = 40;
 
-/** Links a thread to an issue by putting the key at the front of its title. */
+/**
+ * Links a thread to an issue by putting the key at the front of its title. Only threads that can
+ * be changed, and whose key would be read on this issue's Jira site, are offered.
+ */
 export function JiraLinkThreadDialog({
   open,
   onOpenChange,
   issueKey,
+  jiraEnvironmentId,
   linked,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   issueKey: string;
+  jiraEnvironmentId: EnvironmentId;
   linked: ReadonlyArray<ScopedThreadRef>;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -43,6 +57,9 @@ export function JiraLinkThreadDialog({
   const [pending, setPending] = useState(false);
   const shells = useThreadShells();
   const projects = useProjects();
+  const { environments } = useEnvironments();
+  const configured = useAtomValue(jiraConfiguredEnvironmentIdsAtom);
+  const changeable = useEnvironmentsWithScope(environments, AuthOrchestrationOperateScope);
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -63,6 +80,8 @@ export function JiraLinkThreadDialog({
       (shell) =>
         shell.archivedAt === null &&
         shell.deletedAt === null &&
+        changeable.has(shell.environmentId) &&
+        jiraEnvironmentForThread(shell.environmentId, configured) === jiraEnvironmentId &&
         !alreadyLinked.has(`${shell.environmentId}:${shell.id}`) &&
         (needle.length === 0 ||
           shell.title.toLowerCase().includes(needle) ||
@@ -102,6 +121,7 @@ export function JiraLinkThreadDialog({
           <DialogDescription>
             The key goes at the front of the thread's title. Anything whose title or branch names an
             issue shows up under it.
+            {configured.length > 1 ? " Only threads that use this Jira site are listed." : ""}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>

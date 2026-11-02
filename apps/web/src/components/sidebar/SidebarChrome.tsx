@@ -17,6 +17,7 @@ import { primaryServerKeybindingsAtom } from "../../state/server";
 import { cn } from "../../lib/utils";
 import { useIssuesSupported, usePullRequestsSupported } from "../../state/environments";
 import { useJiraEnvironmentId } from "../../state/jira";
+import { readJiraView } from "../jira/jiraViewMemory";
 import { T3Wordmark } from "../T3Wordmark";
 import {
   resolveEnvironmentIdentificationPillLabel,
@@ -256,7 +257,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   };
   const handleJiraClick = () => {
     closeMobileSidebar();
-    void navigate({ to: "/jira" });
+    void navigate({ to: "/jira", search: readJiraView() });
   };
   const handleSettingsClick = () => {
     closeMobileSidebar();

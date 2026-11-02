@@ -6,8 +6,10 @@ import { threadEnvironment } from "~/state/threads";
 import { useOrchestrationCommand } from "~/state/use-orchestration-command";
 import { JiraCommentDialogHost } from "./JiraCommentDialog";
 import {
+  followUpToRename,
   forgetJiraThreadStart,
   nextStepForThreadStart,
+  renameOutcome,
   useJiraThreadStarts,
   type JiraThreadStart,
 } from "./jiraThreadStarts";
@@ -18,19 +20,37 @@ function WatchedThreadStart({ start }: { start: JiraThreadStart }) {
     reportFailure: false,
   });
   const step = nextStepForThreadStart(shell, start);
-  const settle = useEffectEvent(() => {
-    forgetJiraThreadStart(start.threadId);
-    if (step === "rename") {
-      void updateThreadMetadata({
-        environmentId: start.environmentId,
-        input: { threadId: start.threadId, title: start.title },
-      });
-    }
-  });
+  const rename = useEffectEvent(() =>
+    updateThreadMetadata({
+      environmentId: start.environmentId,
+      input: { threadId: start.threadId, title: start.title },
+    }),
+  );
+  // The start is forgotten once the title is set, or can never be set. A failure that may pass
+  // leaves it in place, and the rename is tried again.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- gives a started thread its title once the one generated from its first message has settled
   useEffect(() => {
-    if (step !== "wait") settle();
-  }, [step]);
+    if (step === "wait") return;
+    if (step === "done") {
+      forgetJiraThreadStart(start.threadId);
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const attempt = async (failures: number) => {
+      const result = await rename();
+      if (cancelled) return;
+      const next = followUpToRename(renameOutcome(result), failures + 1);
+      if (next === "forget") forgetJiraThreadStart(start.threadId);
+      else if (next !== "keep")
+        timer = setTimeout(() => void attempt(failures + 1), next.retryInMs);
+    };
+    void attempt(0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [step, start.threadId]);
   return null;
 }
 

@@ -3,11 +3,12 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import { AuthOrchestrationOperateScope, type ScopedThreadRef } from "@t3tools/contracts";
 import { useRouter } from "@tanstack/react-router";
 import { UnlinkIcon } from "lucide-react";
 
 import { useProject, useThreadShell } from "~/state/entities";
+import { useEnvironmentScope } from "~/state/session";
 import { threadEnvironment } from "~/state/threads";
 import { useOrchestrationCommand } from "~/state/use-orchestration-command";
 import { buildThreadRouteParams } from "~/threadRoutes";
@@ -32,6 +33,7 @@ function LinkedThreadRow({
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const canChange = useEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope);
   if (shell === null) return null;
   const withoutKey = unlinkedThreadTitle(shell.title, issueKey);
 
@@ -81,13 +83,16 @@ function LinkedThreadRow({
                 variant="ghost-muted"
                 size="icon-xs"
                 aria-label={`Unlink from ${issueKey}`}
+                disabled={!canChange}
                 onClick={() => void unlink()}
               />
             }
           >
             <UnlinkIcon aria-hidden />
           </TooltipTrigger>
-          <TooltipPopup side="top">Take {issueKey} off the title</TooltipPopup>
+          <TooltipPopup side="top">
+            {canChange ? `Take ${issueKey} off the title` : "This connection cannot change threads"}
+          </TooltipPopup>
         </Tooltip>
       )}
     </li>
