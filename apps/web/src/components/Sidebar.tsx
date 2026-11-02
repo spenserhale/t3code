@@ -136,7 +136,7 @@ import { registerSettleAndAdvance } from "../settleAndAdvance";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useBoringSidebarEnabled, useClientSettings } from "../hooks/useSettings";
 import {
-  inboxWakes,
+  inboxChanges,
   isSidebarInboxStatusOrdered,
   isSidebarInboxTimeOrdered,
   projectSidebarInboxDrop,
@@ -411,7 +411,6 @@ function resolveDraggedOrders(input: {
             [...others(activeThreads), projectSidebarInboxDrop(thread, drag.occurredAt)],
             inboxOrder,
             drag.occurredAt,
-            inboxReturns.returnedAt,
           ).map(threadShellKey)
         : workingShelfEnabled
           ? sortInboxThreadsByReturn(
@@ -664,11 +663,8 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   } = input;
   const preciseNow = new Date().toISOString();
   const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
-  const observesStatus = isSidebarInboxStatusOrdered(inboxOrder);
-  const inboxObservation = inboxReturns.observe(
-    workingShelfEnabled || observesStatus ? threads : null,
-  );
-  inboxWakes.observe(observesStatus ? threads : null, preciseNow);
+  const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
+  inboxChanges.observe(isSidebarInboxStatusOrdered(inboxOrder) ? threads : null, preciseNow);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
   const working: EnvironmentThreadShell[] = [];
@@ -728,7 +724,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   const sortedActive = sortActiveBySend
     ? sortWorkingThreadsBySend(active)
     : inboxOrder !== "default"
-      ? sortSidebarInboxThreads(active, inboxOrder, preciseNow, inboxObservation.returnedAt)
+      ? sortSidebarInboxThreads(active, inboxOrder, preciseNow)
       : workingShelfEnabled
         ? sortInboxThreadsByReturn(active, inboxObservation.returnedAt)
         : sortThreadsForSidebar(active);
@@ -2172,7 +2168,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       assignedKeys: new Map(assignments.map(({ id, orderKey }) => [id, orderKey])),
     };
     if (plan.kind === "move-active" && plan.unsnooze) {
-      inboxWakes.noteWake(activeThread, Date.parse(drop.occurredAt));
+      inboxChanges.noteWake(activeThread, Date.parse(drop.occurredAt));
     }
     setOptimisticDrop(drop);
     void (async () => {
