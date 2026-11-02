@@ -28,10 +28,16 @@ const usage = (
   outputTokens: number,
 ): OllamaCloudModelUsage => ({ model, usageUsd, inputTokens, cachedInputTokens, outputTokens });
 
+/** By default the history accounts for all the credit used. */
 const input = (
   models: ReadonlyArray<OllamaCloudModelUsage>,
   rest: Partial<Pick<OllamaCloudValueInput, "usedUsd" | "remainderUsageUsd">> = {},
-): OllamaCloudValueInput => ({ usedUsd: 10, remainderUsageUsd: 0, models, ...rest });
+): OllamaCloudValueInput => ({
+  usedUsd: models.reduce((sum, entry) => sum + entry.usageUsd, 0) + (rest.remainderUsageUsd ?? 0),
+  remainderUsageUsd: 0,
+  models,
+  ...rest,
+});
 
 describe("openRouterValueUsd", () => {
   // 3000 uncached x 1.0 + 1000 cached x 0.1 + 1000 output x 3.0 = 6100 -> $0.0061 at the market.
@@ -40,15 +46,31 @@ describe("openRouterValueUsd", () => {
   const unpriced = usage("unheard-of", 0.0122, 5_000_000, 0, 1_000_000);
 
   it("applies the market-to-Ollama ratio of the priced models to the credit used", () => {
-    // Ollama billed twice the market price, so $10 of credit is worth $5.
-    assert.closeTo(openRouterValueUsd(market, input([glm]))!, 5, 1e-9);
+    // Ollama billed twice the market price, so $0.0122 of credit is worth $0.0061.
+    assert.closeTo(openRouterValueUsd(market, input([glm]))!, 0.0061, 1e-9);
+    assert.closeTo(openRouterValueUsd(market, input([glm], { usedUsd: 0.0122 }))!, 0.0061, 1e-9);
   });
 
   it("values what it cannot price at that same ratio, while half of the dollars are priced", () => {
-    assert.closeTo(openRouterValueUsd(market, input([glm, unpriced]))!, 5, 1e-9);
+    assert.closeTo(openRouterValueUsd(market, input([glm, unpriced]))!, 0.0122, 1e-9);
     assert.closeTo(
       openRouterValueUsd(market, input([glm], { remainderUsageUsd: 0.0122 }))!,
-      5,
+      0.0122,
+      1e-9,
+    );
+  });
+
+  it("counts credit spent beyond the history against the share, so it cannot drop out", () => {
+    // The history keeps to whole days, so the first day after a renewal is not in it. Here that day
+    // holds all but $0.0122 of the credit used: 1 in 51, however well the rest is priced.
+    assert.isUndefined(openRouterValueUsd(market, input([glm], { usedUsd: 0.0122 * 51 })));
+    // Half of the credit used was priced directly: shown. A little less is not.
+    assert.closeTo(openRouterValueUsd(market, input([glm], { usedUsd: 0.0244 }))!, 0.0122, 1e-9);
+    assert.isUndefined(openRouterValueUsd(market, input([glm], { usedUsd: 0.0245 })));
+    // Bought credit can make the history larger than the included credit used; it counts whole.
+    assert.closeTo(
+      openRouterValueUsd(market, input([glm, unpriced], { usedUsd: 0.001 }))!,
+      0.0005,
       1e-9,
     );
   });
@@ -67,8 +89,8 @@ describe("openRouterValueUsd", () => {
     const gptOss = usage("gpt-oss:120b", 0.0036, 10_000, 0, 2000);
     const ratio = (0.0061 + 0.0018) / (0.0122 + 0.0036);
     assert.closeTo(
-      openRouterValueUsd(market, input([glm, gptOss], { usedUsd: 8 }))!,
-      ratio * 8,
+      openRouterValueUsd(market, input([glm, gptOss], { usedUsd: 0.0158 }))!,
+      ratio * 0.0158,
       1e-9,
     );
   });
@@ -76,7 +98,7 @@ describe("openRouterValueUsd", () => {
   it("clamps cached tokens to the input they are part of", () => {
     const odd = usage("glm-5.3", 0.002, 1000, 4000, 0);
     // 1000 cached tokens at 0.1 = $0.0001 for $0.002 billed.
-    assert.closeTo(openRouterValueUsd(market, input([odd], { usedUsd: 1 }))!, 0.05, 1e-9);
+    assert.closeTo(openRouterValueUsd(market, input([odd]))!, 0.0001, 1e-9);
   });
 
   it("has no value when no model has a market price or any usage to weigh", () => {
@@ -98,7 +120,7 @@ describe("OllamaCloudValuation layer", () => {
       const value = yield* valuation.openRouterValueUsd(
         input([usage("glm-5.3", 0.0122, 4000, 1000, 1000)]),
       );
-      assert.closeTo(value!, 5, 1e-9);
+      assert.closeTo(value!, 0.0061, 1e-9);
     }).pipe(
       Effect.provide(
         layer.pipe(

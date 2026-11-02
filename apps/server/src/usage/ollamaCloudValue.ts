@@ -10,7 +10,7 @@ import * as Layer from "effect/Layer";
 import { OpenRouterZdrRates } from "./OpenRouterZdrRates.ts";
 import { priceUsage, type RateTable } from "./usagePricing.ts";
 
-/** Below this share of the period's Ollama dollars on priced models, the ratio says too little. */
+/** Below this share of the credit the period used on priced models, the ratio says too little. */
 const PRICED_SHARE_FLOOR = 0.5;
 
 /**
@@ -47,7 +47,9 @@ export function openRouterValueUsd(
     marketUsd += priced.costUsd;
     billedUsd += usage.usageUsd;
   }
-  if (billedUsd <= 0 || billedUsd < periodUsd * PRICED_SHARE_FLOOR) return undefined;
+  // The history may leave out some of what was spent, but that spend still counts against the share.
+  const spentUsd = Math.max(periodUsd, input.usedUsd);
+  if (billedUsd <= 0 || billedUsd < spentUsd * PRICED_SHARE_FLOOR) return undefined;
   return (marketUsd / billedUsd) * input.usedUsd;
 }
 
