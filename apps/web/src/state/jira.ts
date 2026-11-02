@@ -23,7 +23,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 
-import { jiraEnvironmentForThread } from "../components/jira/jiraEnvironments";
+import { jiraEnvironmentForThread, threadUsesJiraSite } from "../components/jira/jiraEnvironments";
 import { extractIssueKeys } from "../components/jira/jiraIssueKeys";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -32,12 +32,29 @@ import { primaryEnvironmentIdAtom } from "./primaryEnvironment";
 import { environmentThreadShells } from "./threads";
 
 /** Counts the Jira writes this client has made, so what is on screen asks again. */
-const jiraRevisionAtom = Atom.family((environmentId: EnvironmentId) =>
+export const jiraRevisionAtom = Atom.family((environmentId: EnvironmentId) =>
   Atom.make(0).pipe(Atom.withLabel(`web:jira:revision:${environmentId}`)),
 );
 
 const refreshOnWrite = ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
   jiraRevisionAtom(environmentId);
+
+/** Counts the refreshes of linked issues' statuses alone, on the chips' own schedule. */
+const jiraChipRevisionAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make(0).pipe(Atom.withLabel(`web:jira:chip-revision:${environmentId}`)),
+);
+
+/** What the status lookup watches: every write and page refresh, and the chips' own refreshes. */
+export const jiraLookupSignalAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make(
+    (get) => get(jiraRevisionAtom(environmentId)) + get(jiraChipRevisionAtom(environmentId)),
+  ).pipe(Atom.withLabel(`web:jira:lookup-signal:${environmentId}`)),
+);
+
+/** Asks again for the statuses of linked issues only, leaving the page's lists and details be. */
+export function refreshJiraChips(environmentId: EnvironmentId): void {
+  appAtomRegistry.update(jiraChipRevisionAtom(environmentId), (count) => count + 1);
+}
 
 const writeDone = (
   target: { readonly environmentId: EnvironmentId },
@@ -112,13 +129,14 @@ export const jiraTransitionsQuery = createEnvironmentRpcQueryAtomFamily(connecti
   refreshTrigger: refreshOnWrite,
 });
 
+// Not polled by the query itself, which would go on while the window is hidden; `JiraHost` asks
+// again through `refreshJiraChips` while the app is in view.
 const jiraLookupQuery = createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
   label: "web:jira:lookup",
   tag: WS_METHODS.jiraLookupIssues,
   staleTimeMs: 60_000,
-  refreshIntervalMs: 60_000,
   idleTtlMs: 30_000,
-  refreshTrigger: refreshOnWrite,
+  refreshTrigger: ({ environmentId }) => jiraLookupSignalAtom(environmentId),
 });
 
 export const jiraConfigure = createEnvironmentRpcCommand(connectionAtomRuntime, {
@@ -238,7 +256,7 @@ export const jiraLinkedThreadsAtom = Atom.family((environmentId: EnvironmentId) 
     const linked = new Map<string, ScopedThreadRef[]>();
     for (const shell of get(environmentThreadShells.threadShellsAtom)) {
       if (shell.archivedAt !== null || shell.deletedAt !== null) continue;
-      if (jiraEnvironmentForThread(shell.environmentId, configured) !== environmentId) continue;
+      if (!threadUsesJiraSite(shell.environmentId, configured, environmentId)) continue;
       for (const key of extractIssueKeys(shell, projectKeys)) {
         const refs = linked.get(key) ?? [];
         refs.push(scopeThreadRef(shell.environmentId, shell.id));

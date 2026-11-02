@@ -42,6 +42,20 @@ describe("jiraConnectionSummary", () => {
     });
   });
 
+  it("puts a failed check ahead of the account an earlier check confirmed", () => {
+    expect(
+      jiraConnectionSummary({
+        saved,
+        account: { accountId: "a", displayName: "Sam Rivera" },
+        error: "Jira did not accept the email and API token (HTTP 401).",
+      }),
+    ).toEqual({
+      configured: true,
+      message:
+        "Saved, but Jira did not confirm it: Jira did not accept the email and API token (HTTP 401).",
+    });
+  });
+
   it("says the check is running while Jira has not answered yet", () => {
     expect(jiraConnectionSummary({ saved, account: null, error: null })).toEqual({
       configured: true,
