@@ -191,6 +191,26 @@ describe("subscriptions of one provider account", () => {
         B: opencode({ subscriptions: [zai, { ...ollama, checkedAt: later }] }),
       })[1],
     ).toEqual(["Ollama Cloud", credit]);
+
+    // The freshest credit stands wherever it sits among the reads, even past a newer read with none.
+    const midway = "2026-09-03T11:15:00.000Z";
+    const reads = {
+      A: opencode({ subscriptions: [zai, { ...ollama, credit }] }),
+      B: opencode({ subscriptions: [zai, { ...ollama, checkedAt: later }] }),
+      C: opencode({ subscriptions: [zai, { ...ollama, checkedAt: midway, credit: fresher }] }),
+    } as const;
+    const orders = [
+      ["A", "B", "C"],
+      ["A", "C", "B"],
+      ["B", "A", "C"],
+      ["B", "C", "A"],
+      ["C", "A", "B"],
+      ["C", "B", "A"],
+    ] as const;
+    for (const order of orders) {
+      const fleet = Object.fromEntries(order.map((label) => [label, reads[label]]));
+      expect(creditOf(fleet)[1], order.join("")).toEqual(["Ollama Cloud", fresher]);
+    }
   });
 
   it("offers reset credits on the subscription that banks them", () => {

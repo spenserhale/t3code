@@ -170,9 +170,10 @@ quota and its monthly tool allowance, along with any banked quota resets. **Use 
 of the two, because a weekly reset also clears the 5-hour quota. An Ollama Cloud subscription signed
 in through OpenCode reports its monthly credit, or its session and weekly usage on older plans, each
 with its reset time. Under a monthly credit, Limits also shows how much of the pool the period has
-used, what the plan costs, and any purchased credit. When at least half of that usage was on models
-OpenRouter prices, it also shows what the usage would have cost at OpenRouter's zero-data-retention
-rates. Cursor reports
+used, what the plan costs, and any purchased credit. On a $60 Pro or $300 Max plan, when at least
+half of that usage was on models OpenRouter prices, it also shows what the usage would have cost at
+OpenRouter's zero-data-retention rates. Team and custom-sized pools skip that, because their balance
+can include other members' usage. Cursor reports
 its monthly allowance, including separate Auto and API usage, for `CURSOR_AUTH_TOKEN` when it is set,
 otherwise for the account you signed in with in T3 or set as `CURSOR_API_KEY`, otherwise for the CLI
 login. On macOS, this includes the default Keychain login after you enable Cursor usage. Sign-in, API key,

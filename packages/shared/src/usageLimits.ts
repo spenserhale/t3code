@@ -264,6 +264,7 @@ export interface LimitAccount {
 export function collectLimitAccounts(presentations: LimitPresentations): readonly LimitAccount[] {
   const accounts = new Map<string, LimitAccount>();
   const creditSources = new Map<string, LimitAccount>();
+  const poolSources = new Map<string, LimitAccount>();
   const hubRedeems = new Map<string, LimitAccount>();
   const planSources = new Map<string, LimitAccount>();
   const merge = (key: string, next: LimitAccount) => {
@@ -283,6 +284,14 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         Date.parse(next.limits.checkedAt) > Date.parse(previousCredit.limits.checkedAt))
     ) {
       creditSources.set(key, next);
+    }
+    const previousPool = poolSources.get(key);
+    if (
+      next.credit &&
+      (!previousPool ||
+        Date.parse(next.limits.checkedAt) > Date.parse(previousPool.limits.checkedAt))
+    ) {
+      poolSources.set(key, next);
     }
     const previousPlan = planSources.get(key);
     if (
@@ -321,7 +330,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
           : displayName,
       plan: planSources.get(key)?.plan ?? previous.plan ?? next.plan,
       subscription: previous.subscription ?? next.subscription,
-      credit: winner.credit ?? previous.credit ?? next.credit,
+      credit: poolSources.get(key)?.credit,
       accentColor: previous.accentColor ?? next.accentColor,
       environments,
       sourceLabel: environments.length > 0 ? null : (previous.sourceLabel ?? next.sourceLabel),
