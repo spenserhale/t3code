@@ -1207,6 +1207,22 @@ export function summarizeT3ToolCalls(
           );
       break;
     }
+    case "jira": {
+      const count = selected.length;
+      label = done
+        ? resolve(
+            msg("{count, plural, one {Used Jira {count} time} other {Used Jira {count} times}}", {
+              count,
+            }),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to use Jira {count} time} other {Tried to use Jira {count} times}}",
+              { count },
+            ),
+          );
+      break;
+    }
     case "capabilities": {
       const count = selected.length;
       label = done
