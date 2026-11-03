@@ -68,6 +68,10 @@ import {
 import * as WorktreeHandlers from "./toolkits/worktree/handlers.ts";
 import { WorktreeToolkit } from "./toolkits/worktree/tools.ts";
 import * as WorktreeMcpService from "./WorktreeMcpService.ts";
+import * as WorktreeOpenBranch from "./WorktreeOpenBranch.ts";
+import * as MachineHandoffHandlers from "./toolkits/machineHandoff/handlers.ts";
+import { MachineHandoffToolkit } from "./toolkits/machineHandoff/tools.ts";
+import * as ThreadMachineHandoff from "../peer/ThreadMachineHandoff.ts";
 import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import * as DeviceHandlers from "./toolkits/device/handlers.ts";
@@ -1138,6 +1142,11 @@ const layerEnvironmentToolkit = toolkitRegistration(
 
 export const layerProjectRegistration = toolkitRegistration(ProjectToolkit, ProjectHandlers.layer);
 
+const layerMachineHandoffToolkit = toolkitRegistration(
+  MachineHandoffToolkit,
+  MachineHandoffHandlers.layer,
+).pipe(Layer.provide(ThreadMachineHandoff.layer), Layer.provide(WorktreeOpenBranch.layer));
+
 export const layerAttachmentToolkit = toolkitRegistration(
   AttachmentToolkit,
   AttachmentHandlers.layer,
@@ -1207,4 +1216,5 @@ export const layerTools = Layer.mergeAll(
   layerHtmlToolkit,
 );
 
-export const layer = layerMcpTransport(layerTools);
+// Outside `layerTools`: it is the set `AgentContextBudget.test.ts` measures against upstream's budget.
+export const layer = layerMcpTransport(Layer.mergeAll(layerTools, layerMachineHandoffToolkit));

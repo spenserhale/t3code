@@ -97,6 +97,12 @@ first message there; **Undo** in the toast, or **Un-settle** on the thread, reve
 - The conversation is a copy. The thread, its provider session and its checkpoints stay where they
   were, and the new thread starts a fresh provider session.
 
+An agent can do the same with its `t3_thread_continue_on_machine` tool, with the same checks: it
+commits, pushes and starts the thread on the other machine, and the original settles when the agent's
+turn ends. This needs Linked environments (**Settings → Labs**) and a
+[link](./remote-access.md#link-another-environment) to the other machine, which has to run a
+version of T3 Code that has the tool.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work.
