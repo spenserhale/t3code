@@ -18,22 +18,30 @@ features target the repository a fork tracks. A fork also reports its own
 `origin`, and clients group and label by that, so a fork never collapses into a
 checkout of its upstream.
 
-Continuing a thread on another machine is the client's work, not a link between
-servers. The source pushes a WIP commit to a branch of the shared remote, the
-client reads the conversation as a transcript, makes a worktree on the same
-branch from the target's checkout of the same repository (found by repository
-identity and place in it, not by the sidebar's grouping), and opens a draft in
-it. The thread, its provider session and its checkpoints stay on the source.
-Nothing on the servers ties the two threads, so the client remembers the draft's
-source and settles it once the first message is on the target
+Continuing a thread on another machine moves a branch and a conversation, not
+the thread. The source pushes a WIP commit to a branch of the shared remote. The
+target makes a worktree on the same branch from its checkout of the same
+repository (found by repository identity and place in it, not by the sidebar's
+grouping), and a new thread starts there with the conversation attached as a
+transcript. The thread, its provider session and its checkpoints stay on the
+source, and nothing on the servers ties the two threads. The worktree is made
+when the handoff runs, not on the first send, because the launch path has one
+ref for both the start point and the branch a pull request compares with, and
+cannot track a branch of the same name. It must hold the pushed commit before a
+thread starts in it.
+
+A client drives this for a user: it reads both machines, has the target fetch
+with `vcs.pull` (no command fetches a named remote), checks the commit with
+`review.getBranchCommits`, and settles the source once the first message is on
+the target
 ([`threadMachineHandoffSettle`](../../apps/web/src/lib/threadMachineHandoffSettle.ts)).
-The target's worktree is made when the handoff runs, not on the first send,
-because the launch path has one ref for both the start point and the branch a
-pull request compares with, and cannot track a branch of the same name. The
-target's remote-tracking refs may be old and no command fetches a named remote,
-so the new worktree fetches the remote it tracks (`vcs.pull`) and the client
-checks it holds the pushed commit (`review.getBranchCommits`) before the draft
-opens.
+An agent drives it from its own server through a link, where no client watches
+a draft
+([`ThreadMachineHandoff`](../../apps/server/src/peer/ThreadMachineHandoff.ts)):
+it uploads the transcript to the target, has the target's
+[`t3_worktree_open_branch`](../../apps/server/src/mcp/WorktreeOpenBranch.ts)
+fetch the remote itself and check the commit by ancestry, launches the thread,
+and settles the source.
 
 [Environment ID initialization](../../apps/server/src/environment/ServerEnvironment.ts)
 must publish a complete ID atomically. Repair of an empty ID file retains a
