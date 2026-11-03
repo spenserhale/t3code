@@ -1,10 +1,10 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type {
-  HandoffCodePlan,
   HandoffReady,
   HandoffStep,
   ThreadMachineHandoffPlan,
 } from "@t3tools/client-runtime/thread-machine-handoff";
+import type { HandoffCodePlan } from "@t3tools/shared/threadMachineHandoff";
 import {
   EnvironmentId,
   ProjectId,
