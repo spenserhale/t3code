@@ -1,6 +1,4 @@
 import {
-  buildHandoffNote,
-  handoffCommitMessage,
   isSameHandoffCode,
   resolveHandoffComparisonBase,
   resolveHandoffPushed,
@@ -10,6 +8,7 @@ import {
   type ThreadMachineHandoffPlan,
 } from "@t3tools/client-runtime/thread-machine-handoff";
 import type { ModelSelection } from "@t3tools/contracts";
+import { buildHandoffNote, handoffCommitMessage } from "@t3tools/shared/threadMachineHandoff";
 
 import type { DraftId } from "../composerDraftStore";
 import { formatBytes } from "./formatBytes";

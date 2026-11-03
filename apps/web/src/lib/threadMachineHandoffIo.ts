@@ -1,8 +1,8 @@
-import {
-  explainHandoffGitFailure,
-  type HandoffReady,
-  type ThreadMachineHandoffPlan,
+import type {
+  HandoffReady,
+  ThreadMachineHandoffPlan,
 } from "@t3tools/client-runtime/thread-machine-handoff";
+import { explainHandoffGitFailure } from "@t3tools/shared/threadMachineHandoff";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
