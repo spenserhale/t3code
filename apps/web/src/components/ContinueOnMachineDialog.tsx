@@ -2,13 +2,8 @@ import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
   assessHandoffMachines,
   carriesHandoffCode,
-  collectHandoffBranchNames,
-  explainNoHandoffCode,
-  HANDOFF_BRANCH_QUERY,
-  isHandoffDefaultBranch,
   listHandoffSteps,
   planThreadMachineHandoff,
-  type HandoffGitStatus,
   type HandoffMachine,
   type HandoffReady,
   type HandoffStep,
@@ -20,6 +15,13 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { type EnvironmentId, type VcsStatusResult } from "@t3tools/contracts";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
+import {
+  collectHandoffBranchNames,
+  explainNoHandoffCode,
+  HANDOFF_BRANCH_QUERY,
+  isHandoffDefaultBranch,
+  type HandoffGitStatus,
+} from "@t3tools/shared/threadMachineHandoff";
 import { CheckIcon, CircleAlertIcon, CircleIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
