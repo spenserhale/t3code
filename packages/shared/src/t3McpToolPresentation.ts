@@ -68,7 +68,8 @@ export type T3McpToolSummaryAction =
   | "browser"
   | "device"
   | "html-preview"
-  | "html-render";
+  | "html-render"
+  | "jira";
 
 export interface T3McpToolDefinition {
   readonly displayName: string;
@@ -358,6 +359,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   t3_thread_send_attachments: tool(["Send", "Sending", "Sent", "attachments"], "attachment-send"),
   html_preview: tool(["Preview", "Previewing", "Previewed", "an HTML page"], "html-preview"),
   html_render: tool(["Render", "Rendering", "Rendered", "an HTML page"], "html-render"),
+  jira_issue_search: tool(["Search", "Searching", "Searched", "Jira issues"], "jira"),
+  jira_issue_read: tool(["Read", "Reading", "Read", "a Jira issue"], "jira"),
+  jira_issue_transition: tool(["Manage", "Managing", "Managed", "a Jira issue's status"], "jira"),
+  jira_issue_comment: tool(["Comment on", "Commenting on", "Commented on", "a Jira issue"], "jira"),
 };
 
 export const T3_MCP_TOOL_NAMES: ReadonlySet<string> = new Set(Object.keys(T3_MCP_TOOLS));

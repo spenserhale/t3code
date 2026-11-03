@@ -80,6 +80,19 @@ To move an issue automatically when a thread starts from it, turn on **Move the 
 starts** in the same settings section and name the status. It is off by default, and the move only
 happens when Jira offers it from the issue's current status.
 
+## Agents
+
+Agents use the Jira connection of the environment they work in, [outside agents](./outside-agents.md)
+included. They can search for issues, read one with its description, acceptance criteria and
+comments, list the moves Jira offers from its status and make one, and add a comment
+(`jira_issue_search`, `jira_issue_read`, `jira_issue_transition` and `jira_issue_comment`). Moves
+and comments are made as the connected Jira account, so they appear under your name. An outside
+agent with **Read only** access can search and read, but not move or comment.
+
+An agent links a thread to an issue the way you do: by putting the key in capitals in the thread's
+title, as in `PROJ-123: Fix login redirect`. As for any thread, an automatic title refresh can drop
+the key from a thread without a worktree (see [Threads and issues](#threads-and-issues)).
+
 ## Limits
 
 Jira Cloud only; Data Center and Server are not supported. The Jira page is on web and desktop, not
