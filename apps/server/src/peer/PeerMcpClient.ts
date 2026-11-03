@@ -65,7 +65,7 @@ const decodeFailure = Schema.decodeUnknownOption(
 );
 
 /** A peer link problem, as the agent that asked hears it. */
-const fromLinkError = (error: PeerLinkError) =>
+export const fromLinkError = (error: PeerLinkError) =>
   new OrchestratorMcpFailure({
     code:
       error.reason === "unknown_link"

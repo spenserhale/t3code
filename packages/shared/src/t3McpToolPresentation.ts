@@ -42,6 +42,8 @@ export type T3McpToolSummaryAction =
   | "question-respond"
   | "secret-request"
   | "worktree-handoff"
+  | "worktree-open-branch"
+  | "machine-handoff"
   | "worktree-list"
   | "worktree-status"
   | "project-list"
@@ -171,6 +173,14 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "worktree-handoff",
   ),
   t3_worktree_status: tool(["Get", "Getting", "Got", "thread worktree status"], "worktree-status"),
+  t3_worktree_open_branch: tool(
+    ["Open", "Opening", "Opened", "a branch in a git worktree"],
+    "worktree-open-branch",
+  ),
+  t3_thread_continue_on_machine: tool(
+    ["Continue", "Continuing", "Continued", "a thread on another machine"],
+    "machine-handoff",
+  ),
   preview_status: tool(["Get", "Getting", "Got", "preview browser status"], "browser", "browser"),
   preview_open: tool(
     ["Open", "Opening", "Opened", "a page in the preview browser"],

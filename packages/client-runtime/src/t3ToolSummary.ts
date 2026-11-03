@@ -302,6 +302,20 @@ export function summarizeT3ToolCalls(
         quantity(countEntities(entityIds("worktreePath")), "worktree"),
       );
       break;
+    case "worktree-open-branch":
+      label = phrase(
+        "Opened",
+        "open",
+        quantity(countEntities(entityIds("branch")), "branch", "branches"),
+      );
+      break;
+    case "machine-handoff":
+      label = phrase(
+        "Continued",
+        "continue",
+        `${quantity(selected.length, "thread")} on another machine`,
+      );
+      break;
     case "worktree-list":
       label = phrase("Listed", "list", `workspace branches ${times}`);
       break;
