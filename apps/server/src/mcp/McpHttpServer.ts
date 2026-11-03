@@ -94,6 +94,10 @@ import {
 import * as WorktreeHandlers from "./toolkits/worktree/handlers.ts";
 import { WorktreeToolkit } from "./toolkits/worktree/tools.ts";
 import * as WorktreeMcpService from "./WorktreeMcpService.ts";
+import * as WorktreeOpenBranch from "./WorktreeOpenBranch.ts";
+import * as MachineHandoffHandlers from "./toolkits/machineHandoff/handlers.ts";
+import { MachineHandoffToolkit } from "./toolkits/machineHandoff/tools.ts";
+import * as ThreadMachineHandoff from "../peer/ThreadMachineHandoff.ts";
 import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
 import * as ToolSearchHandlers from "./toolkits/toolSearch/handlers.ts";
 import { ToolSearchToolkit } from "./toolkits/toolSearch/tools.ts";
@@ -1487,6 +1491,11 @@ const layerFeedbackToolkit = toolkitRegistration(FeedbackToolkit, FeedbackHandle
   ),
 );
 
+const layerMachineHandoffToolkit = toolkitRegistration(
+  MachineHandoffToolkit,
+  MachineHandoffHandlers.layer,
+).pipe(Layer.provide(ThreadMachineHandoff.layer), Layer.provide(WorktreeOpenBranch.layer));
+
 export const layerAttachmentToolkit = toolkitRegistration(
   AttachmentToolkit,
   AttachmentHandlers.layer,
@@ -1672,6 +1681,7 @@ export const layerMilestoneEvents = Layer.effectDiscard(
   Layer.provide(layerWebhookTransport),
 );
 
+// Outside `layerTools`: it is the set `AgentContextBudget.test.ts` measures against upstream's budget.
 export const layer = layerMcpTransport(
-  Layer.mergeAll(layerTools, layerToolSearch, layerMilestoneEvents),
+  Layer.mergeAll(layerTools, layerToolSearch, layerMilestoneEvents, layerMachineHandoffToolkit),
 );
