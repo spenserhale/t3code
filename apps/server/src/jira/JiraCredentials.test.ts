@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -18,7 +19,7 @@ const layer = JiraCredentials.layer.pipe(
   ),
 );
 
-it.layer(NodeServices.layer)("JiraCredentials", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("JiraCredentials", (it) => {
   it.effect(
     "keeps the token in the secret store, apart from settings, and forgets it on clear",
     () =>

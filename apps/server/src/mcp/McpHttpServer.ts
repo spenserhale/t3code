@@ -79,6 +79,8 @@ import {
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
 import { requestUrl } from "../requestUrl.ts";
+import * as JiraHandlers from "./toolkits/jira/handlers.ts";
+import { JiraToolkit } from "./toolkits/jira/tools.ts";
 
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
   requestUrl(request).pipe(
@@ -1207,4 +1209,7 @@ export const layerTools = Layer.mergeAll(
   layerHtmlToolkit,
 );
 
-export const layer = layerMcpTransport(layerTools);
+// Outside layerTools, which agentContextBudget.json pins to the tools upstream ships.
+export const layerJiraToolkit = toolkitRegistration(JiraToolkit, JiraHandlers.layer);
+
+export const layer = layerMcpTransport(Layer.mergeAll(layerTools, layerJiraToolkit));
