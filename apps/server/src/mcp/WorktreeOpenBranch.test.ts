@@ -70,7 +70,7 @@ const makeRepository = (
     remoteBranch: options.remoteBranch === false ? null : tip,
     /** The commits every checkout holds: what `merge-base --is-ancestor` finds. */
     holds: new Set(options.holds ?? [tip]),
-    knownRefs: new Set<string>(["origin/main", "main"]),
+    knownRefs: new Set<string>(["refs/remotes/origin/main"]),
     /** How far behind the remote a checkout git makes for a branch that exists already is. */
     behindOnCreate: 0,
     /** How many commits of its own a checkout git makes for a branch that exists already has. */
@@ -239,7 +239,7 @@ describe("t3_worktree_open_branch", () => {
   it.effect("makes a worktree on a new local branch that tracks the remote one", () =>
     Effect.gen(function* () {
       const repo = makeRepository();
-      const opened = yield* open(repo, { baseRef: "origin/main", expectCommit: tip });
+      const opened = yield* open(repo, { baseBranch: "main", expectCommit: tip });
       expect(opened).toEqual({
         worktreePath: "/worktrees/app-1",
         branch: "feature",
@@ -250,7 +250,7 @@ describe("t3_worktree_open_branch", () => {
       expect(repo.log).toEqual(["fetch origin/feature", "worktree feature from origin/feature"]);
       expect(repo.checkouts.get("/worktrees/app-1")).toMatchObject({
         upstream: "origin/feature",
-        base: "origin/main",
+        base: "refs/remotes/origin/main",
       });
     }),
   );
@@ -287,9 +287,37 @@ describe("t3_worktree_open_branch", () => {
   it.effect("stops before making anything when the comparison base is not here", () =>
     Effect.gen(function* () {
       const repo = makeRepository();
-      const message = yield* failureOf(open(repo, { baseRef: "origin/release" }));
+      const message = yield* failureOf(open(repo, { baseBranch: "release" }));
       expect(message).toContain("does not have origin/release");
       expect(repo.log).toEqual(["fetch origin/feature"]);
+    }),
+  );
+
+  it.effect("finds the comparison base on the remote that is its repository", () =>
+    Effect.gen(function* () {
+      const forks = { origin: "git@github.com:fork/app.git", team: "git@github.com:acme/app.git" };
+      // The branch is on acme's repository; the base is on the fork's, which is `origin` here.
+      const other = makeRepository({ remotes: forks });
+      yield* open(other, {
+        repositoryKey: "github.com/acme/app",
+        baseBranch: "main",
+        baseRepositoryKey: "github.com/fork/app",
+      });
+      expect(other.checkouts.get("/worktrees/app-1")?.base).toBe("refs/remotes/origin/main");
+      // Left out, the base is on the branch's own repository, and a branch of that name on another
+      // remote is not it.
+      const same = makeRepository({ remotes: forks });
+      const message = yield* failureOf(
+        open(same, { repositoryKey: "github.com/acme/app", baseBranch: "main" }),
+      );
+      expect(message).toContain("does not have team/main");
+      expect(same.log).toEqual(["fetch team/feature"]);
+      const absent = makeRepository();
+      const missing = yield* failureOf(
+        open(absent, { baseBranch: "main", baseRepositoryKey: "github.com/other/app" }),
+      );
+      expect(missing).toContain("No remote of this project here is github.com/other/app");
+      expect(absent.log).toEqual(["fetch origin/feature"]);
     }),
   );
 
@@ -298,7 +326,7 @@ describe("t3_worktree_open_branch", () => {
       const repo = makeRepository();
       trackingBranch(repo, "/worktrees/earlier");
       repo.checkouts.get("/worktrees/earlier")!.behind = 2;
-      const opened = yield* open(repo, { baseRef: "origin/main", expectCommit: tip });
+      const opened = yield* open(repo, { baseBranch: "main", expectCommit: tip });
       expect(opened).toMatchObject({ worktreePath: "/worktrees/earlier", created: false });
       expect(repo.log).toEqual(["fetch origin/feature", `fast-forward to ${tip}`]);
     }),
@@ -309,7 +337,7 @@ describe("t3_worktree_open_branch", () => {
       const repo = makeRepository();
       trackingBranch(repo, null);
       repo.behindOnCreate = 3;
-      const opened = yield* open(repo, { baseRef: "origin/main", expectCommit: tip });
+      const opened = yield* open(repo, { baseBranch: "main", expectCommit: tip });
       expect(opened).toMatchObject({ worktreePath: "/worktrees/app-1", created: true });
       expect(repo.log).toEqual([
         "fetch origin/feature",
@@ -340,7 +368,7 @@ describe("t3_worktree_open_branch", () => {
       const repo = makeRepository();
       trackingBranch(repo, "/worktrees/earlier");
       change(repo.checkouts.get("/worktrees/earlier")!);
-      const message = yield* failureOf(open(repo, { baseRef: "origin/main" }));
+      const message = yield* failureOf(open(repo, { baseBranch: "main" }));
       expect(message).toContain(expected);
       expect(repo.log).toEqual(["fetch origin/feature"]);
     }),
