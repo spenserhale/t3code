@@ -74,7 +74,12 @@ const failOnCheckout = (box: string) =>
     yield* fileSystem.chmod(hook, 0o755);
   });
 
-const open = (box: string, input: { readonly branch?: string } & Record<string, unknown> = {}) =>
+/** `between` runs once the opener has looked at the branches, and before it asks git for a worktree. */
+const open = (
+  box: string,
+  input: { readonly branch?: string } & Record<string, unknown> = {},
+  between: Effect.Effect<void> = Effect.void,
+) =>
   Effect.gen(function* () {
     const git = yield* GitVcsDriver.GitVcsDriver;
     const project = {
@@ -95,7 +100,8 @@ const open = (box: string, input: { readonly branch?: string } & Record<string, 
         remoteExists: (request) => git.remoteExists(request),
         fetchWorktreeBaseCommit: (request) => git.fetchWorktreeBaseCommit(request),
         listRefs: (request) => git.listRefs(request),
-        createWorktree: (request) => git.createWorktree(request),
+        createWorktree: (request, options) =>
+          between.pipe(Effect.andThen(git.createWorktree(request, options))),
         removeWorktree: (request) => git.removeWorktree(request),
         deleteLocalBranch: (request) => git.deleteLocalBranch(request),
       }),
@@ -246,4 +252,53 @@ it.effect(
         "refs/remotes/team/main",
       );
     }).pipe(Effect.scoped, Effect.provide(layerGit)),
+);
+
+it.effect("leaves the worktree another operation made for the branch in the meantime", () =>
+  Effect.gen(function* () {
+    const { run, fileSystem, path, box } = yield* makeRepositories;
+    const { worktreesDir } = yield* ServerConfig.ServerConfig;
+    const git = yield* GitVcsDriver.GitVcsDriver;
+    yield* run(box, "fetch", "origin");
+    yield* run(box, "branch", "--track", "feature", "origin/feature");
+
+    // The opener found `feature` without a worktree; then another checkout takes it, at the very
+    // path the opener would use, and has work in it that is not committed.
+    const theirs = path.join(worktreesDir, "box", "feature");
+    const takeBranch = git
+      .createWorktree({ cwd: box, refName: "feature", path: null })
+      .pipe(
+        Effect.andThen(fileSystem.writeFileString(path.join(theirs, "notes.txt"), "uncommitted\n")),
+        Effect.orDie,
+      );
+    const failed = yield* open(box, {}, takeBranch).pipe(Effect.flip);
+    expect(failed.message).toContain("Could not make a worktree for feature");
+    expect(failed.message).toContain("left as it was");
+    expect(yield* fileSystem.readFileString(path.join(theirs, "notes.txt"))).toBe("uncommitted\n");
+    expect(yield* run(box, "worktree", "list", "--porcelain")).toContain(theirs);
+    expect(yield* run(box, "branch", "--list", "feature")).toContain("feature");
+  }).pipe(Effect.scoped, Effect.provide(layerGit)),
+);
+
+it.effect("leaves the branch and worktree another operation made first", () =>
+  Effect.gen(function* () {
+    const { run, fileSystem, path, box } = yield* makeRepositories;
+    const { worktreesDir } = yield* ServerConfig.ServerConfig;
+    const git = yield* GitVcsDriver.GitVcsDriver;
+
+    // The project had no `feature`; another operation makes it, with its worktree, before the opener.
+    const theirs = path.join(worktreesDir, "box", "feature");
+    const takeBranch = git
+      .createWorktree({ cwd: box, refName: "origin/feature", newRefName: "feature", path: null })
+      .pipe(
+        Effect.andThen(fileSystem.writeFileString(path.join(theirs, "notes.txt"), "uncommitted\n")),
+        Effect.orDie,
+      );
+    const failed = yield* open(box, {}, takeBranch).pipe(Effect.flip);
+    expect(failed.message).toContain("Could not make a worktree on origin/feature");
+    expect(failed.message).toContain("left as it was");
+    expect(yield* fileSystem.readFileString(path.join(theirs, "notes.txt"))).toBe("uncommitted\n");
+    expect(yield* run(box, "worktree", "list", "--porcelain")).toContain(theirs);
+    expect(yield* run(box, "branch", "--list", "feature")).toContain("feature");
+  }).pipe(Effect.scoped, Effect.provide(layerGit)),
 );

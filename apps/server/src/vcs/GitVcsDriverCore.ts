@@ -4106,6 +4106,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }
       worktreePath = path.join(parentDir, repoName, directoryName);
     }
+    const progress = options?.progress;
     if (input.newRefName) {
       // Kept apart from the checkout so the shared-config lock only covers the tracking write.
       yield* createBranchAt(
@@ -4113,12 +4114,16 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         { cwd: input.cwd, branch: input.newRefName, startPoint: input.refName },
         "git worktree add failed",
       );
+      if (progress?.onBranchCreated) yield* progress.onBranchCreated(input.newRefName);
     }
     const args = ["worktree", "add", "--", worktreePath, input.newRefName ?? input.refName];
-    const progress = options?.progress;
     const onCheckoutProgress = progress?.onCheckoutProgress;
 
     const checkoutWorkers = (yield* readConfigValue(input.cwd, "checkout.workers")) ?? "0";
+    const onWorktreeLeftBehind = progress?.onWorktreeLeftBehind;
+    const folderExisted =
+      onWorktreeLeftBehind === undefined ||
+      (yield* fileSystem.exists(worktreePath).pipe(Effect.orElseSucceed(() => true)));
     yield* executeGitWithStableDiagnostics(
       "GitVcsDriver.createWorktree",
       input.cwd,
@@ -4142,6 +4147,22 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             }
           : {}),
       },
+    ).pipe(
+      Effect.tapError((error) => {
+        // Git refuses with exit 128, before it adds anything. Another failure, in a folder that was
+        // not there before the command, came after git added it: a hook, such as post-checkout.
+        const addedFolder =
+          error.exitCode !== undefined &&
+          error.exitCode !== 128 &&
+          error.reason !== "path_already_exists" &&
+          error.reason !== "branch_checked_out_in_worktree";
+        return onWorktreeLeftBehind === undefined || folderExisted || !addedFolder
+          ? Effect.void
+          : fileSystem.exists(worktreePath).pipe(
+              Effect.orElseSucceed(() => false),
+              Effect.flatMap((there) => (there ? onWorktreeLeftBehind(worktreePath) : Effect.void)),
+            );
+      }),
     );
 
     if (progress?.onWorktreeClaimed) {

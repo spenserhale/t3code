@@ -123,6 +123,10 @@ export interface ExecuteGitProgress {
 export interface CreateWorktreeProgress {
   /** Git refuses existing paths; claimed paths belong to this call and can be removed on cancel. */
   readonly onWorktreeClaimed?: (path: string) => Effect.Effect<void, never>;
+  /** `newRefName` was made by this call, which is reported even if the worktree then fails. */
+  readonly onBranchCreated?: (branch: string) => Effect.Effect<void, never>;
+  /** Git added this folder and then failed, as a post-checkout hook can: it is this call's. */
+  readonly onWorktreeLeftBehind?: (path: string) => Effect.Effect<void, never>;
   readonly onCheckoutProgress?: (input: {
     percent: number;
     completed: number;
