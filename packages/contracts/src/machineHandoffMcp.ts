@@ -46,7 +46,10 @@ export const WorktreeOpenBranchInput = Schema.Struct({
   remote: Schema.optional(TrimmedNonEmptyString),
   /** A project's `repositoryIdentity.canonicalKey`: the repository the branch is on. */
   repositoryKey: Schema.optional(TrimmedNonEmptyString),
-  baseRef: Schema.optional(TrimmedNonEmptyString),
+  /** What a new branch is compared with in pull requests: a branch name, with no remote in it. */
+  baseBranch: Schema.optional(TrimmedNonEmptyString),
+  /** The repository `baseBranch` is on, as for `repositoryKey`. Default: the branch's own. */
+  baseRepositoryKey: Schema.optional(TrimmedNonEmptyString),
   expectCommit: Schema.optional(TrimmedNonEmptyString),
 });
 export type WorktreeOpenBranchInput = typeof WorktreeOpenBranchInput.Type;
