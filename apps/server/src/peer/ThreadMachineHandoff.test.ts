@@ -150,6 +150,7 @@ const makeHarness = (options: Options = {}) => {
       ? (options.status.refName ?? null)
       : "feature/login";
 
+  const targetModels = options.targetModels ?? ["gpt-5"];
   const callingId = options.other === true ? otherThread : sourceThread;
   const shell = (id: ThreadId): OrchestrationV2ThreadShell => ({
     ...liveThreadShell(id, { activeRunId: null }),
@@ -354,7 +355,7 @@ const makeHarness = (options: Options = {}) => {
               providerInstanceId: codex,
               driverKind: "codex",
               displayName: null,
-              models: (options.targetModels ?? ["gpt-5"]).map((id) => ({ id })),
+              models: targetModels.map((id) => ({ id })),
               canRunChildTask: true,
               canRunCrossProviderChildTask: true,
               constraints: [],
@@ -400,6 +401,17 @@ const makeHarness = (options: Options = {}) => {
           created: true,
         });
       case "t3_thread_launch":
+        // A launch for a model the machine lacks is refused there, after the work was pushed.
+        if (
+          params.modelSelection.instanceId !== codex ||
+          !targetModels.includes(params.modelSelection.model)
+        ) {
+          return Effect.fail({
+            _tag: "OrchestratorMcpFailure",
+            code: "model_unavailable",
+            message: `The model ${params.modelSelection.model} is not available.`,
+          });
+        }
         if (options.launchFails === true) {
           return Effect.fail({
             _tag: "OrchestratorMcpFailure",
@@ -605,23 +617,29 @@ describe("t3_thread_continue_on_machine", () => {
       }),
     );
 
-    it.effect("is refused when the target lacks the thread's model, saying where to look", () =>
-      Effect.gen(function* () {
-        const harness = makeHarness({ targetModels: ["something-else"] });
-        const error = yield* harness.failed();
-        expect(error.code).toBe("model_unavailable");
-        expect(error.message).toContain("orchestrator_capabilities with environmentId");
-        expect(gitWrites(harness.log)).toEqual([]);
-      }),
+    it.effect(
+      "is refused when the target lacks the model, the thread's or one the agent names",
+      () =>
+        Effect.gen(function* () {
+          const inherited = makeHarness({ targetModels: ["something-else"] });
+          const error = yield* inherited.failed();
+          expect(error.code).toBe("model_unavailable");
+          expect(error.message).toContain("orchestrator_capabilities with environmentId");
+          expect(gitWrites(inherited.log)).toEqual([]);
+          const named = makeHarness();
+          const refused = yield* named.failed({
+            modelSelection: { instanceId: codex, model: "gpt-6" },
+          });
+          expect(refused.code).toBe("model_unavailable");
+          expect(refused.message).toContain("but not the model gpt-6");
+          expect(gitWrites(named.log)).toEqual([]);
+        }),
     );
 
-    it.effect("takes a model the agent names without asking the target", () =>
+    it.effect("launches with a model the agent names once the target has it", () =>
       Effect.gen(function* () {
-        const harness = makeHarness({ targetModels: [] });
+        const harness = makeHarness({ targetModels: ["gpt-5", "gpt-6"] });
         yield* harness.run({ modelSelection: { instanceId: codex, model: "gpt-6" } });
-        expect(harness.forwarded.map((call) => call.tool)).not.toContain(
-          "orchestrator_capabilities",
-        );
         expect(harness.forwarded.at(-1)?.params.modelSelection).toEqual({
           instanceId: codex,
           model: "gpt-6",
