@@ -50,6 +50,7 @@ import { repositoryBranchOf } from "../git/repositoryBranch.ts";
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { AttachmentToolkit } from "../mcp/toolkits/attachment/tools.ts";
+import { ThreadLaunchLookupTool } from "../mcp/toolkits/machineHandoff/launchLookupTool.ts";
 import { WorktreeOpenBranchTool } from "../mcp/toolkits/machineHandoff/openBranchTool.ts";
 import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
@@ -632,6 +633,33 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Whether the other machine accepted a launch with this id. A launch whose reply never came
+   * back leaves that open, and only the machine that holds the launches can say.
+   */
+  const lookupLaunch = Effect.fn("ThreadMachineHandoff.lookupLaunch")(function* (
+    scope: Scope,
+    target: Target,
+    clientRequestId: string,
+  ) {
+    const found = yield* forwarding
+      .call(scope, ThreadLaunchLookupTool, target.environmentId, { clientRequestId })
+      .pipe(
+        Effect.mapError((error) =>
+          error.message.includes("'t3_thread_launch_lookup' not found")
+            ? failure(
+                "capability_denied",
+                `${target.label} runs a T3 Code version that does not have t3_thread_launch_lookup, so it cannot say whether the launch went through. Both machines need a version that has it.`,
+              )
+            : failure(
+                error.code,
+                `${error.message} Whether the launch went through is not known, so nothing was launched again.`,
+              ),
+        ),
+      );
+    return found.launched ?? undefined;
+  });
+
   const launchThere = Effect.fn("ThreadMachineHandoff.launchThere")(function* (
     scope: Scope,
     target: Target,
@@ -667,7 +695,13 @@ const make = Effect.gen(function* () {
       { attachmentsOnPeer: true },
     );
   });
-  type Launched = Effect.Success<ReturnType<typeof launchThere>>;
+
+  /** The thread the other machine started. */
+  interface LaunchedThread {
+    readonly threadId: ThreadId;
+    readonly link?: string | undefined;
+    readonly projectId: ProjectId;
+  }
 
   /** Settled as t3_thread_organize does: the caller's own thread when its turn ends. */
   const settleSource = Effect.fn("ThreadMachineHandoff.settleSource")(function* (source: Source) {
@@ -701,7 +735,9 @@ const make = Effect.gen(function* () {
     pushed?: Pushed;
     /** Null when there is no branch to open. */
     opened?: WorktreeOpenBranchResult | null;
-    launched?: Launched;
+    /** Whether a launch was asked for, which may have gone through whatever came back. */
+    launchTried: boolean;
+    launched?: LaunchedThread;
     settles?: "now" | "at_turn_end";
   }
 
@@ -726,6 +762,7 @@ const make = Effect.gen(function* () {
       modelSelection,
       attachment,
       wipCommitted: false,
+      launchTried: false,
     };
     return begun;
   });
@@ -797,6 +834,9 @@ const make = Effect.gen(function* () {
     }
     const attempt = yield* attemptOf(scope, input, resolved, target, source);
     const { code, project, modelSelection, attachment } = attempt;
+    // A worktree an earlier call opened. The launch there checks only that the folder is one of
+    // the project's worktrees, so before anything is launched in it, it is looked at again.
+    const openedEarlier = attempt.opened ?? null;
 
     if (code.kind === "carry" && attempt.pushed === undefined) {
       attempt.pushed = yield* pushWork(source, code, attempt, target.label);
@@ -806,21 +846,50 @@ const make = Effect.gen(function* () {
       pushed === null
         ? ""
         : ` The work is committed and pushed to ${pushed.remote}/${pushed.branch} (${pushed.commit.slice(0, 7)}) and this thread was not settled.`;
+    const openBranch = (projectId: ProjectId, work: Pushed) =>
+      openOnTarget(scope, target, projectId, work).pipe(
+        Effect.mapError((error) =>
+          error.message.includes("'t3_worktree_open_branch' not found")
+            ? failure(
+                "capability_denied",
+                `${target.label} runs a T3 Code version that does not have t3_worktree_open_branch, so it cannot open the branch. Both machines need a version that has it.${pushedNote}`,
+              )
+            : failure(error.code, `${error.message}${pushedNote}`),
+        ),
+      );
     if (attempt.opened === undefined) {
       // A scratch project carries no code, so a push means the target is a project.
       attempt.opened =
         pushed === null || project.kind === "scratch"
           ? null
-          : yield* openOnTarget(scope, target, project.projectId, pushed).pipe(
-              Effect.mapError((error) =>
-                error.message.includes("'t3_worktree_open_branch' not found")
-                  ? failure(
-                      "capability_denied",
-                      `${target.label} runs a T3 Code version that does not have t3_worktree_open_branch, so it cannot open the branch. Both machines need a version that has it.${pushedNote}`,
-                    )
-                  : failure(error.code, `${error.message}${pushedNote}`),
-              ),
-            );
+          : yield* openBranch(project.projectId, pushed);
+    }
+    if (
+      attempt.launched === undefined &&
+      openedEarlier !== null &&
+      pushed !== null &&
+      project.kind === "project" &&
+      input.clientRequestId !== undefined
+    ) {
+      // A launch that went through, though its reply was lost, is the agent's by now: that it has
+      // changed the worktree is no reason to refuse. Only without one is the worktree checked.
+      if (attempt.launchTried) {
+        const found = yield* lookupLaunch(scope, target, input.clientRequestId);
+        if (found !== undefined) attempt.launched = found;
+      }
+      if (attempt.launched === undefined) {
+        const again = yield* openBranch(project.projectId, pushed);
+        if (
+          again.worktreePath !== openedEarlier.worktreePath ||
+          again.branch !== openedEarlier.branch
+        ) {
+          return yield* failure(
+            "invalid_request",
+            `${target.label} has ${again.branch} in ${again.worktreePath} now, not in ${openedEarlier.worktreePath} where this hand-off opened it, so it was not launched again.${pushedNote} Hand off again with a new clientRequestId.`,
+          );
+        }
+        attempt.opened = again;
+      }
     }
     const opened = attempt.opened;
 
@@ -838,6 +907,7 @@ const make = Effect.gen(function* () {
         }),
         transcriptAttached: true,
       });
+      attempt.launchTried = true;
       attempt.launched = yield* launchThere(scope, target, {
         project,
         title: source.shell.title.trim() || "Untitled thread",

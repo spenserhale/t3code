@@ -43,7 +43,10 @@ it uploads the transcript to the target, has the target's
 fetch the remote itself and check the commit by ancestry, launches the thread,
 and settles the source. It keeps what each `clientRequestId` has done, in memory
 for six hours, so a retry carries on from the step that failed: planning again
-would read the checkout the first try already changed.
+would read the checkout the first try already changed. Before it launches again
+it asks the target whether the first launch went through, since the agent there
+may have changed the worktree, and otherwise opens the branch again to check
+that the worktree is still the one it chose.
 
 [Environment ID initialization](../../apps/server/src/environment/ServerEnvironment.ts)
 must publish a complete ID atomically. Repair of an empty ID file retains a
