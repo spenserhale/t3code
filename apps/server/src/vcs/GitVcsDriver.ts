@@ -52,6 +52,7 @@ import * as CheckoutCloner from "./CheckoutCloner.ts";
 import * as CheckpointCaptureIndex from "./checkpointCaptureIndex.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
+import type { WorktreeReservation } from "./worktreeReservation.ts";
 
 export interface ExecuteGitInput {
   readonly operation: string;
@@ -149,10 +150,14 @@ export interface CreateWorktreeProgress {
    * For new-branch calls on Git supporting add --reason, cancellation before the claim removes what it made.
    */
   readonly onWorktreeClaimed?: (path: string) => Effect.Effect<void, never>;
+  /**
+   * Asks the driver to make the folder itself before git runs, with a mkdir that fails if the
+   * path is there, empty or not. Git accepts an empty folder, so only a folder made this way is
+   * known to be this call's. It comes first, before the branch, and the reservation takes it back.
+   */
+  readonly onWorktreeReserved?: (reservation: WorktreeReservation) => Effect.Effect<void, never>;
   /** `newRefName` was made by this call, which is reported even if the worktree then fails. */
   readonly onBranchCreated?: (branch: string) => Effect.Effect<void, never>;
-  /** Git added this folder and then failed, as a post-checkout hook can: it is this call's. */
-  readonly onWorktreeLeftBehind?: (path: string) => Effect.Effect<void, never>;
   readonly onCheckoutProgress?: (input: {
     percent: number;
     completed: number;

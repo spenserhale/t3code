@@ -71,6 +71,11 @@ thread starts in it.
   launches again it asks the target whether the first launch went through, since the agent there
   may have changed the worktree, and otherwise opens the branch again to check that the worktree is
   still the one it chose.
+- **The opener reserves a worktree's folder before git runs**, with a mkdir that fails if the path
+  is there. Git accepts an empty folder, so a folder that merely was absent a moment earlier, or a
+  failing hook's exit code, cannot show that a folder is the call's own. It gives the folder back
+  only while it has the same device and inode, and only as git would, without `--force`, so another
+  operation's changes are never deleted.
 
 ## Hosted web is a client
 

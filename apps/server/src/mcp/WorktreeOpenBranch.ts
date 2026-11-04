@@ -16,6 +16,7 @@ import { parseRemoteFetchUrls } from "../git/remoteFetchUrls.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import type { WorktreeReservation } from "../vcs/worktreeReservation.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { unavailable } from "./threadAccess.ts";
 
@@ -62,13 +63,12 @@ const make = Effect.gen(function* () {
   // Two calls for one branch run one after the other, so the second finds the first's worktree.
   const branchLocks = yield* KeyedLock.make<string>();
 
+  // Neither forces anything, as git itself would not: what has changes in it stays.
   const removeWorktree = (cwd: string, path: string) =>
-    gitWorkflow.removeWorktree({ cwd, path, force: true }).pipe(Effect.ignoreCause({ log: true }));
+    gitWorkflow.removeWorktree({ cwd, path }).pipe(Effect.ignoreCause({ log: true }));
 
   const discardNewBranch = (cwd: string, branch: string) =>
-    gitWorkflow
-      .deleteLocalBranch({ cwd, refName: branch, force: true })
-      .pipe(Effect.ignoreCause({ log: true }));
+    gitWorkflow.deleteLocalBranch({ cwd, refName: branch }).pipe(Effect.ignoreCause({ log: true }));
 
   /** The local branch of that name, as the repository lists it now. */
   const findLocalBranch = Effect.fn("WorktreeOpenBranch.findLocalBranch")(function* (
@@ -97,29 +97,31 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Makes the worktree, and if that fails takes back what this call made. The driver says what it
-   * made as it makes it: the branch, and the folder git added, even when a hook such as
-   * post-checkout then fails. Anything else is someone's, whatever holds the branch by then.
+   * Makes the worktree, and if that fails gives back what this call made. The driver makes the
+   * folder first, so it is known to be this call's, and reports the branch it creates. Both go
+   * back as git would take them, without --force, so nothing with changes in it is deleted; what
+   * cannot go is named in the error.
    */
   const makeWorktree = Effect.fn("WorktreeOpenBranch.makeWorktree")(function* (
     cwd: string,
     request: VcsCreateWorktreeInput,
     what: string,
   ) {
-    const made = { branch: false, folder: undefined as string | undefined };
+    const made = { branch: false, folder: undefined as WorktreeReservation | undefined, kept: "" };
     return yield* gitWorkflow
       .createWorktree(request, {
         progress: {
+          onWorktreeReserved: (reservation) => Effect.sync(() => void (made.folder = reservation)),
           onBranchCreated: () => Effect.sync(() => void (made.branch = true)),
-          onWorktreeClaimed: (path) => Effect.sync(() => void (made.folder = path)),
-          onWorktreeLeftBehind: (path) => Effect.sync(() => void (made.folder = path)),
         },
       })
       .pipe(
         Effect.onError(() =>
           Effect.gen(function* () {
-            if (made.folder !== undefined) yield* removeWorktree(cwd, made.folder);
-            if (made.branch && request.newRefName !== undefined) {
+            const released = made.folder === undefined ? undefined : yield* made.folder.release;
+            if (released !== undefined && !released.released) made.kept = ` ${released.reason}`;
+            // The branch is checked out in a folder that stays, so it stays with it.
+            if (made.branch && request.newRefName !== undefined && made.kept === "") {
               yield* discardNewBranch(cwd, request.newRefName);
             }
           }),
@@ -127,13 +129,13 @@ const make = Effect.gen(function* () {
         Effect.mapError((error) =>
           failure(
             "orchestration_error",
-            `${what}: ${error.message}${
+            `${what}: ${error.message}.${
               error.reason === "path_already_exists" ||
               error.reason === "branch_checked_out_in_worktree" ||
               error.reason === "branch_already_exists"
                 ? " What was there already was left as it was."
                 : ""
-            }`,
+            }${made.kept}`,
           ),
         ),
       );
