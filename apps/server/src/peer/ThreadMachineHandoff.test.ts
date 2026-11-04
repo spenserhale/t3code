@@ -131,6 +131,8 @@ interface Options {
   readonly linkedCaller?: boolean;
   /** Something else moves the checkout to this branch before the commit step holds it. */
   readonly switchedBeforeLease?: string;
+  /** The checkout's remotes, by name. */
+  readonly remotes?: Record<string, string>;
 }
 
 const makeHarness = (options: Options = {}) => {
@@ -317,8 +319,9 @@ const makeHarness = (options: Options = {}) => {
     execute: () =>
       Effect.succeed({
         exitCode: 0,
-        stdout:
-          "origin\tgit@github.com:acme/app.git (fetch)\norigin\tgit@github.com:acme/app.git (push)",
+        stdout: Object.entries(options.remotes ?? { origin: "git@github.com:acme/app.git" })
+          .map(([name, url]) => `${name}\t${url} (fetch)\n${name}\t${url} (push)`)
+          .join("\n"),
         stderr: "",
         stdoutTruncated: false,
         stderrTruncated: false,
@@ -769,11 +772,56 @@ describe("t3_thread_continue_on_machine", () => {
             projectId: "project:linkmini",
             branch: "feature/login",
             repositoryKey: "github.com/acme/app",
-            baseRef: "origin/main",
+            baseBranch: "main",
             expectCommit: tip,
           },
         });
       }),
+    );
+
+    it.effect(
+      "names the comparison base by its repository and branch, not by a remote's name",
+      () =>
+        Effect.gen(function* () {
+          const remotes = {
+            origin: "git@github.com:acme/app.git",
+            upstream: "git@github.com:acme/upstream.git",
+          };
+          const cases = [
+            { baseRef: "origin/main", expected: { baseBranch: "main" } },
+            {
+              baseRef: "upstream/release/2.0",
+              expected: {
+                baseBranch: "release/2.0",
+                baseRepositoryKey: "github.com/acme/upstream",
+              },
+            },
+            {
+              baseRef: "refs/remotes/upstream/dev",
+              expected: { baseRepositoryKey: "github.com/acme/upstream", baseBranch: "dev" },
+            },
+            { baseRef: "refs/heads/develop", expected: { baseBranch: "develop" } },
+          ];
+          for (const { baseRef, expected } of cases) {
+            const harness = makeHarness({
+              remotes,
+              status: { branchChanges: { baseRef, insertions: 0, deletions: 0 } },
+            });
+            yield* harness.run();
+            const open = harness.forwarded.find((call) => call.tool === "t3_worktree_open_branch");
+            expect(open?.params, baseRef).toEqual({
+              projectId: "project:linkmini",
+              branch: "feature/login",
+              repositoryKey: "github.com/acme/app",
+              expectCommit: tip,
+              ...expected,
+            });
+          }
+          const bare = makeHarness({ status: { branchChanges: undefined } });
+          yield* bare.run();
+          const open = bare.forwarded.find((call) => call.tool === "t3_worktree_open_branch");
+          expect(Object.keys(open?.params ?? {})).not.toContain("baseBranch");
+        }),
     );
 
     it.effect("asks for a project when it has none with the repository, or several", () =>

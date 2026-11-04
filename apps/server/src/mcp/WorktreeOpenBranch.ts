@@ -50,6 +50,12 @@ const bareBranchName = (ref: string, remote: string) => {
 
 const COMMIT_ID = /^[0-9a-f]{7,64}$/i;
 
+/** A branch pull requests compare with, on one of this project's remotes. */
+interface Base {
+  readonly remote: string;
+  readonly branch: string;
+}
+
 const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
@@ -205,13 +211,12 @@ const make = Effect.gen(function* () {
     worktreePath: string,
     target: {
       readonly branch: string;
-      readonly remote: string;
       readonly remoteRef: string;
       readonly tip: string;
-      readonly baseRef: string | undefined;
+      readonly base: Base | undefined;
     },
   ) {
-    const { branch, remote, remoteRef, tip, baseRef } = target;
+    const { branch, remoteRef, tip, base } = target;
     const status = yield* git
       .statusDetailsLocal(worktreePath, { includeBranchChanges: true })
       .pipe(Effect.mapError(gitFailed(`Could not read ${branch} in ${worktreePath}`)));
@@ -227,15 +232,15 @@ const make = Effect.gen(function* () {
         `${branch} here has commits that ${remoteRef} does not, so it was left alone.`,
       );
     }
-    if (baseRef !== undefined) {
+    if (base !== undefined) {
       const actual =
         status.branchChanges?.baseRef == null
           ? null
-          : bareBranchName(status.branchChanges.baseRef, remote);
-      if (actual !== bareBranchName(baseRef, remote)) {
+          : bareBranchName(status.branchChanges.baseRef, base.remote);
+      if (actual !== base.branch) {
         return yield* failure(
           "invalid_request",
-          `${branch} here compares against ${status.branchChanges?.baseRef ?? "nothing"}, not ${baseRef}, as asked. That cannot be changed from here, so it was left alone.`,
+          `${branch} here compares against ${status.branchChanges?.baseRef ?? "nothing"}, not ${base.remote}/${base.branch}, as asked. That cannot be changed from here, so it was left alone.`,
         );
       }
     }
@@ -251,27 +256,45 @@ const make = Effect.gen(function* () {
     }
   });
 
-  /** The base to compare a new branch with, as a ref this repository has. */
-  const resolveBase = Effect.fn("WorktreeOpenBranch.resolveBase")(function* (
+  /** The remote of this project that is the repository the branch is compared with. */
+  const resolveBaseRemote = Effect.fn("WorktreeOpenBranch.resolveBaseRemote")(function* (
     cwd: string,
     remote: string,
-    baseRef: string,
+    input: WorktreeOpenBranchInput,
   ) {
-    for (const candidate of [baseRef, `${remote}/${baseRef}`]) {
-      const found = yield* git
-        .execute({
-          operation: "WorktreeOpenBranch.resolveBase",
-          cwd,
-          args: ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`],
-          allowNonZeroExit: true,
-        })
-        .pipe(Effect.mapError(gitFailed("Could not read the comparison base")));
-      if (found.exitCode === 0) return candidate;
+    const key = input.baseRepositoryKey;
+    if (key === undefined || key === input.repositoryKey) return remote;
+    const matched = yield* remoteOfRepository(cwd, key);
+    if (matched === null) {
+      return yield* failure(
+        "invalid_request",
+        `No remote of this project here is ${key}, which the branch is compared with in pull requests.`,
+      );
     }
-    return yield* failure(
-      "invalid_request",
-      `This project here does not have ${baseRef}, which the branch is compared with in pull requests.`,
-    );
+    return matched;
+  });
+
+  /** The base to compare a new branch with, as the remote branch this repository has for it. */
+  const resolveBase = Effect.fn("WorktreeOpenBranch.resolveBase")(function* (
+    cwd: string,
+    base: Base,
+  ) {
+    const ref = `refs/remotes/${base.remote}/${base.branch}`;
+    const found = yield* git
+      .execute({
+        operation: "WorktreeOpenBranch.resolveBase",
+        cwd,
+        args: ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+        allowNonZeroExit: true,
+      })
+      .pipe(Effect.mapError(gitFailed("Could not read the comparison base")));
+    if (found.exitCode !== 0) {
+      return yield* failure(
+        "invalid_request",
+        `This project here does not have ${base.remote}/${base.branch}, which the branch is compared with in pull requests.`,
+      );
+    }
+    return ref;
   });
 
   const openLocked = Effect.fn("WorktreeOpenBranch.openLocked")(function* (
@@ -296,7 +319,11 @@ const make = Effect.gen(function* () {
         `${remote} has no branch ${branch}. Push it first, or check that ${remote} here is the repository it is on.`,
       );
     }
-    const target = { branch, remote, remoteRef, tip: fetched.commitSha, baseRef: input.baseRef };
+    const base =
+      input.baseBranch === undefined
+        ? undefined
+        : { remote: yield* resolveBaseRemote(cwd, remote, input), branch: input.baseBranch };
+    const target = { branch, remoteRef, tip: fetched.commitSha, base };
     const local = yield* findLocalBranch(cwd, branch);
     const finish = Effect.fn("WorktreeOpenBranch.finish")(function* (
       worktreePath: string,
@@ -335,15 +362,14 @@ const make = Effect.gen(function* () {
       );
     }
 
-    const base =
-      input.baseRef === undefined ? undefined : yield* resolveBase(cwd, remote, input.baseRef);
+    const baseRefName = base === undefined ? undefined : yield* resolveBase(cwd, base);
     const made = yield* makeWorktree(
       cwd,
       {
         cwd,
         refName: remoteRef,
         newRefName: branch,
-        ...(base === undefined ? {} : { baseRefName: base }),
+        ...(baseRefName === undefined ? {} : { baseRefName }),
         path: null,
       },
       `Could not make a worktree on ${remoteRef}`,

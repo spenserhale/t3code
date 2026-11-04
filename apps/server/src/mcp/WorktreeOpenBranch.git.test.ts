@@ -9,6 +9,7 @@ import * as Path from "effect/Path";
 import * as ServerConfig from "../config.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorktreeOpenBranch from "./WorktreeOpenBranch.ts";
@@ -60,7 +61,7 @@ const makeRepositories = Effect.gen(function* () {
   yield* run(pusher, "push", "origin", "feature");
   yield* run(base, "clone", origin, box);
   yield* identify(box);
-  return { run, commit, fileSystem, path, pusher, box, first };
+  return { run, commit, fileSystem, path, origin, pusher, box, first };
 });
 
 /** A post-checkout hook that fails, as a project's own can once git has made the worktree. */
@@ -123,7 +124,7 @@ it.effect("opens a pushed branch on a real worktree, then moves it forward and o
     const { run, commit, fileSystem, path, pusher, box, first } = yield* makeRepositories;
 
     // A branch the project has never heard of: fetched, tracked, and compared with main.
-    const opened = yield* open(box, { baseRef: "origin/main", expectCommit: first });
+    const opened = yield* open(box, { baseBranch: "main", expectCommit: first });
     expect(opened).toMatchObject({
       branch: "feature",
       remote: "origin",
@@ -136,7 +137,7 @@ it.effect("opens a pushed branch on a real worktree, then moves it forward and o
     expect(yield* run(box, "config", "branch.feature.t3-merge-base")).toBe("main");
 
     // Asked again, it is the same worktree, with nothing to move.
-    const again = yield* open(box, { baseRef: "origin/main", expectCommit: first });
+    const again = yield* open(box, { baseBranch: "main", expectCommit: first });
     expect(again).toMatchObject({ worktreePath: opened.worktreePath, head: first, created: false });
 
     // The remote moves on: the clean worktree follows it.
@@ -224,4 +225,25 @@ it.effect("keeps a branch that was already there when its worktree fails", () =>
     expect(yield* run(box, "worktree", "list", "--porcelain")).not.toContain("feature");
     expect(yield* run(box, "branch", "--list", "feature")).toContain("feature");
   }).pipe(Effect.scoped, Effect.provide(layerGit)),
+);
+
+it.effect(
+  "compares with the base on the remote that is its repository, whatever it is called",
+  () =>
+    Effect.gen(function* () {
+      const { run, origin, pusher, box, first } = yield* makeRepositories;
+      // Here the repository is `team`, and `origin` is another one, which also has a main.
+      yield* run(box, "remote", "rename", "origin", "team");
+      yield* run(box, "remote", "add", "origin", pusher);
+      yield* run(box, "fetch", "origin");
+      const opened = yield* open(box, {
+        repositoryKey: sourceControlDefinitions.repositoryKeyFromRemote(origin)!,
+        baseBranch: "main",
+        expectCommit: first,
+      });
+      expect(opened.remote).toBe("team");
+      expect(yield* run(box, "config", "branch.feature.t3-merge-base-ref")).toBe(
+        "refs/remotes/team/main",
+      );
+    }).pipe(Effect.scoped, Effect.provide(layerGit)),
 );
