@@ -2,6 +2,7 @@ import { OrchestratorMcpFailure, type JiraError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import * as JiraService from "../../../jira/JiraService.ts";
+import { shapeIssueForAgent } from "../../../jira/jiraAgentIssue.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { readCaller } from "../../threadAccess.ts";
 import { JIRA_SEARCH_DEFAULT_PAGE_SIZE, JiraToolkit } from "./tools.ts";
@@ -76,7 +77,13 @@ const make = Effect.gen(function* () {
         }),
       ),
     ),
-    jira_issue_read: McpToolAccess.reads(({ key }) => reading(jira.getIssue({ key }))),
+    jira_issue_read: McpToolAccess.reads(({ key, comments, maxChars }) =>
+      reading(
+        jira
+          .getIssue({ key })
+          .pipe(Effect.map((issue) => shapeIssueForAgent(issue, { comments, maxChars }))),
+      ),
+    ),
     jira_issue_transition: McpToolAccess.either(
       ({ transitionId }) => transitionId === undefined,
       McpToolAccess.reads(({ key }) => reading(jira.listTransitions({ key }))),
