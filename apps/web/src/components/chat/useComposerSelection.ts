@@ -1,5 +1,6 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import type { UnifiedSettings } from "@t3tools/contracts";
+import type { ProviderOptionSelection, UnifiedSettings } from "@t3tools/contracts";
+import { resolveFavoritePickOptions } from "@t3tools/shared/modelShortcuts";
 import type { Dispatch } from "react";
 import type { ComposerThreadTarget, DraftSessionState } from "../../composerDraftStore";
 import { useStableCallback } from "../../hooks/useStableCallback";
@@ -53,6 +54,12 @@ interface ComposerSelectionInput {
   readonly scheduleComposerFocus: () => void;
 }
 
+export interface ProviderModelSelectOptions {
+  readonly focusComposer?: boolean;
+  /** Options to open the model with (a favorite's or slider step's effort), over what was last used. */
+  readonly modelOptions?: ReadonlyArray<ProviderOptionSelection>;
+}
+
 /**
  * The composer's choices for the next turn: provider and model, runtime and interaction mode,
  * and where a new thread runs (local or a new worktree, from the remote's tip or not).
@@ -84,6 +91,9 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     (store) => store.setStickyModelSelection,
   );
   const setComposerDraftModelSelection = useComposerDraftStore((store) => store.setModelSelection);
+  const setComposerProviderModelOptions = useComposerDraftStore(
+    (store) => store.setProviderModelOptions,
+  );
   const setComposerDraftRuntimeMode = useComposerDraftStore((store) => store.setRuntimeMode);
   const setComposerDraftInteractionMode = useComposerDraftStore(
     (store) => store.setInteractionMode,
@@ -142,7 +152,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
   const onProviderModelSelect = (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: { focusComposer?: boolean },
+    options?: ProviderModelSelectOptions,
   ) => {
     if (!activeThread) return;
     const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
@@ -185,9 +195,13 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     }
     const rememberedOptions =
       useComposerDraftStore.getState().stickyOptionsByModelByProvider[instanceId]?.[resolvedModel];
+    const pickedOptions =
+      options?.modelOptions === undefined
+        ? rememberedOptions
+        : resolveFavoritePickOptions(rememberedOptions, { options: options.modelOptions });
     const nextModelSelection: ModelSelection =
-      rememberedOptions !== undefined && rememberedOptions.length > 0
-        ? { instanceId, model: resolvedModel, options: [...rememberedOptions] }
+      pickedOptions !== undefined && pickedOptions.length > 0
+        ? { instanceId, model: resolvedModel, options: [...pickedOptions] }
         : { instanceId, model: resolvedModel };
     const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
       hasStartedSession: activeRuntime !== null,
@@ -205,12 +219,20 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       if (options?.focusComposer !== false) scheduleComposerFocus();
       return;
     }
-    setComposerDraftModelSelection(
-      scopeThreadRef(activeThread.environmentId, activeThread.id),
-      nextModelSelection,
-      { explicit: true, replaceOptions: true },
-    );
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    setComposerDraftModelSelection(threadRef, nextModelSelection, {
+      explicit: true,
+      replaceOptions: true,
+    });
     setStickyComposerModelSelection(nextModelSelection);
+    if (options?.modelOptions !== undefined && resolvedDriverKind !== null) {
+      // A favorite's or step's effort is remembered for the model, as if chosen in its column.
+      setComposerProviderModelOptions(threadRef, resolvedDriverKind, pickedOptions, {
+        instanceId,
+        model: resolvedModel,
+        persistSticky: true,
+      });
+    }
     if (options?.focusComposer !== false) scheduleComposerFocus();
   };
   const onProviderModelSelectStable = useStableCallback(onProviderModelSelect);
