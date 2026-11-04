@@ -535,19 +535,28 @@ describe("favorites with efforts and the effort slider", () => {
     ]);
   });
 
-  it("defaults the slider to off and refuses a longer one than it has room for", () => {
+  it("defaults the slider to off and refuses to write a longer one than it has room for", () => {
     expect(decodeServerSettings({}).effortSlider).toEqual([]);
     expect(DEFAULT_SERVER_SETTINGS.effortSlider).toEqual([]);
-    expect(
-      decodeServerSettings({ effortSlider: steps(MAX_EFFORT_SLIDER_STEPS) }).effortSlider,
-    ).toHaveLength(MAX_EFFORT_SLIDER_STEPS);
-    expect(() =>
-      decodeServerSettings({ effortSlider: steps(MAX_EFFORT_SLIDER_STEPS + 1) }),
-    ).toThrow();
+    expect(decodeServerSettingsPatch({ effortSlider: steps(MAX_EFFORT_SLIDER_STEPS) })).toEqual({
+      effortSlider: steps(MAX_EFFORT_SLIDER_STEPS),
+    });
     expect(() =>
       decodeServerSettingsPatch({ effortSlider: steps(MAX_EFFORT_SLIDER_STEPS + 1) }),
     ).toThrow();
     expect(decodeServerSettingsPatch({ effortSlider: [] })).toEqual({ effortSlider: [] });
+  });
+
+  it("reads a longer list from a hand-edited file instead of invalidating every setting", () => {
+    const long = steps(MAX_EFFORT_SLIDER_STEPS + 1);
+    const settings = decodeServerSettings({
+      defaultAutoPull: true,
+      effortSlider: long,
+      projectSettingsOverrides: { [projectId]: { effortSlider: long } },
+    });
+    expect(settings.defaultAutoPull).toBe(true);
+    expect(settings.effortSlider).toHaveLength(long.length);
+    expect(settings.projectSettingsOverrides[projectId]?.effortSlider).toHaveLength(long.length);
   });
 
   it("carries a favorite's effort in a toggle but leaves hidden models as they were", () => {

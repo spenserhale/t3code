@@ -102,8 +102,9 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   worktreesDirectory: Schema.optionalKey(Schema.Boolean),
   threadAutoSettlementScope: Schema.optionalKey(Schema.Boolean),
   /**
-   * Stores `effortSlider`, a favorite's `options`, and project overrides of both. Older servers
-   * drop these, so hide the slider and favorite efforts where it is absent.
+   * Stores `effortSlider`, a favorite's `options`, and project overrides of both, and reorders
+   * favorites by `reorderModelFavorites`. Older servers drop these, so hide the slider and
+   * favorite efforts, and write the whole favorites list, where it is absent.
    */
   effortSlider: Schema.optionalKey(Schema.Boolean),
   threadRestartContinuation: Schema.optionalKey(Schema.Boolean),
