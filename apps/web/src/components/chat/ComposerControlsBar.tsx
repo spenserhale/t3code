@@ -13,6 +13,7 @@ import {
 import {
   type EnvironmentId,
   type ModelSelection,
+  type ProjectId,
   type ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderInteractionMode,
@@ -29,6 +30,7 @@ import {
 } from "./ComposerModelEffort";
 import type { useComposerProviderModel } from "./useComposerProviderModel";
 import { resolveComposerControlsOwnership } from "./composerControlsOwnership";
+import { useComposerEffortSlider } from "./useComposerEffortSlider";
 
 /**
  * The composer footer controls: the model picker (which also holds effort, speed and
@@ -40,6 +42,7 @@ const MODEL_TRIGGER_STATES = "data-popup-open:bg-accent data-popup-open:text-for
 
 export function ComposerControlsBar(props: {
   environmentId: EnvironmentId;
+  projectId: ProjectId | null;
   routeKind: ChatComposerProps["routeKind"];
   routeThreadRef: ChatComposerProps["routeThreadRef"];
   draftId: ChatComposerProps["draftId"];
@@ -91,6 +94,7 @@ export function ComposerControlsBar(props: {
 }) {
   const {
     environmentId,
+    projectId,
     routeKind,
     routeThreadRef,
     draftId,
@@ -166,6 +170,18 @@ export function ComposerControlsBar(props: {
     planModeEnabled,
   });
   const effort = describeComposerEffort(traitsInput, props.effortDisplay, controlSize);
+  const effortSlider = useComposerEffortSlider({
+    environmentId,
+    projectId,
+    suspended: multipleModelSelections !== null,
+    instanceEntries: providerInstanceEntries,
+    modelOptionsByInstance,
+    selectedModelSelection,
+    lockedProvider,
+    lockedContinuationGroupKey,
+    getModelDisabledReason,
+    onProviderModelSelect,
+  });
   const restingBlockDefs = showModeBlock
     ? [
         {
@@ -227,7 +243,11 @@ export function ComposerControlsBar(props: {
       triggerShortcuts={
         pickerOwnsModeShortcut ? "composer.effort composer.mode" : "composer.effort"
       }
-      effortColumn={<ComposerEffortColumn traits={traitsInput} />}
+      projectId={projectId}
+      {...(effortSlider.slider ? { effortSlider: effortSlider.slider } : {})}
+      effortColumn={
+        <ComposerEffortColumn traits={traitsInput} sliderActions={effortSlider.actions} />
+      }
       footer={
         <ComposerPickerFooter
           traits={traitsInput}

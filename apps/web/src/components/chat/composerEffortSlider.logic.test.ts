@@ -1,0 +1,163 @@
+import {
+  MAX_EFFORT_SLIDER_STEPS,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ModelSelection,
+  type ServerProviderModel,
+} from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
+import { describe, expect, it } from "vite-plus/test";
+
+import { deriveProviderInstanceEntries } from "../../providerInstances";
+import {
+  effortSliderAddDisabledReason,
+  findActiveComposerEffortStep,
+  resolveComposerEffortSteps,
+} from "./composerEffortSlider.logic";
+
+const codex = ProviderInstanceId.make("codex");
+const claude = ProviderInstanceId.make("claude");
+const levels = (ids: ReadonlyArray<string>, defaultId: string) => ({
+  optionDescriptors: [
+    {
+      id: "reasoningEffort",
+      label: "Reasoning effort",
+      type: "select" as const,
+      options: ids.map((id) => ({
+        id,
+        label: id[0]!.toUpperCase() + id.slice(1),
+        ...(id === defaultId ? { isDefault: true } : {}),
+      })),
+    },
+  ],
+});
+const model = (
+  slug: string,
+  capabilities: ServerProviderModel["capabilities"],
+  aliases?: string[],
+) => ({
+  slug,
+  name: `${slug} model`,
+  isCustom: false,
+  capabilities,
+  ...(aliases ? { aliases } : {}),
+});
+const provider = (
+  instanceId: ProviderInstanceId,
+  driver: string,
+  models: ServerProviderModel[],
+) => ({
+  instanceId,
+  driver: ProviderDriverKind.make(driver),
+  enabled: true,
+  installed: true,
+  version: null,
+  status: "ready" as const,
+  auth: { status: "authenticated" as const },
+  checkedAt: "2026-01-01T00:00:00.000Z",
+  models,
+  slashCommands: [],
+  skills: [],
+});
+const instanceEntries = deriveProviderInstanceEntries([
+  provider(codex, "codex", [
+    model("sol", levels(["low", "medium", "high"], "medium"), ["sol-latest"]),
+    model("plain", null),
+  ]),
+  provider(claude, "claudeAgent", [model("opus", levels(["low", "high"], "high"))]),
+]);
+const modelOptionsByInstance = new Map(
+  instanceEntries.map((entry) => [
+    entry.instanceId,
+    entry.models.map((m) => ({
+      slug: m.slug,
+      name: m.name,
+      ...(m.aliases ? { aliases: m.aliases } : {}),
+    })),
+  ]),
+);
+const context = {
+  instanceEntries,
+  modelOptionsByInstance,
+  lockedProvider: null,
+  lockedContinuationGroupKey: null,
+  getModelDisabledReason: () => null,
+};
+const step = (instanceId: ProviderInstanceId, slug: string, effort?: string): ModelSelection =>
+  createModelSelection(
+    instanceId,
+    slug,
+    effort ? [{ id: "reasoningEffort", value: effort }] : undefined,
+  );
+
+describe("resolveComposerEffortSteps", () => {
+  it("labels each step by its short model name and effort", () => {
+    const [first] = resolveComposerEffortSteps([step(codex, "sol", "high")], context);
+    expect(first).toMatchObject({
+      modelLabel: "sol model",
+      effort: "high",
+      effortLabel: "High",
+      unusableReason: null,
+    });
+    const [plain] = resolveComposerEffortSteps([step(codex, "plain")], context);
+    expect(plain).toMatchObject({ effort: null, effortLabel: null, unusableReason: null });
+  });
+
+  it("opens a step saved under an alias as the model it names", () => {
+    const [aliased] = resolveComposerEffortSteps([step(codex, "sol-latest", "low")], context);
+    expect(aliased?.selection.model).toBe("sol");
+    expect(aliased?.unusableReason).toBeNull();
+  });
+
+  it("marks a step it cannot apply, with the reason, instead of dropping it", () => {
+    const steps = resolveComposerEffortSteps(
+      [
+        step(ProviderInstanceId.make("gone"), "sol", "low"),
+        step(codex, "retired", "low"),
+        step(claude, "opus", "high"),
+        step(codex, "sol", "high"),
+      ],
+      {
+        ...context,
+        lockedProvider: ProviderDriverKind.make("codex"),
+        getModelDisabledReason: (_, slug) => (slug === "sol" ? "Start a new thread" : null),
+      },
+    );
+    expect(steps.map((entry) => entry.unusableReason)).toEqual([
+      "This provider is not available",
+      "This model is not available",
+      "Claude is unavailable in this thread",
+      "Start a new thread",
+    ]);
+  });
+});
+
+describe("findActiveComposerEffortStep", () => {
+  const steps = resolveComposerEffortSteps(
+    [step(codex, "sol", "low"), step(codex, "plain"), step(claude, "opus", "high")],
+    context,
+  );
+
+  it("follows the effort the selection runs at, explicit or the model's default", () => {
+    expect(findActiveComposerEffortStep(steps, step(codex, "sol", "low"), instanceEntries)).toBe(0);
+    // No effort chosen yet: the model runs at its default, which no step names.
+    expect(findActiveComposerEffortStep(steps, step(codex, "sol"), instanceEntries)).toBeNull();
+    // Claude's default is high, so a selection that never chose is on the high step.
+    expect(findActiveComposerEffortStep(steps, step(claude, "opus"), instanceEntries)).toBe(2);
+    expect(findActiveComposerEffortStep(steps, step(codex, "plain"), instanceEntries)).toBe(1);
+  });
+});
+
+describe("effortSliderAddDisabledReason", () => {
+  it("allows a new step only while there is room and the model is known", () => {
+    const open = { stepCount: 2, activeIndex: null, selectedModelKnown: true };
+    expect(effortSliderAddDisabledReason(open)).toBeNull();
+    expect(effortSliderAddDisabledReason({ ...open, stepCount: MAX_EFFORT_SLIDER_STEPS })).toMatch(
+      /up to 6/,
+    );
+    expect(effortSliderAddDisabledReason({ ...open, activeIndex: 0 })).toMatch(/Already/);
+    expect(effortSliderAddDisabledReason({ ...open, selectedModelKnown: false })).toMatch(
+      /not available/,
+    );
+  });
+});
