@@ -1,4 +1,5 @@
 import {
+  canonicalEffortSliderSteps,
   type EffortSliderStepView,
   effortSliderStepIdentity,
   findActiveEffortSliderStep,
@@ -31,12 +32,15 @@ export interface ComposerEffortSliderContext {
   readonly getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
 }
 
-/** The configured steps as this composer can use them, each with why it cannot be, if so. */
+/**
+ * The configured steps as this composer can use them, each with why it cannot be, if so. A step
+ * that repeats an earlier one by model and effective effort is left out.
+ */
 export function resolveComposerEffortSteps(
   configured: ReadonlyArray<ModelSelection>,
   context: ComposerEffortSliderContext,
 ): ReadonlyArray<ComposerEffortStep> {
-  return configured.map((step) => {
+  const steps = configured.map((step): ComposerEffortStep => {
     const entry = context.instanceEntries.find(
       (candidate) => candidate.instanceId === step.instanceId,
     );
@@ -73,6 +77,7 @@ export function resolveComposerEffortSteps(
       unusableReason,
     };
   });
+  return canonicalEffortSliderSteps(steps);
 }
 
 /**

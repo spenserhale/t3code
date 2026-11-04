@@ -2,6 +2,7 @@ import { ProviderInstanceId, type ServerProviderModel } from "@t3tools/contracts
 import { createModelSelection } from "@t3tools/shared/model";
 import { describe, expect, it } from "vite-plus/test";
 import {
+  canonicalEffortSliderSteps,
   effortChoices,
   effortSliderIsShown,
   effortSliderStepIdentity,
@@ -161,21 +162,6 @@ describe("nextEffortSliderStep", () => {
     expect(nextEffortSliderStep(steps, 0, -1)).toBeNull();
   });
 
-  it("moves past a stored duplicate of the step it is on instead of selecting it again", () => {
-    const solLow = effortSliderStepIdentity({ instanceId, model: "sol" }, "low");
-    const astra = effortSliderStepIdentity({ instanceId, model: "astra" }, "high");
-    const steps = [
-      { identity: solLow, unusableReason: null },
-      { identity: solLow, unusableReason: null },
-      { identity: astra, unusableReason: null },
-    ];
-    expect(nextEffortSliderStep(steps, 0, 1)).toBe(2);
-    expect(nextEffortSliderStep(steps, 2, -1)).toBe(1);
-    expect(nextEffortSliderStep(steps, 1, -1)).toBeNull();
-    // Steps that carry no identity are all distinct.
-    expect(nextEffortSliderStep([usable, usable], 0, 1)).toBe(1);
-  });
-
   it("enters from the first usable step on Right and the last on Left when off the slider", () => {
     const steps = [blocked, usable, usable, usable, blocked];
     expect(nextEffortSliderStep(steps, null, 1)).toBe(1);
@@ -214,5 +200,24 @@ describe("stableListKeys", () => {
     expect(stableListKeys(["a", "b", "a", "a"])).toEqual(["a#0", "b#0", "a#1", "a#2"]);
     expect(stableListKeys(["b", "a"])).toEqual(["b#0", "a#0"]);
     expect(new Set(stableListKeys(["x", "x", "x"])).size).toBe(3);
+  });
+});
+
+describe("canonicalEffortSliderSteps", () => {
+  it("keeps the first of the steps that run the same model at the same effort", () => {
+    const view = (model: string, effort: string) => ({
+      identity: effortSliderStepIdentity({ instanceId, model }, effort),
+      model,
+      effort,
+    });
+    const steps = [
+      view("sol", "low"),
+      view("luna", "high"),
+      view("sol", "low"),
+      view("sol", "high"),
+      view("luna", "high"),
+    ];
+    expect(canonicalEffortSliderSteps(steps)).toEqual([steps[0], steps[1], steps[3]]);
+    expect(canonicalEffortSliderSteps([])).toEqual([]);
   });
 });

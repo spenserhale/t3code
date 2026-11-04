@@ -7,6 +7,7 @@ import {
   type ModelSelection,
   type ServerProviderModel,
 } from "@t3tools/contracts";
+import { nextEffortSliderStep } from "@t3tools/client-runtime/effort-slider";
 import { createModelSelection } from "@t3tools/shared/model";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -149,6 +150,41 @@ describe("findActiveComposerEffortStep", () => {
     // Claude's default is high, so a selection that never chose is on the high step.
     expect(findActiveComposerEffortStep(steps, step(claude, "opus"), instanceEntries)).toBe(2);
     expect(findActiveComposerEffortStep(steps, step(codex, "plain"), instanceEntries)).toBe(1);
+  });
+});
+
+describe("a stored list with repeated steps", () => {
+  // [Sol low, Plain, Sol low, Opus high]: the third step repeats the first, but not beside it.
+  const stored = [
+    step(codex, "sol", "low"),
+    step(codex, "plain"),
+    step(codex, "sol", "low"),
+    step(claude, "opus", "high"),
+  ];
+
+  it("shows each stop once", () => {
+    expect(
+      resolveComposerEffortSteps(stored, context).map(
+        (entry) => `${entry.modelLabel}:${entry.effort}`,
+      ),
+    ).toEqual(["sol model:low", "plain model:null", "opus model:high"]);
+  });
+
+  it("lets Right reach the last step instead of circling between the same two", () => {
+    const steps = resolveComposerEffortSteps(stored, context);
+    let current = step(codex, "sol", "low");
+    const visited: string[] = [];
+    for (let presses = 0; presses < 10; presses += 1) {
+      const next = nextEffortSliderStep(
+        steps,
+        findActiveComposerEffortStep(steps, current, instanceEntries),
+        1,
+      );
+      if (next === null) break;
+      current = steps[next]!.selection;
+      visited.push(steps[next]!.modelLabel);
+    }
+    expect(visited).toEqual(["plain model", "opus model"]);
   });
 });
 

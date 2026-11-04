@@ -131,22 +131,34 @@ export function effortSliderIsShown(
 }
 
 /**
- * The next usable step in a direction, or null at the end (no wrap). A step that repeats the one
- * the selection is on is passed over, so stored duplicates cannot hold the keys in place. Off the
- * slider, Right enters at the first usable step and Left at the last.
+ * Stored steps without the later repeats of a stop: the first of the steps that share an identity
+ * stays. Stepping, matching and drawing all use this list, so no two of its steps can both be
+ * where a selection sits.
+ */
+export function canonicalEffortSliderSteps<Step extends Pick<EffortSliderStepView, "identity">>(
+  steps: ReadonlyArray<Step>,
+): ReadonlyArray<Step> {
+  const seen = new Set<string>();
+  return steps.filter((step) => {
+    if (seen.has(step.identity)) return false;
+    seen.add(step.identity);
+    return true;
+  });
+}
+
+/**
+ * The next usable step in a direction, or null at the end (no wrap). Off the slider, Right enters
+ * at the first usable step and Left at the last.
  */
 export function nextEffortSliderStep(
-  steps: ReadonlyArray<Pick<EffortSliderStepView, "unusableReason"> & { identity?: string }>,
+  steps: ReadonlyArray<Pick<EffortSliderStepView, "unusableReason">>,
   active: number | null,
   direction: 1 | -1,
 ): number | null {
-  const here = active === null ? undefined : steps[active]?.identity;
+  const usable = (index: number) => steps[index]?.unusableReason === null;
   const start = active ?? (direction === 1 ? -1 : steps.length);
   for (let index = start + direction; index >= 0 && index < steps.length; index += direction) {
-    const step = steps[index];
-    if (step === undefined || step.unusableReason !== null) continue;
-    if (here !== undefined && step.identity === here) continue;
-    return index;
+    if (usable(index)) return index;
   }
   return null;
 }
