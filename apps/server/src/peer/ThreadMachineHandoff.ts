@@ -364,7 +364,7 @@ const make = Effect.gen(function* () {
     );
   });
 
-  /** Only for the thread's own model: one the agent names is taken as it was found there. */
+  /** The launch would refuse a model the machine lacks, but only after the work was pushed. */
   const requireModel = Effect.fn("ThreadMachineHandoff.requireModel")(function* (
     scope: Scope,
     target: Target,
@@ -653,7 +653,7 @@ const make = Effect.gen(function* () {
     const code = yield* planCode(source, target.label);
     const project = yield* findTargetProject(scope, target, source, input.projectId);
     const modelSelection = input.modelSelection ?? source.shell.modelSelection;
-    if (input.modelSelection === undefined) yield* requireModel(scope, target, modelSelection);
+    yield* requireModel(scope, target, modelSelection);
     const attachment = yield* uploadFile(scope, resolved, yield* readTranscript(source.threadId));
 
     const pushed = code.kind === "carry" ? yield* pushWork(source, code, target.label) : null;
