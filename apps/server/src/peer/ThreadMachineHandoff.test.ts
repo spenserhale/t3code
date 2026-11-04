@@ -18,8 +18,10 @@ import {
   type VcsStatusResult,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -138,6 +140,11 @@ interface Options {
   readonly switchedBeforeLease?: string;
   /** The checkout's remotes, by name. */
   readonly remotes?: Record<string, string>;
+  /** The first upload says it has begun, then waits to be let go: a call held mid-preparation. */
+  readonly firstUploadHeld?: {
+    readonly begun: Deferred.Deferred<void>;
+    readonly release: Deferred.Deferred<void>;
+  };
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
@@ -158,6 +165,7 @@ const makeHarness = (initial: Options = {}) => {
   const pushes: Array<{ readonly cwd: string; readonly branch: string | null }> = [];
   // Once the work is committed and pushed, the checkout shows nothing left to carry.
   let carried = false;
+  let firstUploadSeen = false;
   let currentBranch: string | null =
     options.status !== undefined && "refName" in options.status
       ? (options.status.refName ?? null)
@@ -525,7 +533,13 @@ const makeHarness = (initial: Options = {}) => {
   const http = Layer.succeed(
     HttpClient.HttpClient,
     HttpClient.make((request) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
+        const held = options.firstUploadHeld;
+        if (held !== undefined && !firstUploadSeen) {
+          firstUploadSeen = true;
+          yield* Deferred.succeed(held.begun, undefined);
+          yield* Deferred.await(held.release);
+        }
         log.push("upload");
         uploads.push({
           url: request.url,
@@ -1117,6 +1131,36 @@ describe("t3_thread_continue_on_machine", () => {
           }),
         );
         expect(harness.pushes).toHaveLength(1);
+      }),
+    );
+
+    it.effect("refuses an id a hand-off of another thread is still preparing", () =>
+      Effect.gen(function* () {
+        const begun = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const harness = makeHarness({ firstUploadHeld: { begun, release } });
+        const result = yield* harness.session((handOff) =>
+          Effect.gen(function* () {
+            const first = yield* handOff({
+              clientRequestId: "request-1",
+              threadId: sourceThread,
+            }).pipe(Effect.forkChild);
+            // The first is part-way through its upload when a second thread asks with the same id.
+            yield* Deferred.await(begun);
+            const refused = yield* handOff({
+              clientRequestId: "request-1",
+              threadId: otherThread,
+            }).pipe(Effect.flip);
+            expect(refused.code).toBe("invalid_request");
+            expect(refused.message).toContain("different hand-off");
+            yield* Deferred.succeed(release, undefined);
+            return yield* Fiber.join(first);
+          }),
+        );
+        expect(result.threadId).toBe("thread:linkmini-1");
+        expect(harness.uploads).toHaveLength(1);
+        expect(launchesOf(harness)).toHaveLength(1);
+        expect(harness.settled.map((entry) => entry.threadId)).toEqual([sourceThread]);
       }),
     );
 
