@@ -9,7 +9,7 @@ import { ComposerControl, ComposerControlIcon } from "./ComposerControl";
 import { focusRequestedPermission, useComposerMenuProps } from "./composerEventScope";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { resolveModelPickerSelectedModel } from "./ModelPickerContent";
-import { ProviderModelPicker } from "./ProviderModelPicker";
+import { type ModelPick, ProviderModelPicker } from "./ProviderModelPicker";
 import { runtimeModeConfig } from "./runtimeModeConfig";
 import type { ProviderModelSelectOptions } from "./useComposerSelection";
 import { useComposerMenuState } from "./useComposerMenuState";
@@ -282,7 +282,7 @@ export function ComposerModelPicker({
   ) => void;
 }) {
   const { instanceEntries, modelOptionsByInstance } = pickerProps;
-  const toggleModel = (instanceId: ProviderInstanceId, model: string) => {
+  const toggleModel = (instanceId: ProviderInstanceId, model: string, pick?: ModelPick) => {
     const current = multipleModelSelections ?? [selectedModelSelection];
     const matchesModel = (selection: ModelSelection) => {
       if (selection.instanceId !== instanceId) return false;
@@ -297,7 +297,7 @@ export function ComposerModelPicker({
     const exists = current.some(matchesModel);
     const next = exists
       ? current.filter((selection) => !matchesModel(selection))
-      : [...current, createModelSelection(instanceId, model)];
+      : [...current, createModelSelection(instanceId, model, pick?.options)];
     if (next.length > 1) {
       onMultipleModelSelectionsChange(next);
     } else {
@@ -305,6 +305,10 @@ export function ComposerModelPicker({
       const remaining = next[0] ?? selectedModelSelection;
       onProviderModelSelect(remaining.instanceId, remaining.model, {
         focusComposer: false,
+        // A favorite added to several models keeps its effort when it ends up the only one.
+        ...(multipleModelSelections !== null && remaining.options?.length
+          ? { modelOptions: remaining.options }
+          : {}),
       });
     }
   };

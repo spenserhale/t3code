@@ -1,7 +1,6 @@
-import { effortSliderIsShown } from "@t3tools/client-runtime/effort-slider";
+import { effortSliderIsShown, stableListKeys } from "@t3tools/client-runtime/effort-slider";
 import type { EnvironmentId, ModelSelection, ProjectId } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
-import { useNavigate } from "@tanstack/react-router";
 
 import { useAddEffortSliderStep, useEnvironmentModelShortcuts } from "~/hooks/useModelShortcuts";
 import { announce } from "~/lib/announce";
@@ -20,7 +19,12 @@ export interface EffortSliderActions {
   /** Why the selected model and effort cannot be added; null when they can. */
   readonly addDisabledReason: string | null;
   readonly onAdd: () => void;
-  readonly onOpenSettings: () => void;
+  /** What the settings link opens: the project's own list when it is the one in use. */
+  readonly settingsTarget: {
+    readonly environmentId: EnvironmentId;
+    readonly projectId: ProjectId | null;
+    readonly projectOverrides: boolean;
+  };
 }
 
 function describeEffort(modelLabel: string, effortLabel: string | null) {
@@ -38,6 +42,8 @@ export function useComposerEffortSlider(
     readonly projectId: ProjectId | null;
     readonly suspended: boolean;
     readonly selectedModelSelection: ModelSelection;
+    /** What the provider reports a started thread runs at, which the effort control shows. */
+    readonly reportedModelSelection: ModelSelection | null | undefined;
     readonly onProviderModelSelect: (
       instanceId: ModelSelection["instanceId"],
       model: string,
@@ -46,11 +52,8 @@ export function useComposerEffortSlider(
   },
 ): { slider: ModelPickerEffortSlider | null; actions: EffortSliderActions | null } {
   const { environmentId, projectId, selectedModelSelection } = input;
-  const navigate = useNavigate();
-  const { effortSlider, effortSliderSupported } = useEnvironmentModelShortcuts(
-    environmentId,
-    projectId,
-  );
+  const { effortSlider, effortSliderSupported, favoritesSource, effortSliderSource } =
+    useEnvironmentModelShortcuts(environmentId, projectId);
   const addStep = useAddEffortSliderStep(environmentId, projectId);
   if (!effortSliderSupported || input.suspended) return { slider: null, actions: null };
 
@@ -59,14 +62,21 @@ export function useComposerEffortSlider(
     steps,
     selectedModelSelection,
     input.instanceEntries,
+    input.reportedModelSelection,
   );
   const active = activeIndex === null ? null : steps[activeIndex];
-  const current = currentEffortOf(selectedModelSelection, input.instanceEntries);
+  const current = currentEffortOf(
+    selectedModelSelection,
+    input.instanceEntries,
+    input.reportedModelSelection,
+  );
+  const stopKeys = stableListKeys(steps.map((step) => step.identity));
 
   const slider: ModelPickerEffortSlider | null = effortSliderIsShown(steps)
     ? {
         stops: steps.map((step, index) => ({
-          key: `${index}:${step.selection.instanceId}:${step.selection.model}:${step.effort}`,
+          key: stopKeys[index]!,
+          identity: step.identity,
           modelLabel: step.modelLabel,
           effortLabel: step.effortLabel,
           unusableReason: step.unusableReason,
@@ -108,12 +118,10 @@ export function useComposerEffortSlider(
           ),
         );
       },
-      onOpenSettings: () => {
-        void navigate({
-          to: "/settings/threads",
-          search: { machine: environmentId },
-          hash: "model-shortcuts",
-        });
+      settingsTarget: {
+        environmentId,
+        projectId,
+        projectOverrides: favoritesSource === "project" || effortSliderSource === "project",
       },
     },
   };

@@ -4,10 +4,13 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   effortChoices,
   effortSliderIsShown,
+  effortSliderStepIdentity,
   findActiveEffortSliderStep,
   nearestUsableEffortSliderStep,
   nextEffortSliderStep,
   selectedEffort,
+  shownEffort,
+  stableListKeys,
 } from "./effortSlider.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
@@ -70,6 +73,39 @@ describe("selectedEffort", () => {
   });
 });
 
+describe("shownEffort", () => {
+  const sol = model({ optionDescriptors: [levels("medium", ["low", "medium", "high"])] });
+  const high = [{ id: "reasoningEffort", value: "high" }];
+
+  it("is the selection's own choice, else the level the provider reports for it, else the default", () => {
+    const reported = createModelSelection(instanceId, "sol", high);
+    expect(shownEffort(sol, createModelSelection(instanceId, "sol"), reported)?.value).toBe("high");
+    expect(
+      shownEffort(
+        sol,
+        createModelSelection(instanceId, "sol", [{ id: "reasoningEffort", value: "low" }]),
+        reported,
+      )?.value,
+    ).toBe("low");
+    expect(shownEffort(sol, createModelSelection(instanceId, "sol"), null)?.value).toBe("medium");
+    expect(shownEffort(sol, createModelSelection(instanceId, "sol"))?.value).toBe("medium");
+  });
+
+  it("ignores a report about another model or instance", () => {
+    const selection = createModelSelection(instanceId, "sol");
+    expect(shownEffort(sol, selection, createModelSelection(instanceId, "luna", high))?.value).toBe(
+      "medium",
+    );
+    expect(
+      shownEffort(sol, selection, createModelSelection(otherInstanceId, "sol", high))?.value,
+    ).toBe("medium");
+  });
+
+  it("is nothing for a model without an effort control", () => {
+    expect(shownEffort(model(null), createModelSelection(instanceId, "sol"), null)).toBeNull();
+  });
+});
+
 describe("findActiveEffortSliderStep", () => {
   const steps = [
     { selection: createModelSelection(instanceId, "luna"), effort: "low" },
@@ -125,6 +161,21 @@ describe("nextEffortSliderStep", () => {
     expect(nextEffortSliderStep(steps, 0, -1)).toBeNull();
   });
 
+  it("moves past a stored duplicate of the step it is on instead of selecting it again", () => {
+    const solLow = effortSliderStepIdentity({ instanceId, model: "sol" }, "low");
+    const astra = effortSliderStepIdentity({ instanceId, model: "astra" }, "high");
+    const steps = [
+      { identity: solLow, unusableReason: null },
+      { identity: solLow, unusableReason: null },
+      { identity: astra, unusableReason: null },
+    ];
+    expect(nextEffortSliderStep(steps, 0, 1)).toBe(2);
+    expect(nextEffortSliderStep(steps, 2, -1)).toBe(1);
+    expect(nextEffortSliderStep(steps, 1, -1)).toBeNull();
+    // Steps that carry no identity are all distinct.
+    expect(nextEffortSliderStep([usable, usable], 0, 1)).toBe(1);
+  });
+
   it("enters from the first usable step on Right and the last on Left when off the slider", () => {
     const steps = [blocked, usable, usable, usable, blocked];
     expect(nextEffortSliderStep(steps, null, 1)).toBe(1);
@@ -155,5 +206,13 @@ describe("nearestUsableEffortSliderStep", () => {
     expect(nearestUsableEffortSliderStep(steps, 0.99)).toBe(3);
     expect(nearestUsableEffortSliderStep(steps, 1.4)).toBe(3);
     expect(nearestUsableEffortSliderStep([blocked], 0.5)).toBeNull();
+  });
+});
+
+describe("stableListKeys", () => {
+  it("keeps a key with its item when the list is reordered, and tells repeated items apart", () => {
+    expect(stableListKeys(["a", "b", "a", "a"])).toEqual(["a#0", "b#0", "a#1", "a#2"]);
+    expect(stableListKeys(["b", "a"])).toEqual(["b#0", "a#0"]);
+    expect(new Set(stableListKeys(["x", "x", "x"])).size).toBe(3);
   });
 });

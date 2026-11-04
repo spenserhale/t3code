@@ -35,6 +35,7 @@ import { composerFloatingLayerProps, focusCheckedPermission } from "./composerEv
 import { EffortGlyph, FastBolt, resolveEffortGlyph } from "./EffortGlyph";
 import { DockedPickerContext } from "./ProviderModelPicker";
 import type { EffortSliderActions } from "./useComposerEffortSlider";
+import { useOpenModelShortcutsSettings } from "./useOpenModelShortcutsSettings";
 import {
   getTraitsSectionVisibility,
   type TraitsSelectionInput,
@@ -501,6 +502,7 @@ function NoEffortRow() {
 /** Neither shortcut takes focus from the search box the picker opened on. */
 function EffortSliderShortcuts(props: { actions: EffortSliderActions }) {
   const { actions } = props;
+  const openSettings = useOpenModelShortcutsSettings(actions.settingsTarget);
   return (
     <div className="flex shrink-0 items-center gap-1 border-t border-border/70 px-2 py-1.5">
       {/* A disabled button gets no pointer events, so the tooltip hangs on a wrapper. */}
@@ -530,7 +532,7 @@ function EffortSliderShortcuts(props: { actions: EffortSliderActions }) {
               className="ms-auto"
               aria-label="Effort slider settings"
               onMouseDown={(event) => event.preventDefault()}
-              onClick={actions.onOpenSettings}
+              onClick={openSettings}
             />
           }
         >

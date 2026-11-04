@@ -172,6 +172,7 @@ export function ComposerControlsBar(props: {
     instanceEntries: providerInstanceEntries,
     modelOptionsByInstance,
     selectedModelSelection,
+    reportedModelSelection,
     lockedProvider,
     lockedContinuationGroupKey,
     getModelDisabledReason,
