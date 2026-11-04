@@ -132,8 +132,9 @@ model and effort; the button beside it opens the settings, at the project when i
 lists and at the environment otherwise.
 
 Like other settings, both lists belong to the environments and project chosen at the top of
-Settings. A project can keep its own favorites and its own slider, and **Use the environment's**
-returns it to the environment's. Saved efforts and the slider need an environment running a
+Settings. With **All environments** chosen, an edit replaces every environment's list with the one
+on screen; choose one environment to change only its list. A project can keep its own favorites and
+its own slider, and **Use the environment's** returns it to the environment's. Saved efforts and the slider need an environment running a
 recent T3 Code, and they are not shown on mobile.
 
 ## Quote an assistant response
