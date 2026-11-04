@@ -97,6 +97,12 @@ export interface GitActionProgressReporter {
 export interface GitRunStackedActionOptions {
   readonly actionId?: string;
   readonly progressReporter?: GitActionProgressReporter;
+  /**
+   * Refuses to commit or push unless the checkout is on this branch and it is not the default.
+   * Checked under the checkout lease the action runs in, so a switch since the caller looked
+   * cannot put the work on another branch.
+   */
+  readonly expectedBranch?: string;
 }
 
 export interface GitRemoteStatusOptions extends GitVcsDriver.GitRemoteStatusOptions {
@@ -3031,6 +3037,20 @@ export const make = Effect.gen(function* () {
         GitManagerServiceError
       > {
         const initialStatus = yield* gitCore.statusDetails(input.cwd);
+        const expectedBranch = options?.expectedBranch;
+        if (
+          expectedBranch !== undefined &&
+          (initialStatus.branch !== expectedBranch || initialStatus.isDefaultBranch)
+        ) {
+          return yield* new GitManagerError({
+            operation: "runStackedAction",
+            cwd: input.cwd,
+            detail:
+              initialStatus.branch === expectedBranch
+                ? `${expectedBranch} is the default branch, so nothing was committed or pushed.`
+                : `The checkout is on ${initialStatus.branch ?? "no branch"}, not ${expectedBranch}, so nothing was committed or pushed.`,
+          });
+        }
         const wantsCommit = isCommitAction(input.action);
         const wantsPush =
           input.action === "push" ||

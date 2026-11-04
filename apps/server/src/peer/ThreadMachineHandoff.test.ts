@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
   GitCommandError,
+  GitManagerError,
   type GitRunStackedActionResult,
   type OrchestrationV2ThreadShell,
   type OrchestratorMcpFailure,
@@ -128,6 +129,8 @@ interface Options {
   readonly uploadRefused?: { readonly status: number; readonly text: string };
   /** The call comes through a link, as an outside agent of a machine that linked to this one. */
   readonly linkedCaller?: boolean;
+  /** Something else moves the checkout to this branch before the commit step holds it. */
+  readonly switchedBeforeLease?: string;
 }
 
 const makeHarness = (options: Options = {}) => {
@@ -247,10 +250,19 @@ const makeHarness = (options: Options = {}) => {
       currentBranch = input.refName;
       return Effect.succeed({ refName: input.refName });
     },
-    currentBranch: () => Effect.succeed(currentBranch),
     runStackedAction: (input, runOptions) =>
       Effect.gen(function* () {
         log.push(`git ${input.action}`);
+        // The checkout is anyone's until this action holds its lease, and it checks then.
+        if (options.switchedBeforeLease !== undefined) currentBranch = options.switchedBeforeLease;
+        const expected = runOptions?.expectedBranch;
+        if (expected !== undefined && expected !== currentBranch) {
+          return yield* new GitManagerError({
+            operation: "runStackedAction",
+            cwd: input.cwd,
+            detail: `The checkout is on ${currentBranch ?? "no branch"}, not ${expected}, so nothing was committed or pushed.`,
+          });
+        }
         pushes.push({ cwd: input.cwd, branch: currentBranch });
         const publish = runOptions?.progressReporter?.publish;
         const phase = (name: "commit" | "push") =>
@@ -666,6 +678,17 @@ describe("t3_thread_continue_on_machine", () => {
           const open = harness.forwarded.find((call) => call.tool === "t3_worktree_open_branch");
           expect(open?.params.branch).toBe("handoff/fix-the-flaky-login-2");
         }),
+    );
+
+    it.effect("never commits to a branch the checkout was moved to after it was read", () =>
+      Effect.gen(function* () {
+        const harness = makeHarness({ switchedBeforeLease: "main" });
+        const error = yield* harness.failed();
+        expect(error.message).toContain("not feature/login, so nothing was committed or pushed");
+        expect(harness.pushes).toEqual([]);
+        expect(harness.forwarded.map((call) => call.tool)).not.toContain("t3_worktree_open_branch");
+        expect(harness.settled).toEqual([]);
+      }),
     );
 
     it.effect("treats a branch of a repository that names no default as the default", () =>
