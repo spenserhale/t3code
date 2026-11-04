@@ -459,7 +459,7 @@ const make = Effect.gen(function* () {
 
   /**
    * Commits whatever the checkout has and pushes its branch, after moving off the default branch
-   * when it is on one. The checkout is read again first: what is pushed is what is there now.
+   * when it is on one. The commit step refuses unless the checkout is still on that branch.
    */
   const pushWork = Effect.fn("ThreadMachineHandoff.pushWork")(function* (
     source: Source,
@@ -483,15 +483,6 @@ const make = Effect.gen(function* () {
         })
         .pipe(Effect.ignoreCause({ log: true }));
     }
-    const current = yield* gitWorkflow
-      .currentBranch(cwd)
-      .pipe(Effect.mapError(gitFailed("Could not read the checkout's branch")));
-    if (current !== branch) {
-      return yield* failure(
-        "invalid_request",
-        `The checkout moved to ${current ?? "no branch"} while the hand-off started, so nothing was pushed.`,
-      );
-    }
     const actionId = yield* randomUuidV4;
     let committed = false;
     let commitWaitsToPush = false;
@@ -506,6 +497,8 @@ const make = Effect.gen(function* () {
         },
         {
           actionId,
+          // The commit step checks it under its checkout lease; a check made here could be stale by then.
+          expectedBranch: branch,
           progressReporter: {
             publish: (event) =>
               Effect.sync(() => {
