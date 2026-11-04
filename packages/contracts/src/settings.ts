@@ -350,11 +350,22 @@ export type ToolCallVisibility = typeof ToolCallVisibility.Type;
 export const ScreenReaderAnnouncements = Schema.Literals(["status", "messages", "everything"]);
 export type ScreenReaderAnnouncements = typeof ScreenReaderAnnouncements.Type;
 
-export const ModelFavorite = Schema.Struct({
+const ModelReference = Schema.Struct({
   provider: ProviderInstanceId,
   model: TrimmedNonEmptyString,
 });
+export const ModelFavorite = Schema.Struct({
+  ...ModelReference.fields,
+  /** Options (the effort) the model opens with; absent means the model's last used options. */
+  options: Schema.optionalKey(ProviderOptionSelections),
+});
+export type ModelFavorite = typeof ModelFavorite.Type;
 export const ModelFavorites = Schema.Array(ModelFavorite);
+export const MAX_EFFORT_SLIDER_STEPS = 6;
+/** Ordered model and effort pairs of the composer's effort slider; under two steps it is not shown. */
+export const EffortSliderSteps = Schema.Array(ModelSelection).check(
+  Schema.isMaxLength(MAX_EFFORT_SLIDER_STEPS),
+);
 export const ProviderModelPreferences = Schema.Record(
   ProviderInstanceId,
   Schema.Struct({
@@ -1177,6 +1188,8 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "continueThreadsAfterServerUpdate",
   "responseStreamingMode",
   "speechProjectCustomWords",
+  "favorites",
+  "effortSlider",
 ] as const;
 export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];
 
@@ -1215,6 +1228,8 @@ export const ProjectSettingsOverrides = Schema.Struct({
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   speechProjectCustomWords: Schema.optionalKey(SpeechCustomWords),
+  favorites: Schema.optionalKey(ModelFavorites),
+  effortSlider: Schema.optionalKey(EffortSliderSteps),
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),
@@ -1340,6 +1355,7 @@ export const CloudSpeechCredentials = Schema.Struct({
 export const ServerSettings = Schema.Struct({
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  effortSlider: EffortSliderSteps.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   providerModelPreferences: Schema.NullOr(ProviderModelPreferences).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -1760,12 +1776,13 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),
   ),
   setModelsHidden: Schema.optionalKey(
-    Schema.Array(Schema.Struct({ ...ModelFavorite.fields, hidden: Schema.Boolean })),
+    Schema.Array(Schema.Struct({ ...ModelReference.fields, hidden: Schema.Boolean })),
   ),
   setProviderModelOrder: Schema.optionalKey(
     Schema.Struct({ provider: ProviderInstanceId, modelOrder: Schema.Array(TrimmedString) }),
   ),
   favorites: Schema.optionalKey(ModelFavorites),
+  effortSlider: Schema.optionalKey(EffortSliderSteps),
   providerModelPreferences: Schema.optionalKey(ProviderModelPreferences),
   // Applied under the settings service's write lock, only while still unset.
   migrateModelPreferences: Schema.optionalKey(
