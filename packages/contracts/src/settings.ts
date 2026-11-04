@@ -346,10 +346,11 @@ export const MAX_EFFORT_SLIDER_STEPS = 6;
 /**
  * Ordered model and effort pairs of the composer's effort slider; under two steps it is not shown.
  * Stored settings read any length, and readers use the first six, so a longer hand edit cannot
- * make the whole settings file undecodable.
+ * make the whole settings file undecodable. A project's entry is written back whole, so it takes
+ * the same schema; only the slider setting itself is limited on write.
  */
 const StoredEffortSliderSteps = Schema.Array(ModelSelection);
-/** What a write may hold. */
+/** What a write of the slider setting may hold. */
 export const EffortSliderSteps = StoredEffortSliderSteps.check(
   Schema.isMaxLength(MAX_EFFORT_SLIDER_STEPS),
 );
@@ -1621,7 +1622,6 @@ export const ServerSettingsPatch = Schema.Struct({
           Schema.Struct({
             ...ProjectSettingsOverrides.fields,
             sourceControlWritingStyle: Schema.optionalKey(SourceControlWritingStyleSettings),
-            effortSlider: Schema.optionalKey(EffortSliderSteps),
           }),
         ),
       ),

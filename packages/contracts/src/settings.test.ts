@@ -567,12 +567,22 @@ describe("favorites with efforts and the effort slider", () => {
     });
     expect(isNullableProjectSettingsOverride("favorites")).toBe(false);
     expect(isNullableProjectSettingsOverride("effortSlider")).toBe(false);
-    expect(() =>
-      decodeServerSettingsPatch({
-        projectSettingsOverrides: {
-          [projectId]: { effortSlider: steps(MAX_EFFORT_SLIDER_STEPS + 1) },
-        },
-      }),
-    ).toThrow();
+  });
+
+  it("writes a project's entry back whole even when its slider is longer than a write may be", () => {
+    // Entries are replaced whole, so an unrelated edit carries every other list along unchanged.
+    const entry = decodeServerSettings({
+      projectSettingsOverrides: {
+        [projectId]: { defaultAutoPull: true, effortSlider: steps(MAX_EFFORT_SLIDER_STEPS + 1) },
+      },
+    }).projectSettingsOverrides[projectId];
+
+    const sent = encodeServerSettingsPatch({
+      projectSettingsOverrides: { [projectId]: { ...entry, defaultAutoPull: false } },
+    });
+
+    expect(decodeServerSettingsPatch(sent).projectSettingsOverrides?.[projectId]).toMatchObject({
+      defaultAutoPull: false,
+    });
   });
 });
