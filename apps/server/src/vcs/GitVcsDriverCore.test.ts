@@ -4839,6 +4839,60 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("reports what it made, even when the checkout then fails", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const worktrees = yield* makeTmpDir("reported-worktrees-");
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const reported: string[] = [];
+        const progress = {
+          onBranchCreated: (branch: string) =>
+            Effect.sync(() => void reported.push(`branch ${branch}`)),
+          onWorktreeClaimed: (path: string) =>
+            Effect.sync(() => void reported.push(`claimed ${path}`)),
+          onWorktreeLeftBehind: (path: string) =>
+            Effect.sync(() => void reported.push(`left behind ${path}`)),
+        };
+        const create = (name: string) =>
+          driver.createWorktree(
+            {
+              cwd,
+              path: pathService.join(worktrees, name),
+              refName: initialBranch,
+              newRefName: name,
+            },
+            { progress },
+          );
+
+        // A folder in the way: git refuses before it adds anything, but the branch was made.
+        yield* writeTextFile(worktrees, "blocked/keep.txt", "mine\n");
+        yield* create("blocked").pipe(Effect.flip);
+        assert.deepEqual(reported, ["branch blocked"]);
+
+        // A hook fails after git added the folder.
+        const hook = pathService.join(cwd, ".git", "hooks", "post-checkout");
+        yield* fileSystem.writeFileString(hook, "#!/bin/sh\nexit 1\n");
+        yield* fileSystem.chmod(hook, 0o755);
+        reported.length = 0;
+        yield* create("hooked").pipe(Effect.flip);
+        assert.deepEqual(reported, [
+          "branch hooked",
+          `left behind ${pathService.join(worktrees, "hooked")}`,
+        ]);
+
+        yield* fileSystem.remove(hook);
+        reported.length = 0;
+        yield* create("fine");
+        assert.deepEqual(reported, [
+          "branch fine",
+          `claimed ${pathService.join(worktrees, "fine")}`,
+        ]);
+      }),
+    );
+
     it.effect("keeps generated worktree folders short without changing long branch names", () =>
       Effect.gen(function* () {
         const pathService = yield* Path.Path;

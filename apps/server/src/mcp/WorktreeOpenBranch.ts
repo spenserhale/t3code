@@ -5,7 +5,6 @@ import {
   type WorktreeOpenBranchResult,
 } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
-import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -98,42 +97,46 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Git adds a worktree before it runs hooks such as post-checkout, so a failed or cut-short attempt
-   * can leave the worktree behind, and the branch made for it. Those go; nothing that was there
-   * before does. The branch had no worktree when this call began.
+   * Makes the worktree, and if that fails takes back what this call made. The driver says what it
+   * made as it makes it: the branch, and the folder git added, even when a hook such as
+   * post-checkout then fails. Anything else is someone's, whatever holds the branch by then.
    */
-  const takeBackWorktree = Effect.fn("WorktreeOpenBranch.takeBackWorktree")(
-    function* (cwd: string, branch: string, madeBranch: boolean, reason: string | undefined) {
-      const found = yield* findLocalBranch(cwd, branch);
-      if (found === undefined) return;
-      if (found.worktreePath !== null && reason !== "branch_checked_out_in_worktree") {
-        yield* removeWorktree(cwd, found.worktreePath);
-      }
-      if (madeBranch) yield* discardNewBranch(cwd, branch);
-    },
-    Effect.ignoreCause({ log: true }),
-  );
-
   const makeWorktree = Effect.fn("WorktreeOpenBranch.makeWorktree")(function* (
     cwd: string,
     request: VcsCreateWorktreeInput,
     what: string,
   ) {
-    return yield* gitWorkflow.createWorktree(request).pipe(
-      Effect.onError((cause) => {
-        const reason = Option.getOrUndefined(Cause.findErrorOption(cause))?.reason;
-        // Git stopped at a branch that was there already: it is not this call's to remove.
-        return reason === "branch_already_exists"
-          ? Effect.void
-          : takeBackWorktree(
-              cwd,
-              request.newRefName ?? request.refName,
-              request.newRefName !== undefined,
-              reason,
-            );
-      }),
-      Effect.mapError(gitFailed(what)),
-    );
+    const made = { branch: false, folder: undefined as string | undefined };
+    return yield* gitWorkflow
+      .createWorktree(request, {
+        progress: {
+          onBranchCreated: () => Effect.sync(() => void (made.branch = true)),
+          onWorktreeClaimed: (path) => Effect.sync(() => void (made.folder = path)),
+          onWorktreeLeftBehind: (path) => Effect.sync(() => void (made.folder = path)),
+        },
+      })
+      .pipe(
+        Effect.onError(() =>
+          Effect.gen(function* () {
+            if (made.folder !== undefined) yield* removeWorktree(cwd, made.folder);
+            if (made.branch && request.newRefName !== undefined) {
+              yield* discardNewBranch(cwd, request.newRefName);
+            }
+          }),
+        ),
+        Effect.mapError((error) =>
+          failure(
+            "orchestration_error",
+            `${what}: ${error.message}${
+              error.reason === "path_already_exists" ||
+              error.reason === "branch_checked_out_in_worktree" ||
+              error.reason === "branch_already_exists"
+                ? " What was there already was left as it was."
+                : ""
+            }`,
+          ),
+        ),
+      );
   });
 
   /** The project's remote that is `repositoryKey`, origin first. */
