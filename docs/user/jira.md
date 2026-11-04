@@ -87,7 +87,9 @@ included. They can search for issues, read one with its description, acceptance 
 comments, list the moves Jira offers from its status and make one, and add a comment
 (`jira_issue_search`, `jira_issue_read`, `jira_issue_transition` and `jira_issue_comment`). Moves
 and comments are made as the connected Jira account, so they appear under your name. An outside
-agent with **Read only** access can search and read, but not move or comment.
+agent with **Read only** access can search and read, but not move or comment. Reading an issue
+returns its newest ten comments and cuts very long text, saying what it left out; the agent can ask
+for up to fifty comments or for longer text.
 
 An agent links a thread to an issue the way you do: by putting the key in capitals in the thread's
 title, as in `PROJ-123: Fix login redirect`. As for any thread, an automatic title refresh can drop

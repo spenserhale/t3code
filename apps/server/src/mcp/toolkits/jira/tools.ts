@@ -2,7 +2,6 @@ import {
   JIRA_SEARCH_MAX_PAGE_SIZE,
   JiraAddCommentInput,
   JiraComment,
-  JiraIssueDetail,
   JiraIssueInput,
   JiraIssueSummary,
   JiraSearchPreset,
@@ -11,11 +10,21 @@ import {
   JiraStatusCategoryFilter,
   JiraTransitionInput,
   JiraTransitionList,
+  NonNegativeInt,
   OrchestratorMcpFailure,
+  PositiveInt,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
+import {
+  JIRA_AGENT_DEFAULT_COMMENTS,
+  JIRA_AGENT_DEFAULT_MAX_CHARS,
+  JIRA_AGENT_DESCRIPTION_FACTOR,
+  JIRA_AGENT_MAX_CHARS,
+  JIRA_AGENT_MAX_COMMENTS,
+  JiraAgentIssue,
+} from "../../../jira/jiraAgentIssue.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
@@ -67,9 +76,21 @@ const JiraSearchTool = Tool.make("jira_issue_search", {
 const JiraReadTool = Tool.make("jira_issue_read", {
   ...shared,
   description:
-    "Read one Jira issue: description, acceptance criteria, labels, newest comments. To link a thread to it, put the key in capitals in the thread title (`PROJ-123: Fix login`) with `t3_thread_update`. Start work on it with `t3_thread_launch`.",
-  parameters: Schema.Struct({ key }),
-  success: JiraIssueDetail,
+    "Read one Jira issue: description, acceptance criteria, labels, newest comments. Text is limited: size it with `comments` and `maxChars`; `note` says what was left out. To link a thread to it, put the key in capitals in the thread title (`PROJ-123: Fix login`) with `t3_thread_update`. Start work on it with `t3_thread_launch`.",
+  parameters: Schema.Struct({
+    key,
+    comments: Schema.optional(
+      NonNegativeInt.annotate({
+        description: `Newest comments to return, 0 to ${JIRA_AGENT_MAX_COMMENTS}. Default ${JIRA_AGENT_DEFAULT_COMMENTS}.`,
+      }),
+    ),
+    maxChars: Schema.optional(
+      PositiveInt.annotate({
+        description: `Characters kept per text, up to ${JIRA_AGENT_MAX_CHARS}. Default ${JIRA_AGENT_DEFAULT_MAX_CHARS}; the description keeps ${JIRA_AGENT_DESCRIPTION_FACTOR}x.`,
+      }),
+    ),
+  }),
+  success: JiraAgentIssue,
 })
   .annotate(Tool.Title, "Read a Jira issue")
   .annotate(Tool.Readonly, true)

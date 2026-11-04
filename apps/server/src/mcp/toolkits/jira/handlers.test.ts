@@ -8,6 +8,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   type JiraComment,
+  type JiraIssueDetail,
   type JiraIssueSummary,
   type JiraTransition,
 } from "@t3tools/contracts";
@@ -159,6 +160,23 @@ const makeHarness = Effect.fn("makeJiraToolkitHarness")(function* (
     );
   return { call };
 });
+
+const layerServer = (
+  client: Partial<JiraClient.JiraClient["Service"]>,
+  credentials: Option.Option<JiraClient.JiraCredential>,
+) =>
+  McpHttpServer.layerJiraToolkit.pipe(
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+    Layer.provide(layerJira(client, credentials)),
+  );
+
+const callTool = (name: string, args: Record<string, unknown>) =>
+  McpServer.McpServer.pipe(
+    Effect.flatMap((server) => server.callTool({ name, arguments: args })),
+    Effect.provideService(McpInvocationContext.McpInvocationContext, threadCaller),
+    Effect.provideService(McpSchema.McpServerClient, mcpClient),
+  );
 
 it.effect.each([
   { when: "searching", name: "jira_issue_search", params: { preset: "assigned" } },
@@ -381,21 +399,50 @@ it.effect("advertises reads as read-only and surfaces a failure as the tool's er
       jira_issue_transition: false,
       jira_issue_comment: false,
     });
-    const result = yield* server
-      .callTool({ name: "jira_issue_read", arguments: { key: "PROJ-1" } })
-      .pipe(
-        Effect.provideService(McpInvocationContext.McpInvocationContext, threadCaller),
-        Effect.provideService(McpSchema.McpServerClient, mcpClient),
-      );
+    const result = yield* callTool("jira_issue_read", { key: "PROJ-1" });
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result.content)).toContain("Jira is not connected on this machine");
+  }).pipe(Effect.provide(layerServer({}, Option.none()))),
+);
+
+const worstCaseIssue: JiraIssueDetail = {
+  ...issue("PROJ-1"),
+  reporter: null,
+  createdAt: "2026-10-30T09:30:00.000Z",
+  labels: [],
+  descriptionMarkdown: "d".repeat(100_000),
+  acceptanceCriteria: Array.from({ length: 5 }, (_, index) => ({
+    name: `Acceptance criteria ${index + 1}`,
+    markdown: "a".repeat(100_000),
+  })),
+  comments: Array.from({ length: 50 }, (_, index) => ({
+    ...comment,
+    id: String(index + 1),
+    bodyMarkdown: "c".repeat(32_000),
+  })),
+  commentCount: 50,
+};
+
+it.effect("reads a worst-case issue in under 100 KB, and less when asked for less", () =>
+  Effect.gen(function* () {
+    const byDefault = yield* callTool("jira_issue_read", { key: "PROJ-1" });
+    // The agent is sent the result twice: as text and as structured content.
+    const text = byDefault.content.map((part) => ("text" in part ? part.text : "")).join("");
+    expect(Buffer.byteLength(text)).toBeLessThan(100_000);
+    expect(Buffer.byteLength(JSON.stringify(byDefault.structuredContent))).toBeLessThan(100_000);
+
+    const asked = yield* callTool("jira_issue_read", { key: "PROJ-1", comments: 2, maxChars: 100 });
+    expect(asked.structuredContent).toMatchObject({
+      commentCount: 50,
+      comments: [
+        { id: "49", bodyMarkdown: "c".repeat(100), truncated: true },
+        { id: "50", bodyMarkdown: "c".repeat(100), truncated: true },
+      ],
+      note: expect.stringContaining("Not shown: 48 older comments."),
+    });
   }).pipe(
     Effect.provide(
-      McpHttpServer.layerJiraToolkit.pipe(
-        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-        Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
-        Layer.provide(layerJira({}, Option.none())),
-      ),
+      layerServer({ getIssue: () => Effect.succeed(worstCaseIssue) }, Option.some(saved)),
     ),
   ),
 );
