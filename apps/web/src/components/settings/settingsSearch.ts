@@ -277,6 +277,20 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["new thread project provider reasoning effort"],
   },
   {
+    id: "model-favorites",
+    title: "Favorite models",
+    to: "/settings/threads",
+    scope: "project-defaults",
+    searchTerms: ["star order picker effort reasoning level favorites list"],
+  },
+  {
+    id: "effort-slider",
+    title: "Effort slider",
+    to: "/settings/threads",
+    scope: "project-defaults",
+    searchTerms: ["model picker steps reasoning effort composer arrow keys favorites"],
+  },
+  {
     id: "default-permissions",
     title: "Permissions",
     to: "/settings/threads",
