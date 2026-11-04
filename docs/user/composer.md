@@ -126,8 +126,10 @@ The same section holds an optional effort slider of up to six steps, each a mode
 With two or more steps, the model picker shows it above the search. Click or drag it, or press Left
 and Right while the search is empty, to change the model and effort together. The slider follows
 your current choice, stops at its ends, and skips models the thread cannot switch to. Once you type
-in the search, Left and Right move the cursor again. **Add to slider**, under a model's effort
-levels, adds the current model and effort; the button beside it opens the settings.
+in the search, Left and Right move the cursor again. Choosing a model keeps focus in the search
+box while the slider is shown. **Add to slider**, under a model's effort levels, adds the current
+model and effort; the button beside it opens the settings, at the project when it keeps its own
+lists and at the environment otherwise.
 
 Like other settings, both lists belong to the environments and project chosen at the top of
 Settings. A project can keep its own favorites and its own slider, and **Use the environment's**

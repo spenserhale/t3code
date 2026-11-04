@@ -40,7 +40,7 @@ the provider list. When the picker shows an
 [effort slider](composer.md#favorites-and-the-effort-slider), Left and Right in an empty search
 move along it instead, so use Shift+Tab to reach the provider list. Use Up/Down to move and Enter to choose. Right returns to
 model search. Right at the end of the search moves to the highlighted model's effort
-levels, and Left comes back. Choosing a model keeps the picker open on its effort. `mod+shift+up` and `mod+shift+down` switch providers directly and clear the
+levels, and Left comes back. Choosing a model keeps the picker open on its effort, or in the search box while the slider is shown. `mod+shift+up` and `mod+shift+down` switch providers directly and clear the
 search. These provider shortcuts can also be changed in Settings.
 
 These shortcuts run inside the focused web or desktop client. `mod` uses Command
