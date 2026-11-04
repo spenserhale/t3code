@@ -310,6 +310,7 @@ import {
 } from "./preparingComposerImages";
 import { HELD_COMPOSER_SEND_BANNER_ID } from "./ComposerHeldSendBanner";
 import { ComposerControlsBar } from "./ComposerControlsBar";
+import { resolveFanOutSelections } from "./composerMultiModel.logic";
 import type { ProviderModelSelectOptions } from "./useComposerSelection";
 import { composerCommandKeyHandler } from "./composerCommandKey";
 import { promptSuggestionToAccept, usePromptSuggestion } from "./usePromptSuggestion";
@@ -3519,12 +3520,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         selectedModelSelection,
         multipleModelSelections:
           routeKind === "draft" && multipleModelSelections !== null
-            ? multipleModelSelections.map((selection) =>
-                selection.instanceId === selectedModelSelection.instanceId &&
-                selection.model === selectedModelSelection.model
-                  ? selectedModelSelection
-                  : selection,
-              )
+            ? resolveFanOutSelections(multipleModelSelections, selectedModelSelection)
             : null,
         providerAvailable:
           multipleModelSelections !== null ||
