@@ -80,7 +80,9 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(VcsStatusBroadcaster)({}),
 ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
-const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
+// The branding transform renames the product in agent text; count upstream's spelling so the
+// budget upstream commits still applies.
+const utf8Bytes = (text: string) => Buffer.byteLength(text.replaceAll("SECode", "T3 Code"), "utf8");
 
 const claudeSystemAppend = () => {
   const { systemPrompt } = makeClaudeQueryOptions({
