@@ -8,9 +8,10 @@ import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   type ProjectId,
   type RepositoryIdentity,
-  type ThreadContinueOnMachineInput,
+  ThreadContinueOnMachineInput,
   type ThreadContinueOnMachineResult,
   type ThreadId,
+  type WorktreeOpenBranchResult,
 } from "@t3tools/contracts";
 import { toKindScopedComposerContextId } from "@t3tools/shared/composerContextReferences";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
@@ -26,6 +27,7 @@ import {
   type HandoffCodePlan,
 } from "@t3tools/shared/threadMachineHandoff";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -97,6 +99,31 @@ type TargetProject =
   | { readonly kind: "scratch" };
 
 const isTranscriptTooLarge = Schema.is(ThreadManagement.ThreadTranscriptTooLargeError);
+
+const sameRequest = Schema.toEquivalence(ThreadContinueOnMachineInput);
+
+/** Under the day a pending upload lives, so a remembered attempt never holds a lapsed one. */
+const ATTEMPT_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_ATTEMPTS = 200;
+
+/** The work as pushed, which the other machine opens. */
+interface Pushed {
+  readonly branch: string;
+  readonly remote: string;
+  readonly repositoryKey: string;
+  /** What pull requests compare with, by repository: its remote has another name on the target. */
+  readonly base: { readonly repositoryKey: string; readonly branch: string } | null;
+  readonly commit: string;
+  readonly wipCommit: boolean;
+}
+
+/** What the push step has done, which a retry must not do again. */
+interface PushProgress {
+  /** The branch made for the work, once the checkout is on it. */
+  workBranch?: string;
+  /** Whether a WIP commit exists, from this try or an earlier one. */
+  wipCommitted: boolean;
+}
 
 const DEFAULT_MESSAGE = "Continue where the previous thread left off.";
 
@@ -170,6 +197,9 @@ const make = Effect.gen(function* () {
     Effect.provideService(response, FetchHttpClient.RequestInit, { redirect: "manual" }),
   );
   const inFlight = new Set<ThreadId>();
+  // Where each hand-off with a clientRequestId got to, so a retry carries on from there and does
+  // not plan again from a checkout the first try changed. In memory: a restart forgets them.
+  const attempts = new Map<string, Attempt>();
 
   const newCommandId = crypto.randomUUIDv4().pipe(
     Effect.orDie,
@@ -462,6 +492,27 @@ const make = Effect.gen(function* () {
   });
   type Attachment = Effect.Success<ReturnType<typeof uploadFile>>;
 
+  /** Moves the checkout off the default branch, onto a branch of its own for the work to travel on. */
+  const makeWorkBranch = Effect.fn("ThreadMachineHandoff.makeWorkBranch")(function* (
+    source: Source,
+    name: string,
+  ) {
+    const { cwd, threadId } = source;
+    const created = yield* gitWorkflow
+      .createRef({ cwd, refName: name, switchRef: true })
+      .pipe(Effect.mapError(gitFailed(`Could not create the branch ${name}`)));
+    // The checkout moved to the new branch; the thread follows it. Best effort: the work is safe either way.
+    yield* threads
+      .dispatch({
+        type: "thread.metadata.update",
+        commandId: yield* newCommandId,
+        threadId,
+        branch: created.refName,
+      })
+      .pipe(Effect.ignoreCause({ log: true }));
+    return created.refName;
+  });
+
   /**
    * Commits whatever the checkout has and pushes its branch, after moving off the default branch
    * when it is on one. The commit step refuses unless the checkout is still on that branch.
@@ -469,28 +520,16 @@ const make = Effect.gen(function* () {
   const pushWork = Effect.fn("ThreadMachineHandoff.pushWork")(function* (
     source: Source,
     code: Extract<HandoffCodePlan, { readonly kind: "carry" }>,
+    progress: PushProgress,
     label: string,
   ) {
     const { cwd, threadId } = source;
-    let branch = code.branch;
-    if (code.createBranch) {
-      const created = yield* gitWorkflow
-        .createRef({ cwd, refName: code.branch, switchRef: true })
-        .pipe(Effect.mapError(gitFailed(`Could not create the branch ${code.branch}`)));
-      branch = created.refName;
-      // The checkout moved to the new branch; the thread follows it. Best effort: the work is safe either way.
-      yield* threads
-        .dispatch({
-          type: "thread.metadata.update",
-          commandId: yield* newCommandId,
-          threadId,
-          branch,
-        })
-        .pipe(Effect.ignoreCause({ log: true }));
+    if (code.createBranch && progress.workBranch === undefined) {
+      progress.workBranch = yield* makeWorkBranch(source, code.branch);
     }
+    const branch = progress.workBranch ?? code.branch;
     const actionId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
     let committed = false;
-    let commitWaitsToPush = false;
     const result = yield* gitWorkflow
       .runStackedAction(
         {
@@ -509,7 +548,7 @@ const make = Effect.gen(function* () {
               Effect.sync(() => {
                 if (event.kind !== "phase_started") return;
                 if (event.phase === "commit") committed = true;
-                if (event.phase === "push") commitWaitsToPush = committed;
+                if (event.phase === "push" && committed) progress.wipCommitted = true;
               }),
           },
         },
@@ -519,8 +558,10 @@ const make = Effect.gen(function* () {
           failure(
             "orchestration_error",
             `Could not push ${branch}: ${explainHandoffGitFailure(error.message)}${
-              code.createBranch ? ` The checkout in ${cwd} is now on ${branch}.` : ""
-            }${commitWaitsToPush ? " Its WIP commit was not pushed." : ""}`,
+              progress.workBranch === undefined
+                ? ""
+                : ` The checkout in ${cwd} is now on ${branch}.`
+            }${progress.wipCommitted ? " Its WIP commit was not pushed." : ""}`,
           ),
         ),
       );
@@ -565,10 +606,9 @@ const make = Effect.gen(function* () {
           ? null
           : repositoryBranchOf(code.comparisonBase, repositories, repositoryKey),
       commit: head.commitSha,
-      wipCommit: result.commit.status === "created",
-    };
+      wipCommit: progress.wipCommitted || result.commit.status === "created",
+    } satisfies Pushed;
   });
-  type Pushed = Effect.Success<ReturnType<typeof pushWork>>;
 
   /** Has the other machine put the pushed branch on a worktree that holds the pushed commit. */
   const openOnTarget = Effect.fn("ThreadMachineHandoff.openOnTarget")(function* (
@@ -628,6 +668,7 @@ const make = Effect.gen(function* () {
       { attachmentsOnPeer: true },
     );
   });
+  type Launched = Effect.Success<ReturnType<typeof launchThere>>;
 
   /** Settled as t3_thread_organize does: the caller's own thread when its turn ends. */
   const settleSource = Effect.fn("ThreadMachineHandoff.settleSource")(function* (source: Source) {
@@ -650,6 +691,79 @@ const make = Effect.gen(function* () {
       );
   });
 
+  /** What a hand-off has done so far; each step sets its result once it is done. */
+  interface Attempt extends PushProgress {
+    readonly request: ThreadContinueOnMachineInput;
+    readonly startedAt: number;
+    readonly code: HandoffCodePlan;
+    readonly project: TargetProject;
+    readonly modelSelection: ModelSelection;
+    readonly attachment: Attachment;
+    pushed?: Pushed;
+    /** Null when there is no branch to open. */
+    opened?: WorktreeOpenBranchResult | null;
+    launched?: Launched;
+    settles?: "now" | "at_turn_end";
+  }
+
+  /** Reads here and there, then uploads the conversation, so a failure up to there leaves the checkout alone. */
+  const beginAttempt = Effect.fn("ThreadMachineHandoff.beginAttempt")(function* (
+    scope: Scope,
+    input: ThreadContinueOnMachineInput,
+    resolved: PeerLinks.ResolvedPeerLink,
+    target: Target,
+    source: Source,
+  ) {
+    const code = yield* planCode(source, target.label);
+    const project = yield* findTargetProject(scope, target, source, input.projectId);
+    const modelSelection = input.modelSelection ?? source.shell.modelSelection;
+    yield* requireModel(scope, target, modelSelection);
+    const attachment = yield* uploadFile(scope, resolved, yield* readTranscript(source.threadId));
+    const begun: Attempt = {
+      request: { ...input, threadId: source.threadId },
+      startedAt: yield* Clock.currentTimeMillis,
+      code,
+      project,
+      modelSelection,
+      attachment,
+      wipCommitted: false,
+    };
+    return begun;
+  });
+
+  /** The attempt a retry with the same clientRequestId carries on, else a new one. */
+  const attemptOf = Effect.fn("ThreadMachineHandoff.attemptOf")(function* (
+    scope: Scope,
+    input: ThreadContinueOnMachineInput,
+    resolved: PeerLinks.ResolvedPeerLink,
+    target: Target,
+    source: Source,
+  ) {
+    if (input.clientRequestId === undefined) {
+      return yield* beginAttempt(scope, input, resolved, target, source);
+    }
+    const key = `${scope.requestNamespace}\u0000${input.clientRequestId}`;
+    const now = yield* Clock.currentTimeMillis;
+    for (const [id, attempt] of attempts) {
+      if (now - attempt.startedAt > ATTEMPT_TTL_MS) attempts.delete(id);
+    }
+    const earlier = attempts.get(key);
+    if (earlier !== undefined) {
+      if (sameRequest(earlier.request, { ...input, threadId: source.threadId })) return earlier;
+      return yield* failure(
+        "invalid_request",
+        "That clientRequestId was used for a different hand-off. Repeat that one's arguments to retry it, or use a new clientRequestId.",
+      );
+    }
+    const begun = yield* beginAttempt(scope, input, resolved, target, source);
+    if (attempts.size >= MAX_ATTEMPTS) {
+      const oldest = attempts.keys().next();
+      if (oldest.done !== true) attempts.delete(oldest.value);
+    }
+    attempts.set(key, begun);
+    return begun;
+  });
+
   const handOff = Effect.fn("ThreadMachineHandoff.handOff")(function* (
     scope: Scope,
     input: ThreadContinueOnMachineInput,
@@ -663,67 +777,75 @@ const make = Effect.gen(function* () {
         "This MCP credential does not grant worktree capabilities, which committing and pushing need.",
       );
     }
-    // Reads first, here and there, so a failure up to the upload leaves the checkout alone.
-    const code = yield* planCode(source, target.label);
-    const project = yield* findTargetProject(scope, target, source, input.projectId);
-    const modelSelection = input.modelSelection ?? source.shell.modelSelection;
-    yield* requireModel(scope, target, modelSelection);
-    const attachment = yield* uploadFile(scope, resolved, yield* readTranscript(source.threadId));
+    const attempt = yield* attemptOf(scope, input, resolved, target, source);
+    const { code, project, modelSelection, attachment } = attempt;
 
-    const pushed = code.kind === "carry" ? yield* pushWork(source, code, target.label) : null;
+    if (code.kind === "carry" && attempt.pushed === undefined) {
+      attempt.pushed = yield* pushWork(source, code, attempt, target.label);
+    }
+    const pushed = attempt.pushed ?? null;
     const pushedNote =
       pushed === null
         ? ""
         : ` The work is committed and pushed to ${pushed.remote}/${pushed.branch} (${pushed.commit.slice(0, 7)}) and this thread was not settled.`;
-    // A scratch project carries no code, so a push means the target is a project.
-    const opened =
-      pushed === null || project.kind === "scratch"
-        ? null
-        : yield* openOnTarget(scope, target, project.projectId, pushed).pipe(
-            Effect.mapError((error) =>
-              error.message.includes("'t3_worktree_open_branch' not found")
-                ? failure(
-                    "capability_denied",
-                    `${target.label} runs a T3 Code version that does not have t3_worktree_open_branch, so it cannot open the branch. Both machines need a version that has it.${pushedNote}`,
-                  )
-                : failure(error.code, `${error.message}${pushedNote}`),
-            ),
-          );
+    if (attempt.opened === undefined) {
+      // A scratch project carries no code, so a push means the target is a project.
+      attempt.opened =
+        pushed === null || project.kind === "scratch"
+          ? null
+          : yield* openOnTarget(scope, target, project.projectId, pushed).pipe(
+              Effect.mapError((error) =>
+                error.message.includes("'t3_worktree_open_branch' not found")
+                  ? failure(
+                      "capability_denied",
+                      `${target.label} runs a T3 Code version that does not have t3_worktree_open_branch, so it cannot open the branch. Both machines need a version that has it.${pushedNote}`,
+                    )
+                  : failure(error.code, `${error.message}${pushedNote}`),
+              ),
+            );
+    }
+    const opened = attempt.opened;
 
-    const note = buildHandoffNote({
-      title: source.shell.title,
-      sourceLabel: (yield* environment.getDescriptor).label,
-      // The note names a WIP commit only if this call made one.
-      code: code.kind === "carry" && pushed?.wipCommit === false ? { ...code, commit: null } : code,
-      remoteRef: opened === null ? null : `${opened.remote}/${opened.branch}`,
-      threadLink: formatThreadLink({
-        environmentId: scope.environmentId,
-        threadId: source.threadId,
-      }),
-      transcriptAttached: true,
-    });
-    const launched = yield* launchThere(scope, target, {
-      project,
-      title: source.shell.title.trim() || "Untitled thread",
-      modelSelection,
-      worktree:
-        opened === null ? null : { worktreePath: opened.worktreePath, branch: opened.branch },
-      message: `${note}${input.message ?? DEFAULT_MESSAGE}`,
-      attachment,
-      clientRequestId: input.clientRequestId,
-    }).pipe(
-      Effect.mapError((error) =>
-        failure(
-          error.code,
-          `${error.message}${pushedNote}${
-            opened === null
-              ? ""
-              : ` The worktree ${opened.worktreePath} on ${target.label} was kept: retry with the same clientRequestId to reuse it.`
-          }`,
+    if (attempt.launched === undefined) {
+      const note = buildHandoffNote({
+        title: source.shell.title,
+        sourceLabel: (yield* environment.getDescriptor).label,
+        // The note names a WIP commit only if one was made.
+        code:
+          code.kind === "carry" && pushed?.wipCommit === false ? { ...code, commit: null } : code,
+        remoteRef: opened === null ? null : `${opened.remote}/${opened.branch}`,
+        threadLink: formatThreadLink({
+          environmentId: scope.environmentId,
+          threadId: source.threadId,
+        }),
+        transcriptAttached: true,
+      });
+      attempt.launched = yield* launchThere(scope, target, {
+        project,
+        title: source.shell.title.trim() || "Untitled thread",
+        modelSelection,
+        worktree:
+          opened === null ? null : { worktreePath: opened.worktreePath, branch: opened.branch },
+        message: `${note}${input.message ?? DEFAULT_MESSAGE}`,
+        attachment,
+        clientRequestId: input.clientRequestId,
+      }).pipe(
+        Effect.mapError((error) =>
+          failure(
+            error.code,
+            `${error.message}${pushedNote}${
+              opened === null
+                ? ""
+                : ` The worktree ${opened.worktreePath} on ${target.label} was kept: retry with the same clientRequestId to reuse it.`
+            }`,
+          ),
         ),
-      ),
-    );
+      );
+    }
+    const launched = attempt.launched;
 
+    const settles = attempt.settles ?? (yield* settleSource(source));
+    if (settles !== "failed") attempt.settles = settles;
     return {
       environmentId: target.environmentId,
       threadId: launched.threadId,
@@ -734,7 +856,7 @@ const make = Effect.gen(function* () {
       branch: opened?.branch ?? null,
       pushedCommit: pushed?.commit ?? null,
       worktreePath: opened?.worktreePath ?? null,
-      sourceSettles: yield* settleSource(source),
+      sourceSettles: settles,
     } satisfies ThreadContinueOnMachineResult;
   });
 
