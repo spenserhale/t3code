@@ -6,7 +6,11 @@ import type {
   ServerProviderModel,
 } from "@t3tools/contracts";
 import { getProviderOptionDescriptors } from "@t3tools/shared/model";
-import { isReasoningSelect, selectableProviderOptionChoices } from "./modelTraits.ts";
+import {
+  getDescriptorStringValue,
+  isReasoningSelect,
+  selectableProviderOptionChoices,
+} from "./modelTraits.ts";
 
 /** The model's reasoning level control, when it has one. */
 function findEffortDescriptor(
@@ -42,6 +46,27 @@ export function selectedEffort(
   };
 }
 
+/**
+ * The effort the composer's effort control shows for a selection, by the control's own rules: the
+ * selection's option, else the level the provider reports for this model, else the default.
+ */
+export function shownEffort(
+  model: Pick<ServerProviderModel, "capabilities"> | undefined,
+  selection: ModelSelection,
+  reportedSelection?: ModelSelection | null,
+): SelectedEffort | null {
+  const descriptor = findEffortDescriptor(model, selection.options);
+  const value = descriptor
+    ? getDescriptorStringValue(descriptor, selection, reportedSelection)
+    : null;
+  if (!descriptor || value === null) return null;
+  return {
+    descriptorId: descriptor.id,
+    value,
+    label: descriptor.options.find((option) => option.id === value)?.label ?? value,
+  };
+}
+
 /** The pickable levels of a model's effort control, in the catalog's order. */
 export function effortChoices(model: Pick<ServerProviderModel, "capabilities"> | undefined) {
   const descriptor = findEffortDescriptor(model);
@@ -50,10 +75,32 @@ export function effortChoices(model: Pick<ServerProviderModel, "capabilities"> |
     : null;
 }
 
+/** What makes two steps the same stop: the instance, the model and the level they run at. */
+export function effortSliderStepIdentity(
+  selection: Pick<ModelSelection, "instanceId" | "model">,
+  effort: string | null,
+): string {
+  return JSON.stringify([selection.instanceId, selection.model, effort]);
+}
+
+/**
+ * A key for each item that holds when the list is reordered: its identity, and how many identical
+ * ones came before it, so items repeated in stored data still get distinct keys.
+ */
+export function stableListKeys(identities: ReadonlyArray<string>): ReadonlyArray<string> {
+  const seen = new Map<string, number>();
+  return identities.map((identity) => {
+    const earlier = seen.get(identity) ?? 0;
+    seen.set(identity, earlier + 1);
+    return `${identity}#${earlier}`;
+  });
+}
+
 export interface EffortSliderStepView {
   readonly selection: ModelSelection;
   /** The level the step runs at, null when its model has no effort control. */
   readonly effort: string | null;
+  readonly identity: string;
   /** Why the step cannot be applied here; null when it can. */
   readonly unusableReason: string | null;
 }
@@ -84,18 +131,22 @@ export function effortSliderIsShown(
 }
 
 /**
- * The next usable step in a direction, or null at the end (no wrap). Off the slider, Right enters
- * at the first usable step and Left at the last.
+ * The next usable step in a direction, or null at the end (no wrap). A step that repeats the one
+ * the selection is on is passed over, so stored duplicates cannot hold the keys in place. Off the
+ * slider, Right enters at the first usable step and Left at the last.
  */
 export function nextEffortSliderStep(
-  steps: ReadonlyArray<Pick<EffortSliderStepView, "unusableReason">>,
+  steps: ReadonlyArray<Pick<EffortSliderStepView, "unusableReason"> & { identity?: string }>,
   active: number | null,
   direction: 1 | -1,
 ): number | null {
-  const usable = (index: number) => steps[index]?.unusableReason === null;
+  const here = active === null ? undefined : steps[active]?.identity;
   const start = active ?? (direction === 1 ? -1 : steps.length);
   for (let index = start + direction; index >= 0 && index < steps.length; index += direction) {
-    if (usable(index)) return index;
+    const step = steps[index];
+    if (step === undefined || step.unusableReason !== null) continue;
+    if (here !== undefined && step.identity === here) continue;
+    return index;
   }
   return null;
 }

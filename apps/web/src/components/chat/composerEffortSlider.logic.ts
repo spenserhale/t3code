@@ -1,17 +1,21 @@
 import {
   type EffortSliderStepView,
+  effortSliderStepIdentity,
   findActiveEffortSliderStep,
-  selectedEffort,
+  shownEffort,
 } from "@t3tools/client-runtime/effort-slider";
 import {
+  type EnvironmentId,
   MAX_EFFORT_SLIDER_STEPS,
   type ModelSelection,
+  type ProjectId,
   type ProviderDriverKind,
   type ProviderInstanceId,
 } from "@t3tools/contracts";
 import { createModelSelection, resolveSelectableModel } from "@t3tools/shared/model";
 
 import { isProviderInstancePickerReady, type ProviderInstanceEntry } from "../../providerInstances";
+import type { SettingsScopeSearch } from "../settings/settingsScope";
 import { getTriggerDisplayModelName, type ModelEsque } from "./providerIconUtils";
 
 export interface ComposerEffortStep extends EffortSliderStepView {
@@ -54,13 +58,15 @@ export function resolveComposerEffortSteps(
             ? `${entry.displayName} is unavailable in this thread`
             : context.getModelDisabledReason(step.instanceId, model);
     const resolved = model ?? step.model;
-    const effort = selectedEffort(
+    const selection = createModelSelection(step.instanceId, resolved, step.options);
+    const effort = shownEffort(
       entry?.models.find((candidate) => candidate.slug === resolved),
-      step.options,
+      selection,
     );
     const option = options?.find((candidate) => candidate.slug === resolved);
     return {
-      selection: createModelSelection(step.instanceId, resolved, step.options),
+      selection,
+      identity: effortSliderStepIdentity(selection, effort?.value ?? null),
       effort: effort?.value ?? null,
       effortLabel: effort?.label ?? null,
       modelLabel: option ? getTriggerDisplayModelName(option, entry?.driverKind) : resolved,
@@ -69,26 +75,31 @@ export function resolveComposerEffortSteps(
   });
 }
 
-/** The effort a selection runs at, compared with the steps the way the steps compare to it. */
+/**
+ * The effort a selection runs at, as the composer's effort control shows it, so the slider and
+ * the control never disagree about where a thread is.
+ */
 export function currentEffortOf(
   selection: ModelSelection,
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>,
+  reportedSelection?: ModelSelection | null,
 ) {
   const model = instanceEntries
     .find((entry) => entry.instanceId === selection.instanceId)
     ?.models.find((candidate) => candidate.slug === selection.model);
-  return { model, effort: selectedEffort(model, selection.options) };
+  return { model, effort: shownEffort(model, selection, reportedSelection) };
 }
 
 export function findActiveComposerEffortStep(
   steps: ReadonlyArray<ComposerEffortStep>,
   selection: ModelSelection,
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>,
+  reportedSelection?: ModelSelection | null,
 ): number | null {
   return findActiveEffortSliderStep(steps, {
     instanceId: selection.instanceId,
     model: selection.model,
-    effort: currentEffortOf(selection, instanceEntries).effort?.value ?? null,
+    effort: currentEffortOf(selection, instanceEntries, reportedSelection).effort?.value ?? null,
   });
 }
 
@@ -103,4 +114,41 @@ export function effortSliderAddDisabledReason(input: {
   }
   if (input.activeIndex !== null) return "Already on the slider";
   return input.selectedModelKnown ? null : "This model is not available";
+}
+
+/**
+ * Where the picker's settings link goes: the checkout whose own list the picker is showing, so
+ * what is edited there is that list, and otherwise the environment's.
+ */
+export function modelShortcutsSettingsSearch(
+  input: {
+    readonly environmentId: EnvironmentId;
+    readonly projectId: ProjectId | null;
+    readonly projectOverrides: boolean;
+  },
+  groups: ReadonlyArray<{
+    readonly projectKey: string;
+    readonly memberProjects: ReadonlyArray<{
+      readonly id: ProjectId;
+      readonly environmentId: EnvironmentId;
+      readonly physicalProjectKey: string;
+    }>;
+  }>,
+): SettingsScopeSearch {
+  if (input.projectOverrides && input.projectId !== null) {
+    for (const group of groups) {
+      const member = group.memberProjects.find(
+        (candidate) =>
+          candidate.id === input.projectId && candidate.environmentId === input.environmentId,
+      );
+      if (member) {
+        return {
+          project: group.projectKey,
+          machine: input.environmentId,
+          checkout: member.physicalProjectKey,
+        };
+      }
+    }
+  }
+  return { machine: input.environmentId };
 }
