@@ -1,6 +1,13 @@
-import { effortChoices, selectedEffort } from "@t3tools/client-runtime/effort-slider";
+import {
+  effortChoices,
+  effortSliderStepIdentity,
+  selectedEffort,
+  shownEffort,
+  stableListKeys,
+} from "@t3tools/client-runtime/effort-slider";
 import {
   MAX_EFFORT_SLIDER_STEPS,
+  type ModelSelection,
   type ProviderInstanceId,
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
@@ -23,7 +30,10 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   addFavorite,
   effortSliderAddBlockReason,
+  effortSliderEditBlockReason,
+  type FavoritesEdit,
   moveListItem,
+  planFavoritesWrite,
   removeListItem,
   setFavoriteOptions,
   setSliderStepOptions,
@@ -257,7 +267,17 @@ export function ModelShortcutsSettings() {
     representative?.label ?? (connectedEnvironments.length > 1 ? "the environment" : "environment");
 
   const favorites = settings.favorites;
-  const steps = settings.effortSlider;
+  // Readers use the first six steps, so that is what is shown, and no write holds more.
+  const steps =
+    settings.effortSlider.length > MAX_EFFORT_SLIDER_STEPS
+      ? settings.effortSlider.slice(0, MAX_EFFORT_SLIDER_STEPS)
+      : settings.effortSlider;
+  // A server that holds no list yet, or cannot take the change itself, gets the whole list.
+  const listOnServer =
+    connectedEnvironments.length > 0 &&
+    connectedEnvironments.every(
+      (environment) => (environment.serverConfig?.settings.favorites ?? null) !== null,
+    );
   // A project that has not made its own list shows the environment's, read-only. Servers that
   // keep no efforts or slider keep no project lists either.
   const favoritesReadOnly =
@@ -276,6 +296,26 @@ export function ModelShortcutsSettings() {
       available: option !== undefined && option.isUnavailable !== true,
     };
   };
+  // Models this environment does not know keep their saved options as their level.
+  const effortOf = (selection: ModelSelection) =>
+    shownEffort(describe(selection.instanceId, selection.model).model, selection)?.value ??
+    (selection.options?.length ? JSON.stringify(selection.options) : null);
+  const favoriteKeys = stableListKeys(
+    favorites.map((favorite) => `${favorite.provider}:${favorite.model}`),
+  );
+  const stepKeys = stableListKeys(
+    steps.map((step) => effortSliderStepIdentity(step, effortOf(step))),
+  );
+  const editFavorites = (edit: FavoritesEdit, list: typeof favorites) =>
+    updateSettings(
+      planFavoritesWrite({
+        projectScope: isProjectScope,
+        listOnServer,
+        reorderSupported: supportsEffortSlider,
+        list,
+        edit,
+      }),
+    );
   const picker = (
     label: string,
     onPick: (instanceId: ProviderInstanceId, model: string) => void,
@@ -313,7 +353,7 @@ export function ModelShortcutsSettings() {
       slug,
       effort ? [{ id: effort.descriptorId, value: effort.value }] : undefined,
     );
-    const blocked = effortSliderAddBlockReason(steps, step);
+    const blocked = effortSliderAddBlockReason(steps, step, effortOf);
     if (blocked) {
       toastManager.add({ type: "warning", title: "Step not added", description: blocked });
       return;
@@ -336,18 +376,18 @@ export function ModelShortcutsSettings() {
         control={
           favoritesReadOnly
             ? undefined
-            : picker("Add a favorite", (instanceId, model) =>
-                updateSettings({
-                  favorites: addFavorite(favorites, { provider: instanceId, model }),
-                }),
-              )
+            : picker("Add a favorite", (instanceId, model) => {
+                const favorite = { provider: instanceId, model };
+                const next = addFavorite(favorites, favorite);
+                if (next !== favorites) editFavorites({ kind: "add", favorite }, next);
+              })
         }
       >
         {isProjectScope && supportsEffortSlider ? (
           <ProjectListControl
             source={favoritesSource}
             environmentLabel={environmentLabel}
-            onCustomize={() => updateSettings({ favorites })}
+            onCustomize={() => editFavorites({ kind: "replace" }, favorites)}
             onInherit={() => clearOverrides(["favorites"])}
           />
         ) : null}
@@ -376,7 +416,7 @@ export function ModelShortcutsSettings() {
               const { entry, model, name, available } = describe(favorite.provider, favorite.model);
               return (
                 <ModelRow
-                  key={`${favorite.provider}:${favorite.model}`}
+                  key={favoriteKeys[index]!}
                   entry={entry}
                   instanceId={favorite.provider}
                   name={name}
@@ -393,17 +433,21 @@ export function ModelShortcutsSettings() {
                         allowLastUsed
                         disabled={favoritesReadOnly}
                         onChange={(options) =>
-                          updateSettings({
-                            favorites: setFavoriteOptions(favorites, index, options),
-                          })
+                          editFavorites(
+                            { kind: "effort", favorite, options },
+                            setFavoriteOptions(favorites, index, options),
+                          )
                         }
                       />
                     ) : null
                   }
-                  onMove={(direction) =>
-                    updateSettings({ favorites: moveListItem(favorites, index, direction) })
+                  onMove={(direction) => {
+                    const list = moveListItem(favorites, index, direction);
+                    editFavorites({ kind: "move", list }, list);
+                  }}
+                  onRemove={() =>
+                    editFavorites({ kind: "remove", favorite }, removeListItem(favorites, index))
                   }
-                  onRemove={() => updateSettings({ favorites: removeListItem(favorites, index) })}
                 />
               );
             })}
@@ -457,7 +501,7 @@ export function ModelShortcutsSettings() {
                   const { entry, model, name, available } = describe(step.instanceId, step.model);
                   return (
                     <ModelRow
-                      key={`${step.instanceId}:${step.model}:${step.options?.map((option) => `${option.id}=${option.value}`).join(",")}`}
+                      key={stepKeys[index]!}
                       entry={entry}
                       instanceId={step.instanceId}
                       name={name}
@@ -473,11 +517,25 @@ export function ModelShortcutsSettings() {
                           options={step.options}
                           allowLastUsed={false}
                           disabled={sliderReadOnly}
-                          onChange={(options) =>
+                          onChange={(options) => {
+                            const blocked = effortSliderEditBlockReason(
+                              steps,
+                              index,
+                              createModelSelection(step.instanceId, step.model, options),
+                              effortOf,
+                            );
+                            if (blocked) {
+                              toastManager.add({
+                                type: "warning",
+                                title: "Step not changed",
+                                description: blocked,
+                              });
+                              return;
+                            }
                             updateSettings({
                               effortSlider: setSliderStepOptions(steps, index, options),
-                            })
-                          }
+                            });
+                          }}
                         />
                       }
                       onMove={(direction) =>

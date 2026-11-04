@@ -23,6 +23,8 @@ const state = vi.hoisted(() => ({
   source: "environment" as "environment" | "project",
   projectScope: false,
   supported: true,
+  /** The environment keeps its favorites on the server, instead of this client's old copy. */
+  listOnServer: true,
   updateSettings: vi.fn<(patch: ScopedSettingsPatch) => void>(),
   clearOverrides: vi.fn<(keys: readonly string[]) => void>(),
 }));
@@ -34,6 +36,7 @@ function setup(overrides: Partial<Omit<typeof state, "updateSettings" | "clearOv
     source: "environment",
     projectScope: false,
     supported: true,
+    listOnServer: true,
     ...overrides,
   });
   state.updateSettings.mockReset();
@@ -80,6 +83,7 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
         environmentId,
         label: "Mac mini",
         serverConfig: {
+          settings: { favorites: state.listOnServer ? state.favorites : null },
           environment: { capabilities: state.supported ? { effortSlider: true } : {} },
         },
       },
@@ -162,26 +166,52 @@ const steps: ModelSelection[] = [
   { instanceId, model: "sol", options: high },
 ];
 
-it("reorders, removes and sets the effort of favorites, each as one whole list", async () => {
+const luna = { provider: instanceId, model: "luna" };
+const sol = { provider: instanceId, model: "sol" };
+
+it("reorders, removes and sets the effort of favorites by saying what changed", async () => {
   setup({ favorites });
   await using _screen = await render(<ModelShortcutsSettings />);
 
   await userEvent.click(page.getByRole("button", { name: "Move Luna up" }));
-  expect(state.updateSettings).toHaveBeenLastCalledWith({
-    favorites: [favorites[1], favorites[0]],
-  });
+  expect(state.updateSettings).toHaveBeenLastCalledWith({ reorderModelFavorites: [luna, sol] });
   await userEvent.click(page.getByRole("button", { name: "Remove Sol" }));
-  expect(state.updateSettings).toHaveBeenLastCalledWith({ favorites: [favorites[1]] });
+  expect(state.updateSettings).toHaveBeenLastCalledWith({
+    setModelFavorites: [{ ...sol, favorite: false }],
+  });
   await expect.element(page.getByRole("button", { name: "Move Sol up" })).toBeDisabled();
   await expect.element(page.getByRole("button", { name: "Move Luna down" })).toBeDisabled();
 
   await userEvent.click(page.getByRole("combobox", { name: "Effort for Luna" }));
   await userEvent.click(page.getByRole("option", { name: "Low" }));
   expect(state.updateSettings).toHaveBeenLastCalledWith({
-    favorites: [
-      favorites[0],
-      { provider: instanceId, model: "luna", options: [{ id: "reasoningEffort", value: "low" }] },
+    setModelFavorites: [
+      { ...luna, favorite: true, options: [{ id: "reasoningEffort", value: "low" }] },
     ],
+  });
+  await userEvent.click(page.getByRole("combobox", { name: "Effort for Sol" }));
+  await userEvent.click(page.getByRole("option", { name: "Last used" }));
+  expect(state.updateSettings).toHaveBeenLastCalledWith({
+    setModelFavorites: [{ ...sol, favorite: true, options: [] }],
+  });
+});
+
+it("writes the whole list where the server holds none yet, or cannot reorder by intent", async () => {
+  setup({ favorites, listOnServer: false });
+  await using screen = await render(<ModelShortcutsSettings />);
+  await userEvent.click(page.getByRole("button", { name: "Remove Sol" }));
+  expect(state.updateSettings).toHaveBeenLastCalledWith({ favorites: [favorites[1]] });
+
+  setup({ favorites, supported: false });
+  await screen.rerender(<ModelShortcutsSettings key="older-server" />);
+  await userEvent.click(page.getByRole("button", { name: "Move Luna up" }));
+  expect(state.updateSettings).toHaveBeenLastCalledWith({
+    favorites: [favorites[1], favorites[0]],
+  });
+  // Unstarring needs nothing newer, so an older server is still told only what changed.
+  await userEvent.click(page.getByRole("button", { name: "Remove Sol" }));
+  expect(state.updateSettings).toHaveBeenLastCalledWith({
+    setModelFavorites: [{ ...sol, favorite: false }],
   });
 });
 
@@ -191,6 +221,27 @@ it("moves a slider step as one whole list", async () => {
   await userEvent.click(page.getByRole("button", { name: "Move Sol up" }));
   expect(state.updateSettings).toHaveBeenLastCalledWith({ effortSlider: [steps[1], steps[0]] });
   await expect.element(page.getByRole("list", { name: "Effort slider steps" })).toBeVisible();
+});
+
+it("refuses to make one step repeat another, since the arrow keys could not tell them apart", async () => {
+  const solLow = { instanceId, model: "sol", options: [{ id: "reasoningEffort", value: "low" }] };
+  setup({ effortSlider: [solLow, steps[1]!] });
+  await using _screen = await render(<ModelShortcutsSettings />);
+  await userEvent.click(page.getByRole("combobox", { name: "Effort for Sol" }).nth(1));
+  await userEvent.click(page.getByRole("option", { name: "Low" }));
+  expect(state.updateSettings).not.toHaveBeenCalled();
+});
+
+it("shows the first six steps of a longer stored list, the ones the picker uses", async () => {
+  const seven = Array.from({ length: 7 }, (_, index) => steps[index % 2]!);
+  setup({ effortSlider: seven });
+  await using _screen = await render(<ModelShortcutsSettings />);
+  await expect
+    .element(page.getByRole("list", { name: "Effort slider steps" }).getByRole("listitem").first())
+    .toBeVisible();
+  expect(
+    page.getByRole("list", { name: "Effort slider steps" }).getByRole("listitem").elements(),
+  ).toHaveLength(6);
 });
 
 it("says that one step is too few for the slider to appear", async () => {
