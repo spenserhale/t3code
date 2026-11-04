@@ -75,6 +75,26 @@ Mobile keeps local copies of draft attachments so you can preview them and queue
 }
 ```
 
+## Favorites and the effort slider
+
+On web and desktop, star a model in the model picker to make it a favorite. The picker lists
+favorites first, in the order you set under **Settings → Threads → Favorites and effort slider**,
+where you can also reorder them, remove them, and save an effort with a favorite. A favorite with
+a saved effort opens at it, even when you used another effort last. One without keeps the effort
+you used last for that model.
+
+The same section holds an optional effort slider of up to six steps, each a model and an effort.
+With two or more steps, the model picker shows it above the search. Click or drag it, or press Left
+and Right while the search is empty, to change the model and effort together. The slider follows
+your current choice, stops at its ends, and skips models the thread cannot switch to. Once you type
+in the search, Left and Right move the cursor again. **Add to slider**, under a model's effort
+levels, adds the current model and effort; the button beside it opens the settings.
+
+Like other settings, both lists belong to the environments and project chosen at the top of
+Settings. A project can keep its own favorites and its own slider, and **Use the environment's**
+returns it to the environment's. Saved efforts and the slider need an environment running a
+recent T3 Code, and they are not shown on mobile.
+
 ## Quote an assistant response
 
 - **Web and desktop**: Select text in an assistant message and click **Cite in composer**. Click the pencil on the chip to add or edit a comment; click the chip to jump back to the source.

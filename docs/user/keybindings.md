@@ -24,6 +24,7 @@ To free a default shortcut, choose **Unassign** from its row menu (**Reset to de
 Configure whether `Enter` sends or requires `mod+Enter` in **Settings → Chat → Send shortcut** (`Shift+Enter` always inserts a newline).
 
 In the model picker, use `Left`/`Shift+Tab` to move to the provider list, `Right` to return to search or move into effort levels, and `Up`/`Down`/`Enter` to select.
+When the picker shows an [effort slider](composer.md#favorites-and-the-effort-slider), `Left` and `Right` in an empty search move along it instead, so use `Shift+Tab` to reach the provider list.
 
 ## Copy pull request and thread references
 

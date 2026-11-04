@@ -11,6 +11,7 @@ Use the **"Applying settings for …"** selector at the top of Settings (web/des
 - **Inheritance order**: `Project override` → `Environment setting` → `t3.json` in the repo → `Built-in default`. Leave a setting on **Inherit** to defer to the next tier.
 - Click the **layers icon** beside a server setting to inspect its inheritance chain, jump to overriding projects, or **Reset all** back to the environment default.
 - **Per-project providers**: With a project selected in **Settings → Providers**, toggling a provider enables or disables it for that project only (in either direction). Running turns finish; no new turns start on a disabled provider.
+- **Favorites and the effort slider**: **Settings → Threads** also holds your favorite models and the [effort slider](composer.md#favorites-and-the-effort-slider), which a project can override with its own list.
 
 ## Pin and archive projects
 
