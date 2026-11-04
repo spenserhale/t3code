@@ -41,7 +41,9 @@ a draft
 it uploads the transcript to the target, has the target's
 [`t3_worktree_open_branch`](../../apps/server/src/mcp/WorktreeOpenBranch.ts)
 fetch the remote itself and check the commit by ancestry, launches the thread,
-and settles the source.
+and settles the source. It keeps what each `clientRequestId` has done, in memory
+for six hours, so a retry carries on from the step that failed: planning again
+would read the checkout the first try already changed.
 
 [Environment ID initialization](../../apps/server/src/environment/ServerEnvironment.ts)
 must publish a complete ID atomically. Repair of an empty ID file retains a
