@@ -6642,6 +6642,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     worktreePath = path.resolve(input.cwd, worktreePath);
     // Read before the branch exists, so a missing pattern file leaves nothing behind.
     const sparsePatterns = yield* readWorktreeSparsePatterns(input.cwd, input.refName);
+    const progress = options?.progress;
     const newRefName = input.newRefName;
     // Older Git still creates worktrees normally, but cannot prove ownership for cancellation.
     const addHelp = newRefName
@@ -6664,9 +6665,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         { cwd: input.cwd, branch: newRefName, startPoint: input.refName },
         "git branch failed",
       );
+      if (progress?.onBranchCreated) yield* progress.onBranchCreated(input.newRefName);
     }
     const checkoutRef = newRefName ?? input.refName;
-    const progress = options?.progress;
     const onCheckoutProgress = progress?.onCheckoutProgress;
     const checkoutProgressOptions: ExecuteGitOptions = onCheckoutProgress
       ? {
@@ -6693,6 +6694,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       { concurrency: "unbounded" },
     );
     const checkoutWorkers = configuredCheckoutWorkers ?? "0";
+    const onWorktreeLeftBehind = progress?.onWorktreeLeftBehind;
+    const folderExisted =
+      onWorktreeLeftBehind === undefined ||
+      (yield* fileSystem.exists(worktreePath).pipe(Effect.orElseSucceed(() => true)));
     // The cache clones a full checkout, so a sparse worktree uses Git's own checkout.
     const fastCheckout =
       checkoutCache !== undefined && options?.fastCheckout === true && sparsePatterns === null;
@@ -6771,6 +6776,21 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             .pipe(Effect.flatMap((cloned) => (cloned ? Effect.void : stockCheckout)))
         : stockCheckout
     ).pipe(
+      Effect.tapError((error) => {
+        // Git refuses with exit 128, before it adds anything. Another failure, in a folder that was
+        // not there before the command, came after git added it: a hook, such as post-checkout.
+        const addedFolder =
+          error.exitCode !== undefined &&
+          error.exitCode !== 128 &&
+          error.reason !== "path_already_exists" &&
+          error.reason !== "branch_checked_out_in_worktree";
+        return onWorktreeLeftBehind === undefined || folderExisted || !addedFolder
+          ? Effect.void
+          : fileSystem.exists(worktreePath).pipe(
+              Effect.orElseSucceed(() => false),
+              Effect.flatMap((there) => (there ? onWorktreeLeftBehind(worktreePath) : Effect.void)),
+            );
+      }),
       Effect.andThen(sparseCheckout),
       Effect.andThen(
         fastCheckout ? checkoutCache.schedule(worktreePath, cacheGeneration) : Effect.void,
