@@ -4282,6 +4282,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const directoryName = `${prefix}-${Hex.encode(hash).slice(0, 16)}`;
       worktreePath = path.join(parentDir, repoName, directoryName);
     }
+    const progress = options?.progress;
     const newRefName = input.newRefName;
     if (newRefName) {
       // Kept apart from the checkout so the shared-config lock only covers the tracking write.
@@ -4290,9 +4291,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         { cwd: input.cwd, branch: newRefName, startPoint: input.refName },
         "git worktree add failed",
       );
+      if (progress?.onBranchCreated) yield* progress.onBranchCreated(input.newRefName);
     }
     const checkoutRef = newRefName ?? input.refName;
-    const progress = options?.progress;
     const onCheckoutProgress = progress?.onCheckoutProgress;
 
     // Both reads leave the repository alone, so they share one round trip before the checkout.
@@ -4306,6 +4307,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       { concurrency: "unbounded" },
     );
     const checkoutWorkers = configuredCheckoutWorkers ?? "0";
+    const onWorktreeLeftBehind = progress?.onWorktreeLeftBehind;
+    const folderExisted =
+      onWorktreeLeftBehind === undefined ||
+      (yield* fileSystem.exists(worktreePath).pipe(Effect.orElseSucceed(() => true)));
     const fastCheckout = checkoutCache !== undefined && options?.fastCheckout === true;
     const cacheGeneration = fastCheckout ? yield* checkoutCache.currentGeneration : 0;
     const stockCheckout = executeGitWithStableDiagnostics(
@@ -4347,6 +4352,21 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             .pipe(Effect.flatMap((cloned) => (cloned ? Effect.void : stockCheckout)))
         : stockCheckout
     ).pipe(
+      Effect.tapError((error) => {
+        // Git refuses with exit 128, before it adds anything. Another failure, in a folder that was
+        // not there before the command, came after git added it: a hook, such as post-checkout.
+        const addedFolder =
+          error.exitCode !== undefined &&
+          error.exitCode !== 128 &&
+          error.reason !== "path_already_exists" &&
+          error.reason !== "branch_checked_out_in_worktree";
+        return onWorktreeLeftBehind === undefined || folderExisted || !addedFolder
+          ? Effect.void
+          : fileSystem.exists(worktreePath).pipe(
+              Effect.orElseSucceed(() => false),
+              Effect.flatMap((there) => (there ? onWorktreeLeftBehind(worktreePath) : Effect.void)),
+            );
+      }),
       Effect.onError(() =>
         newRefName
           ? deleteLocalBranch({ cwd: input.cwd, refName: newRefName, force: true }).pipe(
