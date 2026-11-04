@@ -3,7 +3,10 @@ import {
   ProviderInstanceId,
   type ModelFavorite,
   type ModelSelection,
+  type ProviderOptionSelection,
 } from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
+import { useState } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -12,6 +15,7 @@ import "~/index.css";
 import { render } from "../../../test/render";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { ComposerModelPicker } from "./ComposerFooterControls";
+import { resolveFanOutSelections } from "./composerMultiModel.logic";
 
 const state = vi.hoisted(() => ({ favorites: [] as ModelFavorite[] }));
 
@@ -92,12 +96,15 @@ async function shiftClick(name: RegExp) {
 it("adds a favorite to several models at its saved effort", async () => {
   setup([{ provider: instanceId, model: "sol", options: high }]);
   const onChange = vi.fn();
+  const onSelect = vi.fn();
   await using screen = await render(
-    <Picker selections={null} onChange={onChange} onSelect={vi.fn()} />,
+    <Picker selections={null} onChange={onChange} onSelect={onSelect} />,
   );
   await screen.getByRole("button", { name: "Choose models" }).click();
   await shiftClick(/Sol model/);
   expect(onChange).toHaveBeenLastCalledWith([luna, { instanceId, model: "sol", options: high }]);
+  // Sol is not the primary model, so the effort control's selection is left as it was.
+  expect(onSelect).not.toHaveBeenCalled();
 });
 
 it("adds a model with no saved effort as it always did, leaving its options to what was last used", async () => {
@@ -132,4 +139,68 @@ it("keeps a favorite's saved effort when the selection falls back to that one mo
     focusComposer: false,
     modelOptions: high,
   });
+});
+
+it("sends a favorite's saved effort after it was taken out of several models and put back", async () => {
+  setup([
+    { provider: instanceId, model: "luna", options: high },
+    { provider: instanceId, model: "sol" },
+    { provider: instanceId, model: "plain" },
+  ]);
+  const low = [{ id: "reasoningEffort", value: "low" }];
+
+  // The composer around the picker: the primary selection the effort control edits, the models
+  // picked for the draft, and what a send would carry out of the two.
+  function Draft() {
+    const [selections, setSelections] = useState<ReadonlyArray<ModelSelection> | null>(null);
+    const [primary, setPrimary] = useState<ModelSelection>(
+      createModelSelection(instanceId, "luna", low),
+    );
+    const outgoing = selections === null ? [primary] : resolveFanOutSelections(selections, primary);
+    return (
+      <>
+        <output aria-label="Outgoing">{JSON.stringify(outgoing)}</output>
+        <ComposerModelPicker
+          environmentId={null}
+          multipleModelsEnabled
+          multipleModelSelections={selections}
+          onMultipleModelSelectionsChange={setSelections}
+          selectedModelSelection={primary}
+          onProviderModelSelect={(
+            id: ProviderInstanceId,
+            model: string,
+            picked?: { modelOptions?: ReadonlyArray<ProviderOptionSelection> },
+          ) => setPrimary(createModelSelection(id, model, picked?.modelOptions))}
+          activeInstanceId={instanceId}
+          model="luna"
+          lockedProvider={null}
+          instanceEntries={entries}
+          modelOptionsByInstance={options}
+          triggerAriaLabel="Choose models"
+        />
+      </>
+    );
+  }
+  const outgoing = (screen: { getByRole: typeof page.getByRole }) =>
+    JSON.parse(screen.getByRole("status", { name: "Outgoing" }).element().textContent ?? "[]");
+
+  await using screen = await render(<Draft />);
+  await screen.getByRole("button", { name: "Choose models" }).click();
+  await shiftClick(/Sol model/);
+  await shiftClick(/Plain model/);
+  await shiftClick(/Luna model/);
+  await vi.waitFor(() =>
+    expect(outgoing(screen)).toEqual([
+      { instanceId, model: "sol" },
+      { instanceId, model: "plain" },
+    ]),
+  );
+  await shiftClick(/Luna model/);
+  await vi.waitFor(() =>
+    expect(outgoing(screen)).toEqual([
+      { instanceId, model: "sol" },
+      { instanceId, model: "plain" },
+      { instanceId, model: "luna", options: high },
+    ]),
+  );
 });
