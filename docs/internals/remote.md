@@ -48,6 +48,13 @@ it asks the target whether the first launch went through, since the agent there
 may have changed the worktree, and otherwise opens the branch again to check
 that the worktree is still the one it chose.
 
+The opener makes a worktree's folder itself before it asks git for the worktree, with
+a mkdir that fails if the path is there. Git accepts an empty folder, so a folder
+that merely was absent a moment earlier, or a failing hook's exit code, cannot show that
+a folder is the call's own. It gives the folder back only while it has the same device
+and inode, and only as git would, without `--force`, so another operation's changes are
+never deleted.
+
 [Environment ID initialization](../../apps/server/src/environment/ServerEnvironment.ts)
 must publish a complete ID atomically. Repair of an empty ID file retains a
 recovery file so concurrent or delayed initializers choose the same winner.

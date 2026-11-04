@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import { ChildProcessSpawner } from "effect/process";
 
 import * as ServerConfig from "../config.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
@@ -19,11 +20,48 @@ import * as WorktreeOpenBranch from "./WorktreeOpenBranch.ts";
 // that pushes. Only the layer above git is faked, so the refs, tracking, worktrees and
 // fast-forwards are git's own.
 
-const layerGit = GitVcsDriver.layer.pipe(
+const driverLayer = GitVcsDriver.layer.pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-open-branch-git-" })),
   Layer.provideMerge(VcsProcess.layer),
+);
+const layerGit = driverLayer.pipe(
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
+
+/**
+ * A moment for another operation to act in: just before the driver spawns git for the worktree,
+ * once it has settled on the folder. What was set runs there, once.
+ */
+const makeGap = () => {
+  let pending: Effect.Effect<void> | undefined;
+  const spawner = Layer.effect(
+    ChildProcessSpawner.ChildProcessSpawner,
+    Effect.gen(function* () {
+      const base = yield* ChildProcessSpawner.ChildProcessSpawner;
+      return ChildProcessSpawner.make((command) =>
+        Effect.suspend(() => {
+          const addsWorktree =
+            command._tag === "StandardCommand" &&
+            command.args.includes("worktree") &&
+            command.args.includes("add") &&
+            command.args.some((arg) => String(arg).startsWith("checkout.workers="));
+          const act = addsWorktree ? pending : undefined;
+          if (act !== undefined) pending = undefined;
+          return (act ?? Effect.void).pipe(Effect.andThen(base.spawn(command)));
+        }),
+      );
+    }),
+  );
+  return {
+    set: (act: Effect.Effect<void>) => {
+      pending = act;
+    },
+    layer: driverLayer.pipe(
+      Layer.provide(spawner),
+      Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+    ),
+  };
+};
 
 const projectId = ProjectId.make("project:app");
 
@@ -65,15 +103,17 @@ const makeRepositories = Effect.gen(function* () {
   return { run, commit, fileSystem, path, origin, pusher, box, first };
 });
 
-/** A post-checkout hook that fails, as a project's own can once git has made the worktree. */
-const failOnCheckout = (box: string) =>
+/** A post-checkout hook, which runs in the new worktree once git has put the checkout there. */
+const postCheckout = (box: string, script: string) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const hook = path.join(box, ".git", "hooks", "post-checkout");
-    yield* fileSystem.writeFileString(hook, "#!/bin/sh\nexit 1\n");
+    yield* fileSystem.writeFileString(hook, `#!/bin/sh\n${script}\n`);
     yield* fileSystem.chmod(hook, 0o755);
   });
+/** One that fails, as a project's own can. */
+const failOnCheckout = (box: string) => postCheckout(box, "exit 1");
 
 /** `between` runs once the opener has looked at the branches, and before it asks git for a worktree. */
 const open = (
@@ -300,6 +340,97 @@ it.effect("leaves the branch and worktree another operation made first", () =>
     expect(failed.message).toContain("left as it was");
     expect(yield* fileSystem.readFileString(path.join(theirs, "notes.txt"))).toBe("uncommitted\n");
     expect(yield* run(box, "worktree", "list", "--porcelain")).toContain(theirs);
+    expect(yield* run(box, "branch", "--list", "feature")).toContain("feature");
+  }).pipe(Effect.scoped, Effect.provide(layerGit)),
+);
+
+it.effect(
+  "leaves a worktree another operation puts in the folder this call is about to use",
+  () => {
+    const gap = makeGap();
+    return Effect.gen(function* () {
+      const { run, fileSystem, path, box } = yield* makeRepositories;
+      const { worktreesDir } = yield* ServerConfig.ServerConfig;
+      yield* run(box, "fetch", "origin");
+      yield* run(box, "branch", "--track", "feature", "origin/feature");
+
+      // The folder is settled and git is about to be asked for the worktree. Another operation
+      // deletes the branch, puts a detached worktree with notes in the folder, and holds the
+      // config lock, so that git, which must now make the branch again, fails (255) before it
+      // adds anything.
+      const theirs = path.join(worktreesDir, "box", "feature");
+      const lock = path.join(box, ".git", "config.lock");
+      gap.set(
+        Effect.gen(function* () {
+          yield* run(box, "branch", "-D", "feature");
+          yield* run(box, "worktree", "add", "--detach", "--", theirs, "origin/feature");
+          yield* fileSystem.writeFileString(path.join(theirs, "notes.txt"), "mine\n");
+          yield* fileSystem.writeFileString(lock, "");
+        }).pipe(Effect.orDie),
+      );
+      const failed = yield* open(box).pipe(Effect.flip);
+      yield* fileSystem.remove(lock);
+      expect(failed.message).toContain("Could not make a worktree for feature");
+      expect(yield* fileSystem.readFileString(path.join(theirs, "notes.txt"))).toBe("mine\n");
+      expect(yield* run(box, "worktree", "list", "--porcelain")).toContain(theirs);
+    }).pipe(Effect.scoped, Effect.provide(gap.layer));
+  },
+);
+
+it.effect("leaves a folder another operation puts where this call's was", () => {
+  const gap = makeGap();
+  return Effect.gen(function* () {
+    const { run, fileSystem, path, box } = yield* makeRepositories;
+    const { worktreesDir } = yield* ServerConfig.ServerConfig;
+
+    // Another operation's folder takes the place of the one settled on, and git, which accepts
+    // an empty folder, checks the branch out into it. Its hook fails after leaving a note, as
+    // that operation's own work in the folder could be there by then.
+    const theirs = path.join(worktreesDir, "box", "feature");
+    yield* postCheckout(box, "echo mine > notes.txt\nexit 1");
+    gap.set(
+      Effect.gen(function* () {
+        // The old folder is moved aside, so the new one cannot reuse its inode number.
+        if (yield* fileSystem.exists(theirs)) yield* fileSystem.rename(theirs, `${theirs}-moved`);
+        yield* fileSystem.makeDirectory(theirs, { recursive: true });
+      }).pipe(Effect.orDie),
+    );
+    const failed = yield* open(box).pipe(Effect.flip);
+    expect(failed.message).toContain("Could not make a worktree on origin/feature");
+    expect(yield* fileSystem.readFileString(path.join(theirs, "notes.txt"))).toBe("mine\n");
+    // The branch this call made is checked out in that folder, so it stays with it.
+    expect(yield* run(box, "branch", "--list", "feature")).toContain("feature");
+  }).pipe(Effect.scoped, Effect.provide(gap.layer));
+});
+
+it.effect("does not use a folder another operation made first, not even an empty one", () =>
+  Effect.gen(function* () {
+    const { run, fileSystem, path, box } = yield* makeRepositories;
+    const { worktreesDir } = yield* ServerConfig.ServerConfig;
+
+    // Git would take an empty folder, and the folder would then look like this call's own.
+    const theirs = path.join(worktreesDir, "box", "feature");
+    const made = fileSystem.makeDirectory(theirs, { recursive: true }).pipe(Effect.orDie);
+    const failed = yield* open(box, {}, made).pipe(Effect.flip);
+    expect(failed.message).toContain("left as it was");
+    expect(yield* fileSystem.readDirectory(theirs)).toEqual([]);
+    expect(yield* run(box, "worktree", "list", "--porcelain")).not.toContain(theirs);
+    expect(yield* run(box, "branch", "--list", "feature")).toBe("");
+  }).pipe(Effect.scoped, Effect.provide(layerGit)),
+);
+
+it.effect("keeps a worktree its hook left changes in, with its branch, and says so", () =>
+  Effect.gen(function* () {
+    const { run, fileSystem, path, box } = yield* makeRepositories;
+    const { worktreesDir } = yield* ServerConfig.ServerConfig;
+
+    // Git would not remove it without deleting the note, so neither does this call.
+    yield* postCheckout(box, "echo mine > notes.txt\nexit 1");
+    const theirs = path.join(worktreesDir, "box", "feature");
+    const failed = yield* open(box).pipe(Effect.flip);
+    expect(failed.message).toContain("Could not make a worktree on origin/feature");
+    expect(failed.message).toContain(`${theirs} was left as it is`);
+    expect(yield* fileSystem.readFileString(path.join(theirs, "notes.txt"))).toBe("mine\n");
     expect(yield* run(box, "branch", "--list", "feature")).toContain("feature");
   }).pipe(Effect.scoped, Effect.provide(layerGit)),
 );
