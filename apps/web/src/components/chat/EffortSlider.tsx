@@ -6,6 +6,8 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export interface EffortSliderStop {
   readonly key: string;
+  /** What makes two stops the same one; the arrow keys pass over a repeat of the stop they are on. */
+  readonly identity: string;
   readonly modelLabel: string;
   readonly effortLabel: string | null;
   /** Why the stop cannot be applied here; it is dimmed and skipped. */

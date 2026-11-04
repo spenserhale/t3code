@@ -88,6 +88,8 @@ const steps = [
 ];
 
 function Picker(props: {
+  /** The composer leaves the slider out where the server keeps none. */
+  withoutSlider?: boolean;
   unusable?: ReadonlyArray<number>;
   onFavoritePick?: (model: string, picked: ReadonlyArray<ProviderOptionSelection>) => void;
   onSelectStop?: (index: number) => void;
@@ -98,6 +100,7 @@ function Picker(props: {
   });
   const stops: EffortSliderStop[] = steps.map((step, index) => ({
     key: `${step.model}-${step.effort}`,
+    identity: `${step.model}-${step.effort}`,
     modelLabel: step.modelLabel,
     effortLabel: step.effortLabel,
     unusableReason: props.unusable?.includes(index) ? "Not available" : null,
@@ -116,17 +119,21 @@ function Picker(props: {
       instanceEntries={entries}
       modelOptionsByInstance={options}
       triggerAriaLabel="Choose model"
-      effortSlider={{
-        stops,
-        activeIndex,
-        valueText: active
-          ? `${active.modelLabel}, ${active.effortLabel.toLowerCase()} effort`
-          : "None",
-        onSelect: (index) => {
-          props.onSelectStop?.(index);
-          setCurrent({ model: steps[index]!.model, effort: steps[index]!.effort });
-        },
-      }}
+      {...(props.withoutSlider
+        ? {}
+        : {
+            effortSlider: {
+              stops,
+              activeIndex,
+              valueText: active
+                ? `${active.modelLabel}, ${active.effortLabel.toLowerCase()} effort`
+                : "None",
+              onSelect: (index: number) => {
+                props.onSelectStop?.(index);
+                setCurrent({ model: steps[index]!.model, effort: steps[index]!.effort });
+              },
+            },
+          })}
       onInstanceModelChange={(_, model, pick) => {
         if (pick) props.onFavoritePick?.(model, pick.options);
         setCurrent({
@@ -242,9 +249,27 @@ it("lists favorites in the order they were saved and opens one at its saved effo
   await expect.element(slider()).toHaveAttribute("aria-valuetext", "Sol, high effort");
   await expect.element(search).toHaveFocus();
 
-  // A favorite without a saved effort behaves as before: focus goes to the effort column.
+  // The slider is up, so a favorite without a saved effort leaves focus where it was as well.
   await rows.nth(1).click();
-  await expect.element(page.getByRole("radio", { name: "Medium" })).toHaveFocus();
+  await expect.element(search).toHaveFocus();
+  await expect.element(page.getByRole("radio", { name: "Medium" })).not.toHaveFocus();
+});
+
+it("keeps focus in the search box for any pick made from the keyboard while the slider is up", async () => {
+  setup();
+  state.favorites = [
+    { provider: instanceId, model: "sol", options: [{ id: "reasoningEffort", value: "high" }] },
+    { provider: instanceId, model: "luna" },
+  ];
+  await using screen = await render(<Picker />);
+  await screen.getByRole("button", { name: "Choose model" }).click();
+  const search = page.getByPlaceholder("Search models...");
+  await expect.element(search).toHaveFocus();
+  // Luna has no saved effort. Enter on it used to hand focus to the effort column.
+  await userEvent.keyboard("{ArrowDown}{Enter}");
+  await expect.element(search).toHaveFocus();
+  await expect.element(page.getByRole("radio", { name: "Medium" })).not.toHaveFocus();
+  await expect.element(page.getByRole("button", { name: "Choose model" })).toBeVisible();
 });
 
 it("opens a favorite the way it always did on a server that keeps no efforts", async () => {
@@ -254,7 +279,7 @@ it("opens a favorite the way it always did on a server that keeps no efforts", a
     { provider: instanceId, model: "sol", options: [{ id: "reasoningEffort", value: "high" }] },
   ];
   const onFavoritePick = vi.fn();
-  await using screen = await render(<Picker onFavoritePick={onFavoritePick} />);
+  await using screen = await render(<Picker withoutSlider onFavoritePick={onFavoritePick} />);
   await screen.getByRole("button", { name: "Choose model" }).click();
   const row = page.getByRole("option").first();
   await expect.element(row).toBeVisible();
