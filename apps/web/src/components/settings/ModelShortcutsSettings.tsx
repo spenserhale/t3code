@@ -272,12 +272,12 @@ export function ModelShortcutsSettings() {
     settings.effortSlider.length > MAX_EFFORT_SLIDER_STEPS
       ? settings.effortSlider.slice(0, MAX_EFFORT_SLIDER_STEPS)
       : settings.effortSlider;
-  // A server that holds no list yet, or cannot take the change itself, gets the whole list.
-  const listOnServer =
-    connectedEnvironments.length > 0 &&
-    connectedEnvironments.every(
-      (environment) => (environment.serverConfig?.settings.favorites ?? null) !== null,
-    );
+  // An environment scope has one destination, so that environment alone decides how it is written.
+  const [onlyEnvironment] = connectedEnvironments;
+  const destination = {
+    listOnServer: (onlyEnvironment?.serverConfig?.settings.favorites ?? null) !== null,
+    reorderSupported: onlyEnvironment?.serverConfig?.environment.capabilities.effortSlider === true,
+  };
   // A project that has not made its own list shows the environment's, read-only. Servers that
   // keep no efforts or slider keep no project lists either.
   const favoritesReadOnly =
@@ -309,9 +309,8 @@ export function ModelShortcutsSettings() {
   const editFavorites = (edit: FavoritesEdit, list: typeof favorites) =>
     updateSettings(
       planFavoritesWrite({
-        projectScope: isProjectScope,
-        listOnServer,
-        reorderSupported: supportsEffortSlider,
+        scope: isProjectScope ? "project" : scope.kind === "environment" ? "environment" : "all",
+        destination,
         list,
         edit,
       }),

@@ -15,6 +15,7 @@ import type { ScopedSettingsPatch } from "./scopedSettings";
 
 const instanceId = ProviderInstanceId.make("codex");
 const environmentId = EnvironmentId.make("env-a");
+const otherEnvironmentId = EnvironmentId.make("env-b");
 const high = [{ id: "reasoningEffort", value: "high" }];
 
 const state = vi.hoisted(() => ({
@@ -22,6 +23,8 @@ const state = vi.hoisted(() => ({
   effortSlider: [] as ModelSelection[],
   source: "environment" as "environment" | "project",
   projectScope: false,
+  /** All environments is selected, and a second environment is connected beside the first. */
+  allEnvironments: false,
   supported: true,
   /** The environment keeps its favorites on the server, instead of this client's old copy. */
   listOnServer: true,
@@ -35,6 +38,7 @@ function setup(overrides: Partial<Omit<typeof state, "updateSettings" | "clearOv
     effortSlider: [],
     source: "environment",
     projectScope: false,
+    allEnvironments: false,
     supported: true,
     listOnServer: true,
     ...overrides,
@@ -76,18 +80,21 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
   useSettingsScope: (() => ({
     scope: state.projectScope
       ? { kind: "project", environmentIds: [environmentId] }
-      : { kind: "environment", environmentId, environmentIds: [environmentId] },
+      : state.allEnvironments
+        ? { kind: "all", environmentIds: [environmentId, otherEnvironmentId] }
+        : { kind: "environment", environmentId, environmentIds: [environmentId] },
     target: { environmentId, projectId: null },
     connectedEnvironments: [
-      {
-        environmentId,
-        label: "Mac mini",
-        serverConfig: {
-          settings: { favorites: state.listOnServer ? state.favorites : null },
-          environment: { capabilities: state.supported ? { effortSlider: true } : {} },
-        },
+      environmentId,
+      ...(state.allEnvironments ? [otherEnvironmentId] : []),
+    ].map((id) => ({
+      environmentId: id,
+      label: id === environmentId ? "Mac mini" : "Laptop",
+      serverConfig: {
+        settings: { favorites: state.listOnServer ? state.favorites : null },
+        environment: { capabilities: state.supported ? { effortSlider: true } : {} },
       },
-    ],
+    })),
   })) as never,
 }));
 
@@ -200,18 +207,43 @@ it("writes the whole list where the server holds none yet, or cannot reorder by 
   setup({ favorites, listOnServer: false });
   await using screen = await render(<ModelShortcutsSettings />);
   await userEvent.click(page.getByRole("button", { name: "Remove Sol" }));
-  expect(state.updateSettings).toHaveBeenLastCalledWith({ favorites: [favorites[1]] });
+  expect(state.updateSettings).toHaveBeenLastCalledWith({
+    favorites: [{ ...luna, options: [] }],
+  });
 
   setup({ favorites, supported: false });
   await screen.rerender(<ModelShortcutsSettings key="older-server" />);
   await userEvent.click(page.getByRole("button", { name: "Move Luna up" }));
   expect(state.updateSettings).toHaveBeenLastCalledWith({
-    favorites: [favorites[1], favorites[0]],
+    favorites: [{ ...luna, options: [] }, favorites[0]],
   });
   // Unstarring needs nothing newer, so an older server is still told only what changed.
   await userEvent.click(page.getByRole("button", { name: "Remove Sol" }));
   expect(state.updateSettings).toHaveBeenLastCalledWith({
     setModelFavorites: [{ ...sol, favorite: false }],
+  });
+});
+
+it("replaces every environment's list whole at All environments", async () => {
+  setup({ favorites, allEnvironments: true });
+  await using _screen = await render(<ModelShortcutsSettings />);
+
+  // The same list goes to every environment, so each ends up with what this page shows.
+  await userEvent.click(page.getByRole("button", { name: "Move Luna up" }));
+  expect(state.updateSettings).toHaveBeenLastCalledWith({
+    favorites: [{ ...luna, options: [] }, favorites[0]],
+  });
+  await userEvent.click(page.getByRole("button", { name: "Remove Sol" }));
+  expect(state.updateSettings).toHaveBeenLastCalledWith({
+    favorites: [{ ...luna, options: [] }],
+  });
+  await userEvent.click(page.getByRole("combobox", { name: "Effort for Sol" }));
+  await userEvent.click(page.getByRole("option", { name: "Last used" }));
+  expect(state.updateSettings).toHaveBeenLastCalledWith({
+    favorites: [
+      { ...sol, options: [] },
+      { ...luna, options: [] },
+    ],
   });
 });
 
