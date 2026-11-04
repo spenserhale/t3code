@@ -13,10 +13,12 @@ import {
   ProviderInstanceId,
   type RepositoryIdentity,
   type ThreadContinueOnMachineInput,
+  type ThreadContinueOnMachineResult,
   ThreadId,
   type VcsStatusResult,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -24,6 +26,7 @@ import * as Schema from "effect/Schema";
 import type { Tool } from "effect/ai";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
@@ -120,8 +123,10 @@ interface Options {
   readonly targetModels?: ReadonlyArray<string>;
   readonly pushedTo?: string;
   readonly pushFails?: "after-commit" | "before-commit";
-  readonly openBranch?: "missing" | "fails";
+  readonly openBranch?: "missing" | "fails" | "dirty";
   readonly launchFails?: boolean;
+  /** The other machine starts the thread, but the reply never reaches this one. */
+  readonly launchLosesReply?: boolean;
   readonly settleFails?: boolean;
   /** The changes the checkout showed were gone by the time the commit step looked. */
   readonly nothingToCommit?: boolean;
@@ -135,7 +140,11 @@ interface Options {
   readonly remotes?: Record<string, string>;
 }
 
-const makeHarness = (options: Options = {}) => {
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+const makeHarness = (initial: Options = {}) => {
+  // A test changes what happens between its calls: the other machine recovers, the worktree there changes.
+  const options: Mutable<Options> = { ...initial };
   const log: string[] = [];
   const forwarded: Array<{
     readonly tool: string;
@@ -147,6 +156,8 @@ const makeHarness = (options: Options = {}) => {
   const settled: Array<{ readonly threadId: string; readonly byOwnAgent: boolean }> = [];
   const dispatched: unknown[] = [];
   const pushes: Array<{ readonly cwd: string; readonly branch: string | null }> = [];
+  // Once the work is committed and pushed, the checkout shows nothing left to carry.
+  let carried = false;
   let currentBranch: string | null =
     options.status !== undefined && "refName" in options.status
       ? (options.status.refName ?? null)
@@ -287,7 +298,7 @@ const makeHarness = (options: Options = {}) => {
             detail: "pre-commit hook failed",
           });
         }
-        yield* phase("commit");
+        if (options.nothingToCommit !== true) yield* phase("commit");
         yield* phase("push");
         if (options.pushFails === "after-commit") {
           return yield* new GitCommandError({
@@ -298,6 +309,7 @@ const makeHarness = (options: Options = {}) => {
             reason: "push_rejected_non_fast_forward",
           });
         }
+        carried = true;
         return {
           action: "commit_push",
           branch: { status: "skipped_not_requested" },
@@ -331,7 +343,21 @@ const makeHarness = (options: Options = {}) => {
   const status = Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({
     refreshStatus: () => {
       log.push("git status");
-      return Effect.succeed(statusOf({ ...options.status, refName: currentBranch }));
+      return Effect.succeed(
+        statusOf({
+          ...options.status,
+          refName: currentBranch,
+          isDefaultRef: currentBranch === "main",
+          ...(carried
+            ? {
+                hasWorkingTreeChanges: false,
+                workingTree: { files: [], insertions: 0, deletions: 0 },
+                hasUpstream: true,
+                aheadCount: 0,
+              }
+            : {}),
+        }),
+      );
     },
   });
   const respond = (
@@ -389,6 +415,14 @@ const makeHarness = (options: Options = {}) => {
             message: "Tool 't3_worktree_open_branch' not found",
           });
         }
+        if (options.openBranch === "dirty") {
+          return Effect.fail({
+            _tag: "OrchestratorMcpFailure",
+            code: "invalid_request",
+            message:
+              "feature/login is checked out in /worktrees/app-1, which has uncommitted changes, so it was left alone.",
+          });
+        }
         if (options.openBranch === "fails") {
           return Effect.fail({
             _tag: "OrchestratorMcpFailure",
@@ -420,6 +454,13 @@ const makeHarness = (options: Options = {}) => {
             _tag: "OrchestratorMcpFailure",
             code: "orchestration_error",
             message: "The linked environment stopped answering.",
+          });
+        }
+        if (options.launchLosesReply === true) {
+          return Effect.fail({
+            _tag: "OrchestratorMcpFailure",
+            code: "orchestration_error",
+            message: "The reply never arrived.",
           });
         }
         return Effect.succeed({
@@ -519,21 +560,32 @@ const makeHarness = (options: Options = {}) => {
       ),
     ),
   );
-  const run = (input: Partial<ThreadContinueOnMachineInput> = {}) =>
+  /** Calls that share one service, as a retry does: what an earlier call recorded is there for it. */
+  const session = <A, E>(
+    body: (
+      handOff: (
+        input?: Partial<ThreadContinueOnMachineInput>,
+      ) => Effect.Effect<ThreadContinueOnMachineResult, OrchestratorMcpFailure>,
+    ) => Effect.Effect<A, E>,
+  ) =>
     Effect.gen(function* () {
       const service = yield* ThreadMachineHandoff.ThreadMachineHandoff;
-      return yield* service.continueOnMachine(scope, {
-        environmentId: linkMini,
-        threadId: options.other === true ? sourceThread : undefined,
-        ...input,
-      });
+      return yield* body((input = {}) =>
+        service.continueOnMachine(scope, {
+          environmentId: linkMini,
+          threadId: options.other === true ? sourceThread : undefined,
+          ...input,
+        }),
+      );
     }).pipe(Effect.provide(layer));
+  const run = (input: Partial<ThreadContinueOnMachineInput> = {}) =>
+    session((handOff) => handOff(input));
   const failed = (input: Partial<ThreadContinueOnMachineInput> = {}) =>
     run(input).pipe(
       Effect.flip,
       Effect.map((error: OrchestratorMcpFailure) => error),
     );
-  return { run, failed, log, forwarded, uploads, settled, dispatched, pushes };
+  return { run, failed, session, options, log, forwarded, uploads, settled, dispatched, pushes };
 };
 
 const gitWrites = (log: ReadonlyArray<string>) =>
@@ -965,6 +1017,130 @@ describe("t3_thread_continue_on_machine", () => {
         const error = yield* makeHarness({ openBranch: "fails" }).failed();
         expect(error.message).toContain("origin has no branch feature/login.");
         expect(error.message).toContain("committed and pushed to origin/feature/login");
+      }),
+    );
+  });
+
+  describe("retrying with the same clientRequestId", () => {
+    const launchesOf = (harness: ReturnType<typeof makeHarness>) =>
+      harness.forwarded.filter((call) => call.tool === "t3_thread_launch");
+    const opensOf = (harness: ReturnType<typeof makeHarness>) =>
+      harness.forwarded.filter((call) => call.tool === "t3_worktree_open_branch");
+
+    it.effect("carries on after a failed launch with what it pushed, and plans nothing again", () =>
+      Effect.gen(function* () {
+        // The repository names no default, so a second plan takes the pushed branch for the default.
+        const harness = makeHarness({ defaultKnown: false, launchFails: true });
+        const result = yield* harness.session((handOff) =>
+          Effect.gen(function* () {
+            const failed = yield* handOff({ clientRequestId: "request-1" }).pipe(Effect.flip);
+            expect(failed.message).toContain("The linked environment stopped answering.");
+            harness.options.launchFails = false;
+            return yield* handOff({ clientRequestId: "request-1" });
+          }),
+        );
+        expect(result).toMatchObject({
+          branch: "handoff/fix-the-flaky-login",
+          pushedCommit: tip,
+          worktreePath: "/worktrees/app-1",
+          sourceSettles: "at_turn_end",
+        });
+        expect(gitWrites(harness.log)).toEqual([
+          "upload",
+          "git createRef handoff/fix-the-flaky-login",
+          "git commit_push",
+        ]);
+        expect(opensOf(harness)).toHaveLength(1);
+        const launches = launchesOf(harness);
+        expect(launches).toHaveLength(2);
+        expect(launches[1]).toEqual(launches[0]);
+        expect(harness.settled).toHaveLength(1);
+      }),
+    );
+
+    it.effect("recovers a launch whose reply was lost, though the worktree has changed since", () =>
+      Effect.gen(function* () {
+        const harness = makeHarness({ launchLosesReply: true });
+        const result = yield* harness.session((handOff) =>
+          Effect.gen(function* () {
+            yield* handOff({ clientRequestId: "request-1" }).pipe(Effect.flip);
+            // The agent there has been working in it, so opening the branch again would refuse.
+            harness.options.launchLosesReply = false;
+            harness.options.openBranch = "dirty";
+            return yield* handOff({ clientRequestId: "request-1" });
+          }),
+        );
+        expect(result).toMatchObject({
+          threadId: "thread:linkmini-1",
+          worktreePath: "/worktrees/app-1",
+        });
+        expect(harness.pushes).toHaveLength(1);
+        expect(opensOf(harness)).toHaveLength(1);
+        expect(launchesOf(harness)).toHaveLength(2);
+      }),
+    );
+
+    it.effect("repeats only the step that failed", () =>
+      Effect.gen(function* () {
+        const harness = makeHarness({ pushFails: "after-commit" });
+        yield* harness.session((handOff) =>
+          Effect.gen(function* () {
+            const refused = yield* handOff({ clientRequestId: "request-1" }).pipe(Effect.flip);
+            expect(refused.message).toContain("Its WIP commit was not pushed.");
+            delete harness.options.pushFails;
+            harness.options.nothingToCommit = true;
+            yield* handOff({ clientRequestId: "request-1" });
+          }),
+        );
+        // The conversation went up once, and the commit made before the push is still named.
+        expect(harness.uploads).toHaveLength(1);
+        expect(launchesOf(harness)[0]?.params.message).toContain("includes a WIP commit");
+      }),
+    );
+
+    it.effect("refuses an id that was used for a different hand-off", () =>
+      Effect.gen(function* () {
+        const harness = makeHarness({ launchFails: true });
+        yield* harness.session((handOff) =>
+          Effect.gen(function* () {
+            yield* handOff({ clientRequestId: "request-1", message: "Fix the tests" }).pipe(
+              Effect.flip,
+            );
+            const before = harness.forwarded.length;
+            const refused = yield* handOff({
+              clientRequestId: "request-1",
+              message: "Do something else",
+            }).pipe(Effect.flip);
+            expect(refused.code).toBe("invalid_request");
+            expect(refused.message).toContain("different hand-off");
+            expect(harness.forwarded).toHaveLength(before);
+          }),
+        );
+        expect(harness.pushes).toHaveLength(1);
+      }),
+    );
+
+    it.effect("forgets an attempt after six hours, and the oldest past two hundred", () =>
+      Effect.gen(function* () {
+        const harness = makeHarness({ launchFails: true });
+        yield* harness.session((handOff) =>
+          Effect.gen(function* () {
+            const attempt = (id: string) => handOff({ clientRequestId: id }).pipe(Effect.flip);
+            // A remembered attempt does not upload the conversation again; a forgotten one does.
+            yield* attempt("request-0");
+            yield* attempt("request-0");
+            expect(harness.uploads).toHaveLength(1);
+            yield* TestClock.adjust(Duration.hours(7));
+            yield* attempt("request-0");
+            expect(harness.uploads).toHaveLength(2);
+            for (let index = 1; index <= 200; index += 1) yield* attempt(`request-${index}`);
+            const uploaded = harness.uploads.length;
+            yield* attempt("request-200");
+            expect(harness.uploads).toHaveLength(uploaded);
+            yield* attempt("request-0");
+            expect(harness.uploads).toHaveLength(uploaded + 1);
+          }),
+        );
       }),
     );
   });

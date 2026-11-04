@@ -65,7 +65,9 @@ thread starts in it.
   ([`ThreadMachineHandoff`](../../apps/server/src/peer/ThreadMachineHandoff.ts)): it uploads the
   transcript to the target, has the target's
   [`t3_worktree_open_branch`](../../apps/server/src/mcp/WorktreeOpenBranch.ts) fetch the remote
-  itself and check the commit by ancestry, launches the thread, and settles the source.
+  itself and check the commit by ancestry, launches the thread, and settles the source. It keeps
+  what each `clientRequestId` has done, in memory for six hours, so a retry carries on from the step
+  that failed: planning again would read the checkout the first try already changed.
 
 ## Hosted web is a client
 
