@@ -350,7 +350,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   activeInstanceId: ProviderInstanceId;
   model: string;
   selectedModels?: ReadonlyArray<{ instanceId: ProviderInstanceId; model: string }>;
-  onToggleModel?: (instanceId: ProviderInstanceId, model: string) => void;
+  onToggleModel?: (instanceId: ProviderInstanceId, model: string, pick?: ModelPick) => void;
   lockedProvider: ProviderDriverKind | null;
   lockedContinuationGroupKey?: string | null;
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
@@ -507,17 +507,19 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     }
     const resolvedModel = resolveSelectableModel(entry.driverKind, modelSlug, options);
     if (!resolvedModel) return null;
-    if (additive && onToggleModel) {
-      onToggleModel(instanceId, resolvedModel);
-      return resolvedModel;
-    }
-    // A favorite opens at its saved effort, and the search box keeps focus rather than the column.
+    // A favorite opens at its saved effort, whether it is picked alone or added to several models.
     const savedOptions = effortSliderSupported
       ? favoriteByKey.get(providerModelKey(instanceId, resolvedModel))?.options
       : undefined;
     const pick = savedOptions?.length ? { options: savedOptions } : undefined;
+    if (additive && onToggleModel) {
+      onToggleModel(instanceId, resolvedModel, pick);
+      return resolvedModel;
+    }
     onInstanceModelChange(instanceId, resolvedModel, pick);
-    if (pick) focusSearchInput();
+    // The search box keeps focus rather than the effort column when the pick brought its own
+    // effort, and while the slider is up, since the person is steering from there.
+    if (pick || props.effortSlider) focusSearchInput();
     return resolvedModel;
   };
 
@@ -1027,7 +1029,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   e.preventDefault();
                   e.stopPropagation();
                   // The column shows the selected model's effort, so a highlighted model is picked
-                  // first; the owning popup then moves focus to that model's levels.
+                  // first, and focus then moves to that model's levels once the column shows them.
+                  const focusEffort = props.onFocusEffort;
                   const highlighted = highlightedModelKeyRef.current
                     ? parseModelPickerModelKey(highlightedModelKeyRef.current)
                     : null;
@@ -1035,7 +1038,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     highlighted !== null &&
                     highlightedModelKeyRef.current !== activeModelKey &&
                     handleModelSelect(highlighted.slug, highlighted.instanceId) !== null;
-                  if (!pickedNew) props.onFocusEffort();
+                  if (pickedNew) window.requestAnimationFrame(focusEffort);
+                  else focusEffort();
                   return;
                 }
                 if (e.key === "Enter" && highlightedModelKeyRef.current) {

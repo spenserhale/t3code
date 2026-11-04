@@ -1,5 +1,7 @@
 import {
+  EnvironmentId,
   MAX_EFFORT_SLIDER_STEPS,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ModelSelection,
@@ -10,8 +12,10 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
+  currentEffortOf,
   effortSliderAddDisabledReason,
   findActiveComposerEffortStep,
+  modelShortcutsSettingsSearch,
   resolveComposerEffortSteps,
 } from "./composerEffortSlider.logic";
 
@@ -148,6 +152,44 @@ describe("findActiveComposerEffortStep", () => {
   });
 });
 
+describe("a thread whose provider reports the effort it runs at", () => {
+  const steps = resolveComposerEffortSteps(
+    [step(codex, "sol", "medium"), step(codex, "sol", "high")],
+    context,
+  );
+
+  it("puts the thumb where the effort control shows the reported level", () => {
+    // Sol defaults to medium, but the provider says this thread runs at high.
+    const reported = step(codex, "sol", "high");
+    expect(findActiveComposerEffortStep(steps, step(codex, "sol"), instanceEntries, reported)).toBe(
+      1,
+    );
+    expect(findActiveComposerEffortStep(steps, step(codex, "sol"), instanceEntries)).toBe(0);
+  });
+
+  it("prefers what was chosen over what was reported, and ignores a report about another model", () => {
+    const reported = step(codex, "sol", "high");
+    expect(
+      findActiveComposerEffortStep(steps, step(codex, "sol", "medium"), instanceEntries, reported),
+    ).toBe(0);
+    expect(
+      findActiveComposerEffortStep(
+        steps,
+        step(codex, "sol"),
+        instanceEntries,
+        step(codex, "plain", "high"),
+      ),
+    ).toBe(0);
+  });
+
+  it("offers the reported level to Add to slider as the one the model is on", () => {
+    const reported = step(codex, "sol", "high");
+    expect(currentEffortOf(step(codex, "sol"), instanceEntries, reported).effort?.value).toBe(
+      "high",
+    );
+  });
+});
+
 describe("effortSliderAddDisabledReason", () => {
   it("allows a new step only while there is room and the model is known", () => {
     const open = { stepCount: 2, activeIndex: null, selectedModelKnown: true };
@@ -159,5 +201,47 @@ describe("effortSliderAddDisabledReason", () => {
     expect(effortSliderAddDisabledReason({ ...open, selectedModelKnown: false })).toMatch(
       /not available/,
     );
+  });
+});
+
+describe("the link from the model picker", () => {
+  const environmentId = EnvironmentId.make("env-a");
+  const projectId = ProjectId.make("project-a");
+  const groups = [
+    {
+      projectKey: "repo",
+      memberProjects: [
+        {
+          id: ProjectId.make("project-b"),
+          environmentId: EnvironmentId.make("env-b"),
+          physicalProjectKey: "env-b:/repo",
+        },
+        { id: projectId, environmentId, physicalProjectKey: "env-a:/repo" },
+      ],
+    },
+  ];
+
+  it("opens the environment unless the project keeps a list of its own", () => {
+    expect(
+      modelShortcutsSettingsSearch({ environmentId, projectId, projectOverrides: false }, groups),
+    ).toEqual({ machine: environmentId });
+    expect(
+      modelShortcutsSettingsSearch(
+        { environmentId, projectId: null, projectOverrides: true },
+        groups,
+      ),
+    ).toEqual({ machine: environmentId });
+  });
+
+  it("opens the checkout whose own list is in use, so edits there reach that list", () => {
+    expect(
+      modelShortcutsSettingsSearch({ environmentId, projectId, projectOverrides: true }, groups),
+    ).toEqual({ project: "repo", machine: environmentId, checkout: "env-a:/repo" });
+  });
+
+  it("falls back to the environment when the project is in no group", () => {
+    expect(
+      modelShortcutsSettingsSearch({ environmentId, projectId, projectOverrides: true }, []),
+    ).toEqual({ machine: environmentId });
   });
 });

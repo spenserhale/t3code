@@ -84,7 +84,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   activeInstanceId: ProviderInstanceId;
   model: string;
   selectedModels?: ReadonlyArray<{ instanceId: ProviderInstanceId; model: string }>;
-  onToggleModel?: (instanceId: ProviderInstanceId, model: string) => void;
+  onToggleModel?: (instanceId: ProviderInstanceId, model: string, pick?: ModelPick) => void;
   lockedProvider: ProviderDriverKind | null;
   lockedContinuationGroupKey?: string | null;
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
@@ -190,6 +190,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       ?.click();
   };
 
+  // Several selected models have no one effort to slide, and stepping would discard them.
+  const slider = docked && props.selectedModels === undefined ? props.effortSlider : undefined;
+
   const handleInstanceModelChange = (
     instanceId: ProviderInstanceId,
     model: string,
@@ -201,8 +204,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       setIsMenuOpen(false);
       return;
     }
-    // A favorite that brought its own effort has nothing left to choose in the column.
-    if (pick) return;
+    // With the slider up, the person is steering from the search box and keeps it. A favorite that
+    // brought its own effort has nothing left to choose in the column either.
+    if (pick || slider) return;
     // The column renders the new model's levels on commit.
     window.requestAnimationFrame(() => focusEffort("levels"));
   };
@@ -254,8 +258,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     "data-chat-provider-model-picker-label": "true",
   } as const;
 
-  // Several selected models have no one effort to slide, and stepping would discard them.
-  const slider = docked && props.selectedModels === undefined ? props.effortSlider : undefined;
   const picker = (
     <ModelPickerContent
       searchInputRef={searchInputRef}
@@ -265,8 +267,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       {...(props.selectedModels !== undefined ? { selectedModels: props.selectedModels } : {})}
       {...(props.onToggleModel
         ? {
-            onToggleModel: (instanceId: ProviderInstanceId, model: string) => {
-              if (!props.disabled) props.onToggleModel?.(instanceId, model);
+            onToggleModel: (instanceId: ProviderInstanceId, model: string, pick?: ModelPick) => {
+              if (!props.disabled) props.onToggleModel?.(instanceId, model, pick);
             },
           }
         : {})}
