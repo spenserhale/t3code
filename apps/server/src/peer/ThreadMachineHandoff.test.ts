@@ -125,7 +125,9 @@ interface Options {
   readonly targetModels?: ReadonlyArray<string>;
   readonly pushedTo?: string;
   readonly pushFails?: "after-commit" | "before-commit";
-  readonly openBranch?: "missing" | "fails" | "dirty";
+  readonly openBranch?: "missing" | "fails" | "dirty" | "elsewhere";
+  /** Asking the other machine whether it accepted a launch fails: it lacks the tool, or is silent. */
+  readonly lookup?: "missing" | "fails";
   readonly launchFails?: boolean;
   /** The other machine starts the thread, but the reply never reaches this one. */
   readonly launchLosesReply?: boolean;
@@ -166,6 +168,8 @@ const makeHarness = (initial: Options = {}) => {
   // Once the work is committed and pushed, the checkout shows nothing left to carry.
   let carried = false;
   let firstUploadSeen = false;
+  // The project of the launch the other machine accepted, if it has.
+  let accepted: ProjectId | undefined;
   let currentBranch: string | null =
     options.status !== undefined && "refName" in options.status
       ? (options.status.refName ?? null)
@@ -439,7 +443,9 @@ const makeHarness = (initial: Options = {}) => {
           });
         }
         return Effect.succeed({
-          worktreePath: "/worktrees/app-1",
+          // "elsewhere": the checkout that held the branch is on another one now.
+          worktreePath:
+            options.openBranch === "elsewhere" ? "/worktrees/app-2" : "/worktrees/app-1",
           branch: params.branch,
           remote: "origin",
           head: params.expectCommit,
@@ -464,6 +470,8 @@ const makeHarness = (initial: Options = {}) => {
             message: "The linked environment stopped answering.",
           });
         }
+        // The other machine accepts the launch, and its reply may still not get back.
+        accepted = params.projectId ?? ProjectId.make("project:linkmini-scratch");
         if (options.launchLosesReply === true) {
           return Effect.fail({
             _tag: "OrchestratorMcpFailure",
@@ -474,10 +482,31 @@ const makeHarness = (initial: Options = {}) => {
         return Effect.succeed({
           threadId: ThreadId.make("thread:linkmini-1"),
           link: "<t3-thread://v2/environment-linkmini/thread:linkmini-1>",
-          projectId: params.projectId ?? ProjectId.make("project:linkmini-scratch"),
+          projectId: accepted,
           modelSelection: params.modelSelection,
           runId: null,
           status: null,
+        });
+      case "t3_thread_launch_lookup":
+        if (options.lookup !== undefined) {
+          return Effect.fail({
+            _tag: "OrchestratorMcpFailure",
+            code: options.lookup === "missing" ? "invalid_request" : "orchestration_error",
+            message:
+              options.lookup === "missing"
+                ? "Tool 't3_thread_launch_lookup' not found"
+                : "The linked environment stopped answering.",
+          });
+        }
+        return Effect.succeed({
+          launched:
+            accepted === undefined
+              ? null
+              : {
+                  threadId: ThreadId.make("thread:linkmini-1"),
+                  link: "<t3-thread://v2/environment-linkmini/thread:linkmini-1>",
+                  projectId: accepted,
+                },
         });
     }
     return Effect.die(`unexpected ${name}`);
@@ -1064,7 +1093,10 @@ describe("t3_thread_continue_on_machine", () => {
           "git createRef handoff/fix-the-flaky-login",
           "git commit_push",
         ]);
-        expect(opensOf(harness)).toHaveLength(1);
+        // Nothing had been launched, so the worktree was checked again before it was repeated.
+        const opens = opensOf(harness);
+        expect(opens).toHaveLength(2);
+        expect(opens[1]).toEqual(opens[0]);
         const launches = launchesOf(harness);
         expect(launches).toHaveLength(2);
         expect(launches[1]).toEqual(launches[0]);
@@ -1087,10 +1119,36 @@ describe("t3_thread_continue_on_machine", () => {
         expect(result).toMatchObject({
           threadId: "thread:linkmini-1",
           worktreePath: "/worktrees/app-1",
+          sourceSettles: "at_turn_end",
         });
+        // The launch that went through is found, not repeated, and the worktree is not looked at.
         expect(harness.pushes).toHaveLength(1);
         expect(opensOf(harness)).toHaveLength(1);
-        expect(launchesOf(harness)).toHaveLength(2);
+        expect(launchesOf(harness)).toHaveLength(1);
+        expect(harness.forwarded.map((call) => call.tool)).toContain("t3_thread_launch_lookup");
+        expect(harness.settled).toHaveLength(1);
+      }),
+    );
+
+    it.effect("does not launch again when it cannot tell whether the launch went through", () =>
+      Effect.gen(function* () {
+        const cases = [
+          { lookup: "missing", expected: "does not have t3_thread_launch_lookup" },
+          { lookup: "fails", expected: "Whether the launch went through is not known" },
+        ] as const;
+        for (const { lookup, expected } of cases) {
+          const harness = makeHarness({ launchLosesReply: true });
+          yield* harness.session((handOff) =>
+            Effect.gen(function* () {
+              yield* handOff({ clientRequestId: "request-1" }).pipe(Effect.flip);
+              harness.options.lookup = lookup;
+              const refused = yield* handOff({ clientRequestId: "request-1" }).pipe(Effect.flip);
+              expect(refused.message).toContain(expected);
+            }),
+          );
+          expect(launchesOf(harness)).toHaveLength(1);
+          expect(harness.settled).toEqual([]);
+        }
       }),
     );
 
@@ -1109,6 +1167,42 @@ describe("t3_thread_continue_on_machine", () => {
         // The conversation went up once, and the commit made before the push is still named.
         expect(harness.uploads).toHaveLength(1);
         expect(launchesOf(harness)[0]?.params.message).toContain("includes a WIP commit");
+      }),
+    );
+
+    it.effect("does not launch in a worktree that is not the one it opened", () =>
+      Effect.gen(function* () {
+        const harness = makeHarness({ launchFails: true });
+        yield* harness.session((handOff) =>
+          Effect.gen(function* () {
+            yield* handOff({ clientRequestId: "request-1" }).pipe(Effect.flip);
+            // Nothing was launched, and the checkout that held the branch has moved to another.
+            harness.options.launchFails = false;
+            harness.options.openBranch = "elsewhere";
+            const refused = yield* handOff({ clientRequestId: "request-1" }).pipe(Effect.flip);
+            expect(refused.message).toContain("/worktrees/app-2");
+            expect(refused.message).toContain("not launched again");
+          }),
+        );
+        expect(launchesOf(harness)).toHaveLength(1);
+        expect(harness.settled).toEqual([]);
+      }),
+    );
+
+    it.effect("does not launch in a worktree that changed after a launch that never arrived", () =>
+      Effect.gen(function* () {
+        const harness = makeHarness({ launchFails: true });
+        yield* harness.session((handOff) =>
+          Effect.gen(function* () {
+            yield* handOff({ clientRequestId: "request-1" }).pipe(Effect.flip);
+            harness.options.launchFails = false;
+            harness.options.openBranch = "dirty";
+            const refused = yield* handOff({ clientRequestId: "request-1" }).pipe(Effect.flip);
+            expect(refused.message).toContain("uncommitted changes");
+          }),
+        );
+        expect(launchesOf(harness)).toHaveLength(1);
+        expect(harness.settled).toEqual([]);
       }),
     );
 

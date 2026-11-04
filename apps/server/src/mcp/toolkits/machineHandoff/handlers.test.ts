@@ -1,12 +1,15 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  type OrchestrationV2ThreadShell,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   type ThreadContinueOnMachineResult,
   type WorktreeOpenBranchResult,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -21,6 +24,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
 import * as WorktreeOpenBranch from "../../WorktreeOpenBranch.ts";
+import { launchCommandId } from "../project/handlers.ts";
 import * as MachineHandoffHandlers from "./handlers.ts";
 import { MachineHandoffToolkit } from "./tools.ts";
 
@@ -78,8 +82,10 @@ const scopeOf = (caller: Caller): McpInvocationContext.McpInvocationScope => ({
 /** Runs a tool through its handler as `caller`, with the services it calls recorded. */
 const callTool = (
   caller: Caller,
-  name: "t3_worktree_open_branch" | "t3_thread_continue_on_machine",
+  name: "t3_worktree_open_branch" | "t3_thread_continue_on_machine" | "t3_thread_launch_lookup",
   params: Record<string, unknown>,
+  /** The threads that exist, besides the caller's, by id. */
+  threads: ReadonlyMap<string, OrchestrationV2ThreadShell> = new Map(),
 ) =>
   Effect.gen(function* () {
     const calls = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -87,8 +93,10 @@ const callTool = (
     const dependencies = Layer.mergeAll(
       Layer.succeed(McpInvocationContext.McpInvocationContext, scopeOf(caller)),
       Layer.mock(ThreadManagement.ThreadManagementService)({
-        getThreadShell: () => Effect.succeed(liveThreadShell(threadId)),
+        getThreadShell: (id) =>
+          Effect.succeed(id === threadId ? liveThreadShell(threadId) : (threads.get(id) ?? null)),
       }),
+      NodeCrypto.layer,
       Layer.mock(WorktreeOpenBranch.WorktreeOpenBranch)({
         open: () => record("open here").pipe(Effect.as(opened)),
       }),
@@ -170,14 +178,54 @@ it.effect("does not continue a thread for a client approved for read-only access
   }),
 );
 
+it.effect("finds the thread a launch with that id started, as the launch itself would", () =>
+  Effect.gen(function* () {
+    // The id is the launch's own, from the caller's namespace and the key it passed.
+    const started = ThreadId.make(yield* launchCommandId("namespace:linked", "request-1"));
+    const shell = liveThreadShell(started);
+    const { result } = yield* callTool(
+      "linked",
+      "t3_thread_launch_lookup",
+      { clientRequestId: "request-1" },
+      new Map([[started, shell]]),
+    );
+    expect(result).toEqual({
+      launched: {
+        threadId: started,
+        link: expect.stringContaining(started),
+        projectId: shell.projectId,
+      },
+    });
+    // Another caller's launch with the same key is another thread, and a launch that never was
+    // finds nothing; neither does a thread that was deleted since.
+    const other = yield* callTool(
+      "thread",
+      "t3_thread_launch_lookup",
+      { clientRequestId: "request-1" },
+      new Map([[started, shell]]),
+    );
+    expect(other.result).toEqual({ launched: null });
+    const deleted = yield* callTool(
+      "linked",
+      "t3_thread_launch_lookup",
+      { clientRequestId: "request-1" },
+      new Map([
+        [started, { ...shell, deletedAt: DateTime.makeUnsafe("2026-11-02T10:00:00.000Z") }],
+      ]),
+    );
+    expect(deleted.result).toEqual({ launched: null });
+  }).pipe(Effect.provide(NodeCrypto.layer)),
+);
+
 it.effect(
-  "advertises both tools, naming the machine to move to for the one that moves a thread",
+  "advertises the tools, naming the machine to move to for the one that moves a thread",
   () =>
     Effect.gen(function* () {
       const server = yield* McpServer.McpServer;
       const advertised = new Map(server.tools.map(({ tool }) => [tool.name, tool.inputSchema]));
       expect([...advertised.keys()].toSorted()).toEqual([
         "t3_thread_continue_on_machine",
+        "t3_thread_launch_lookup",
         "t3_worktree_open_branch",
       ]);
       // Moving a thread always names a machine; opening a branch acts here unless it names one.
@@ -199,6 +247,7 @@ it.effect(
               Layer.mock(ThreadManagement.ThreadManagementService)({}),
               Layer.mock(WorktreeOpenBranch.WorktreeOpenBranch)({}),
               Layer.mock(ThreadMachineHandoff.ThreadMachineHandoff)({}),
+              NodeCrypto.layer,
             ),
           ),
         ),
