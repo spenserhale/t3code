@@ -18,7 +18,7 @@ import * as WorktreeOpenBranch from "./WorktreeOpenBranch.ts";
 // fast-forwards are git's own.
 
 const layerGit = GitVcsDriver.layer.pipe(
-  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-open-branch-git-" })),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-open-branch-git-" })),
   Layer.provideMerge(VcsProcess.layer),
   Layer.provideMerge(NodeServices.layer),
 );
@@ -62,6 +62,16 @@ const makeRepositories = Effect.gen(function* () {
   yield* identify(box);
   return { run, commit, fileSystem, path, pusher, box, first };
 });
+
+/** A post-checkout hook that fails, as a project's own can once git has made the worktree. */
+const failOnCheckout = (box: string) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const hook = path.join(box, ".git", "hooks", "post-checkout");
+    yield* fileSystem.writeFileString(hook, "#!/bin/sh\nexit 1\n");
+    yield* fileSystem.chmod(hook, 0o755);
+  });
 
 const open = (box: string, input: { readonly branch?: string } & Record<string, unknown> = {}) =>
   Effect.gen(function* () {
@@ -175,5 +185,43 @@ it.effect("does not fetch a branch the remote lacks, nor leave a stale one to be
     const failed = yield* open(box).pipe(Effect.flip);
     expect(failed.message).toContain("origin has no branch feature");
     expect(yield* run(box, "worktree", "list", "--porcelain")).not.toContain("feature");
+  }).pipe(Effect.scoped, Effect.provide(layerGit)),
+);
+
+it.effect("takes back what a failed checkout made, and leaves what was there before", () =>
+  Effect.gen(function* () {
+    const { run, fileSystem, path, box } = yield* makeRepositories;
+    const { worktreesDir } = yield* ServerConfig.ServerConfig;
+
+    // Someone's folder is where the worktree would go: git refuses, and the branch made for it goes.
+    const occupied = path.join(worktreesDir, "box", "feature");
+    yield* fileSystem.makeDirectory(occupied, { recursive: true });
+    yield* fileSystem.writeFileString(path.join(occupied, "keep.txt"), "mine\n");
+    const blocked = yield* open(box).pipe(Effect.flip);
+    expect(blocked.message).toContain("Could not make a worktree on origin/feature");
+    expect(yield* fileSystem.readFileString(path.join(occupied, "keep.txt"))).toBe("mine\n");
+    expect(yield* run(box, "branch", "--list", "feature")).toBe("");
+
+    // Git makes the worktree, then a hook fails: the worktree and the branch go.
+    yield* fileSystem.remove(occupied, { recursive: true });
+    yield* failOnCheckout(box);
+    const hooked = yield* open(box).pipe(Effect.flip);
+    expect(hooked.message).toContain("Could not make a worktree on origin/feature");
+    expect(yield* run(box, "worktree", "list", "--porcelain")).not.toContain("feature");
+    expect(yield* fileSystem.exists(occupied)).toBe(false);
+    expect(yield* run(box, "branch", "--list", "feature")).toBe("");
+  }).pipe(Effect.scoped, Effect.provide(layerGit)),
+);
+
+it.effect("keeps a branch that was already there when its worktree fails", () =>
+  Effect.gen(function* () {
+    const { run, box } = yield* makeRepositories;
+    yield* run(box, "fetch", "origin");
+    yield* run(box, "branch", "--track", "feature", "origin/feature");
+    yield* failOnCheckout(box);
+    const hooked = yield* open(box).pipe(Effect.flip);
+    expect(hooked.message).toContain("Could not make a worktree for feature");
+    expect(yield* run(box, "worktree", "list", "--porcelain")).not.toContain("feature");
+    expect(yield* run(box, "branch", "--list", "feature")).toContain("feature");
   }).pipe(Effect.scoped, Effect.provide(layerGit)),
 );

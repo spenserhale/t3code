@@ -1,10 +1,11 @@
 import {
   OrchestratorMcpFailure,
-  type VcsRef,
+  type VcsCreateWorktreeInput,
   type WorktreeOpenBranchInput,
   type WorktreeOpenBranchResult,
 } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -63,6 +64,71 @@ const make = Effect.gen(function* () {
     gitWorkflow
       .deleteLocalBranch({ cwd, refName: branch, force: true })
       .pipe(Effect.ignoreCause({ log: true }));
+
+  /** The local branch of that name, as the repository lists it now. */
+  const findLocalBranch = Effect.fn("WorktreeOpenBranch.findLocalBranch")(function* (
+    cwd: string,
+    branch: string,
+  ) {
+    const refs = yield* readAllRefPages((cursor) =>
+      gitWorkflow
+        .listRefs({
+          cwd,
+          query: branch,
+          refKind: "local",
+          refresh: true,
+          limit: 200,
+          ...(cursor === undefined ? {} : { cursor }),
+        })
+        .pipe(Effect.mapError(gitFailed("Could not read the branches"))),
+    );
+    if (refs === null) {
+      return yield* failure(
+        "orchestration_error",
+        "This repository has too many branches to check them all.",
+      );
+    }
+    return refs.find((ref) => ref.isRemote !== true && ref.name === branch);
+  });
+
+  /**
+   * Git adds a worktree before it runs hooks such as post-checkout, so a failed or cut-short attempt
+   * can leave the worktree behind, and the branch made for it. Those go; nothing that was there
+   * before does. The branch had no worktree when this call began.
+   */
+  const takeBackWorktree = Effect.fn("WorktreeOpenBranch.takeBackWorktree")(
+    function* (cwd: string, branch: string, madeBranch: boolean, reason: string | undefined) {
+      const found = yield* findLocalBranch(cwd, branch);
+      if (found === undefined) return;
+      if (found.worktreePath !== null && reason !== "branch_checked_out_in_worktree") {
+        yield* removeWorktree(cwd, found.worktreePath);
+      }
+      if (madeBranch) yield* discardNewBranch(cwd, branch);
+    },
+    Effect.ignoreCause({ log: true }),
+  );
+
+  const makeWorktree = Effect.fn("WorktreeOpenBranch.makeWorktree")(function* (
+    cwd: string,
+    request: VcsCreateWorktreeInput,
+    what: string,
+  ) {
+    return yield* gitWorkflow.createWorktree(request).pipe(
+      Effect.onError((cause) => {
+        const reason = Option.getOrUndefined(Cause.findErrorOption(cause))?.reason;
+        // Git stopped at a branch that was there already: it is not this call's to remove.
+        return reason === "branch_already_exists"
+          ? Effect.void
+          : takeBackWorktree(
+              cwd,
+              request.newRefName ?? request.refName,
+              request.newRefName !== undefined,
+              reason,
+            );
+      }),
+      Effect.mapError(gitFailed(what)),
+    );
+  });
 
   /** The project's remote that is `repositoryKey`, origin first. */
   const remoteOfRepository = Effect.fn("WorktreeOpenBranch.remoteOfRepository")(function* (
@@ -231,27 +297,7 @@ const make = Effect.gen(function* () {
       );
     }
     const target = { branch, remote, remoteRef, tip: fetched.commitSha, baseRef: input.baseRef };
-    const refs = yield* readAllRefPages((cursor) =>
-      gitWorkflow
-        .listRefs({
-          cwd,
-          query: branch,
-          refKind: "local",
-          refresh: true,
-          limit: 200,
-          ...(cursor === undefined ? {} : { cursor }),
-        })
-        .pipe(Effect.mapError(gitFailed("Could not read the branches"))),
-    );
-    if (refs === null) {
-      return yield* failure(
-        "orchestration_error",
-        "This repository has too many branches to check them all.",
-      );
-    }
-    const local: VcsRef | undefined = refs.find(
-      (ref) => ref.isRemote !== true && ref.name === branch,
-    );
+    const local = yield* findLocalBranch(cwd, branch);
     const finish = Effect.fn("WorktreeOpenBranch.finish")(function* (
       worktreePath: string,
       created: boolean,
@@ -277,9 +323,11 @@ const make = Effect.gen(function* () {
         yield* catchUp(local.worktreePath, target);
         return yield* finish(local.worktreePath, false);
       }
-      const made = yield* gitWorkflow
-        .createWorktree({ cwd, refName: branch, path: null })
-        .pipe(Effect.mapError(gitFailed(`Could not make a worktree for ${branch}`)));
+      const made = yield* makeWorktree(
+        cwd,
+        { cwd, refName: branch, path: null },
+        `Could not make a worktree for ${branch}`,
+      );
       const worktreePath = made.worktree.path;
       return yield* catchUp(worktreePath, target).pipe(
         Effect.andThen(finish(worktreePath, true)),
@@ -289,15 +337,17 @@ const make = Effect.gen(function* () {
 
     const base =
       input.baseRef === undefined ? undefined : yield* resolveBase(cwd, remote, input.baseRef);
-    const made = yield* gitWorkflow
-      .createWorktree({
+    const made = yield* makeWorktree(
+      cwd,
+      {
         cwd,
         refName: remoteRef,
         newRefName: branch,
         ...(base === undefined ? {} : { baseRefName: base }),
         path: null,
-      })
-      .pipe(Effect.mapError(gitFailed(`Could not make a worktree on ${remoteRef}`)));
+      },
+      `Could not make a worktree on ${remoteRef}`,
+    );
     const worktreePath = made.worktree.path;
     const tracking = git
       .statusDetailsLocal(worktreePath)
