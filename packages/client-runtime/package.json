@@ -659,6 +659,10 @@
       "types": "./src/pullRequestSelection.ts",
       "default": "./src/pullRequestSelection.ts"
     },
+    "./effort-slider": {
+      "types": "./src/effortSlider.ts",
+      "default": "./src/effortSlider.ts"
+    },
     "./provider-clients": {
       "types": "./src/providerClients.ts",
       "default": "./src/providerClients.ts"
