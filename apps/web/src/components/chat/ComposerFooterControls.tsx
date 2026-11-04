@@ -372,6 +372,14 @@ export function ComposerModelPicker({
     const next = exists
       ? current.filter((selection) => !matchesModel(selection))
       : [...current, createModelSelection(instanceId, model, pick?.options)];
+    // The primary model is sent with the options the effort control shows, so a favorite's saved
+    // effort for it has to land there, or a send would carry the control's older effort instead.
+    if (!exists && pick && matchesModel(selectedModelSelection)) {
+      onProviderModelSelect(instanceId, model, {
+        focusComposer: false,
+        modelOptions: pick.options,
+      });
+    }
     if (next.length > 1) {
       onMultipleModelSelectionsChange(next);
     } else {
