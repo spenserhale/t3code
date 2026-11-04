@@ -57,34 +57,45 @@ export type FavoritesEdit =
   | { readonly kind: "replace" };
 
 /**
- * An environment is sent the change itself, which its server applies to the list it holds now, so
- * a favorite another client added since this page loaded survives. The whole list goes only to a
- * server that cannot reorder by intent or holds none yet, and always for a project's override.
+ * One environment is sent the change itself, which its server applies to the list it holds now,
+ * so a favorite another client added since this page loaded survives. All environments is a bulk
+ * edit: every list is replaced whole, with every effort spelled out so none survives unchosen. A
+ * project's list is written whole too, as upstream writes every project override whole.
  */
 export function planFavoritesWrite(input: {
-  readonly projectScope: boolean;
-  /** Every environment in scope keeps its favorites on the server. */
-  readonly listOnServer: boolean;
-  /** Every environment in scope can reorder favorites by intent. */
-  readonly reorderSupported: boolean;
+  readonly scope: "environment" | "all" | "project";
+  /** The one environment an environment scope writes to: its own list and capability decide. */
+  readonly destination: {
+    /** The environment keeps its favorites on the server, not only in this client's old copy. */
+    readonly listOnServer: boolean;
+    /** The environment can reorder favorites by intent. */
+    readonly reorderSupported: boolean;
+  };
   /** The list as it reads after the edit. */
   readonly list: ReadonlyArray<ModelFavorite>;
   readonly edit: FavoritesEdit;
 }): ServerSettingsPatch {
-  if (input.projectScope) {
+  if (input.scope === "project") {
     return {
       favorites: input.list.map(({ options, ...rest }) =>
         options?.length ? { ...rest, options } : rest,
       ),
     };
   }
-  const { edit } = input;
+  const whole = {
+    favorites: input.list.map((favorite) => ({
+      ...favorite,
+      options: favorite.options?.length ? favorite.options : [],
+    })),
+  };
+  const { edit, destination } = input;
   if (
+    input.scope === "all" ||
     edit.kind === "replace" ||
-    !input.listOnServer ||
-    (edit.kind === "move" && !input.reorderSupported)
+    !destination.listOnServer ||
+    (edit.kind === "move" && !destination.reorderSupported)
   ) {
-    return { favorites: input.list };
+    return whole;
   }
   const named = (favorite: FavoriteName) => ({
     provider: favorite.provider,
