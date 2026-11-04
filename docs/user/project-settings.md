@@ -165,7 +165,8 @@ than** on the task.
 Threads contains the model and workspace for new threads. Browser controls agent browser
 access. Source control contains automatic pull, the default pull request merge method and text
 generation. The same rows edit environment defaults or project overrides depending on the
-project crumb.
+project crumb. Threads also holds your favorite models and the effort slider, which a project can
+override with its own list.
 
 The Projects category, under Code, holds the project's name, icon, actions,
 checkouts and removal. Actions belong to a project: editing them creates the project's own list
