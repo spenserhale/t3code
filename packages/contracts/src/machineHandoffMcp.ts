@@ -63,3 +63,17 @@ export const WorktreeOpenBranchResult = Schema.Struct({
   created: Schema.Boolean,
 });
 export type WorktreeOpenBranchResult = typeof WorktreeOpenBranchResult.Type;
+
+/** Asks whether a `t3_thread_launch` with this `clientRequestId` started a thread there. */
+export const ThreadLaunchLookupInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
+  clientRequestId: OrchestratorMcpClientRequestId,
+});
+export type ThreadLaunchLookupInput = typeof ThreadLaunchLookupInput.Type;
+
+export const ThreadLaunchLookupResult = Schema.Struct({
+  launched: Schema.NullOr(
+    Schema.Struct({ threadId: ThreadId, link: Schema.String, projectId: ProjectId }),
+  ),
+});
+export type ThreadLaunchLookupResult = typeof ThreadLaunchLookupResult.Type;

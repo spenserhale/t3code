@@ -177,6 +177,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     ["Open", "Opening", "Opened", "a branch in a git worktree"],
     "worktree-open-branch",
   ),
+  t3_thread_launch_lookup: tool(
+    ["Look up", "Looking up", "Looked up", "a launched thread"],
+    "thread-read",
+  ),
   t3_thread_continue_on_machine: tool(
     ["Continue", "Continuing", "Continued", "a thread on another machine"],
     "machine-handoff",

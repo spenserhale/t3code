@@ -8,6 +8,7 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadMachineHandoff from "../../../peer/ThreadMachineHandoff.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { ThreadLaunchLookupTool } from "./launchLookupTool.ts";
 import { WorktreeOpenBranchTool } from "./openBranchTool.ts";
 
 const ThreadContinueOnMachineTool = Tool.make("t3_thread_continue_on_machine", {
@@ -33,4 +34,5 @@ const ThreadContinueOnMachineTool = Tool.make("t3_thread_continue_on_machine", {
 export const MachineHandoffToolkit = Toolkit.make(
   ThreadContinueOnMachineTool,
   WorktreeOpenBranchTool,
+  ThreadLaunchLookupTool,
 );
