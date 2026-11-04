@@ -3,7 +3,7 @@ import {
   ThreadLaunchLookupInput,
   ThreadLaunchLookupResult,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import { Tool } from "effect/ai";
 
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -20,7 +20,7 @@ export const ThreadLaunchLookupTool = Tool.make("t3_thread_launch_lookup", {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
-    Crypto.Crypto,
+    Digest.Digest,
   ],
 })
   .annotate(Tool.Title, "Look up a launched thread")

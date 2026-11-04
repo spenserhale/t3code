@@ -43,6 +43,7 @@ import {
 } from "./GitVcsDriverCore.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
 import { gitConfigEnv } from "./VcsProcess.ts";
+import type { WorktreeReservation } from "./worktreeReservation.ts";
 
 const encodeGitCommandError = Schema.encodeEffect(Schema.fromJsonString(GitCommandError));
 const decodeVcsRef = Schema.decodeUnknownSync(VcsRef);
@@ -4839,57 +4840,89 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("reports what it made, even when the checkout then fails", () =>
+    it.effect("reserves the folder before git, and gives it back only while it is its own", () =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const pathService = yield* Path.Path;
         const cwd = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(cwd);
-        const worktrees = yield* makeTmpDir("reported-worktrees-");
+        const worktrees = yield* makeTmpDir("reserved-worktrees-");
         const driver = yield* GitVcsDriver.GitVcsDriver;
         const reported: string[] = [];
+        let held: WorktreeReservation | undefined;
         const progress = {
+          onWorktreeReserved: (reservation: WorktreeReservation) =>
+            Effect.sync(() => {
+              held = reservation;
+              reported.push("reserved");
+            }),
           onBranchCreated: (branch: string) =>
             Effect.sync(() => void reported.push(`branch ${branch}`)),
-          onWorktreeClaimed: (path: string) =>
-            Effect.sync(() => void reported.push(`claimed ${path}`)),
-          onWorktreeLeftBehind: (path: string) =>
-            Effect.sync(() => void reported.push(`left behind ${path}`)),
+          onWorktreeClaimed: () => Effect.sync(() => void reported.push("claimed")),
         };
-        const create = (name: string) =>
+        const folderOf = (name: string) => pathService.join(worktrees, name);
+        const create = (name: string, refName = initialBranch) =>
           driver.createWorktree(
-            {
-              cwd,
-              path: pathService.join(worktrees, name),
-              refName: initialBranch,
-              newRefName: name,
-            },
+            { cwd, path: folderOf(name), refName, newRefName: name },
             { progress },
           );
-
-        // A folder in the way: git refuses before it adds anything, but the branch was made.
-        yield* writeTextFile(worktrees, "blocked/keep.txt", "mine\n");
-        yield* create("blocked").pipe(Effect.flip);
-        assert.deepEqual(reported, ["branch blocked"]);
-
-        // A hook fails after git added the folder.
+        const giveBack = Effect.suspend(() => held!.release);
         const hook = pathService.join(cwd, ".git", "hooks", "post-checkout");
-        yield* fileSystem.writeFileString(hook, "#!/bin/sh\nexit 1\n");
-        yield* fileSystem.chmod(hook, 0o755);
+        const postCheckout = (script: string) =>
+          fileSystem
+            .writeFileString(hook, `#!/bin/sh\n${script}\n`)
+            .pipe(Effect.andThen(fileSystem.chmod(hook, 0o755)));
+
+        // A folder in the way, empty or not, is refused before anything is made, a branch included.
+        yield* writeTextFile(worktrees, "blocked/keep.txt", "mine\n");
+        yield* fileSystem.makeDirectory(folderOf("empty"));
+        for (const name of ["blocked", "empty"]) {
+          const refused = yield* create(name).pipe(Effect.flip);
+          assert.equal(refused.reason, "path_already_exists");
+        }
+        assert.deepEqual(reported, []);
+        assert.equal(yield* git(cwd, ["branch", "--list", "blocked", "empty"]), "");
+
+        // A branch that cannot be made leaves the empty folder, which goes back.
+        const missing = yield* create("unmade", "no-such-ref").pipe(Effect.flip);
+        assert.equal(missing.operation, "GitVcsDriver.createWorktree.createBranch");
+        assert.deepEqual(reported, ["reserved"]);
+        assert.deepEqual(yield* giveBack, { released: true });
+        assert.equal(yield* fileSystem.exists(folderOf("unmade")), false);
+
+        // A hook fails after git put the checkout in; nothing in it changed, so git takes it back.
+        yield* postCheckout("exit 1");
         reported.length = 0;
         yield* create("hooked").pipe(Effect.flip);
-        assert.deepEqual(reported, [
-          "branch hooked",
-          `left behind ${pathService.join(worktrees, "hooked")}`,
-        ]);
+        assert.deepEqual(reported, ["reserved", "branch hooked"]);
+        assert.deepEqual(yield* giveBack, { released: true });
+        assert.equal(yield* fileSystem.exists(folderOf("hooked")), false);
+
+        // A note the hook left in it is a change git would not delete, so the folder stays.
+        yield* postCheckout("echo mine > note.txt\nexit 1");
+        yield* create("noted").pipe(Effect.flip);
+        const kept = yield* giveBack;
+        assert.equal(kept.released, false);
+        assert.equal(
+          yield* fileSystem.readFileString(pathService.join(folderOf("noted"), "note.txt")),
+          "mine\n",
+        );
+
+        // A folder that took its place is not touched. The old one is moved aside, so the new one
+        // cannot reuse its inode number.
+        yield* fileSystem.rename(folderOf("noted"), folderOf("noted-moved"));
+        yield* writeTextFile(worktrees, "noted/other.txt", "theirs\n");
+        const replaced = yield* giveBack;
+        assert.equal(replaced.released, false);
+        assert.equal(
+          yield* fileSystem.readFileString(pathService.join(folderOf("noted"), "other.txt")),
+          "theirs\n",
+        );
 
         yield* fileSystem.remove(hook);
         reported.length = 0;
         yield* create("fine");
-        assert.deepEqual(reported, [
-          "branch fine",
-          `claimed ${pathService.join(worktrees, "fine")}`,
-        ]);
+        assert.deepEqual(reported, ["reserved", "branch fine", "claimed"]);
       }),
     );
 
