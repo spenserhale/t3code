@@ -420,11 +420,18 @@ export function applyServerSettingsPatch(
   const favorites =
     setModelFavorites?.reduce(
       (current, change) => {
-        const exists = current.some(
+        const index = current.findIndex(
           (favorite) => favorite.provider === change.provider && favorite.model === change.model,
         );
         if (change.favorite) {
-          if (!exists) current.push({ provider: change.provider, model: change.model });
+          // A request without options leaves the saved effort alone; one with options replaces it.
+          const options = change.options?.length ? { options: change.options } : {};
+          if (index === -1) {
+            current.push({ provider: change.provider, model: change.model, ...options });
+          } else if (change.options !== undefined) {
+            const { options: _previous, ...rest } = current[index]!;
+            current[index] = { ...rest, ...options };
+          }
           return current;
         }
         return current.filter(

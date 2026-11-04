@@ -14,6 +14,8 @@ import {
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
   idleCompactionPatch,
+  isNullableProjectSettingsOverride,
+  MAX_EFFORT_SLIDER_STEPS,
   requiredScopesForProjectMutation,
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
@@ -482,5 +484,86 @@ describe("server model preferences", () => {
     const input = { favorites: [], providerModelPreferences: {} };
     expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
     expect(decodeServerSettingsPatch(input)).toEqual(input);
+  });
+});
+
+describe("favorites with efforts and the effort slider", () => {
+  const provider = ProviderInstanceId.make("codex");
+  const projectId = ProjectId.make("project-a");
+  const effort = [{ id: "reasoningEffort", value: "high" }];
+  const steps = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      instanceId: provider,
+      model: `model-${index}`,
+      options: effort,
+    }));
+
+  it("keeps a favorite's effort optional, so favorites from older builds still decode", () => {
+    const decoded = decodeServerSettings({
+      favorites: [
+        { provider, model: "sol" },
+        { provider, model: "luna", options: effort },
+      ],
+    });
+    expect(decoded.favorites).toEqual([
+      { provider, model: "sol" },
+      { provider, model: "luna", options: effort },
+    ]);
+    expect(encodeServerSettings(decoded).favorites).toEqual(decoded.favorites);
+    expect(decodeClientSettings({ favorites: [{ provider, model: "sol" }] }).favorites).toEqual([
+      { provider, model: "sol" },
+    ]);
+  });
+
+  it("defaults the slider to off and refuses a longer one than it has room for", () => {
+    expect(decodeServerSettings({}).effortSlider).toEqual([]);
+    expect(DEFAULT_SERVER_SETTINGS.effortSlider).toEqual([]);
+    expect(
+      decodeServerSettings({ effortSlider: steps(MAX_EFFORT_SLIDER_STEPS) }).effortSlider,
+    ).toHaveLength(MAX_EFFORT_SLIDER_STEPS);
+    expect(() =>
+      decodeServerSettings({ effortSlider: steps(MAX_EFFORT_SLIDER_STEPS + 1) }),
+    ).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({ effortSlider: steps(MAX_EFFORT_SLIDER_STEPS + 1) }),
+    ).toThrow();
+    expect(decodeServerSettingsPatch({ effortSlider: [] })).toEqual({ effortSlider: [] });
+  });
+
+  it("carries a favorite's effort in a toggle but leaves hidden models as they were", () => {
+    expect(
+      decodeServerSettingsPatch({
+        setModelFavorites: [{ provider, model: "sol", favorite: true, options: effort }],
+      }).setModelFavorites,
+    ).toEqual([{ provider, model: "sol", favorite: true, options: effort }]);
+    expect(
+      decodeServerSettingsPatch({
+        setModelsHidden: [{ provider, model: "sol", hidden: true, options: effort }],
+      }).setModelsHidden,
+    ).toEqual([{ provider, model: "sol", hidden: true }]);
+  });
+
+  it("lets a project override either list, and clearing the override is removing it", () => {
+    const decoded = decodeServerSettings({
+      projectSettingsOverrides: {
+        [projectId]: {
+          favorites: [{ provider, model: "sol", options: effort }],
+          effortSlider: steps(2),
+        },
+      },
+    });
+    expect(decoded.projectSettingsOverrides[projectId]).toEqual({
+      favorites: [{ provider, model: "sol", options: effort }],
+      effortSlider: steps(2),
+    });
+    expect(isNullableProjectSettingsOverride("favorites")).toBe(false);
+    expect(isNullableProjectSettingsOverride("effortSlider")).toBe(false);
+    expect(() =>
+      decodeServerSettingsPatch({
+        projectSettingsOverrides: {
+          [projectId]: { effortSlider: steps(MAX_EFFORT_SLIDER_STEPS + 1) },
+        },
+      }),
+    ).toThrow();
   });
 });
