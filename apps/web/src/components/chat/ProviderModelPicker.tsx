@@ -2,7 +2,9 @@ import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type ProviderInstanceId,
   type EnvironmentId,
+  type ProjectId,
   type ProviderDriverKind,
+  type ProviderOptionSelection,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { RegistryContext } from "@effect/atom-react";
@@ -24,6 +26,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { ModelPickerContent, resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import { retainedModelWhileProviderLocked } from "./ProviderModelPicker.logic";
 import { ChatGptSharingControl } from "./ChatGptSharingControl";
+import { EffortSlider, type ModelPickerEffortSlider } from "./EffortSlider";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ModelEsque, getDisplayModelName, getTriggerDisplayModelName } from "./providerIconUtils";
 import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../providerInstances";
@@ -88,6 +91,11 @@ function lockBackgroundScroll(popup: HTMLElement | null) {
 /** What a docked effort column needs from its picker: the model it serves. */
 export const DockedPickerContext = createContext<{ modelLabel: string }>({ modelLabel: "" });
 
+/** A pick that brings options along, such as a favorite's saved effort. */
+export interface ModelPick {
+  readonly options: ReadonlyArray<ProviderOptionSelection>;
+}
+
 export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   environmentId: EnvironmentId | null;
   workspaceCwd?: string | null;
@@ -115,7 +123,14 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   onOpenChange?: (open: boolean) => void;
   onOpenProviderSetup?: (instanceId: ProviderInstanceId) => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
-  onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
+  onInstanceModelChange: (instanceId: ProviderInstanceId, model: string, pick?: ModelPick) => void;
+  /** The project whose own favorites, if it has any, the picker lists. */
+  projectId?: ProjectId | null;
+  /**
+   * Steps along an effort slider above the search box. Left and Right in an empty search move
+   * along it, and pressing or dragging a stop applies it, all without taking focus from the search.
+   */
+  effortSlider?: ModelPickerEffortSlider;
   /** Shown after the model name inside the same trigger, such as the effort level. */
   triggerSuffix?: ReactNode;
   /** Names the suffix for the tooltip and screen readers. */
@@ -222,13 +237,19 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       ?.click();
   };
 
-  const handleInstanceModelChange = (instanceId: ProviderInstanceId, model: string) => {
+  const handleInstanceModelChange = (
+    instanceId: ProviderInstanceId,
+    model: string,
+    pick?: ModelPick,
+  ) => {
     if (props.disabled) return;
-    props.onInstanceModelChange(instanceId, model);
+    props.onInstanceModelChange(instanceId, model, pick);
     if (!docked) {
       setIsMenuOpen(false);
       return;
     }
+    // A favorite that brought its own effort has nothing left to choose in the column.
+    if (pick) return;
     // The column renders the new model's levels on commit.
     window.requestAnimationFrame(() => focusEffort("levels"));
   };
@@ -290,6 +311,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     "data-chat-provider-model-picker-label": "true",
   } as const;
 
+  // Several selected models have no one effort to slide, and stepping would discard them.
+  const slider = docked && props.selectedModels === undefined ? props.effortSlider : undefined;
   const picker = (
     <ModelPickerContent
       searchInputRef={searchInputRef}
@@ -308,6 +331,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       lockedProvider={props.lockedProvider}
       lockedContinuationGroupKey={props.lockedContinuationGroupKey ?? null}
       instanceEntries={props.instanceEntries}
+      {...(props.projectId !== undefined ? { projectId: props.projectId } : {})}
+      {...(slider ? { effortSlider: slider } : {})}
       {...(props.keybindings ? { keybindings: props.keybindings } : {})}
       modelOptionsByInstance={props.modelOptionsByInstance}
       terminalOpen={props.terminalOpen ?? false}
@@ -474,6 +499,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         {props.effortColumn ? (
           <DockedPickerContext value={{ modelLabel: triggerTitle }}>
             <div className="flex max-h-(--available-height) flex-col">
+              {slider ? <EffortSlider {...slider} /> : null}
               {/* One fixed height, so a model with more options never resizes the popup. Short
                   windows shrink it and keep the footer. */}
               <div className="flex h-86.5 min-h-0 max-sm:h-auto max-sm:flex-col">

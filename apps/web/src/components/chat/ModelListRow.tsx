@@ -24,6 +24,8 @@ export const ModelListRow = memo(function ModelListRow(props: {
   acpRegistryAgentId?: string | undefined;
   acpRegistryIconUrl?: string | undefined;
   isFavorite: boolean;
+  /** The effort a favorite opens at, when it saved one. */
+  favoriteEffort?: string | null;
   /** In Favorites every row is starred, so the star shows only on hover. */
   favoriteStarOnHover?: boolean;
   isSelected: boolean;
@@ -94,6 +96,12 @@ export const ModelListRow = memo(function ModelListRow(props: {
           >
             {gt("New", { $context: "badge on a newly added model" })}
           </span>
+        ) : null}
+        {props.favoriteEffort ? (
+          <Badge variant="outline" size="sm" className="shrink-0">
+            {props.favoriteEffort}
+            <span className="sr-only"> effort</span>
+          </Badge>
         ) : null}
         {props.unavailable ? (
           <Badge variant="outline" size="sm">

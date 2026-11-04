@@ -12,6 +12,7 @@ import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { resolveRuntimeModeOption, runtimeModeConfig } from "./runtimeModeConfig";
+import type { ProviderModelSelectOptions } from "./useComposerSelection";
 import { useComposerMenuState } from "./useComposerMenuState";
 import {
   RuntimeModeLimitsTargetContext,
@@ -295,7 +296,7 @@ export function ComposerModelPicker({
   readonly onProviderModelSelect: (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: { focusComposer?: boolean },
+    options?: ProviderModelSelectOptions,
   ) => void;
 }) {
   const { instanceEntries, modelOptionsByInstance } = pickerProps;
@@ -336,9 +337,9 @@ export function ComposerModelPicker({
             onToggleModel: toggleModel,
           }
         : {})}
-      onInstanceModelChange={(instanceId, model) => {
+      onInstanceModelChange={(instanceId, model, pick) => {
         onMultipleModelSelectionsChange(null);
-        onProviderModelSelect(instanceId, model);
+        onProviderModelSelect(instanceId, model, pick ? { modelOptions: pick.options } : undefined);
       }}
     />
   );

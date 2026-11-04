@@ -6,7 +6,7 @@ import type {
   ServerProviderModel,
 } from "@t3tools/contracts";
 import { getProviderOptionDescriptors } from "@t3tools/shared/model";
-import { REASONING_SELECT_DESCRIPTOR_IDS, selectableProviderOptionChoices } from "./modelTraits.ts";
+import { isReasoningSelect, selectableProviderOptionChoices } from "./modelTraits.ts";
 
 /** The model's reasoning level control, when it has one. */
 function findEffortDescriptor(
@@ -14,9 +14,10 @@ function findEffortDescriptor(
   options?: ReadonlyArray<ProviderOptionSelection>,
 ): SelectProviderOptionDescriptor | null {
   if (!model?.capabilities) return null;
-  const descriptor = getProviderOptionDescriptors({ caps: model.capabilities, selections: options })
-    .filter((candidate): candidate is SelectProviderOptionDescriptor => candidate.type === "select")
-    .find((candidate) => REASONING_SELECT_DESCRIPTOR_IDS.has(candidate.id));
+  const descriptor = getProviderOptionDescriptors({
+    caps: model.capabilities,
+    selections: options,
+  }).find(isReasoningSelect);
   return descriptor ?? null;
 }
 
