@@ -1013,6 +1013,91 @@ describe("synchronized model preferences", () => {
     expect(applyServerSettingsPatch(reordered, { effortSlider: [] }).effortSlider).toEqual([]);
   });
 
+  describe("a list written by a client that does not know saved efforts", () => {
+    const high = [{ id: "reasoningEffort", value: "high" }];
+    const low = [{ id: "reasoningEffort", value: "low" }];
+    const saved = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      favorites: [
+        { provider, model: "sol", options: high },
+        { provider, model: "astra", options: low },
+        { provider, model: "luna" },
+      ],
+    });
+
+    it("keeps the effort of each favorite it names, in the order it sends them", () => {
+      // An official client decodes favorites without options, so that is what it writes back.
+      const written = applyServerSettingsPatch(saved, {
+        favorites: [
+          { provider, model: "luna" },
+          { provider, model: "sol" },
+          { provider, model: "terra" },
+        ],
+      });
+      expect(written.favorites).toEqual([
+        { provider, model: "luna" },
+        { provider, model: "sol", options: high },
+        { provider, model: "terra" },
+      ]);
+    });
+
+    it("replaces an effort the write names and clears one it empties", () => {
+      const written = applyServerSettingsPatch(saved, {
+        favorites: [
+          { provider, model: "sol", options: low },
+          { provider, model: "astra", options: [] },
+          { provider, model: "luna" },
+        ],
+      });
+      expect(written.favorites).toEqual([
+        { provider, model: "sol", options: low },
+        { provider, model: "astra" },
+        { provider, model: "luna" },
+      ]);
+    });
+  });
+
+  describe("reordering favorites by intent", () => {
+    const high = [{ id: "reasoningEffort", value: "high" }];
+    const [sol, astra, luna, terra] = ["sol", "astra", "luna", "terra"].map((model) => ({
+      provider,
+      model,
+    }));
+    const saved = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      favorites: [{ ...sol!, options: high }, astra!, luna!],
+    });
+
+    it("moves the named favorites and keeps their saved efforts", () => {
+      expect(
+        applyServerSettingsPatch(saved, { reorderModelFavorites: [luna!, sol!, astra!] }).favorites,
+      ).toEqual([luna, { ...sol, options: high }, astra]);
+    });
+
+    it("keeps a favorite another client added since this one read the list", () => {
+      const withTerra = applyServerSettingsPatch(saved, {
+        setModelFavorites: [{ ...terra!, favorite: true }],
+      });
+      expect(
+        applyServerSettingsPatch(withTerra, { reorderModelFavorites: [astra!, sol!, luna!] })
+          .favorites,
+      ).toEqual([astra, { ...sol, options: high }, luna, terra]);
+    });
+
+    it("ignores names that are no longer favorites and names repeated", () => {
+      expect(
+        applyServerSettingsPatch(saved, {
+          reorderModelFavorites: [luna!, terra!, luna!, { provider, model: "gone" }],
+        }).favorites,
+      ).toEqual([luna, { ...sol, options: high }, astra]);
+    });
+
+    it("leaves a list that was never moved to the server alone", () => {
+      expect(
+        applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { reorderModelFavorites: [sol!, luna!] })
+          .favorites,
+      ).toBeNull();
+    });
+  });
+
   it("keeps the same model on different provider instances as separate favorites", () => {
     const otherProvider = ProviderInstanceId.make("codex_personal");
     const first = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {

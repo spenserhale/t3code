@@ -11,6 +11,7 @@ import {
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
   isProviderTextGenerationCapable,
+  type ModelFavorite,
   type ModelSelection,
   type ProjectId,
   type ProjectScopedServerSettingKey,
@@ -350,6 +351,43 @@ function patchedIdleCompaction(
   return globalIdleCompaction(current) === "off" ? "off" : "onReturn";
 }
 
+/**
+ * A whole list from a client that predates saved efforts carries none, so a favorite it names
+ * keeps the effort the server holds. An explicit empty `options` clears it.
+ */
+function keepSavedFavoriteEfforts(
+  incoming: ReadonlyArray<ModelFavorite>,
+  existing: ReadonlyArray<ModelFavorite> | null,
+): ReadonlyArray<ModelFavorite> {
+  return incoming.map((favorite) => {
+    if (favorite.options !== undefined) {
+      if (favorite.options.length > 0) return favorite;
+      const { options: _cleared, ...rest } = favorite;
+      return rest;
+    }
+    const saved = existing?.find(
+      (entry) => entry.provider === favorite.provider && entry.model === favorite.model,
+    )?.options;
+    return saved?.length ? { ...favorite, options: saved } : favorite;
+  });
+}
+
+/** The named favorites first, in that order; the ones not named follow in the order they had. */
+function reorderFavorites(
+  favorites: ReadonlyArray<ModelFavorite>,
+  names: ReadonlyArray<Pick<ModelFavorite, "provider" | "model">>,
+): ReadonlyArray<ModelFavorite> {
+  const keyOf = (favorite: Pick<ModelFavorite, "provider" | "model">) =>
+    JSON.stringify([favorite.provider, favorite.model]);
+  const byKey = new Map(favorites.map((favorite) => [keyOf(favorite), favorite]));
+  const named = new Map<string, ModelFavorite>();
+  for (const name of names) {
+    const favorite = byKey.get(keyOf(name));
+    if (favorite !== undefined && !named.has(keyOf(name))) named.set(keyOf(name), favorite);
+  }
+  return [...named.values(), ...favorites.filter((favorite) => !named.has(keyOf(favorite)))];
+}
+
 export function applyServerSettingsPatch(
   current: ServerSettings,
   rawPatch: ServerSettingsPatch,
@@ -359,6 +397,7 @@ export function applyServerSettingsPatch(
   const {
     migrateModelPreferences,
     setModelFavorites,
+    reorderModelFavorites,
     setModelsHidden,
     setProviderModelOrder,
     providerModelPreferences,
@@ -416,8 +455,13 @@ export function applyServerSettingsPatch(
           }
         : undefined;
   const initialFavorites =
-    patch.favorites ?? current.favorites ?? migrateModelPreferences?.favorites ?? null;
-  const favorites =
+    (patch.favorites === undefined
+      ? undefined
+      : keepSavedFavoriteEfforts(patch.favorites, current.favorites)) ??
+    current.favorites ??
+    migrateModelPreferences?.favorites ??
+    null;
+  const toggledFavorites =
     setModelFavorites?.reduce(
       (current, change) => {
         const index = current.findIndex(
@@ -440,6 +484,10 @@ export function applyServerSettingsPatch(
       },
       [...(initialFavorites ?? [])],
     ) ?? initialFavorites;
+  const favorites =
+    reorderModelFavorites === undefined || toggledFavorites === null
+      ? toggledFavorites
+      : reorderFavorites(toggledFavorites, reorderModelFavorites);
   const initialModelPreferences =
     providerModelPreferences ??
     current.providerModelPreferences ??

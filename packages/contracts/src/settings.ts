@@ -343,8 +343,14 @@ export const ModelFavorite = Schema.Struct({
 export type ModelFavorite = typeof ModelFavorite.Type;
 export const ModelFavorites = Schema.Array(ModelFavorite);
 export const MAX_EFFORT_SLIDER_STEPS = 6;
-/** Ordered model and effort pairs of the composer's effort slider; under two steps it is not shown. */
-export const EffortSliderSteps = Schema.Array(ModelSelection).check(
+/**
+ * Ordered model and effort pairs of the composer's effort slider; under two steps it is not shown.
+ * Stored settings read any length, and readers use the first six, so a longer hand edit cannot
+ * make the whole settings file undecodable.
+ */
+const StoredEffortSliderSteps = Schema.Array(ModelSelection);
+/** What a write may hold. */
+export const EffortSliderSteps = StoredEffortSliderSteps.check(
   Schema.isMaxLength(MAX_EFFORT_SLIDER_STEPS),
 );
 export const ProviderModelPreferences = Schema.Record(
@@ -1098,7 +1104,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   favorites: Schema.optionalKey(ModelFavorites),
-  effortSlider: Schema.optionalKey(EffortSliderSteps),
+  effortSlider: Schema.optionalKey(StoredEffortSliderSteps),
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),
@@ -1196,7 +1202,7 @@ export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 export const ServerSettings = Schema.Struct({
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
-  effortSlider: EffortSliderSteps.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  effortSlider: StoredEffortSliderSteps.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   providerModelPreferences: Schema.NullOr(ProviderModelPreferences).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -1544,6 +1550,9 @@ export const ServerSettingsPatch = Schema.Struct({
   setProviderModelOrder: Schema.optionalKey(
     Schema.Struct({ provider: ProviderInstanceId, modelOrder: Schema.Array(TrimmedString) }),
   ),
+  // Moves the favorites it names into that order; the ones it does not name keep their place after
+  // them, so a favorite another client added in the meantime is not lost.
+  reorderModelFavorites: Schema.optionalKey(Schema.Array(ModelReference)),
   favorites: Schema.optionalKey(ModelFavorites),
   effortSlider: Schema.optionalKey(EffortSliderSteps),
   providerModelPreferences: Schema.optionalKey(ProviderModelPreferences),
@@ -1612,6 +1621,7 @@ export const ServerSettingsPatch = Schema.Struct({
           Schema.Struct({
             ...ProjectSettingsOverrides.fields,
             sourceControlWritingStyle: Schema.optionalKey(SourceControlWritingStyleSettings),
+            effortSlider: Schema.optionalKey(EffortSliderSteps),
           }),
         ),
       ),
