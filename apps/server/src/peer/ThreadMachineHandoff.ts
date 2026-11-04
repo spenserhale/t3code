@@ -32,6 +32,7 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -200,6 +201,8 @@ const make = Effect.gen(function* () {
   // Where each hand-off with a clientRequestId got to, so a retry carries on from there and does
   // not plan again from a checkout the first try changed. In memory: a restart forgets them.
   const attempts = new Map<string, Attempt>();
+  // The requests whose attempt is still being prepared, by the same key.
+  const preparing = new Map<string, ThreadContinueOnMachineInput>();
 
   const newCommandId = crypto.randomUUIDv4().pipe(
     Effect.orDie,
@@ -731,7 +734,11 @@ const make = Effect.gen(function* () {
     return begun;
   });
 
-  /** The attempt a retry with the same clientRequestId carries on, else a new one. */
+  /**
+   * The attempt a retry with the same clientRequestId carries on, else a new one. The id is taken
+   * before the preparing begins, in one step with the look, so a second call with it cannot slip
+   * in while the first is still uploading.
+   */
   const attemptOf = Effect.fn("ThreadMachineHandoff.attemptOf")(function* (
     scope: Scope,
     input: ThreadContinueOnMachineInput,
@@ -743,25 +750,40 @@ const make = Effect.gen(function* () {
       return yield* beginAttempt(scope, input, resolved, target, source);
     }
     const key = `${scope.requestNamespace}\u0000${input.clientRequestId}`;
+    const request = { ...input, threadId: source.threadId };
     const now = yield* Clock.currentTimeMillis;
-    for (const [id, attempt] of attempts) {
-      if (now - attempt.startedAt > ATTEMPT_TTL_MS) attempts.delete(id);
-    }
-    const earlier = attempts.get(key);
-    if (earlier !== undefined) {
-      if (sameRequest(earlier.request, { ...input, threadId: source.threadId })) return earlier;
+    const claimed = yield* Effect.sync(() => {
+      for (const [id, attempt] of attempts) {
+        if (now - attempt.startedAt > ATTEMPT_TTL_MS) attempts.delete(id);
+      }
+      const earlier = attempts.get(key);
+      const holder = earlier?.request ?? preparing.get(key);
+      if (holder !== undefined && !sameRequest(holder, request)) return { kind: "other" } as const;
+      if (earlier !== undefined) return { kind: "carry-on", earlier } as const;
+      // The same request cannot be preparing: the same thread is refused while one runs.
+      preparing.set(key, request);
+      return { kind: "begin" } as const;
+    });
+    if (claimed.kind === "carry-on") return claimed.earlier;
+    if (claimed.kind === "other") {
       return yield* failure(
         "invalid_request",
         "That clientRequestId was used for a different hand-off. Repeat that one's arguments to retry it, or use a new clientRequestId.",
       );
     }
-    const begun = yield* beginAttempt(scope, input, resolved, target, source);
-    if (attempts.size >= MAX_ATTEMPTS) {
-      const oldest = attempts.keys().next();
-      if (oldest.done !== true) attempts.delete(oldest.value);
-    }
-    attempts.set(key, begun);
-    return begun;
+    return yield* beginAttempt(scope, input, resolved, target, source).pipe(
+      Effect.onExit((exit) =>
+        Effect.sync(() => {
+          preparing.delete(key);
+          if (!Exit.isSuccess(exit)) return;
+          if (attempts.size >= MAX_ATTEMPTS) {
+            const oldest = attempts.keys().next();
+            if (oldest.done !== true) attempts.delete(oldest.value);
+          }
+          attempts.set(key, exit.value);
+        }),
+      ),
+    );
   });
 
   const handOff = Effect.fn("ThreadMachineHandoff.handOff")(function* (
