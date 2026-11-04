@@ -100,7 +100,6 @@ function Picker(props: {
   });
   const stops: EffortSliderStop[] = steps.map((step, index) => ({
     key: `${step.model}-${step.effort}`,
-    identity: `${step.model}-${step.effort}`,
     modelLabel: step.modelLabel,
     effortLabel: step.effortLabel,
     unusableReason: props.unusable?.includes(index) ? "Not available" : null,

@@ -76,7 +76,6 @@ export function useComposerEffortSlider(
     ? {
         stops: steps.map((step, index) => ({
           key: stopKeys[index]!,
-          identity: step.identity,
           modelLabel: step.modelLabel,
           effortLabel: step.effortLabel,
           unusableReason: step.unusableReason,
