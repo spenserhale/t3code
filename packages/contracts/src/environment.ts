@@ -120,6 +120,11 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Sent by macOS servers, which honor the fastWorktreeCheckout setting. */
   fastWorktreeCheckout: Schema.optionalKey(Schema.Boolean),
   threadAutoSettlementScope: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Stores `effortSlider`, a favorite's `options`, and project overrides of both. Older servers
+   * drop these, so hide the slider and favorite efforts where it is absent.
+   */
+  effortSlider: Schema.optionalKey(Schema.Boolean),
   threadRestartContinuation: Schema.optionalKey(Schema.Boolean),
   projectSettingsOverrides: Schema.optionalKey(Schema.Boolean),
   /** Hide the switch when absent; older servers silently drop per-project provider patches. */
