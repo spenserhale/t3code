@@ -15,7 +15,7 @@ import * as WorktreeOpenBranch from "../../WorktreeOpenBranch.ts";
  */
 export const WorktreeOpenBranchTool = Tool.make("t3_worktree_open_branch", {
   description:
-    "Open a branch from a remote in a worktree of a project, fetching it first. Reuses a worktree or local branch that has it and fast-forwards it; one with changes or commits of its own is left alone. `remote`: default the one that is `repositoryKey`, else origin. `baseRef`: what a new local branch is compared with. `expectCommit`: fails unless the branch holds it. `created`: whether this call made the worktree. Bind a thread to it with `t3_thread_launch` `workspaceStrategy` `existing_worktree`.",
+    "Open a branch from a remote in a worktree of a project, fetching it first. Reuses a worktree or local branch that has it and fast-forwards it; one with changes or commits of its own is left alone. `remote`: default the one that is `repositoryKey`, else origin. `baseBranch`: what a new local branch is compared with, a branch name without its remote, on `baseRepositoryKey` (default: the branch's own). `expectCommit`: fails unless the branch holds it. `created`: whether this call made the worktree. Bind a thread to it with `t3_thread_launch` `workspaceStrategy` `existing_worktree`.",
   parameters: WorktreeOpenBranchInput,
   success: WorktreeOpenBranchResult,
   failure: OrchestratorMcpFailure,

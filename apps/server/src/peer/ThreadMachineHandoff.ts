@@ -43,6 +43,7 @@ import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import { readAllRefPages } from "../git/readAllRefPages.ts";
 import { parseRemoteFetchUrls } from "../git/remoteFetchUrls.ts";
 import { parseRemoteRefWithRemoteNames } from "../git/remoteRefs.ts";
+import { repositoryBranchOf } from "../git/repositoryBranch.ts";
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { AttachmentToolkit } from "../mcp/toolkits/attachment/tools.ts";
@@ -534,6 +535,9 @@ const make = Effect.gen(function* () {
       .execute({ operation: "ThreadMachineHandoff.listRemotes", cwd, args: ["remote", "-v"] })
       .pipe(Effect.mapError(gitFailed("Could not list the remotes")));
     const urls = parseRemoteFetchUrls(listed.stdout);
+    const repositories = new Map(
+      [...urls].map(([name, url]) => [name, sourceControlDefinitions.repositoryKeyFromRemote(url)]),
+    );
     const pushedTo = parseRemoteRefWithRemoteNames(
       upstream,
       [...urls.keys()].toSorted((left, right) => right.length - left.length),
@@ -550,12 +554,16 @@ const make = Effect.gen(function* () {
     yield* statusBroadcaster
       .refreshStatus(cwd)
       .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach);
+    const repositoryKey = repositories.get(pushedTo.remoteName)!;
     return {
       branch: pushedTo.branchName,
       remote: pushedTo.remoteName,
-      repositoryKey: sourceControlDefinitions.repositoryKeyFromRemote(
-        urls.get(pushedTo.remoteName)!,
-      ),
+      repositoryKey,
+      // What pull requests compare with, by repository: its remote has another name on the target.
+      base:
+        code.comparisonBase === null
+          ? null
+          : repositoryBranchOf(code.comparisonBase, repositories, repositoryKey),
       commit: head.commitSha,
       wipCommit: result.commit.status === "created",
     };
@@ -568,13 +576,19 @@ const make = Effect.gen(function* () {
     target: Target,
     projectId: ProjectId,
     pushed: Pushed,
-    comparisonBase: string | null,
   ) {
     return yield* forwarding.call(scope, WorktreeOpenBranchTool, target.environmentId, {
       projectId,
       branch: pushed.branch,
       repositoryKey: pushed.repositoryKey,
-      ...(comparisonBase === null ? {} : { baseRef: comparisonBase }),
+      ...(pushed.base === null
+        ? {}
+        : {
+            baseBranch: pushed.base.branch,
+            ...(pushed.base.repositoryKey === pushed.repositoryKey
+              ? {}
+              : { baseRepositoryKey: pushed.base.repositoryKey }),
+          }),
       expectCommit: pushed.commit,
     });
   });
@@ -665,13 +679,7 @@ const make = Effect.gen(function* () {
     const opened =
       pushed === null || project.kind === "scratch"
         ? null
-        : yield* openOnTarget(
-            scope,
-            target,
-            project.projectId,
-            pushed,
-            code.kind === "carry" ? code.comparisonBase : null,
-          ).pipe(
+        : yield* openOnTarget(scope, target, project.projectId, pushed).pipe(
             Effect.mapError((error) =>
               error.message.includes("'t3_worktree_open_branch' not found")
                 ? failure(
