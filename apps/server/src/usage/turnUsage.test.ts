@@ -16,6 +16,7 @@ import {
   priceTurn,
   recordedTurns,
   threadTotals,
+  threadWorkedMs,
   turnUsageToTotals,
   usageModelId,
   usageWindow,
@@ -442,6 +443,41 @@ describe("priceTurn", () => {
     expect(priceTurn(turn("unknown-model"), { ...noRates, aliases }).models).toEqual([
       expect.objectContaining({ model: "mapped-target", costUsd: 4, costSource: "modelPriced" }),
     ]);
+  });
+});
+
+describe("threadWorkedMs", () => {
+  const run = (id: string, startedAt: string | null, completedAt: string | null) => ({
+    id: RunId.make(id),
+    modelSelection: selection("model"),
+    startedAt: startedAt === null ? null : at(startedAt),
+    completedAt: completedAt === null ? null : at(completedAt),
+  });
+
+  it("adds up finished runs and leaves out the waits between them", () => {
+    // An hour of work, three hours away, another hour: two hours worked.
+    expect(
+      threadWorkedMs({
+        runs: [
+          run("first", "2026-11-04T09:00:00.000Z", "2026-11-04T10:00:00.000Z"),
+          run("second", "2026-11-04T13:00:00.000Z", "2026-11-04T14:00:00.000Z"),
+        ],
+      }),
+    ).toBe(2 * 60 * 60 * 1000);
+  });
+
+  it("counts overlapping runs once and skips runs that never started or are still going", () => {
+    expect(
+      threadWorkedMs({
+        runs: [
+          run("outer", "2026-11-04T09:00:00.000Z", "2026-11-04T09:30:00.000Z"),
+          run("inside", "2026-11-04T09:10:00.000Z", "2026-11-04T09:20:00.000Z"),
+          run("overlapping", "2026-11-04T09:20:00.000Z", "2026-11-04T09:40:00.000Z"),
+          run("queued", null, null),
+          run("running", "2026-11-04T10:00:00.000Z", null),
+        ],
+      }),
+    ).toBe(40 * 60 * 1000);
   });
 });
 

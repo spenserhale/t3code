@@ -61,5 +61,10 @@ export const ThreadUsageDetail = Schema.Struct({
   threadId: ThreadId,
   /** Oldest first. Turns with no reported usage are absent. */
   turns: Schema.Array(ThreadTurnUsage),
+  /**
+   * Time the agent spent working, summed over finished runs without the waits
+   * between them. Absent when none finished, or from a server that predates it.
+   */
+  workedMs: Schema.optional(NonNegativeInt),
 });
 export type ThreadUsageDetail = typeof ThreadUsageDetail.Type;

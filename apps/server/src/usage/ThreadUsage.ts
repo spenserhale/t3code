@@ -1,14 +1,6 @@
 /**
- * ThreadUsage - tokens and estimated cost per thread and per run.
- *
- * Reads the provider turns orchestration already projects and prices them when
- * asked, with the usage service's rates. It stores nothing and keeps no cache,
- * so a new price or model mapping reaches every past run at once.
- *
- * Only work driven through T3 Code is counted, and only for providers whose
- * adapters report turn usage.
- *
- * @module ThreadUsage
+ * Prices the provider turns orchestration already projects when asked, storing nothing, so a new
+ * price or model mapping reaches every past run. Counts only work driven through T3 Code.
  */
 import {
   ThreadId,
@@ -22,11 +14,18 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ProjectionStoreV2 from "../orchestration-v2/ProjectionStore.ts";
 import * as UsageService from "./UsageService.ts";
-import { priceTurn, recordedTurns, threadTotals, usageWindow } from "./turnUsage.ts";
+import {
+  priceTurn,
+  recordedTurns,
+  threadTotals,
+  threadWorkedMs,
+  usageWindow,
+} from "./turnUsage.ts";
 
 export class ThreadUsage extends Context.Service<
   ThreadUsage,
@@ -56,15 +55,24 @@ const make = Effect.gen(function* () {
     input: ThreadUsageInput,
   ) {
     // Usage annotates a thread: one that cannot be read shows none, not an error.
-    const turns = yield* readRecordedTurns(input.threadId).pipe(
-      Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed([]) }),
+    const records = yield* projections.getThreadRecords(input.threadId, USAGE_FIELDS).pipe(
+      Effect.asSome,
+      Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeedNone }),
       Effect.catch((error) =>
-        Effect.logWarning("thread usage could not be read", error).pipe(Effect.as([])),
+        Effect.logWarning("thread usage could not be read", error).pipe(Effect.as(Option.none())),
       ),
     );
-    if (turns.length === 0) return { threadId: input.threadId, turns: [] };
+    if (Option.isNone(records)) return { threadId: input.threadId, turns: [] };
+    const turns = recordedTurns(records.value);
+    const workedMs = threadWorkedMs(records.value);
+    const worked = workedMs > 0 ? { workedMs } : {};
+    if (turns.length === 0) return { threadId: input.threadId, turns: [], ...worked };
     const rates = yield* usage.currentRates;
-    return { threadId: input.threadId, turns: turns.map((turn) => priceTurn(turn, rates)) };
+    return {
+      threadId: input.threadId,
+      turns: turns.map((turn) => priceTurn(turn, rates)),
+      ...worked,
+    };
   });
 
   const listThreadUsage = Effect.fn("ThreadUsage.listThreadUsage")(function* (

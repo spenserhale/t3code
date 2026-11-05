@@ -65,7 +65,7 @@ describe("threadUsageView", () => {
     );
     // A subagent thread's turn has no run, so no "Worked for" row can show it.
     const runless = turn([model({ totalTokens: 100, costUsd: 0.01 })], null);
-    const view = threadUsageView([priced, unpriced, runless])!;
+    const view = threadUsageView({ turns: [priced, unpriced, runless], workedMs: 90_000 })!;
 
     expect(view.totals).toEqual({
       totalTokens: 250_600,
@@ -75,10 +75,19 @@ describe("threadUsageView", () => {
     });
     expect([...view.turns.keys()]).toEqual(["run-1", "run-2"]);
     expect(view.turns.get("run-2" as RunId)).toBe(unpriced);
+    expect(view.workedMs).toBe(90_000);
   });
 
-  it("is empty for a thread with no reported usage", () => {
-    expect(threadUsageView([])).toBeNull();
+  it("keeps a thread whose agent worked without reporting usage", () => {
+    expect(threadUsageView({ turns: [], workedMs: 60_000 })).toMatchObject({
+      totals: { turns: 0 },
+      workedMs: 60_000,
+    });
+  });
+
+  it("is empty for a thread with no reported usage and no finished work", () => {
+    expect(threadUsageView({ turns: [] })).toBeNull();
+    expect(threadUsageView({ turns: [], workedMs: 0 })).toBeNull();
   });
 });
 

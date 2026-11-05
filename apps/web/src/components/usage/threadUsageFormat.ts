@@ -1,4 +1,9 @@
-import type { RunId, ThreadTurnUsage, ThreadUsageModel } from "@t3tools/contracts";
+import type {
+  RunId,
+  ThreadTurnUsage,
+  ThreadUsageDetail,
+  ThreadUsageModel,
+} from "@t3tools/contracts";
 import { formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 
 /** Explains the asterisk after every thread or turn cost. */
@@ -24,15 +29,20 @@ export interface ThreadUsageView {
   readonly totals: ThreadUsageTotals;
   /** By the run a "Worked for" row belongs to. Turns outside a run are only in `totals`. */
   readonly turns: ReadonlyMap<RunId, ThreadTurnUsage>;
+  /** How long the agent worked, waits between turns left out; `null` when unknown. */
+  readonly workedMs: number | null;
 }
 
 function isTurnUnpriced(turn: ThreadTurnUsage): boolean {
   return turn.models.every((model) => model.costSource === "unpriced");
 }
 
-/** `null` for a thread with no reported usage. */
-export function threadUsageView(turns: readonly ThreadTurnUsage[]): ThreadUsageView | null {
-  if (turns.length === 0) return null;
+/** `null` for a thread with neither reported usage nor finished work. */
+export function threadUsageView({
+  turns,
+  workedMs,
+}: Pick<ThreadUsageDetail, "turns" | "workedMs">): ThreadUsageView | null {
+  if (turns.length === 0 && !workedMs) return null;
   const byRun = new Map<RunId, ThreadTurnUsage>();
   let totals: ThreadUsageTotals = { totalTokens: 0, costUsd: 0, turns: 0, unpricedTurns: 0 };
   for (const turn of turns) {
@@ -44,7 +54,7 @@ export function threadUsageView(turns: readonly ThreadTurnUsage[]): ThreadUsageV
       unpricedTurns: totals.unpricedTurns + (isTurnUnpriced(turn) ? 1 : 0),
     };
   }
-  return { totals, turns: byRun };
+  return { totals, turns: byRun, workedMs: workedMs || null };
 }
 
 export interface UsageFigures {
