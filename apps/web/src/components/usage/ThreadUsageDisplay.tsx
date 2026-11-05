@@ -5,7 +5,8 @@
  */
 import type { RunId, ScopedThreadRef, ThreadTurnUsage } from "@t3tools/contracts";
 import { formatTokens } from "@t3tools/shared/usageFormat";
-import { HexagonIcon } from "lucide-react";
+import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { HexagonIcon, TimerIcon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
 import { useThreadUsage, useUsageCostAnalysisSetting } from "../../state/threadUsage";
@@ -109,15 +110,28 @@ export function ThreadUsageHoverRow(props: { readonly threadRef: ScopedThreadRef
 function EnabledThreadUsageHoverRow({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
   const usage = useThreadUsage(threadRef);
   if (!usage) return null;
-  const figures = threadUsageFigures(usage.totals);
+  const figures = usage.totals.turns > 0 ? threadUsageFigures(usage.totals) : null;
   return (
-    <div className="flex min-w-0 items-center gap-2">
-      <TokenIcon className="stroke-muted-foreground" />
-      <div className="min-w-0 truncate text-foreground/75 tabular-nums">
-        {figures.tokens}
-        {figures.cost === null ? " · no price" : ` · ${figures.cost}*`}
-        <span className="text-muted-foreground"> estimated</span>
-      </div>
-    </div>
+    <>
+      {figures ? (
+        <div className="flex min-w-0 items-center gap-2">
+          <TokenIcon className="stroke-muted-foreground" />
+          <div className="min-w-0 truncate text-foreground/75 tabular-nums">
+            {figures.tokens}
+            {figures.cost === null ? " · no price" : ` · ${figures.cost}*`}
+            <span className="text-muted-foreground"> estimated</span>
+          </div>
+        </div>
+      ) : null}
+      {usage.workedMs === null ? null : (
+        <div className="flex min-w-0 items-center gap-2">
+          <TimerIcon aria-label="agent time" className="size-3 shrink-0 stroke-muted-foreground" />
+          <div className="min-w-0 truncate text-foreground/75 tabular-nums">
+            {formatDuration(usage.workedMs)}
+            <span className="text-muted-foreground"> worked</span>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

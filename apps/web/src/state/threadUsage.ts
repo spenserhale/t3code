@@ -1,12 +1,6 @@
 /**
- * Tokens and estimated cost of threads and their runs, from servers that
- * report them (`capabilities.threadUsage`), shown only while the Usage and
- * cost setting is on.
- *
- * The server prices when it is asked, so a query refetches when its answer
- * could have changed: a thread's when one of its runs starts or finishes, and
- * every query when the environment's custom prices or model mappings change.
- * Queries are dropped as soon as nothing shows them, so none refetches unseen.
+ * The server prices when asked, so a thread's query refetches when one of its runs starts or
+ * finishes, and every query when custom prices or model mappings change. Unseen queries drop.
  */
 import { useAtomValue } from "@effect/atom-react";
 import { createEnvironmentRpcQueryAtomFamily } from "@t3tools/client-runtime/state/runtime";
@@ -103,7 +97,7 @@ const threadUsageViewAtom = Atom.family((key: string) => {
         ),
       ),
     );
-    return detail === null ? null : threadUsageView(detail.turns);
+    return detail === null ? null : threadUsageView(detail);
   }).pipe(Atom.withLabel(`web:thread-usage-view:${key}`));
 });
 

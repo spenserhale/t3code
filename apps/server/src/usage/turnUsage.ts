@@ -177,6 +177,36 @@ export function recordedTurns(records: ThreadUsageRecords): readonly RecordedTur
   );
 }
 
+/**
+ * How long the agent worked on the thread: each finished run from start to finish, overlaps
+ * counted once, so the time between turns is left out. A run still going adds nothing yet.
+ */
+export function threadWorkedMs(records: {
+  readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "startedAt" | "completedAt">>;
+}): number {
+  const spans = records.runs
+    .flatMap((run) =>
+      run.startedAt === null || run.completedAt === null
+        ? []
+        : [
+            {
+              start: DateTime.toEpochMillis(run.startedAt),
+              end: DateTime.toEpochMillis(run.completedAt),
+            },
+          ],
+    )
+    .filter(({ start, end }) => end > start)
+    .toSorted((left, right) => left.start - right.start);
+  let total = 0;
+  let coveredUntil = Number.NEGATIVE_INFINITY;
+  for (const { start, end } of spans) {
+    if (end <= coveredUntil) continue;
+    total += end - Math.max(start, coveredUntil);
+    coveredUntil = end;
+  }
+  return total;
+}
+
 /** Prices a run the way the usage breakdown prices the same tokens. */
 export function priceTurn(turn: RecordedTurn, rates: UsageRates): ThreadTurnUsage {
   // A model reports and prices under its provider-qualified id when a mapping, a custom price or

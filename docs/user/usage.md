@@ -66,7 +66,8 @@ It is off by default. The token count is marked with a hexagon, the way `$` mark
 - A turn's "Worked for" summary adds what it used, for example `Worked for 5m 33s using ⬡ 264K,
   $0.14*`. Hover it to see each model's share and where its price came from. Short answers that
   show no "Worked for" summary show no usage either.
-- Hovering a thread in the sidebar shows its total.
+- Hovering a thread in the sidebar shows its total, and how long the agent worked on it: the time
+  of each finished turn added up, without the time it sat waiting for you.
 - **Usage** gains a **Thread** breakdown. Select a column heading to sort by it.
 
 The asterisk marks an estimate at API prices. If you use a subscription, your bill is different.
