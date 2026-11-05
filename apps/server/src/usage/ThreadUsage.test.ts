@@ -117,6 +117,7 @@ const finishRun = Effect.fn("finishRun")(function* (input: {
   readonly threadId: ThreadId;
   readonly ordinal: number;
   readonly model: string;
+  readonly startedAt?: string;
   readonly completedAt: string;
   readonly inputTokens: number;
   readonly outputTokens: number;
@@ -129,6 +130,7 @@ const finishRun = Effect.fn("finishRun")(function* (input: {
   const providerThreadId = ProviderThreadId.make(`provider-thread:${input.threadId}`);
   const providerTurnId = ProviderTurnId.make(`provider-turn:${suffix}`);
   const completedAt = DateTime.makeUnsafe(input.completedAt);
+  const startedAt = DateTime.makeUnsafe(input.startedAt ?? input.completedAt);
 
   yield* projections.apply({
     id: EventId.make(`event:${suffix}:run`),
@@ -147,8 +149,8 @@ const finishRun = Effect.fn("finishRun")(function* (input: {
       rootNodeId: nodeId,
       activeAttemptId: null,
       status: "completed",
-      requestedAt: completedAt,
-      startedAt: completedAt,
+      requestedAt: startedAt,
+      startedAt,
       completedAt,
       checkpointId: null,
       contextHandoffId: null,
@@ -222,6 +224,7 @@ it.layer(TestLayer)("ThreadUsage", (it) => {
         threadId,
         ordinal: 1,
         model: "claude-opus-5-5[1m]",
+        startedAt: "2026-10-05T09:00:00.000Z",
         completedAt: "2026-10-05T10:00:00.000Z",
         inputTokens: 1_000_000,
         outputTokens: 200_000,
@@ -230,6 +233,7 @@ it.layer(TestLayer)("ThreadUsage", (it) => {
         threadId,
         ordinal: 2,
         model: "unpriced-model",
+        startedAt: "2026-10-05T10:59:00.000Z",
         completedAt: "2026-10-05T11:00:00.000Z",
         inputTokens: 500,
         outputTokens: 0,
@@ -254,6 +258,8 @@ it.layer(TestLayer)("ThreadUsage", (it) => {
         },
       ]);
       assert.strictEqual(before.turns[1]?.models[0]?.costSource, "unpriced");
+      // An hour, then a minute; the minutes between them are not work.
+      assert.strictEqual(before.workedMs, 61 * 60 * 1000);
 
       priceOverrides = {
         "unpriced-model": { inputCostPerMillionTokens: 2000, outputCostPerMillionTokens: 2000 },
