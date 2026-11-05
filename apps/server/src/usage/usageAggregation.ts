@@ -11,7 +11,7 @@ import { EMPTY_TOTALS, type UsageRecord } from "@t3tools/provider-core/server/us
 import { cacheSavingsUsd, priceUsage, type RateTable } from "./usagePricing.ts";
 
 // en-CA gives ISO-ordered parts in the requested zone; Date getters are host-local.
-function makeDayFormatter(timeZone: string): (timestampMs: number) => string {
+export function makeDayFormatter(timeZone: string): (timestampMs: number) => string {
   let format: Intl.DateTimeFormat;
   try {
     format = new Intl.DateTimeFormat("en-CA", {
