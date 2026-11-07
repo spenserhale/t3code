@@ -185,6 +185,9 @@ import * as CursorAccountReader from "@t3tools/provider-cursor/server/CursorAcco
 import * as CursorKeychain from "@t3tools/provider-cursor/server/CursorKeychain";
 import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsageAccounts";
 import * as ThreadUsage from "./usage/ThreadUsage.ts";
+import * as JiraClient from "./jira/JiraClient.ts";
+import * as JiraCredentials from "./jira/JiraCredentials.ts";
+import * as JiraService from "./jira/JiraService.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as OllamaCloudValue from "./usage/ollamaCloudValue.ts";
 import * as OpenRouterZdrRates from "./usage/OpenRouterZdrRates.ts";
@@ -296,6 +299,12 @@ const layerThreadUsage = ThreadUsage.layer.pipe(
   Layer.provide(layerUsage),
   Layer.provide(ProjectionStoreV2.layer),
   Layer.provide(SqlitePersistence.layerConfig),
+);
+
+const layerJira = JiraService.layer.pipe(
+  Layer.provide(JiraClient.layer),
+  Layer.provide(JiraCredentials.layer),
+  Layer.provide(ServerSecretStore.layer),
 );
 
 const layerResourceDiagnostics = Layer.mergeAll(
@@ -710,6 +719,7 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
 
 const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   Layer.provideMerge(layerThreadUsage),
+  Layer.provideMerge(layerJira),
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),

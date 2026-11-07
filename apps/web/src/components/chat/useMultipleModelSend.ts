@@ -24,6 +24,7 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { threadEnvironment } from "../../state/threads";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
+import { planJiraFanoutFor } from "../jira/jiraBranches";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
   boundAttachmentIds,
@@ -147,17 +148,20 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
           clearedDraftSnapshot &&
         appAtomRegistry.get(fanoutSelectionsAtom) === submittedSelections;
       setThreadError(threadId, null);
+      const jiraFanout = planJiraFanoutFor(threadId, project);
       const starts = Promise.all(
         targets.map(async (target) => {
+          const retryKey = JSON.stringify([
+            routeThreadKey,
+            target.selection.instanceId,
+            target.selection.model,
+          ]);
           const started = await startFanoutThread({
-            retryKey: JSON.stringify([
-              routeThreadKey,
-              target.selection.instanceId,
-              target.selection.model,
-            ]),
+            retryKey,
             model: target.selection.model,
             uncertainSubmissions: uncertainSubmissionsRef.current,
-            start: (targetThreadId) => {
+            start: async (targetThreadId) => {
+              const jiraBranch = await jiraFanout.adopt(retryKey, targetThreadId);
               return startThreadTurn({
                 environmentId,
                 input: {
@@ -191,6 +195,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                       baseBranch: branch,
                       requireWorktree: true,
                       ...(startFromOrigin ? { startFromOrigin: true } : {}),
+                      ...jiraBranch,
                     },
                     runSetupScript: true,
                   },
@@ -212,6 +217,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
       resetLocalDispatch();
       releasedComposer = true;
       await starts;
+      if (failedSelections.length === 0) jiraFanout.finish();
       if (startedCount > 0) {
         toastManager.add(
           stackedThreadToast({
