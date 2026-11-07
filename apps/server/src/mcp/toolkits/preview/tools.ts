@@ -6,6 +6,8 @@ import {
   PreviewAutomationDialogInput,
   PreviewAutomationError,
   PreviewAutomationEvaluateInput,
+  PreviewAutomationFillLoginInput,
+  PreviewAutomationFillLoginResult,
   PreviewAutomationNavigateInput,
   PreviewAutomationOpenInput,
   PreviewAutomationRecordingArtifact,
@@ -190,6 +192,21 @@ const PreviewEvaluateTool = browserTool(
   }).annotate(Tool.Title, "Evaluate JavaScript in preview"),
 );
 
+const PreviewFillLoginTool = browserTool(
+  Tool.make("preview_fill_login", {
+    description:
+      "On a login page, fill the user's saved login instead of asking for a password. You never see the values; the user may be asked to approve. `choose`: call again with a `login` id. `no_login`: ask the user. Then submit the form yourself.",
+    parameters: PreviewAutomationFillLoginInput,
+    success: Schema.Union(
+      PreviewAutomationFillLoginResult.members.map((member) =>
+        Schema.Struct({ ...member.fields, ...presentationFields }),
+      ),
+    ),
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Fill a saved login"),
+);
+
 const PreviewWaitForTool = readonlyBrowserTool(
   Tool.make("preview_wait_for", {
     description:
@@ -232,6 +249,7 @@ export const PreviewToolkit = Toolkit.make(
   PreviewSnapshotTool,
   PreviewActTool,
   PreviewEvaluateTool,
+  PreviewFillLoginTool,
   PreviewWaitForTool,
   PreviewRecordingStartTool,
   PreviewRecordingStopTool,
@@ -246,6 +264,7 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewSetAppearanceTool,
   PreviewActTool,
   PreviewEvaluateTool,
+  PreviewFillLoginTool,
   PreviewWaitForTool,
   PreviewRecordingStartTool,
   PreviewRecordingStopTool,

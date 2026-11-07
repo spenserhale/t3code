@@ -13,6 +13,8 @@ export interface SecretProviderDefinition<Config = unknown> {
   readonly isReference: (reference: string) => boolean;
   readonly referencePlaceholder: string;
   readonly invalidReferenceMessage: string;
+  /** Whether its server driver can fill website logins into the built-in browser. */
+  readonly supportsLogins?: boolean;
 }
 
 export const defineSecretProvider = <Config>(

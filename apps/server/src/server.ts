@@ -84,6 +84,7 @@ import * as PreviewManager from "./preview/Manager.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as PreviewAgentActivity from "./preview/PreviewAgentActivity.ts";
+import * as BrowserLogins from "./preview/BrowserLogins.ts";
 import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
@@ -797,7 +798,13 @@ const layerMakeRoutes = Layer.mergeAll(
   // The same activity instance RunExecutionService reports to, by layer memoization.
   Layer.provide(
     ServerBrowser.layer.pipe(
-      Layer.provide(Layer.merge(DesktopBrowserChannel.layer, PreviewAgentActivity.layer)),
+      Layer.provide(
+        Layer.mergeAll(
+          DesktopBrowserChannel.layer,
+          PreviewAgentActivity.layer,
+          BrowserLogins.layer,
+        ),
+      ),
     ),
   ),
   Layer.provide(PreviewBrowser.layer),
