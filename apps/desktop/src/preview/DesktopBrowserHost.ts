@@ -23,6 +23,7 @@ import {
   routeMouseToFrame,
   sendPageCommand,
 } from "./GuestInput.ts";
+import * as LoginApprovalDialog from "./LoginApprovalDialog.ts";
 
 const encodeEvent = Schema.encodeSync(Schema.fromJsonString(DesktopBrowserEvent));
 const decodeCommand = Schema.decodeUnknownOption(Schema.fromJsonString(DesktopBrowserCommand));
@@ -218,6 +219,7 @@ export const make = Effect.gen(function* () {
   const drawnTabs = new Set<string>();
   const drawWaiters = new Map<string, Set<() => void>>();
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
+  const loginApproval = yield* Effect.serviceOption(LoginApprovalDialog.LoginApprovalDialog);
 
   const nextScreenshot = (tab: AttachedTab) => {
     tab.screenshotTurn = null;
@@ -818,6 +820,27 @@ export const make = Effect.gen(function* () {
         return;
       }
       const tab = tabs.get(keyOf(command.value));
+      if (command.value.type === "loginApproval") {
+        const { threadId, tabId, requestId } = command.value;
+        const ask =
+          tab && Option.isSome(loginApproval)
+            ? loginApproval.value.ask(tab.debuggee.webContents, command.value)
+            : Effect.succeed(false);
+        runFork(
+          ask.pipe(
+            Effect.flatMap((approved) =>
+              PubSub.publish(outbox, {
+                type: "loginApproval",
+                threadId,
+                tabId,
+                requestId,
+                approved,
+              }),
+            ),
+          ),
+        );
+        return;
+      }
       if (!tab) return;
       if (command.value.type === "pointer") {
         const { threadId, tabId, phase, x, y } = command.value;

@@ -25,6 +25,12 @@ export const DesktopBrowserEvent = Schema.Union([
   }),
   /** Its `<webview>` started or stopped being on screen in a desktop window. */
   Schema.Struct({ type: Schema.Literal("shown"), ...TabKey, shown: Schema.Boolean }),
+  Schema.Struct({
+    type: Schema.Literal("loginApproval"),
+    ...TabKey,
+    requestId: TrimmedNonEmptyString,
+    approved: Schema.Boolean,
+  }),
 ]);
 export type DesktopBrowserEvent = typeof DesktopBrowserEvent.Type;
 
@@ -43,6 +49,19 @@ export const DesktopBrowserCommand = Schema.Union([
     type: Schema.Literal("turn"),
     threadId: TrimmedNonEmptyString,
     active: Schema.Boolean,
+  }),
+  /** Ask the user, in a native dialog, before a password manager login is filled into the tab. */
+  Schema.Struct({
+    type: Schema.Literal("loginApproval"),
+    ...TabKey,
+    requestId: TrimmedNonEmptyString,
+    providerLabel: Schema.String,
+    loginTitle: Schema.String,
+    vault: Schema.optional(Schema.String),
+    origin: Schema.String,
+    threadTitle: Schema.optional(Schema.String),
+    agent: Schema.optional(Schema.String),
+    scope: Schema.Literals(["request", "thread", "application"]),
   }),
 ]);
 export type DesktopBrowserCommand = typeof DesktopBrowserCommand.Type;

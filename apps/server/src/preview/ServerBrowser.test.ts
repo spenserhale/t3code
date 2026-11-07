@@ -527,6 +527,7 @@ const dependencies = Layer.mergeAll(
             return Effect.sync(() => desktopDetaches.off("shown", onShown));
           }).pipe(Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.succeed(false) })),
     loadFailure: (key) => desktopLoadFailures.get(key.tabId),
+    approveLogin: () => Effect.succeed(false),
     endpoint: (key) =>
       Effect.acquireRelease(Effect.succeed(`ws://desktop/${key.tabId}`), () =>
         Effect.sync(() => {
