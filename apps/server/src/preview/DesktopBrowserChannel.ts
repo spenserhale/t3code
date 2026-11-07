@@ -8,6 +8,7 @@ import {
   type DesktopBrowserCommand as DesktopBrowserCommandType,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -35,6 +36,13 @@ export interface DesktopTabKey {
 
 const keyOf = ({ threadId, tabId }: DesktopTabKey) => `${threadId}\u0000${tabId}`;
 
+export type DesktopLoginPrompt = Omit<
+  Extract<DesktopBrowserCommandType, { readonly type: "loginApproval" }>,
+  "type" | "threadId" | "tabId" | "requestId"
+>;
+
+const LOGIN_APPROVAL_TIMEOUT = Duration.minutes(2);
+
 export class DesktopBrowserChannel extends Context.Service<
   DesktopBrowserChannel,
   {
@@ -51,6 +59,11 @@ export class DesktopBrowserChannel extends Context.Service<
     ) => Effect.Effect<void>;
     /** Never fails. A failed write means a broken channel; the next backend starts with no turns. */
     readonly turn: (threadId: string, active: boolean) => Effect.Effect<void>;
+    /** Asks the user in a native dialog; a missing app, a closed dialog, or two minutes is a no. */
+    readonly approveLogin: (
+      key: DesktopTabKey,
+      prompt: DesktopLoginPrompt,
+    ) => Effect.Effect<boolean>;
   }
 >()("t3/preview/DesktopBrowserChannel") {}
 
@@ -83,8 +96,12 @@ const make = Effect.gen(function* () {
       pointer: Effect.fn("DesktopBrowserChannel.pointer")(function () {
         return Effect.void;
       }),
+      approveLogin: Effect.fn("DesktopBrowserChannel.approveLogin")(function () {
+        return Effect.succeed(false);
+      }),
     });
   }
+  const loginApprovals = new Map<string, Deferred.Deferred<boolean>>();
 
   const command = (message: DesktopBrowserCommandType) =>
     writeLock.withPermits(1)(
@@ -114,6 +131,12 @@ const make = Effect.gen(function* () {
       const key = { threadId: event.threadId, tabId: event.tabId };
       const id = keyOf(key);
       switch (event.type) {
+        case "loginApproval": {
+          const pending = loginApprovals.get(event.requestId);
+          return pending
+            ? Deferred.succeed(pending, event.approved).pipe(Effect.asVoid)
+            : Effect.void;
+        }
         case "cdp": {
           const queue = inbound.get(id);
           return queue ? Queue.offer(queue, event.message).pipe(Effect.asVoid) : Effect.void;
@@ -227,6 +250,17 @@ const make = Effect.gen(function* () {
     }),
     pointer: Effect.fn("DesktopBrowserChannel.pointer")(function (key, pointer) {
       return command({ type: "pointer", ...key, ...pointer });
+    }),
+    approveLogin: Effect.fn("DesktopBrowserChannel.approveLogin")(function* (key, prompt) {
+      const requestId = NodeCrypto.randomUUID();
+      const answer = yield* Deferred.make<boolean>();
+      loginApprovals.set(requestId, answer);
+      return yield* command({ type: "loginApproval", ...key, requestId, ...prompt }).pipe(
+        Effect.andThen(Deferred.await(answer)),
+        Effect.timeoutOption(LOGIN_APPROVAL_TIMEOUT),
+        Effect.map((approved) => Option.getOrElse(approved, () => false)),
+        Effect.ensuring(Effect.sync(() => loginApprovals.delete(requestId))),
+      );
     }),
   });
 });

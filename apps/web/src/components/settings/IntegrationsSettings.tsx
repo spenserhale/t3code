@@ -8,6 +8,7 @@ import {
   BrowserImportFailureReason,
   BROWSER_PROFILE_MAX_COUNT,
   type BrowserLinkTarget,
+  type BrowserLoginApproval,
   type BrowserProfile,
   BrowserSearchEngine,
   BROWSER_CUSTOM_SEARCH_URL_MAX_LENGTH,
@@ -15,6 +16,7 @@ import {
   BROWSER_PROFILE_NAME_MAX_LENGTH,
   BROWSER_RECORDING_FRAME_RATES,
   DEFAULT_BROWSER_AUTO_SHOW_FLOATING_PREVIEW,
+  DEFAULT_BROWSER_LOGIN_APPROVAL,
   DEFAULT_BROWSER_PROFILE_ID,
   DEFAULT_BROWSER_LINK_TARGET,
   DEFAULT_BROWSER_RECORDING_FRAME_RATE,
@@ -34,6 +36,7 @@ import {
   type BrowserImportSource,
   type PreviewAppearancePreference,
   type PreviewViewportSetting,
+  type SecretProviderId,
 } from "@t3tools/contracts";
 import { isValidSearchUrlTemplate } from "@t3tools/shared/preview";
 import { PREVIEW_VIEWPORT_PRESETS } from "@t3tools/shared/previewViewport";
@@ -57,7 +60,8 @@ import {
   DeviceHubSetupStatus,
   deviceHubReadiness,
 } from "~/components/device/DeviceSetup";
-import { isElectron } from "../../env";
+import { isElectron, isSecretsFeatureEnabled } from "../../env";
+import { builtInSecretProviderDefinitions } from "@t3tools/secret-provider-definitions/registry";
 
 import { Badge } from "../ui/badge";
 import {
@@ -1546,6 +1550,138 @@ function BrowserProfilesSetting({ disabled }: { readonly disabled: boolean }) {
   );
 }
 
+const LOGINS_OFF = "off";
+
+const LOGIN_APPROVAL_OPTIONS: ReadonlyArray<{
+  readonly value: BrowserLoginApproval;
+  readonly label: string;
+}> = [
+  { value: "request", label: "Every login" },
+  { value: "thread", label: "Once per thread" },
+  { value: "application", label: "Once until restart" },
+];
+
+function BrowserLoginSettings() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const { secretProviderId, approval } = settings.browserLogins;
+  const providers = Object.entries(settings.secretProviders).flatMap(([id, provider]) => {
+    const definition = builtInSecretProviderDefinitions.find(provider.kind);
+    return definition?.supportsLogins === true
+      ? [{ id: id as SecretProviderId, label: `${provider.label} · ${definition.label}` }]
+      : [];
+  });
+  const selected = providers.find((provider) => provider.id === secretProviderId);
+  const off = secretProviderId === undefined;
+
+  return (
+    <>
+      <SettingsRow
+        serverScoped
+        settingKeys={["browserLogins"]}
+        {...searchableSetting("browser-login-provider")}
+        description={
+          providers.length === 0 && off
+            ? "Add a 1Password provider in Settings > Secrets to let agents sign in to sites. Works in the desktop app's browser."
+            : "Agents can sign the built-in browser in to sites with logins saved here. They never see the values. Works in the desktop app's browser."
+        }
+        resetAction={
+          !off ? (
+            <SettingResetButton
+              label="password manager for logins"
+              onClick={() => updateSettings({ browserLogins: { approval } })}
+            />
+          ) : null
+        }
+        control={
+          <Select
+            value={secretProviderId ?? LOGINS_OFF}
+            onValueChange={(value) =>
+              updateSettings({
+                browserLogins:
+                  value === LOGINS_OFF
+                    ? { approval }
+                    : { secretProviderId: value as SecretProviderId, approval },
+              })
+            }
+            disabled={providers.length === 0 && off}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-full min-w-0 sm:w-56"
+              aria-label="Password manager for logins"
+            >
+              <SelectValue>
+                {off ? "Off" : (selected?.label ?? `${secretProviderId} (unavailable)`)}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              <SelectItem value={LOGINS_OFF}>Off</SelectItem>
+              {providers.map((provider) => (
+                <SelectItem key={provider.id} value={provider.id}>
+                  {provider.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        }
+      />
+      <SettingsRow
+        serverScoped
+        settingKeys={["browserLogins"]}
+        {...searchableSetting("browser-login-approval")}
+        description="Like 1Password's approval setting. The desktop app asks in a dialog."
+        resetAction={
+          approval !== DEFAULT_BROWSER_LOGIN_APPROVAL ? (
+            <SettingResetButton
+              label="ask before filling"
+              onClick={() =>
+                updateSettings({
+                  browserLogins: {
+                    ...(secretProviderId === undefined ? {} : { secretProviderId }),
+                    approval: DEFAULT_BROWSER_LOGIN_APPROVAL,
+                  },
+                })
+              }
+            />
+          ) : null
+        }
+        control={
+          <Select
+            value={approval}
+            onValueChange={(value) =>
+              updateSettings({
+                browserLogins: {
+                  ...(secretProviderId === undefined ? {} : { secretProviderId }),
+                  approval: value as BrowserLoginApproval,
+                },
+              })
+            }
+            disabled={off}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-full min-w-0 sm:w-56"
+              aria-label="Ask before filling"
+            >
+              <SelectValue>
+                {LOGIN_APPROVAL_OPTIONS.find((option) => option.value === approval)?.label}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              {LOGIN_APPROVAL_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        }
+      />
+    </>
+  );
+}
+
 export function BrowserSettingsPanel() {
   const desktopOnly = !isElectron;
   const desktopOnlyMessage = desktopOnly ? "Only available in the desktop app." : undefined;
@@ -1555,6 +1691,11 @@ export function BrowserSettingsPanel() {
       <SettingsSection id="browser-agent-access" title="Agent access">
         <AgentBrowserAccessSetting />
       </SettingsSection>
+      {isSecretsFeatureEnabled ? (
+        <SettingsSection id="browser-logins" title="Logins">
+          <BrowserLoginSettings />
+        </SettingsSection>
+      ) : null}
       <SettingsSection id="browser" title="Browsing">
         <SettingsUnavailableGroup message={desktopOnlyMessage}>
           <BrowserProfilesSetting disabled={desktopOnly} />

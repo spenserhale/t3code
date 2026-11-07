@@ -12,6 +12,8 @@ import {
   OrchestratorMcpFailure,
   type ToolActivityIcon,
   type ThreadId,
+  type PreviewAutomationFillLoginInput,
+  type PreviewAutomationFillLoginResult,
   type PreviewAutomationOperation,
   type PreviewAutomationOpenInput,
   type PreviewAutomationRecordingStatus,
@@ -33,6 +35,7 @@ import * as ServerConfig from "../../../config.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import { PreviewSnapshotToolkit, PreviewStandardToolkit, PreviewToolkit } from "./tools.ts";
 
 /** Whether a preview the agent
@@ -111,6 +114,34 @@ const invokeTargeted = <A extends object>(
     })),
   );
 };
+
+const LOGIN_TIMEOUT_MS = 120_000;
+
+/** The approval prompt names the thread and agent; they come from the caller, not the tool input. */
+const fillLogin = Effect.fn("PreviewToolkit.fillLogin")(function* (
+  input: PreviewAutomationFillLoginInput,
+) {
+  const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+  const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+  const threadTitle = yield* threadManagement.getThreadRecords(scope.thread.threadId, []).pipe(
+    Effect.map((records) => records.thread.title.slice(0, 200)),
+    Effect.orElseSucceed(() => undefined),
+  );
+  const { tabId, ...loginInput } = input;
+  const { result, toolIcon } = yield* invoke<PreviewAutomationFillLoginResult>(
+    "fillLogin",
+    {
+      ...loginInput,
+      requester: {
+        ...(threadTitle ? { threadTitle } : {}),
+        provider: String(scope.thread.providerInstanceId).slice(0, 100),
+      },
+    },
+    input.timeoutMs ?? LOGIN_TIMEOUT_MS,
+    tabId,
+  );
+  return { ...result, ...(toolIcon ? { toolIcon } : {}) };
+});
 
 const decodeActInput = Record.map(PreviewAutomationActInputs, (schema) =>
   Schema.decodeUnknownEffect(schema),
@@ -233,6 +264,7 @@ const handlers = {
       })),
     ),
   ),
+  preview_fill_login: McpToolAccess.actsAsCaller(fillLogin),
   preview_wait_for: McpToolAccess.readsAsCaller((input) =>
     invokeTargeted<object>("waitFor", input, input.timeoutMs),
   ),

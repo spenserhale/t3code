@@ -13,6 +13,36 @@ export type SecretProviderDriverServices =
   | FileSystem.FileSystem
   | Crypto.Crypto;
 
+export type SecretProviderLoginField = "username" | "password" | "totp";
+
+/** A saved website login, without any of its secrets. */
+export interface SecretProviderLogin {
+  readonly id: string;
+  readonly title: string;
+  readonly vault?: string;
+  /** Websites the provider would autofill this login on. */
+  readonly urls: ReadonlyArray<string>;
+}
+
+export type SecretProviderLoginValues = Partial<Record<SecretProviderLoginField, string>>;
+
+/** Optional: a provider that can sign the built-in browser in to websites. */
+export interface SecretProviderLogins<Config = unknown> {
+  /** `undefined` when the provider could not be read. */
+  readonly list: (
+    config: Config,
+  ) => Effect.Effect<
+    ReadonlyArray<SecretProviderLogin> | undefined,
+    never,
+    SecretProviderDriverServices
+  >;
+  readonly read: (
+    config: Config,
+    login: SecretProviderLogin,
+    fields: ReadonlyArray<SecretProviderLoginField>,
+  ) => Effect.Effect<SecretProviderLoginValues | undefined, never, SecretProviderDriverServices>;
+}
+
 export interface SecretProviderDriver {
   readonly kind: SecretProviderKind;
   readonly definition: SecretProviderDefinition;
@@ -24,6 +54,7 @@ export interface SecretProviderDriver {
     config: unknown,
     references: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<string | undefined>, never, SecretProviderDriverServices>;
+  readonly logins?: SecretProviderLogins;
 }
 
 export const defineSecretProviderDriver = <Config>(driver: {
@@ -33,8 +64,10 @@ export const defineSecretProviderDriver = <Config>(driver: {
     config: Config,
     references: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<string | undefined>, never, SecretProviderDriverServices>;
+  readonly logins?: SecretProviderLogins<Config>;
 }): SecretProviderDriver => {
   const isConfig = Schema.is(driver.definition.configSchema);
+  const logins = driver.logins;
   return {
     kind: driver.kind,
     definition: driver.definition,
@@ -42,5 +75,15 @@ export const defineSecretProviderDriver = <Config>(driver: {
       isConfig(config)
         ? driver.read(config, references)
         : Effect.succeed(references.map(() => undefined)),
+    ...(logins === undefined
+      ? {}
+      : {
+          logins: {
+            list: (config) =>
+              isConfig(config) ? logins.list(config) : Effect.sync(() => undefined),
+            read: (config, login, fields) =>
+              isConfig(config) ? logins.read(config, login, fields) : Effect.sync(() => undefined),
+          },
+        }),
   };
 };
