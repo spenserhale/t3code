@@ -4,6 +4,8 @@
  * a feature defines its step in its own module and appends one entry. Never edit a shipped step.
  */
 
+import { THREAD_WAITS_STEP } from "../threadWaits/threadWaitSchema.ts";
+
 export interface SidebarSchemaStep {
   /** Stable and unique. Never rename a shipped step. */
   readonly name: string;
@@ -54,4 +56,5 @@ export const LEGACY_STEPS: readonly string[] = [
 
 export const SIDEBAR_SCHEMA_STEPS: readonly SidebarSchemaStep[] = [
   // Feature branches append one entry each, defined in the feature's own module.
+  THREAD_WAITS_STEP,
 ];

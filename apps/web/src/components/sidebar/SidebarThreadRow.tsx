@@ -27,6 +27,7 @@ import {
   type EnvironmentId,
   type EnvironmentMachineKind,
   type ScopedThreadRef,
+  type ThreadId,
 } from "@t3tools/contracts";
 
 import type { TimestampFormat } from "@t3tools/contracts/settings";
@@ -116,6 +117,13 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { ThreadUsageHoverRow } from "../usage/ThreadUsageDisplay";
 import { useThreadHasUnsentDraft } from "../../composerDraftStore";
+import { useAtomValue } from "@effect/atom-react";
+import { threadWaitBlockerAtom } from "../../state/threadWaits";
+import {
+  SidebarThreadBlocksMarker,
+  SidebarThreadWaitLabel,
+  ThreadWaitSnoozeMenuItem,
+} from "./SidebarThreadWait";
 
 // The fields thread rows show. Provider status pushes refresh `checkedAt`,
 // status and auth on every provider; leaving those out keeps each
@@ -375,6 +383,7 @@ function SnoozeMenuButton(props: {
   onSnooze: (preset: Pick<SnoozePreset, "snoozedUntil">) => void;
   timestampFormat: TimestampFormat;
   environmentId: EnvironmentId;
+  threadId: ThreadId;
 }) {
   const { open, onOpenChange, onSnooze, timestampFormat, environmentId } = props;
   const presets = open
@@ -427,6 +436,7 @@ function SnoozeMenuButton(props: {
         >
           Custom…
         </MenuItem>
+        <ThreadWaitSnoozeMenuItem environmentId={environmentId} threadId={props.threadId} />
       </MenuPopup>
     </Menu>
   );
@@ -658,6 +668,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
+  const waitBlockerId = useAtomValue(threadWaitBlockerAtom(threadKey));
   const canOperateThread = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
   const { leaseLiveStatus, rowRef: leaseRowRef } = useSidebarRowSubscriptionLease(props.isActive);
   const { revealRef } = props;
@@ -1254,8 +1265,20 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               )}
               {draftIndicator}
               {title}
+              {variantAction === "unsnooze" && waitBlockerId !== null ? (
+                <SidebarThreadWaitLabel
+                  environmentId={thread.environmentId}
+                  blockerThreadId={waitBlockerId}
+                  onOpen={onThreadActivate}
+                />
+              ) : null}
               {multiline ? titleLineIcons : null}
               {pinIndicator}
+              <SidebarThreadBlocksMarker
+                threadKey={threadKey}
+                environmentId={thread.environmentId}
+                threadId={thread.id}
+              />
               {multiline ? null : terminalStatusIcon}
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">
@@ -1277,7 +1300,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       !isWoke && "group-any-hover/sidebar-row:opacity-0",
                     )}
                   >
-                    {variantAction === "unsnooze" && props.snoozeWakeLabelText !== null ? (
+                    {variantAction === "unsnooze" &&
+                    waitBlockerId !== null ? null : variantAction === "unsnooze" &&
+                      props.snoozeWakeLabelText !== null ? (
                       <span className="inline-flex items-center gap-1 text-xs text-info-foreground tabular-nums">
                         {/* The clock tells a wake time from an age at a glance. */}
                         <AlarmClockIcon aria-hidden className="size-3" />
@@ -1439,6 +1464,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {/* Left of the status slot, the pin would slide when hover swaps the
                 label for the wider row controls. */}
               {pinIndicator}
+              <SidebarThreadBlocksMarker
+                threadKey={threadKey}
+                environmentId={thread.environmentId}
+                threadId={thread.id}
+              />
               {props.projectDisplayName ? (
                 <span
                   className={cn("min-w-0 flex-1 truncate font-normal text-secondary-label text-xs")}
@@ -1547,6 +1577,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           onSnooze={handleSnoozePreset}
                           timestampFormat={props.timestampFormat}
                           environmentId={thread.environmentId}
+                          threadId={thread.id}
                         />
                       ) : null}
                       {props.settlementSupported ? (
