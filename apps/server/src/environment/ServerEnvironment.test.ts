@@ -118,6 +118,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
           storageCleanupRun: true,
           projectWorktreeCleanup: true,
           worktreesDirectory: true,
+          newProjectsDirectory: true,
           threadAutoSettlementScope: true,
         });
       }

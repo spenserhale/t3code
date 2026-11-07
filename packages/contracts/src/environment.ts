@@ -95,6 +95,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   projectWorktreeCleanup: Schema.optionalKey(Schema.Boolean),
   settledWorktreeCleanup: Schema.optionalKey(Schema.Boolean),
   worktreesDirectory: Schema.optionalKey(Schema.Boolean),
+  /** Honors the `newProjectsDirectory` setting; older servers drop the key, so hide its row. */
+  newProjectsDirectory: Schema.optionalKey(Schema.Boolean),
   threadAutoSettlementScope: Schema.optionalKey(Schema.Boolean),
   threadRestartContinuation: Schema.optionalKey(Schema.Boolean),
   projectSettingsOverrides: Schema.optionalKey(Schema.Boolean),

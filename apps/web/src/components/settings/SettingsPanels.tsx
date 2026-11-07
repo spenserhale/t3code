@@ -56,6 +56,7 @@ import {
 import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
 import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
 import { scopedIdleCompaction } from "./scopedSettings";
+import { NewProjectsDirectoryRow } from "./NewProjectsDirectoryRow";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ThreadTitleInstructionsSettings } from "./ThreadTitleInstructionsSettings";
 import { SnoozePresetsRow } from "./SnoozePresetsSettings";
@@ -542,6 +543,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
       ? ["Add project base directory"]
       : []),
+    ...(settings.newProjectsDirectory !== DEFAULT_UNIFIED_SETTINGS.newProjectsDirectory
+      ? ["New projects folder"]
+      : []),
     ...(settings.confirmThreadUnpin !== DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin
       ? ["Unpin confirmation"]
       : []),
@@ -657,6 +661,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
+      newProjectsDirectory: DEFAULT_UNIFIED_SETTINGS.newProjectsDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
       confirmThreadUnpin: DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin,
@@ -1618,6 +1623,7 @@ export function ThreadsSettingsPanel() {
             />
           }
         />
+        <NewProjectsDirectoryRow />
       </SettingsSection>
 
       <ProjectDefaultsSettings category="general" />
