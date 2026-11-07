@@ -79,6 +79,7 @@ import {
 } from "./ThreadActivityBanners";
 import { useForceStopThread } from "./useForceStopThread";
 import { useAtomValue } from "@effect/atom-react";
+import { useThreadWaitLabel } from "../../state/threadWaits";
 import type { RunStopPresentation } from "@t3tools/client-runtime/state/thread-execution";
 import { Atom } from "effect/reactivity";
 import { environmentThreadDetails } from "../../state/threads";
@@ -658,14 +659,16 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     snoozedUntil && Date.parse(snoozedUntil) > Date.parse(snoozeNow)
       ? snoozeWakeLabel(snoozedUntil, { now: snoozeNow }, messages)
       : null;
+  const waitLabel = useThreadWaitLabel(activeThreadShell);
   const threadStatusLine = activeThreadSnoozed ? (
     limitRecoveryHoldsSnooze ? null : (
       <ThreadStatusLine
         icon={<AlarmClockIcon />}
         label={
-          snoozeWake
+          waitLabel ??
+          (snoozeWake
             ? gt("Snoozed, {remaining} left", { remaining: snoozeWake })
-            : gt("Snoozed", { $context: "thread status" })
+            : gt("Snoozed", { $context: "thread status" }))
         }
         clockMinute={nowMinute}
         actionLabel={isUnsnoozing ? gt("Waking...") : gt("Wake now")}

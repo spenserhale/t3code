@@ -225,6 +225,10 @@ import {
   restrictBelowSidebarLabel,
 } from "./Sidebar.drag";
 import { SidebarPointerSensor } from "./Sidebar.pointer";
+import { createThreadWaitDrag } from "./Sidebar.waitDrag";
+import { ThreadWaitDragBadge } from "./sidebar/SidebarThreadWait";
+import { pickThreadAndWait, stopWaiting, waitOnThread } from "../lib/threadWaitActions";
+import { readThreadWaitMenuState, readThreadWaits } from "../state/threadWaits";
 import { createSidebarListMotion } from "./Sidebar.motion";
 import { createSidebarShiftGuard } from "./Sidebar.shiftGuard";
 import {
@@ -339,6 +343,10 @@ const sidebarProviderEntriesAtom = Atom.make((get) => {
   return !changed && previous !== null ? previous : next;
 }).pipe(Atom.withLabel("sidebar-provider-entries"));
 
+const threadWaitDrag = createThreadWaitDrag({
+  waits: readThreadWaits,
+  onLink: (threadRef, blockerThreadId) => void waitOnThread(threadRef, blockerThreadId),
+});
 const EMPTY_PROVIDER_ENTRIES: ReadonlyMap<string, SidebarProviderEntry> = new Map();
 const EMPTY_THREADS: readonly EnvironmentThreadShell[] = [];
 const EMPTY_DRAFT_IDS: readonly DraftId[] = [];
@@ -1786,11 +1794,17 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     dragState?.contextDrag === true ||
     dragState?.activeSection === "working";
   const dragTargetSection = isContextDrag ? null : (dragState?.targetSection ?? null);
+  const threadWaitDragContext = () => ({
+    list: threadListRef.current,
+    sourceKey: contextDragKeyRef.current,
+    threads: threadByKeyRef.current,
+  });
   const finishThreadDrag = (started: boolean) => {
     dragSensorRef.current = null;
     contextDragKeyRef.current = null;
     dragScrollRef.current = null;
     endThreadContextDrag();
+    threadWaitDrag.end();
     if (started) {
       listMotionRef.current?.release();
       setDragState(null);
@@ -1823,16 +1837,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     if (scroll && scroll.viewport.scrollTop !== scroll.top) scroll.viewport.scrollTop = scroll.top;
   };
   const moveThreadContextDrag = (point: { x: number; y: number }) => {
+    // Linking holds rows still like a context drag, but drops onto a row in the list.
+    const linking = threadWaitDrag.move(point, threadWaitDragContext());
     // Search results cannot reorder, so their context preview starts inside the list.
-    const contextDrag = searchResultsListRef.current !== null || pointerOutsideThreadList(point);
+    const contextDrag =
+      linking || searchResultsListRef.current !== null || pointerOutsideThreadList(point);
     setDragState((current) =>
       current === null || current.contextDrag === contextDrag
         ? current
         : { ...current, contextDrag },
     );
-    if (!contextDrag) {
+    if (!contextDrag || linking) {
       endThreadContextDrag();
-      return false;
+      return linking;
     }
     restoreDragScroll();
     const threads = contextDragThreads();
@@ -1842,6 +1859,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     return true;
   };
   const dropThreadContextDrag = (point: { x: number; y: number }) => {
+    if (threadWaitDrag.drop(point, threadWaitDragContext())) return true;
     if (!pointerOutsideThreadList(point)) return false;
     restoreDragScroll();
     dropThreadContext(point, contextDragThreads());
@@ -2748,6 +2766,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               ),
               canTurnIntoProject: canTurnThreadIntoProject(threadRef),
               canRename: !fromSearch,
+              threadWait: readThreadWaitMenuState(threadRef),
               supports: {
                 settlement: configLoaded,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -2826,6 +2845,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           case "unsnooze":
             attemptUnsnooze(threadRef);
+            return;
+          case "snooze-until-thread":
+            void pickThreadAndWait(threadRef);
+            return;
+          case "stop-waiting":
+            void stopWaiting(threadRef);
             return;
           case "pin":
             attemptPin(threadRef);
@@ -3086,6 +3111,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const newThreadInProjectShortcutLabel = shortcutLabelForCommand(keybindings, "chat.newLocal");
   return (
     <SidebarFolderDrop>
+      <ThreadWaitDragBadge />
       <SidebarChromeHeader isElectron={isElectron} />
       <SidebarContent
         ref={sidebarContentRef}
