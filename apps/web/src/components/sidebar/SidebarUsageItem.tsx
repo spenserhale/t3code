@@ -10,25 +10,25 @@ import { SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { UsageLimitsGlance } from "../usage/UsageLimitsGlance";
 import { readUsagePagePreferences, saveUsagePagePreferences } from "../usage/usagePagePreferences";
+import { useHasUseToday } from "../usage/useTodayStore";
 
 /**
- * The sidebar's Usage button. Pressing it opens Usage. While a subscription
- * reports limits, resting the pointer on it or focusing it with the keyboard
- * shows what is left on each one in place of the button's name, from what the
- * servers last pushed: showing it never asks them to check again. The button
- * stays mounted either way, so focus and a press under way survive an account
- * starting or stopping to report.
+ * The sidebar's Usage button. A press opens Usage; resting on it shows what is left on
+ * each subscription, from the servers' last push, never asking them to check. A dot
+ * marks subscriptions worth switching to today. The button stays mounted as accounts come and go.
  */
 export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) {
   const accounts = collectLimitAccounts(
     useAtomValue(environmentPresentations.presentationsWithProvidersAtom),
   );
   const showGlance = accounts.length > 0;
+  const hasUseToday = useHasUseToday();
   const [glanceHandle] = useState(() => PopoverCreateHandle());
   const suppressFocusOpen = useRef(false);
   const glancePopupRef = useRef<HTMLDivElement>(null);
   const triggerId = useId();
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- opens or closes the glance popover handle as accounts start or stop reporting, keeping keyboard focus in step
   useEffect(() => {
     if (!showGlance) {
       glanceHandle.close();
@@ -48,7 +48,8 @@ export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) 
 
   const button = (
     <SidebarMenuButton
-      aria-label="Usage"
+      aria-label={hasUseToday ? "Usage, subscriptions worth switching to today" : "Usage"}
+      className="relative"
       onBlur={() => {
         suppressFocusOpen.current = false;
       }}
@@ -69,6 +70,9 @@ export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) 
       size="icon"
     >
       <ChartNoAxesColumnIcon />
+      {hasUseToday ? (
+        <span aria-hidden className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-warning" />
+      ) : null}
     </SidebarMenuButton>
   );
 
@@ -138,7 +142,7 @@ export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) 
             ref={glancePopupRef}
             side="top"
             tooltipStyle
-            width="md"
+            width="lg"
           >
             <UsageLimitsGlance accounts={accounts} onOpenLimits={openLimits} />
           </PopoverPopup>

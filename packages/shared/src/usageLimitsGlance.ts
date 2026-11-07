@@ -11,7 +11,11 @@ import {
   type LimitGroupState,
   groupLimitAccounts,
   labelLimitAccounts,
+  resolveLimitSchedule,
 } from "./usageLimitGroups.ts";
+import { type DailyTokens, paceDetailFor } from "./usageLimitForecast.ts";
+import type { LimitHistory } from "./usageLimitHistory.ts";
+import { type WindowPace, windowPace } from "./usageLimitPace.ts";
 import {
   type LimitAccount,
   type LimitPoolMember,
@@ -37,6 +41,8 @@ export interface LimitGlanceRow {
   readonly remainingPercent: number | null;
   /** `resets in 2h 13m`, or null when the window has no reset. */
   readonly resetsIn: string | null;
+  /** How the window is pacing against the account's schedule; null when it cannot be judged. */
+  readonly pace: WindowPace | null;
 }
 
 export interface LimitGlanceSection {
@@ -72,22 +78,22 @@ function hasReset(window: ServerProviderUsageWindow, now: number): boolean {
 
 /**
  * Accounts as rows, in the sections and provider order Limits uses: one list
- * when groups are off, one section per group when they are on. Within a
- * provider, rows sort by name so a refresh never reorders them.
- *
- * Each row shows the window its account has least of left, among the windows
- * Limits shows for the provider's accounts in that section (Cursor's combined
- * figure is hidden or not by the whole pool, as on the page) and that have
- * not reset since they were read. An account with none of those left falls
- * back to its hidden windows, so it keeps a row, and counts as reset only
- * when every window it reports has. Windows with the same share left go to
- * the one Limits lists first: session, weekly, monthly, then the rest.
+ * when groups are off, one section per group when on. Each row shows the window
+ * its account has least left of, among those Limits shows (Cursor's combined
+ * figure is hidden or not by the whole pool) that have not reset since read.
  */
 export function collectLimitGlance(
   accounts: readonly LimitAccount[],
   groups: LimitGroupState,
   now: number,
   nameOf: (account: LimitAccount) => string,
+  /** What pace is judged by beyond the schedule: recorded clearings, and token history for the usual pattern. */
+  extras: {
+    readonly history?: LimitHistory | undefined;
+    readonly dailyTokens?:
+      | ((account: LimitAccount) => readonly DailyTokens[] | undefined)
+      | undefined;
+  } = {},
 ): LimitGlance {
   const section = (group: LimitGroup | null, members: readonly LimitAccount[]) => {
     const pools = collectLimitPools(members, now);
@@ -107,6 +113,7 @@ export function collectLimitGlance(
       for (const { members } of pool.windows) add(reported, members);
       for (const { members } of displayLimitWindows(pool)) add(shown, members);
     }
+    // Equal shares left go to the window Limits lists first: session, weekly, monthly, then the rest.
     const tightest = (windows: readonly ServerProviderUsageWindow[] = []) =>
       windows
         .filter((candidate) => !hasReset(candidate, now))
@@ -120,6 +127,7 @@ export function collectLimitGlance(
         if (!reported.has(account.key)) return [];
         // A window Limits hides still counts when none it shows is left to read.
         const window = tightest(shown.get(account.key)) ?? tightest(reported.get(account.key));
+        // Every window the account reports has reset since it was read.
         if (!window) {
           return [
             {
@@ -129,11 +137,13 @@ export function collectLimitGlance(
               windowLabel: null,
               remainingPercent: null,
               resetsIn: null,
+              pace: null,
             },
           ];
         }
         const details =
           account.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
+        const schedule = resolveLimitSchedule(groups, account);
         return [
           {
             account,
@@ -142,6 +152,12 @@ export function collectLimitGlance(
             windowLabel: details?.label ?? window.label,
             remainingPercent: remainingPercent(window),
             resetsIn: formatResetsIn(window, now),
+            pace: windowPace(
+              window,
+              now,
+              schedule,
+              paceDetailFor({ account, window, schedule, now, ...extras }),
+            ),
           },
         ];
       }),
