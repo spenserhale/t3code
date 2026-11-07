@@ -3037,6 +3037,39 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
     }),
   );
 
+  it.effect("holds a stacked action to the branch it was asked for, and never the default", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["branch", "feature/hand-off"]);
+      NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "changed\n");
+      const { manager } = yield* makeManager();
+      const subjects = () =>
+        runGit(repoDir, ["log", "--pretty=%s"]).pipe(
+          Effect.map((result) => result.stdout.trim().split("\n")),
+        );
+      const commit = (expectedBranch: string) =>
+        runStackedAction(
+          manager,
+          { cwd: repoDir, action: "commit", commitMessage: "WIP: hand off" },
+          { expectedBranch },
+        );
+
+      // The checkout is on main, as when another operation switched it since the caller looked.
+      const elsewhere = yield* commit("feature/hand-off").pipe(Effect.flip);
+      expect(elsewhere.message).toContain("is on main, not feature/hand-off");
+      // Not even when the branch it was asked for is the one it is on, if that is the default.
+      const onDefault = yield* commit("main").pipe(Effect.flip);
+      expect(onDefault.message).toContain("main is the default branch");
+      expect(yield* subjects()).toEqual(["Initial commit"]);
+
+      yield* runGit(repoDir, ["checkout", "feature/hand-off"]);
+      const result = yield* commit("feature/hand-off");
+      expect(result.commit.status).toBe("created");
+      expect(yield* subjects()).toEqual(["WIP: hand off", "Initial commit"]);
+    }),
+  );
+
   it.effect("create_pr targets the remote default branch when it is not main", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");

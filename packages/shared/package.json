@@ -239,6 +239,10 @@
       "types": "./src/threadTranscript.ts",
       "import": "./src/threadTranscript.ts"
     },
+    "./threadMachineHandoff": {
+      "types": "./src/threadMachineHandoff.ts",
+      "import": "./src/threadMachineHandoff.ts"
+    },
     "./paletteSearch": {
       "types": "./src/paletteSearch.ts",
       "import": "./src/paletteSearch.ts"

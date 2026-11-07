@@ -56,6 +56,11 @@ export function createReviewEnvironmentAtoms<R, E>(
       tag: WS_METHODS.reviewGetBranchCommits,
       staleTimeMs: 5_000,
     }),
+    // An uncached read, for a decision that has to match the repository as it is now.
+    readBranchCommits: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:review:read-branch-commits",
+      tag: WS_METHODS.reviewGetBranchCommits,
+    }),
     diffPreview,
     diffFilePatch: createEnvironmentQueryAtomFamily(runtime, {
       label: "environment-data:review:diff-file-patch",

@@ -18,6 +18,43 @@ features target the repository a fork tracks. A fork also reports its own
 `origin`, and clients group and label by that, so a fork never collapses into a
 checkout of its upstream.
 
+Continuing a thread on another machine moves a branch and a conversation, not
+the thread. The source pushes a WIP commit to a branch of the shared remote. The
+target makes a worktree on the same branch from its checkout of the same
+repository (found by repository identity and place in it, not by the sidebar's
+grouping), and a new thread starts there with the conversation attached as a
+transcript. The thread, its provider session and its checkpoints stay on the
+source, and nothing on the servers ties the two threads. The worktree is made
+when the handoff runs, not on the first send, because the launch path has one
+ref for both the start point and the branch a pull request compares with, and
+cannot track a branch of the same name. It must hold the pushed commit before a
+thread starts in it.
+
+A client drives this for a user: it reads both machines, has the target fetch
+with `vcs.pull` (no command fetches a named remote), checks the commit with
+`review.getBranchCommits`, and settles the source once the first message is on
+the target
+([`threadMachineHandoffSettle`](../../apps/web/src/lib/threadMachineHandoffSettle.ts)).
+An agent drives it from its own server through a link, where no client watches
+a draft
+([`ThreadMachineHandoff`](../../apps/server/src/peer/ThreadMachineHandoff.ts)):
+it uploads the transcript to the target, has the target's
+[`t3_worktree_open_branch`](../../apps/server/src/mcp/WorktreeOpenBranch.ts)
+fetch the remote itself and check the commit by ancestry, launches the thread,
+and settles the source. It keeps what each `clientRequestId` has done, in memory
+for six hours, so a retry carries on from the step that failed: planning again
+would read the checkout the first try already changed. Before it launches again
+it asks the target whether the first launch went through, since the agent there
+may have changed the worktree, and otherwise opens the branch again to check
+that the worktree is still the one it chose.
+
+The opener makes a worktree's folder itself before it asks git for the worktree, with
+a mkdir that fails if the path is there. Git accepts an empty folder, so a folder
+that merely was absent a moment earlier, or a failing hook's exit code, cannot show that
+a folder is the call's own. It gives the folder back only while it has the same device
+and inode, and only as git would, without `--force`, so another operation's changes are
+never deleted.
+
 [Environment ID initialization](../../apps/server/src/environment/ServerEnvironment.ts)
 must publish a complete ID atomically. Repair of an empty ID file retains a
 recovery file so concurrent or delayed initializers choose the same winner.

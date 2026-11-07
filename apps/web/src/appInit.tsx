@@ -30,6 +30,8 @@ import {
   subscribeDraftThreadPromotion,
   useComposerDraftStore,
 } from "./composerDraftStore";
+import { settleHandoffSource } from "./lib/settleHandoffSource";
+import { startMachineHandoffSettling } from "./lib/threadMachineHandoffSettle";
 import { startDefaultThemeAdoption } from "./hooks/useDefaultTheme";
 import { startEnvironmentThemeRepaint } from "./hooks/useEnvironmentTheme";
 import { readLocalStorageValue, subscribeLocalStorageKey } from "./hooks/useLocalStorage";
@@ -54,6 +56,7 @@ import { installChatRouteCommands } from "./shortcuts/chatRouteCommands";
 import { startWorkspaceFocus } from "./lib/workspaceFocus";
 import { installCommandPaletteCommands } from "./shortcuts/commandPaletteCommands";
 import { registerOpenFavoriteEditorCommand } from "./components/chat/OpenInPickerShortcut";
+import { environmentSummaries } from "./state/presentation";
 import { environmentThreadShells } from "./state/threads";
 import { resolveThreadRouteTarget } from "./threadRoutes";
 
@@ -198,6 +201,14 @@ export function startAppServices(): AppRouter {
     registry: appAtomRegistry,
     threadShellAtom: environmentThreadShells.quietThreadShellAtom,
     threadRefsAtom: environmentThreadShells.threadRefsAtom,
+  });
+  // A thread handed to another machine settles once its first message is sent there.
+  startMachineHandoffSettling({
+    registry: appAtomRegistry,
+    threadShellAtom: environmentThreadShells.quietThreadShellAtom,
+    threadRefsAtom: environmentThreadShells.threadRefsAtom,
+    connectedEnvironmentIdsAtom: environmentSummaries.connectedEnvironmentIdsAtom,
+    settle: settleHandoffSource,
   });
   subscribeComposerDraftModelReconciliation({
     registry: appAtomRegistry,
