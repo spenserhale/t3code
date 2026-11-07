@@ -37,7 +37,9 @@ variable. Pi reads `~/.pi/agent/sessions`, or the `sessions` directory under
 To include sessions saved through `--session-dir` or Pi's `sessionDir` setting, set this environment
 variable to the same directory. Pi includes recorded tool and summary costs under `Tools/summaries`.
 Muse Code reads native session history, including child sessions, from the home reported by the
-configured Muse CLI. Its environment settings, including `XDG_DATA_HOME`, apply. Models without
+configured Muse CLI. Its environment settings, including `XDG_DATA_HOME`, apply. OpenCode's Ollama
+Cloud models appear as `ollama-cloud/<model>`, priced at the median of OpenRouter's zero-data-retention
+endpoints for the same model, because a flat Ollama plan has no per-token price. Models without
 known prices still contribute tokens and appear as unpriced; set custom prices to estimate their cost.
 Use absolute paths or `~/` paths in the account's environment settings; relative environment paths
 depend on each project's working directory and cannot be reliably discovered by Usage. Accounts
@@ -139,12 +141,16 @@ refresh provider status. A Z.ai Coding Plan signed in through OpenCode reports i
 quota and its monthly tool allowance, along with any banked quota resets. **Use reset** spends the
 5-hour reset, or the weekly one when that is the only kind banked or the weekly quota is the fuller
 of the two, because a weekly reset also clears the 5-hour quota. An Ollama Cloud subscription signed
-in through OpenCode reports its monthly usage, or its session and weekly usage on older plans;
-Ollama reports no reset time, so these bars show none. Cursor reports
-its monthly allowance, including separate Auto and API usage, using the CLI login or
-`CURSOR_AUTH_TOKEN`. On macOS, this includes the default Keychain login after you enable Cursor
-usage. Keychain login is used for limits only with Cursor's default API endpoint. If you configure
-a custom Cursor endpoint, use an explicit token or file-based CLI login for limits.
+in through OpenCode reports its monthly credit, or its session and weekly usage on older plans, each
+with its reset time. Under a monthly credit, Limits also shows how much of the pool the period has
+used, what the plan costs, and any purchased credit. On a $60 Pro or $300 Max plan, when at least
+half of that usage was on models OpenRouter prices, it also shows what the usage would have cost at
+OpenRouter's zero-data-retention rates. Team and custom-sized pools skip that, because their balance
+can include other members' usage. Cursor reports its monthly allowance, including separate Auto and
+API usage, using the CLI login or `CURSOR_AUTH_TOKEN`. On macOS, this includes the default Keychain
+login after you enable Cursor usage. Keychain login is used for limits only with Cursor's default
+API endpoint. If you configure a custom Cursor endpoint, use an explicit token or file-based CLI
+login for limits.
 
 Grok reports the remaining subscription allowance and reset time for its current billing period
 after signing in with `grok login`. Explicit `XAI_API_KEY` connections and custom authentication

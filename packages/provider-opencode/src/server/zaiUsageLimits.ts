@@ -1,6 +1,7 @@
 import type {
   ProviderConsumeResetCreditOutcome,
   ServerProviderResetCredits,
+  ServerProviderUsageCredit,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
 } from "@t3tools/contracts";
@@ -318,26 +319,27 @@ export const consumeZaiResetCredit = Effect.fn("consumeZaiResetCredit")(function
   return "reset" as const satisfies ProviderConsumeResetCreditOutcome;
 }, Effect.timeout("20 seconds"));
 
+/**
+ * What a subscription probe reads: its limits, and its credit pool when the plan has one.
+ * The credit travels with the limits so a failed read keeps both, and leaves them
+ * together in `combineUsageLimits`, which lists it under the subscription only.
+ */
+export type SubscriptionLimits = ServerProviderUsageLimits & {
+  readonly credit?: ServerProviderUsageCredit | undefined;
+};
+
 /** What one subscription probe returned, with the plan it reads. */
 interface SubscriptionProbe {
   readonly id: string;
   readonly label: string;
-  readonly limits: ServerProviderUsageLimits;
+  readonly limits: SubscriptionLimits;
 }
 
 /**
- * One OpenCode account can hold several subscriptions. Windows from each
- * available probe are shown together; when none is available the first
- * failure explains why. An account has a single identity slot, so the set of
- * credentials names it: one fingerprint passes through unchanged (matching
- * what a server without Z.ai publishes), several are hashed together. Inputs
- * may be remembered results of different ages, so the combined result is
- * stamped with the oldest `checkedAt` among those it was built from.
- *
- * Each available probe that names its credential is also listed under
- * `subscriptions` with its own fingerprint, age, windows and credits, so a
- * client can match one subscription across environments whatever else each
- * of them is signed in to.
+ * One OpenCode account can hold several subscriptions: their windows show together, and the
+ * first failure explains an account with none available. One fingerprint passes through
+ * unchanged, several are hashed together, and remembered inputs make the oldest `checkedAt`
+ * the result's. Each probe with a credential is also listed under `subscriptions`.
  */
 export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
   probes: readonly [SubscriptionProbe, ...SubscriptionProbe[]],
@@ -368,6 +370,7 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
             checkedAt: entry.checkedAt,
             windowIds: entry.windows.map((window) => window.id),
             ...(entry.resetCredits ? { resetCredits: entry.resetCredits } : {}),
+            ...(entry.credit ? { credit: entry.credit } : {}),
           },
         ]
       : [],
@@ -384,18 +387,14 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
 });
 
 /**
- * Gives one subscription probe a memory. Create the wrapped probe once, where
- * the provider is built, and run it on every refresh: a read that failed this
- * time returns that subscription's last good result instead, so a brief
- * outage keeps its bars and fingerprint in the combined result.
- * `unsupported` replaces the memory, as it does for the provider as a whole,
- * and so does a failure that names a different credential, which is a
- * different account.
+ * Gives one subscription probe a memory: create it once, where the provider is built. A read
+ * that fails returns the last good result, so a brief outage keeps its bars and fingerprint.
+ * `unsupported` and a failure naming a different credential replace the memory.
  */
-export const keepLastGoodUsageLimits = <E, R>(
-  probe: Effect.Effect<ServerProviderUsageLimits, E, R>,
+export const keepLastGoodUsageLimits = <Limits extends ServerProviderUsageLimits, E, R>(
+  probe: Effect.Effect<Limits, E, R>,
 ) =>
-  Effect.map(Ref.make<ServerProviderUsageLimits | undefined>(undefined), (published) =>
+  Effect.map(Ref.make<Limits | undefined>(undefined), (published) =>
     Effect.flatMap(probe, (probed) =>
       Ref.modify(published, (last) => {
         const otherAccount =
