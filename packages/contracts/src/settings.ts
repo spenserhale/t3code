@@ -340,11 +340,29 @@ export type ChatWidth = typeof ChatWidth.Type;
 export const EffortDisplay = Schema.Literals(["label", "bars"]);
 export type EffortDisplay = typeof EffortDisplay.Type;
 
-export const ModelFavorite = Schema.Struct({
+const ModelReference = Schema.Struct({
   provider: ProviderInstanceId,
   model: TrimmedNonEmptyString,
 });
+export const ModelFavorite = Schema.Struct({
+  ...ModelReference.fields,
+  /** Options (the effort) the model opens with; absent means the model's last used options. */
+  options: Schema.optionalKey(ProviderOptionSelections),
+});
+export type ModelFavorite = typeof ModelFavorite.Type;
 export const ModelFavorites = Schema.Array(ModelFavorite);
+export const MAX_EFFORT_SLIDER_STEPS = 6;
+/**
+ * Ordered model and effort pairs of the composer's effort slider; under two steps it is not shown.
+ * Stored settings read any length, and readers use the first six, so a longer hand edit cannot
+ * make the whole settings file undecodable. A project's entry is written back whole, so it takes
+ * the same schema; only the slider setting itself is limited on write.
+ */
+const StoredEffortSliderSteps = Schema.Array(ModelSelection);
+/** What a write of the slider setting may hold. */
+export const EffortSliderSteps = StoredEffortSliderSteps.check(
+  Schema.isMaxLength(MAX_EFFORT_SLIDER_STEPS),
+);
 export const ProviderModelPreferences = Schema.Record(
   ProviderInstanceId,
   Schema.Struct({
@@ -1062,6 +1080,8 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "sidebarAutoSettleKeepPullRequests",
   "continueThreadsAfterServerUpdate",
   "responseStreamingMode",
+  "favorites",
+  "effortSlider",
 ] as const;
 export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];
 
@@ -1099,6 +1119,8 @@ export const ProjectSettingsOverrides = Schema.Struct({
   sidebarAutoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
+  favorites: Schema.optionalKey(ModelFavorites),
+  effortSlider: Schema.optionalKey(StoredEffortSliderSteps),
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),
@@ -1196,6 +1218,7 @@ export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 export const ServerSettings = Schema.Struct({
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  effortSlider: StoredEffortSliderSteps.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   providerModelPreferences: Schema.NullOr(ProviderModelPreferences).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -1539,12 +1562,16 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),
   ),
   setModelsHidden: Schema.optionalKey(
-    Schema.Array(Schema.Struct({ ...ModelFavorite.fields, hidden: Schema.Boolean })),
+    Schema.Array(Schema.Struct({ ...ModelReference.fields, hidden: Schema.Boolean })),
   ),
   setProviderModelOrder: Schema.optionalKey(
     Schema.Struct({ provider: ProviderInstanceId, modelOrder: Schema.Array(TrimmedString) }),
   ),
+  // Moves the favorites it names into that order; the ones it does not name keep their place after
+  // them, so a favorite another client added in the meantime is not lost.
+  reorderModelFavorites: Schema.optionalKey(Schema.Array(ModelReference)),
   favorites: Schema.optionalKey(ModelFavorites),
+  effortSlider: Schema.optionalKey(EffortSliderSteps),
   providerModelPreferences: Schema.optionalKey(ProviderModelPreferences),
   // Applied under the settings service's write lock, only while still unset.
   migrateModelPreferences: Schema.optionalKey(

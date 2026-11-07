@@ -120,6 +120,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
           worktreesDirectory: true,
           newProjectsDirectory: true,
           threadAutoSettlementScope: true,
+          effortSlider: true,
         });
       }
     }),

@@ -38,6 +38,14 @@ interface ScopedSettingsEnvironment {
 }
 
 const SERVER_KEYS = new Set<string>(Object.keys(ServerSettings.fields));
+// These name a change to the favorites rather than a value to store, so the server applies them
+// under its settings lock and no stored key carries them. They reach environments only: a
+// project's list is written whole, like every other project override.
+const FAVORITE_INTENT_KEYS = [
+  "setModelFavorites",
+  "reorderModelFavorites",
+] as const satisfies ReadonlyArray<keyof ServerSettingsPatch>;
+const SERVER_BOUND_KEYS = new Set<string>([...SERVER_KEYS, ...FAVORITE_INTENT_KEYS]);
 const CLIENT_KEYS = new Set<string>(Object.keys(ClientSettingsSchema.fields));
 const PROJECT_SCOPED_KEYS = new Set<string>(PROJECT_SCOPED_SERVER_SETTING_KEYS);
 
@@ -226,7 +234,7 @@ export function planScopedSettingsPatch(
     Object.entries(patch).filter(([key]) => CLIENT_KEYS.has(key) && !SERVER_KEYS.has(key)),
   ) as ClientSettingsPatch;
   const serverPatch = Object.fromEntries(
-    Object.entries(patch).filter(([key]) => SERVER_KEYS.has(key)),
+    Object.entries(patch).filter(([key]) => SERVER_BOUND_KEYS.has(key)),
   ) as ServerSettingsPatch;
   const serverKeys = Object.keys(serverPatch);
   const { connectedEnvironments } = selectScopedSettingsEnvironments(scope, environments, null);
@@ -432,6 +440,8 @@ function writeWasDropped(value: unknown, before: unknown, saved: unknown): boole
 function droppedSettingKeys(write: ScopedServerWrite, saved: ServerSettings | undefined) {
   if (saved === undefined) return [];
   return Object.entries(write.patch).flatMap(([key, value]) =>
+    // An intent is not stored under its own key, so nothing in the saved settings could show it.
+    SERVER_KEYS.has(key) &&
     writeWasDropped(
       value,
       write.previous[key as keyof ServerSettings],
