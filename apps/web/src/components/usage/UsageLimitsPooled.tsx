@@ -82,7 +82,7 @@ function AccountAvatar({
   readonly account: LimitAccount;
   readonly className?: string;
 }) {
-  if (account.redeem) {
+  if (account.redeem || account.environments.length > 0) {
     return (
       <ProviderInstanceIcon
         driverKind={account.driver}

@@ -269,6 +269,7 @@ import {
 import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
+import { providersFor, withoutUsageLimitSubscriptions } from "./usage/usageLimitSubscriptions.ts";
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
@@ -1728,9 +1729,10 @@ export const layerWsRpc = (
       const loadServerConfig = Effect.fn("ws.loadServerConfig")(function* (options: {
         readonly usageLimitsCommand: boolean;
         readonly workspaceSnapshotsOnDemand: boolean;
+        readonly usageLimitSubscriptions?: boolean | undefined;
       }) {
         const keybindingsConfig = yield* keybindings.loadConfigState;
-        const currentProviders = yield* providerRegistry.getProviders;
+        const currentProviders = providersFor(yield* providerRegistry.getProviders, options);
         const commandProviders = options.usageLimitsCommand
           ? withUsageLimitsCommands(currentProviders, yield* usageLimitSources.current)
           : currentProviders;
@@ -2353,11 +2355,16 @@ export const layerWsRpc = (
                 providers = yield* providerRegistry.refreshInstance(instance.instanceId);
               }
             }
-            if (input.workspaceSnapshotsOnDemand !== true) return { providers };
+            if (input.workspaceSnapshotsOnDemand !== true) {
+              return { providers: withoutUsageLimitSubscriptions(providers) };
+            }
             const commandProviders =
               input.usageLimitsCommand === true
-                ? withUsageLimitsCommands(providers, yield* usageLimitSources.current)
-                : providers;
+                ? withUsageLimitsCommands(
+                    withoutUsageLimitSubscriptions(providers),
+                    yield* usageLimitSources.current,
+                  )
+                : withoutUsageLimitSubscriptions(providers);
             const { instanceId, cwd } = input;
             if (instanceId === undefined || cwd === undefined) {
               return { providers: withoutWorkspaceSnapshots(commandProviders) };
@@ -2430,7 +2437,12 @@ export const layerWsRpc = (
               ),
           ),
         [WS_METHODS.serverUpdateProvider]: (input) =>
-          providerMaintenanceRunner.updateProvider(input),
+          providerMaintenanceRunner.updateProvider(input).pipe(
+            Effect.map((result) => ({
+              ...result,
+              providers: withoutUsageLimitSubscriptions(result.providers),
+            })),
+          ),
         [WS_METHODS.providerConsumeResetCredit]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* (input) {
@@ -3105,6 +3117,7 @@ export const layerWsRpc = (
               const config = yield* loadServerConfig({
                 usageLimitsCommand,
                 workspaceSnapshotsOnDemand,
+                usageLimitSubscriptions: input.usageLimitSubscriptions,
               });
               const keybindingsUpdates = keybindingsChanges.pipe(
                 Stream.map((event) => ({
@@ -3137,6 +3150,7 @@ export const layerWsRpc = (
                     : commandProviders;
                 },
               ).pipe(
+                Stream.map((providers) => providersFor(providers, input)),
                 // Compare initial paired values with the snapshot; blindly dropping them loses changes between snapshot and subscription.
                 (updates) => Stream.concat(rpcInitialItems([config.providers]), updates),
                 Stream.changesWith(
