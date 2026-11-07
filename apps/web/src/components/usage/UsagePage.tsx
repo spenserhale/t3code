@@ -82,6 +82,7 @@ import {
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
+import { UsageLimitGroupsButton } from "./UsageLimitGroupsDialog";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart } from "./UsageProviderChart";
@@ -367,6 +368,14 @@ export function UsagePage() {
     shownHourly && shownWindow.sinceTime !== undefined && shownWindow.untilTime !== undefined
       ? `${formatDateTimeShort(shownWindow.sinceTime, shownWindow.timeZone, hour12)} to ${formatDateTimeShort(shownWindow.untilTime, shownWindow.timeZone, hour12)}`
       : `${formatDayShort(shownWindow.sinceDay)} to ${formatDayShort(shownWindow.untilDay)}`;
+  // First in its row, so the controls after it stay put when Limits opens.
+  const limitGroupsButton = showingLimits ? (
+    <UsageLimitGroupsButton
+      selectedEnvironmentIds={selectedEnvironmentIds}
+      hiddenProviders={hiddenProviders}
+      now={limitsNow}
+    />
+  ) : null;
   const topbarContent = (
     <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 @4xl/usage-header:flex">
       <WorkspaceBreadcrumb ariaLabel="Usage breadcrumb" className="min-w-0">
@@ -402,6 +411,7 @@ export function UsagePage() {
         </span>
       ) : null}
       <div className="ms-auto hidden shrink-0 items-center justify-end gap-2 @4xl/usage-header:flex">
+        {limitGroupsButton}
         {/* Limits are always current, so they have no period. The period sits before the metric
             tabs so dropping it never moves them. */}
         {showingLimits ? null : (
@@ -448,6 +458,7 @@ export function UsagePage() {
         </Button>
       </div>
       <div className="ms-auto flex shrink-0 items-center justify-end gap-1 @4xl/usage-header:hidden">
+        {limitGroupsButton}
         {showingLimits ? null : (
           <Select value={String(windowDays)} onValueChange={(value) => selectWindow(Number(value))}>
             <SelectTrigger
