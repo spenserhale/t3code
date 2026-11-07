@@ -95,7 +95,7 @@ function QueuedRunSender(props: {
             label: senderShell?.title.trim() || "Agent",
           }
         : attribution === "t3code"
-          ? { icon: null, label: "Sent by T3 Code" }
+          ? { icon: null, label: "Sent by SECode" }
           : null;
   if (sender === null) return null;
   return (

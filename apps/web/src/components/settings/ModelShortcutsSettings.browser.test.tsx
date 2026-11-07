@@ -308,7 +308,7 @@ it("keeps the order of favorites but offers no efforts or slider where the serve
   await expect
     .element(screen.getByRole("combobox", { name: "Effort for Sol" }))
     .not.toBeInTheDocument();
-  await expect.element(screen.getByText(/needs a newer T3 Code/).first()).toBeVisible();
+  await expect.element(screen.getByText(/needs a newer SECode/).first()).toBeVisible();
   await expect
     .element(screen.getByRole("list", { name: "Effort slider steps" }))
     .not.toBeInTheDocument();

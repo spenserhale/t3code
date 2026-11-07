@@ -99,7 +99,7 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       const path = yield* Path.Path;
       const home = yield* fs.makeTempDirectoryScoped();
       const command = yield* commandIn({ home });
-      const link = path.join(home, ".local", "bin", "t3");
+      const link = path.join(home, ".local", "bin", "se");
 
       expect(yield* command.state).toEqual({
         supported: true,
@@ -109,13 +109,13 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       });
       const installed = yield* command.install;
       expect(installed.installedPath).toBe(link);
-      expect(installed.launcherPath).toBe(path.join(home, ".t3", "bin", "t3"));
-      expect(yield* fs.readLink(link)).toBe(path.join(home, ".t3", "bin", "t3"));
+      expect(installed.launcherPath).toBe(path.join(home, ".t3", "bin-se", "se"));
+      expect(yield* fs.readLink(link)).toBe(path.join(home, ".t3", "bin-se", "se"));
       expect((yield* command.install).installedPath).toBe(link);
 
       expect((yield* command.uninstall).installedPath).toBeNull();
       expect(yield* fs.exists(link)).toBe(false);
-      expect(yield* fs.exists(path.join(home, ".t3", "bin", "t3"))).toBe(true);
+      expect(yield* fs.exists(path.join(home, ".t3", "bin-se", "se"))).toBe(true);
     }).pipe(Effect.scoped),
   );
 
@@ -125,19 +125,19 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       const path = yield* Path.Path;
       const home = yield* fs.makeTempDirectoryScoped();
       const command = yield* commandIn({ home });
-      const theirs = path.join(home, ".local", "bin", "t3");
+      const theirs = path.join(home, ".local", "bin", "se");
       yield* fs.makeDirectory(path.dirname(theirs), { recursive: true });
       yield* fs.writeFileString(theirs, "npm's t3\n");
       yield* fs.makeDirectory(path.join(home, "bin"), { recursive: true });
-      yield* fs.symlink(path.join(home, "gone"), path.join(home, "bin", "t3"));
+      yield* fs.symlink(path.join(home, "gone"), path.join(home, "bin", "se"));
 
       const error = yield* Effect.flip(command.install);
-      expect(error.message).toContain("Another t3 command is already installed");
+      expect(error.message).toContain("Another se command is already installed");
       yield* command.uninstall;
       expect(yield* fs.readFileString(theirs)).toBe("npm's t3\n");
-      expect(yield* fs.readLink(path.join(home, "bin", "t3"))).toBe(path.join(home, "gone"));
+      expect(yield* fs.readLink(path.join(home, "bin", "se"))).toBe(path.join(home, "gone"));
 
-      const launcher = path.join(home, ".t3", "bin", "t3");
+      const launcher = path.join(home, ".t3", "bin-se", "se");
       yield* fs.writeFileString(launcher, "npm's t3\n");
       process.env.PATH = path.dirname(launcher);
       expect(yield* command.state).toMatchObject({ onPath: false, shadowedBy: launcher });
@@ -158,10 +158,10 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       const after = yield* commandIn({ home, baseDir: path.join(home, "new-t3") });
       expect((yield* after.state).installedPath).toBe(link);
       expect((yield* after.install).installedPath).toBe(link);
-      expect(yield* fs.readLink(link!)).toBe(path.join(home, "new-t3", "bin", "t3"));
+      expect(yield* fs.readLink(link!)).toBe(path.join(home, "new-t3", "bin-se", "se"));
       yield* after.uninstall;
-      expect(yield* fs.exists(path.join(home, ".local", "bin", "t3"))).toBe(false);
-      expect(yield* fs.exists(path.join(home, "bin", "t3"))).toBe(false);
+      expect(yield* fs.exists(path.join(home, ".local", "bin", "se"))).toBe(false);
+      expect(yield* fs.exists(path.join(home, "bin", "se"))).toBe(false);
     }).pipe(Effect.scoped),
   );
 
@@ -172,21 +172,21 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       const home = yield* fs.makeTempDirectoryScoped();
       const shadow = path.join(home, "shadow");
       yield* fs.makeDirectory(shadow);
-      yield* fs.writeFileString(path.join(shadow, "t3"), "#!/bin/sh\n", { mode: 0o755 });
+      yield* fs.writeFileString(path.join(shadow, "se"), "#!/bin/sh\n", { mode: 0o755 });
       process.env.PATH = [shadow, path.join(home, ".local", "bin")].join(":");
 
       const command = yield* commandIn({ home });
-      const theirs = path.join(shadow, "t3");
+      const theirs = path.join(shadow, "se");
       expect((yield* command.state).shadowedBy).toBe(theirs);
       const error = yield* Effect.flip(command.install);
       expect(error.message).toContain(theirs);
-      expect(yield* fs.exists(path.join(home, ".local", "bin", "t3"))).toBe(false);
+      expect(yield* fs.exists(path.join(home, ".local", "bin", "se"))).toBe(false);
 
       yield* fs.remove(theirs);
       const installed = yield* command.install;
       expect(installed).toMatchObject({
         onPath: true,
-        installedPath: path.join(home, ".local", "bin", "t3"),
+        installedPath: path.join(home, ".local", "bin", "se"),
       });
       expect(installed.shadowedBy).toBeUndefined();
     }).pipe(Effect.scoped),
@@ -202,25 +202,25 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
         const folder = path.join(home, "folder");
         const plain = path.join(home, "plain");
         const shadow = path.join(home, "shadow");
-        yield* fs.makeDirectory(path.join(folder, "t3"), { recursive: true });
+        yield* fs.makeDirectory(path.join(folder, "se"), { recursive: true });
         yield* fs.makeDirectory(plain);
-        yield* fs.writeFileString(path.join(plain, "t3"), "notes\n");
+        yield* fs.writeFileString(path.join(plain, "se"), "notes\n");
         // Root can execute mode 0o601; other users must honor the owner permissions.
-        yield* fs.chmod(path.join(plain, "t3"), process.getuid?.() === 0 ? 0o600 : 0o601);
+        yield* fs.chmod(path.join(plain, "se"), process.getuid?.() === 0 ? 0o600 : 0o601);
         yield* fs.makeDirectory(shadow);
-        yield* fs.writeFileString(path.join(shadow, "t3"), "#!/bin/sh\n", { mode: 0o755 });
+        yield* fs.writeFileString(path.join(shadow, "se"), "#!/bin/sh\n", { mode: 0o755 });
         process.env.PATH = [folder, plain, shadow, path.join(home, ".local", "bin")].join(":");
 
         const command = yield* commandIn({ home });
-        expect((yield* command.state).shadowedBy).toBe(path.join(shadow, "t3"));
+        expect((yield* command.state).shadowedBy).toBe(path.join(shadow, "se"));
 
         const error = yield* Effect.flip(command.install);
-        expect(error.message).toContain(path.join(shadow, "t3"));
+        expect(error.message).toContain(path.join(shadow, "se"));
 
         yield* fs.remove(shadow, { recursive: true });
         expect(yield* command.install).toMatchObject({
           onPath: true,
-          installedPath: path.join(home, ".local", "bin", "t3"),
+          installedPath: path.join(home, ".local", "bin", "se"),
         });
       }).pipe(Effect.scoped),
   );
@@ -230,7 +230,7 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const home = yield* fs.makeTempDirectoryScoped();
-      const launcher = path.join(home, ".t3", "bin", "t3");
+      const launcher = path.join(home, ".t3", "bin-se", "se");
       process.env.PATH = [path.dirname(launcher), path.join(home, ".local", "bin")].join(":");
 
       const command = yield* commandIn({ home });
@@ -239,7 +239,7 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       expect(yield* fs.exists(launcher)).toBe(true);
       expect(installed).toMatchObject({
         onPath: true,
-        installedPath: path.join(home, ".local", "bin", "t3"),
+        installedPath: path.join(home, ".local", "bin", "se"),
       });
       expect(installed.shadowedBy).toBeUndefined();
       expect(yield* command.state).toEqual(installed);
@@ -269,7 +269,7 @@ it.layer(NodeServices.layer)("DesktopCliCommand", (it) => {
       registry.failReads = false;
       const launcherDir = DesktopCliShim.launcherPath(
         environmentFor(yield* Path.Path, { home, baseDir: `${home}/.t3`, platform: "win32" }),
-      ).replace(/[\\/]t3\.cmd$/, "");
+      ).replace(/[\\/]se\.cmd$/, "");
       yield* command.install;
       expect(registry.path).toBe(`${userPath};${launcherDir}`);
       yield* command.uninstall;

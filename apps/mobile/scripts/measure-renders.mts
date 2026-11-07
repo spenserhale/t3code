@@ -86,7 +86,7 @@ const connectInspector = Effect.fn("measure.connectInspector")(function* (metro:
     .pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(InspectorTargets)));
   const target = targets.find((entry) => entry.appId.startsWith("com.t3tools.t3code"));
   if (!target)
-    return yield* new MeasureError({ message: `No T3 Code app is attached to Metro at ${metro}.` });
+    return yield* new MeasureError({ message: `No SECode app is attached to Metro at ${metro}.` });
   // Expo closes inspector sockets unless Origin matches Metro's advertised URL; pass that URL as --metro.
   const socket = yield* Socket.makeWebSocket(target.webSocketDebuggerUrl, {
     headers: { origin: new URL(metro).origin },

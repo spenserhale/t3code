@@ -370,7 +370,7 @@ export function ModelShortcutsSettings() {
         description={
           supportsEffortSlider
             ? "The model picker lists favorites first, in this order. A favorite with an effort opens at it instead of the effort you used last."
-            : "The model picker lists favorites first, in this order. Favorite efforts need a newer T3 Code."
+            : "The model picker lists favorites first, in this order. Favorite efforts need a newer SECode."
         }
         control={
           favoritesReadOnly
@@ -392,7 +392,7 @@ export function ModelShortcutsSettings() {
         ) : null}
         {isProjectScope && !supportsEffortSlider ? (
           <p className="px-2 pb-1 text-xs text-muted-foreground">
-            A project keeps its own favorites only on environments running a newer T3 Code.
+            A project keeps its own favorites only on environments running a newer SECode.
           </p>
         ) : null}
         {mixedFavorites ? (
@@ -402,7 +402,7 @@ export function ModelShortcutsSettings() {
         ) : null}
         {unsupportedLabels.length > 0 && connectedEnvironments.length > 1 ? (
           <p className="px-2 pb-1 text-xs text-muted-foreground">
-            Favorite efforts and the slider need a newer T3 Code on {unsupportedLabels.join(", ")}.
+            Favorite efforts and the slider need a newer SECode on {unsupportedLabels.join(", ")}.
           </p>
         ) : null}
         {favorites.length === 0 ? (
@@ -462,7 +462,7 @@ export function ModelShortcutsSettings() {
         description={
           supportsEffortSlider
             ? `Up to ${MAX_EFFORT_SLIDER_STEPS} steps of model and effort, shown above the search in the composer's model picker. Left and Right in an empty search move along it. Fewer than two steps hide the slider.`
-            : "The effort slider needs a newer T3 Code on every selected environment."
+            : "The effort slider needs a newer SECode on every selected environment."
         }
         control={
           !supportsEffortSlider || sliderReadOnly

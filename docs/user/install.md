@@ -101,11 +101,11 @@ Home Manager, update your configuration's nixpkgs input or channel and rebuild.
 Nix manages both the desktop app and the bundled
 `t3` command; use Nix to update them instead of the in-app updater or `t3 update`.
 
-### The `t3` command
+### The `se` command
 
-The desktop app includes the `t3` command-line tool. To run it from any
+The desktop app includes the `se` command-line tool. To run it from any
 terminal, open **Settings → About** and choose **Install** next to
-**t3 command**. On macOS and Linux it adds a `t3` link to a folder on your
+**se command**. On macOS and Linux it adds an `se` link to a folder on your
 `PATH`; on Windows it adds the app's command folder to your `PATH`. Open a new
 terminal afterwards. **Remove** takes it off again. If you already have `t3`
 from npm, it stays as it is.
