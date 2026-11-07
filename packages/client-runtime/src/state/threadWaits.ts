@@ -71,7 +71,6 @@ const EMPTY_INDEX = indexThreadWaits([]);
  * `serverConfigsAtom` is the client's per-environment server config map (web:
  * `environmentPresentations.serverConfigsAtom`). `waits` streams the full list live;
  * `index` is the same list as lookups, empty while unsupported or still loading.
- * @public
  */
 export function createThreadWaitEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,

@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { create } from "zustand";
+import { ThreadWaitPickerHost } from "./ThreadWaitPickerDialog";
 import {
   localSnoozeDate,
   localSnoozeTime,
@@ -59,7 +60,12 @@ export function CustomSnoozeDialogHost() {
   const request = useRequest((state) => state.request);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- resolves any pending snooze request promise with null when the dialog host unmounts
   useEffect(() => () => finish(null), []);
-  return request ? <CustomSnoozeDialog /> : null;
+  return (
+    <>
+      {request ? <CustomSnoozeDialog /> : null}
+      <ThreadWaitPickerHost />
+    </>
+  );
 }
 
 function CustomSnoozeDialog() {

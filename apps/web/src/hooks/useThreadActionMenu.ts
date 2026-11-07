@@ -35,6 +35,8 @@ import {
 } from "../state/entities";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
+import { pickThreadAndWait, stopWaiting } from "../lib/threadWaitActions";
+import { readThreadWaitMenuState } from "../state/threadWaits";
 import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKey,
@@ -148,6 +150,7 @@ export function useThreadActionMenu(input: {
         snoozePresets,
         canShareWithGuest,
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
+        threadWait: readThreadWaitMenuState(threadRef),
       });
       const clicked = await settlePromise(() => api.contextMenu.show(items, position));
       if (clicked._tag === "Failure" || clicked.value === null) return;
@@ -229,6 +232,12 @@ export function useThreadActionMenu(input: {
           return;
         case "unsnooze":
           await reportFailure("Failed to wake thread", () => unsnoozeThread(threadRef));
+          return;
+        case "snooze-until-thread":
+          await pickThreadAndWait(threadRef);
+          return;
+        case "stop-waiting":
+          await stopWaiting(threadRef);
           return;
         case "pin":
           await reportFailure("Failed to pin thread", () => pinThread(threadRef));
