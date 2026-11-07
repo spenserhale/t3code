@@ -153,3 +153,88 @@ describe("1Password driver", () => {
     }).pipe(Effect.provide(op.layer));
   });
 });
+
+describe("1Password logins", () => {
+  const listed = JSON.stringify([
+    {
+      id: "abc123",
+      title: "Grafana",
+      vault: { id: "v1", name: "Work" },
+      urls: [{ primary: true, href: "https://grafana.example.com/login" }],
+    },
+    { id: "nourl", title: "Wi-Fi", vault: { id: "v1", name: "Work" } },
+  ]);
+  const item = JSON.stringify({
+    id: "abc123",
+    fields: [
+      { id: "username", type: "STRING", purpose: "USERNAME", value: "ops@example.com" },
+      { id: "password", type: "CONCEALED", purpose: "PASSWORD", value: "hunter2" },
+      { id: "notes", type: "STRING", purpose: "NOTES", value: "" },
+      { id: "otp", type: "OTP", value: "otpauth://totp/x?secret=ABC", totp: "123456" },
+    ],
+  });
+  const grafana = { id: "abc123", title: "Grafana", vault: "Work", urls: ["https://x"] };
+
+  it.effect("lists logins that have a website, without reading secrets", () => {
+    const op = fakeOp(() => ({ stdout: listed }));
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(yield* driver.logins!.list({ account }), [
+        {
+          id: "abc123",
+          title: "Grafana",
+          vault: "Work",
+          urls: ["https://grafana.example.com/login"],
+        },
+      ]);
+      assert.deepStrictEqual(op.invocations, [
+        [
+          "--cache=false",
+          "item",
+          "list",
+          "--account=my.1password.com",
+          "--categories=Login",
+          "--format=json",
+        ],
+      ]);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect("reads only the requested fields, with the current one-time code", () => {
+    const op = fakeOp(() => ({ stdout: item }));
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(yield* driver.logins!.read({ account }, grafana, ["password"]), {
+        password: "hunter2",
+      });
+      assert.deepStrictEqual(
+        yield* driver.logins!.read({ account }, grafana, ["username", "password", "totp"]),
+        { username: "ops@example.com", password: "hunter2", totp: "123456" },
+      );
+      assert.deepStrictEqual(op.invocations[0], [
+        "--cache=false",
+        "item",
+        "get",
+        "abc123",
+        "--account=my.1password.com",
+        "--reveal",
+        "--format=json",
+      ]);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect("reads a locked or failed account as undefined", () => {
+    const op = fakeOp(() => ({ code: 1, stderr: "[ERROR] account is locked" }));
+    return Effect.gen(function* () {
+      assert.strictEqual(yield* driver.logins!.list({ account }), undefined);
+      assert.strictEqual(yield* driver.logins!.read({ account }, grafana, ["password"]), undefined);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect("never passes an item id that looks like a flag", () => {
+    const op = fakeOp(() => ({ stdout: item }));
+    return Effect.gen(function* () {
+      const flag = { ...grafana, id: "--help" };
+      assert.strictEqual(yield* driver.logins!.read({ account }, flag, ["password"]), undefined);
+      assert.strictEqual(op.invocations.length, 0);
+    }).pipe(Effect.provide(op.layer));
+  });
+});

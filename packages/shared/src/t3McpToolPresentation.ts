@@ -240,6 +240,11 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "browser",
     "browser",
   ),
+  preview_fill_login: tool(
+    ["Fill", "Filling", "Filled", "a saved login in the preview browser"],
+    "browser",
+    "browser",
+  ),
   preview_wait_for: tool(
     ["Wait", "Waiting", "Waited", "for the preview page"],
     "browser",

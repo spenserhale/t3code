@@ -34,6 +34,9 @@ import {
   type PreviewAutomationTypeInput,
   type PreviewAutomationUploadInput,
   type PreviewAutomationWaitForInput,
+  type PreviewAutomationFillLoginRequest,
+  type PreviewAutomationFillLoginResult,
+  type PreviewLoginField,
   PreviewClearProfileError,
   type PreviewEvent,
   type PreviewNavStatus,
@@ -77,9 +80,11 @@ import * as ServerConfig from "../config.ts";
 import { resolveRootCliCommand } from "../cli/invocation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+import * as BrowserLogins from "./BrowserLogins.ts";
 import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as PreviewManager from "./Manager.ts";
+import * as ServerBrowserLogin from "./ServerBrowserLogin.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
@@ -465,6 +470,7 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const previewBrowser = yield* PreviewBrowser.PreviewBrowser;
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
+  const browserLogins = yield* Effect.serviceOption(BrowserLogins.BrowserLogins);
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
@@ -2116,6 +2122,107 @@ const make = Effect.gen(function* () {
     );
   };
 
+  const loginStep = <A>(effect: Effect.Effect<A, BrowserLogins.BrowserLoginError>) =>
+    runPromise(
+      effect.pipe(
+        Effect.mapError((error) => ServerBrowserLogin.loginError(error.message)),
+        Effect.catchDefect(() =>
+          Effect.fail(ServerBrowserLogin.loginError("The password manager failed.")),
+        ),
+      ),
+    );
+
+  const fillLogin = async (
+    tab: ServerTab,
+    input: PreviewAutomationFillLoginRequest,
+  ): Promise<PreviewAutomationFillLoginResult> => {
+    if (Option.isNone(browserLogins)) {
+      throw ServerBrowserLogin.loginError("This server cannot fill browser logins.");
+    }
+    const logins = browserLogins.value;
+    // The approval dialog and the user who answers it live in the desktop app.
+    if (!tab.desktop) {
+      throw ServerBrowserLogin.loginError(
+        "Logins can only be filled in the desktop app's browser. Ask the user to sign in.",
+      );
+    }
+    const pageUrl = tab.page.url();
+    const origin = URL.canParse(pageUrl) ? new URL(pageUrl).origin : pageUrl;
+    const { provider, logins: candidates } = await loginStep(logins.candidates(pageUrl));
+    const summary = (login: (typeof candidates)[number]) => ({
+      id: login.id,
+      title: login.title,
+      ...(login.vault ? { vault: login.vault } : {}),
+    });
+    const login =
+      input.login === undefined
+        ? candidates.length === 1
+          ? candidates[0]
+          : undefined
+        : candidates.find((candidate) => candidate.id === input.login);
+    if (login === undefined) {
+      return candidates.length === 0
+        ? { status: "no_login", tabId: tab.tabId, origin }
+        : { status: "choose", tabId: tab.tabId, origin, candidates: candidates.map(summary) };
+    }
+    const fields = [...new Set<PreviewLoginField>(input.fields ?? ["username", "password"])];
+    const locators = Object.fromEntries(
+      Object.entries(input.locators ?? {}).flatMap(([field, locator]) => {
+        const target = ServerBrowserPage.targetLocator(tab.page, { locator });
+        return target === null ? [] : [[field, target]];
+      }),
+    );
+    const frameCovered = (frameUrl: string) => BrowserLogins.loginCoversPage(login.urls, frameUrl);
+    const { targets, missing } = await ServerBrowserLogin.findLoginTargets({
+      page: tab.page,
+      fields,
+      locators,
+      frameCovered,
+    });
+    if (missing.length > 0) {
+      throw ServerBrowserLogin.loginError(
+        `No ${missing.join(" or ")} field was found. Pass its aria-ref from preview_snapshot in \`locators\`, or leave it out of \`fields\`.`,
+      );
+    }
+    if (await runPromise(logins.needsApproval(tab.threadId))) {
+      const approved = await runPromise(
+        desktopChannel.approveLogin(
+          { threadId: tab.threadId, tabId: tab.tabId },
+          {
+            providerLabel: provider.label,
+            loginTitle: login.title,
+            ...(login.vault ? { vault: login.vault } : {}),
+            origin,
+            ...(input.requester?.threadTitle ? { threadTitle: input.requester.threadTitle } : {}),
+            ...(input.requester?.provider ? { agent: input.requester.provider } : {}),
+            scope: provider.approval,
+          },
+        ),
+      );
+      if (!approved) throw ServerBrowserLogin.loginError("The user did not approve this login.");
+      await runPromise(logins.recordApproval(tab.threadId));
+    }
+    const values = await loginStep(logins.read(login, fields));
+    const absent = fields.filter((field) => values[field] === undefined);
+    if (absent.length > 0) {
+      throw ServerBrowserLogin.loginError(
+        `The login "${login.title}" has no ${absent.join(" or ")}.`,
+      );
+    }
+    // The page may have moved on while the user was deciding.
+    if (!frameCovered(tab.page.url())) {
+      throw ServerBrowserLogin.loginError("The page left the login's site before it was filled.");
+    }
+    ServerBrowserLogin.rememberFilled(
+      tab.page,
+      fields.filter((field) => field !== "username").map((field) => values[field] ?? ""),
+    );
+    for (const field of fields) {
+      await targets.get(field)?.fill(values[field] ?? "", { timeout: 10_000 });
+    }
+    return { status: "filled", tabId: tab.tabId, login: summary(login), filled: fields };
+  };
+
   const executeTabOperation = async (tab: ServerTab, request: PreviewAutomationRequest) => {
     const input = request.input;
     switch (request.operation) {
@@ -2152,11 +2259,15 @@ const make = Effect.gen(function* () {
         return { tabId: tab.tabId, colorScheme };
       }
       case "snapshot": {
-        return withScreencastsPaused(tab, () =>
+        const snapshot = await withScreencastsPaused(tab, () =>
           ServerBrowserPage.snapshot({
             ...tab,
             renderScale: tab.desktop ? "display" : RENDER_SCALE,
           }),
+        );
+        return ServerBrowserLogin.scrubSecrets(
+          snapshot,
+          ServerBrowserLogin.filledSecrets(tab.page),
         );
       }
       case "click": {
@@ -2194,11 +2305,23 @@ const make = Effect.gen(function* () {
         return recordAction(tab, "scroll", () =>
           ServerBrowserPage.scroll(tab.page, input as PreviewAutomationScrollInput),
         );
-      case "evaluate":
-        return ServerBrowserPage.evaluate(
+      case "evaluate": {
+        const secrets = ServerBrowserLogin.filledSecrets(tab.page);
+        if (await ServerBrowserLogin.pageHoldsSecret(tab.page, secrets)) {
+          throw ServerBrowserLogin.loginError(
+            "A password the password manager filled is still in this page. Submit or leave the form first.",
+          );
+        }
+        const value = await ServerBrowserPage.evaluate(
           tab.cdp,
           input as PreviewAutomationEvaluateInput,
           request.timeoutMs,
+        );
+        return ServerBrowserLogin.scrubSecrets(value, secrets);
+      }
+      case "fillLogin":
+        return recordAction(tab, "fillLogin", () =>
+          fillLogin(tab, input as PreviewAutomationFillLoginRequest),
         );
       case "waitFor":
         return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);

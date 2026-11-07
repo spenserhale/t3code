@@ -831,6 +831,20 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["allow disable enable open drive preview tools sessions project override"],
   },
   {
+    id: "browser-login-provider",
+    title: "Password manager for logins",
+    to: "/settings/browser",
+    searchTerms: ["agent sign in log in credentials 1password fill website browser"],
+    secretsFeatureOnly: true,
+  },
+  {
+    id: "browser-login-approval",
+    title: "Ask before filling",
+    to: "/settings/browser",
+    searchTerms: ["login approval every once per thread until restart dialog 1password"],
+    secretsFeatureOnly: true,
+  },
+  {
     id: "device-sources",
     title: "Device sources",
     to: "/settings/devices",

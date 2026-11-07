@@ -99,7 +99,7 @@ const refsFor = (page: Page) => {
   return state;
 };
 
-const targetLocator = (
+export const targetLocator = (
   page: Page,
   input: { readonly locator?: string | undefined; readonly selector?: string | undefined },
 ): Locator | null => {
