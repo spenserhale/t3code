@@ -59,9 +59,13 @@ export class DesktopBrowserChannel extends Context.Service<
     ) => Effect.Effect<void>;
     /** Never fails. A failed write means a broken channel; the next backend starts with no turns. */
     readonly turn: (threadId: string, active: boolean) => Effect.Effect<void>;
-    /** Asks the user in a native dialog; a missing app, a closed dialog, or two minutes is a no. */
+    /**
+     * Asks the user in a native dialog. A missing app, a closed dialog, or no answer within
+     * `timeoutMs` (at most two minutes) is a no.
+     */
     readonly approveLogin: (
       key: DesktopTabKey,
+      timeoutMs: number,
       prompt: DesktopLoginPrompt,
     ) => Effect.Effect<boolean>;
   }
@@ -251,17 +255,19 @@ const make = Effect.gen(function* () {
     pointer: Effect.fn("DesktopBrowserChannel.pointer")(function (key, pointer) {
       return command({ type: "pointer", ...key, ...pointer });
     }),
-    approveLogin: Effect.fn("DesktopBrowserChannel.approveLogin")(function* (key, prompt) {
-      const requestId = NodeCrypto.randomUUID();
-      const answer = yield* Deferred.make<boolean>();
-      loginApprovals.set(requestId, answer);
-      return yield* command({ type: "loginApproval", ...key, requestId, ...prompt }).pipe(
-        Effect.andThen(Deferred.await(answer)),
-        Effect.timeoutOption(LOGIN_APPROVAL_TIMEOUT),
-        Effect.map((approved) => Option.getOrElse(approved, () => false)),
-        Effect.ensuring(Effect.sync(() => loginApprovals.delete(requestId))),
-      );
-    }),
+    approveLogin: Effect.fn("DesktopBrowserChannel.approveLogin")(
+      function* (key, timeoutMs, prompt) {
+        const requestId = NodeCrypto.randomUUID();
+        const answer = yield* Deferred.make<boolean>();
+        loginApprovals.set(requestId, answer);
+        return yield* command({ type: "loginApproval", ...key, requestId, ...prompt }).pipe(
+          Effect.andThen(Deferred.await(answer)),
+          Effect.timeoutOption(Duration.min(Duration.millis(timeoutMs), LOGIN_APPROVAL_TIMEOUT)),
+          Effect.map((approved) => Option.getOrElse(approved, () => false)),
+          Effect.ensuring(Effect.sync(() => loginApprovals.delete(requestId))),
+        );
+      },
+    ),
   });
 });
 

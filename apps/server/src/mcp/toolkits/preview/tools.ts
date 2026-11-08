@@ -195,7 +195,7 @@ const PreviewEvaluateTool = browserTool(
 const PreviewFillLoginTool = browserTool(
   Tool.make("preview_fill_login", {
     description:
-      "On a login page, fill the user's saved login instead of asking for a password. You never see the values; the user may be asked to approve. `choose`: call again with a `login` id. `no_login`: ask the user. Then submit the form yourself.",
+      "On a login page, fill the user's saved login instead of asking for a password. You never see the password or code; the user may be asked to approve. `choose`: call again with a `login` id. `no_login`: ask the user. Then submit the form yourself.",
     parameters: PreviewAutomationFillLoginInput,
     success: Schema.Union(
       PreviewAutomationFillLoginResult.members.map((member) =>

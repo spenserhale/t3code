@@ -45,7 +45,7 @@ const make = Effect.gen(function* () {
         `${who || "An agent"} wants to sign in to ${prompt.origin} with "${prompt.loginTitle}"${
           prompt.vault ? ` from ${prompt.vault}` : ""
         }.`,
-        "The agent will not see the username, password, or code.",
+        "The agent will not see the password or code.",
         SCOPE_NOTE[prompt.scope],
       ].join("\n\n");
       return yield* oneAtATime.withPermits(1)(
