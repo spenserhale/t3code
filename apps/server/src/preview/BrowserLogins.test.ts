@@ -33,21 +33,26 @@ describe("loginCoversPage", () => {
 });
 
 describe("scrubSecrets", () => {
-  it("replaces filled secrets everywhere except image bytes", () => {
+  it("replaces filled secrets in keys and values, leaving only media bytes", () => {
     const secrets = new Set(["hunter2", "123456"]);
     const scrubbed = scrubSecrets(
       {
         visibleText: "code 123456",
         consoleEntries: [{ text: "pw=hunter2" }],
-        screenshot: { data: "aGVsbG8hunter2" },
+        screenshot: { mimeType: "image/png", data: "aGVsbG8hunter2", width: 1 },
+        result: { hunter2: true, screenshot: "123456" },
+        error: { message: "Error: 123456" },
         count: 3,
       },
       secrets,
     );
-    assert.deepStrictEqual(scrubbed, {
-      visibleText: "code [filled by password manager]",
-      consoleEntries: [{ text: "pw=[filled by password manager]" }],
-      screenshot: { data: "aGVsbG8hunter2" },
+    const redacted = "[filled by password manager]";
+    assert.deepStrictEqual<unknown>(scrubbed, {
+      visibleText: `code ${redacted}`,
+      consoleEntries: [{ text: `pw=${redacted}` }],
+      screenshot: { mimeType: "image/png", data: "aGVsbG8hunter2", width: 1 },
+      result: { [redacted]: true, screenshot: redacted },
+      error: { message: `Error: ${redacted}` },
       count: 3,
     });
   });
@@ -139,20 +144,68 @@ describe("BrowserLogins", () => {
       const logins = yield* BrowserLogins.BrowserLogins;
       const setApproval = (approval: "request" | "thread" | "application") =>
         settings.updateSettings({ browserLogins: { secretProviderId: providerId, approval } });
+      const revision = () =>
+        logins.candidates("https://github.com/").pipe(Effect.map((found) => found.revision));
 
-      assert.isTrue(yield* logins.needsApproval("thread-a"));
-      yield* logins.recordApproval("thread-a");
-      assert.isFalse(yield* logins.needsApproval("thread-a"));
-      assert.isTrue(yield* logins.needsApproval("thread-b"));
+      let at = yield* revision();
+      assert.isTrue(yield* logins.needsApproval(at, "thread-a"));
+      yield* logins.recordApproval(at, "thread-a");
+      assert.isFalse(yield* logins.needsApproval(at, "thread-a"));
+      assert.isTrue(yield* logins.needsApproval(at, "thread-b"));
 
       yield* setApproval("request");
-      yield* logins.recordApproval("thread-a");
-      assert.isTrue(yield* logins.needsApproval("thread-a"));
+      at = yield* revision();
+      yield* logins.recordApproval(at, "thread-a");
+      assert.isTrue(yield* logins.needsApproval(at, "thread-a"));
+
+      // Back to once per thread: the earlier approval is forgotten.
+      yield* setApproval("thread");
+      at = yield* revision();
+      assert.isTrue(yield* logins.needsApproval(at, "thread-a"));
 
       yield* setApproval("application");
-      assert.isTrue(yield* logins.needsApproval("thread-a"));
-      yield* logins.recordApproval("thread-a");
-      assert.isFalse(yield* logins.needsApproval("thread-b"));
+      at = yield* revision();
+      assert.isTrue(yield* logins.needsApproval(at, "thread-a"));
+      yield* logins.recordApproval(at, "thread-a");
+      assert.isFalse(yield* logins.needsApproval(at, "thread-b"));
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("forgets approvals when logins are turned off and on", () => {
+    const { layer } = makeService([github]);
+    return Effect.gen(function* () {
+      const settings = yield* Settings.ServerSettingsService;
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const { revision } = yield* logins.candidates("https://github.com/");
+      yield* logins.recordApproval(revision, "thread-a");
+      yield* settings.updateSettings({ browserLogins: { approval: "thread" } });
+      yield* logins.candidates("https://github.com/").pipe(Effect.flip);
+      yield* settings.updateSettings({
+        browserLogins: { secretProviderId: providerId, approval: "thread" },
+      });
+      const again = yield* logins.candidates("https://github.com/");
+      assert.strictEqual(again.revision, revision);
+      assert.isTrue(yield* logins.needsApproval(again.revision, "thread-a"));
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("rejects an answer or a read begun under a setting that has since changed", () => {
+    const { layer } = makeService([github]);
+    return Effect.gen(function* () {
+      const settings = yield* Settings.ServerSettingsService;
+      const logins = yield* BrowserLogins.BrowserLogins;
+      yield* settings.updateSettings({
+        browserLogins: { secretProviderId: providerId, approval: "request" },
+      });
+      const { revision } = yield* logins.candidates("https://github.com/");
+      // The user widens the setting while the "every login" prompt is open.
+      yield* settings.updateSettings({
+        browserLogins: { secretProviderId: providerId, approval: "application" },
+      });
+      yield* logins.recordApproval(revision, "thread-a").pipe(Effect.flip);
+      yield* logins.read(revision, github, ["password"]).pipe(Effect.flip);
+      const now = yield* logins.candidates("https://github.com/");
+      assert.isTrue(yield* logins.needsApproval(now.revision, "thread-b"));
     }).pipe(Effect.provide(layer));
   });
 });

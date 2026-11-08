@@ -80,6 +80,59 @@ export const findLoginTargets = async (input: {
   return { targets, missing };
 };
 
+/**
+ * Writes one value into the element a locator points at, if its document is still on the site
+ * the login covers. The origin is checked in the same page task as the write, and a handle from a
+ * document that has since navigated cannot be evaluated, so a redirect cannot catch the value.
+ * The field is drawn as dots (even if the page later reveals it) so images and recordings stay clean.
+ */
+export const fillCovered = async (input: {
+  readonly target: Locator;
+  readonly value: string;
+  readonly frameCovered: (frameUrl: string) => boolean;
+}) => {
+  const handle = await input.target.elementHandle({ timeout: 10_000 });
+  if (handle === null) throw loginError("A login field disappeared before it was filled.");
+  try {
+    const frame = await handle.ownerFrame();
+    const frameUrl = frame?.url() ?? "";
+    if (frame === null || !input.frameCovered(frameUrl)) {
+      throw loginError("The page left the login's site before it was filled.");
+    }
+    const written = await handle.evaluate(
+      (element, { value, origin }) => {
+        // Runs in the page; the server's types have no DOM.
+        const page = globalThis as unknown as {
+          readonly location: { readonly origin: string };
+          readonly Event: new (type: string, init: { readonly bubbles: boolean }) => unknown;
+        };
+        if (page.location.origin !== origin) return false;
+        const field = element as unknown as {
+          readonly style: { setProperty: (name: string, value: string) => void };
+          focus: () => void;
+          dispatchEvent: (event: unknown) => boolean;
+        };
+        const setter = Object.getOwnPropertyDescriptor(
+          Object.getPrototypeOf(element),
+          "value",
+        )?.set;
+        if (setter === undefined) return false;
+        field.style.setProperty("-webkit-text-security", "disc");
+        field.focus();
+        // The prototype's setter, so frameworks that track the value (React) see the change.
+        setter.call(element, value);
+        field.dispatchEvent(new page.Event("input", { bubbles: true }));
+        field.dispatchEvent(new page.Event("change", { bubbles: true }));
+        return true;
+      },
+      { value: input.value, origin: new URL(frameUrl).origin },
+    );
+    if (!written) throw loginError("The page left the login's site before it was filled.");
+  } finally {
+    await handle.dispose().catch(() => undefined);
+  }
+};
+
 const filled = new WeakMap<Page, Set<string>>();
 
 /** Secrets filled into a page, kept only to scrub them from what the agent reads back. */
@@ -93,22 +146,27 @@ export const rememberFilled = (page: Page, values: ReadonlyArray<string>) => {
 
 const REDACTED = "[filled by password manager]";
 
-/** Replaces every filled secret in a value bound for the agent. */
+/**
+ * Replaces every filled secret in a value bound for the agent, in keys as well as values. Only
+ * image or video bytes (`data` beside a `mimeType`) are left alone: a short secret could match
+ * inside them by chance, and the filled fields are drawn as dots.
+ */
 export const scrubSecrets = <A>(value: A, secrets: ReadonlySet<string>): A => {
   if (secrets.size === 0) return value;
+  const scrubText = (text: string) => {
+    let next = text;
+    for (const secret of secrets) next = next.split(secret).join(REDACTED);
+    return next;
+  };
   const scrub = (current: unknown): unknown => {
-    if (typeof current === "string") {
-      let next = current;
-      for (const secret of secrets) next = next.split(secret).join(REDACTED);
-      return next;
-    }
+    if (typeof current === "string") return scrubText(current);
     if (Array.isArray(current)) return current.map(scrub);
     if (current !== null && typeof current === "object") {
+      const media = typeof (current as { readonly mimeType?: unknown }).mimeType === "string";
       return Object.fromEntries(
-        // Image bytes are left alone; a short secret could match inside them by chance.
         Object.entries(current).map(([key, entry]) => [
-          key,
-          key === "screenshot" ? entry : scrub(entry),
+          scrubText(key),
+          media && key === "data" ? entry : scrub(entry),
         ]),
       );
     }
@@ -117,17 +175,22 @@ export const scrubSecrets = <A>(value: A, secrets: ReadonlySet<string>): A => {
   return scrub(value) as A;
 };
 
-/** Whether a filled password still sits in an input of the page, where script could read it. */
+/**
+ * Whether a filled secret still sits in any field of the page, where script could read or
+ * transform it. A frame that cannot be checked counts as holding one.
+ */
 export const pageHoldsSecret = async (page: Page, secrets: ReadonlySet<string>) => {
   if (secrets.size === 0) return false;
   for (const frame of page.frames()) {
+    if (frame.isDetached()) continue;
     const values = await frame
-      .locator('input[type="password"]')
-      .evaluateAll((inputs) =>
-        inputs.map((input) => (input as unknown as { readonly value: string }).value),
+      .locator("input, textarea")
+      .evaluateAll((fields) =>
+        fields.map((field) => (field as unknown as { readonly value: string }).value),
       )
-      .catch(() => [] as string[]);
-    if (values.some((value) => secrets.has(value))) return true;
+      .catch(() => undefined);
+    if (values === undefined) return !frame.isDetached();
+    if (values.some((value) => [...secrets].some((secret) => value.includes(secret)))) return true;
   }
   return false;
 };
