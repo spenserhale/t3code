@@ -13,6 +13,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import { BUILT_IN_SECRET_PROVIDER_DRIVER_LIST } from "../secrets/secretProviderDefinitions.ts";
 import * as Settings from "../serverSettings.ts";
@@ -38,17 +39,27 @@ export class BrowserLogins extends Context.Service<
     readonly candidates: (pageUrl: string) => Effect.Effect<
       {
         readonly provider: BrowserLoginProvider;
+        /** The settings these logins came from; later steps fail once it changes. */
+        readonly revision: string;
         readonly logins: ReadonlyArray<SecretProviderLogin>;
       },
       BrowserLoginError
     >;
     readonly read: (
+      revision: string,
       login: SecretProviderLogin,
       fields: ReadonlyArray<SecretProviderLoginField>,
     ) => Effect.Effect<SecretProviderLoginValues, BrowserLoginError>;
     /** Whether the user must approve before a fill on this thread under the current setting. */
-    readonly needsApproval: (threadId: string) => Effect.Effect<boolean>;
-    readonly recordApproval: (threadId: string) => Effect.Effect<void>;
+    readonly needsApproval: (
+      revision: string,
+      threadId: string,
+    ) => Effect.Effect<boolean, BrowserLoginError>;
+    /** Records the answer to a prompt shown under `revision`, never under a newer setting. */
+    readonly recordApproval: (
+      revision: string,
+      threadId: string,
+    ) => Effect.Effect<void, BrowserLoginError>;
   }
 >()("t3/preview/BrowserLogins") {}
 
@@ -83,6 +94,7 @@ export const loginCoversPage = (urls: ReadonlyArray<string>, pageUrl: string): b
 
 interface Resolved {
   readonly provider: BrowserLoginProvider;
+  readonly revision: string;
   readonly config: unknown;
   readonly logins: SecretProviderLogins;
 }
@@ -107,8 +119,10 @@ const resolve = (
       message: `The password manager chosen for browser logins (${id}) is missing or cannot fill logins. The user can fix it in Settings > Browser.`,
     });
   }
+  const approval = settings.browserLogins.approval;
   return {
-    provider: { id, label: driver.definition.label, approval: settings.browserLogins.approval },
+    provider: { id, label: driver.definition.label, approval },
+    revision: [id, configured.kind, encodeConfig(configured.config), approval].join("\u0000"),
     config: configured.config,
     logins: driver.logins,
   };
@@ -124,8 +138,20 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     readonly at: number;
     readonly logins: ReadonlyArray<SecretProviderLogin>;
   } | null = null;
-  // Approvals are kept for the server's life and keyed by the setting, so changing it starts over.
+  // Approvals last for the server's life; any change to the provider, its config, or the approval
+  // setting forgets them all, so turning logins off and on again asks again. Seen both on each
+  // read and on the change stream, which catches an off-and-on between two fills.
   const approvals = new Set<string>();
+  let seenRevision: string | undefined;
+  const see = (resolved: Resolved | BrowserLoginError) => {
+    const revision = resolved instanceof BrowserLoginError ? "" : resolved.revision;
+    if (seenRevision !== undefined && seenRevision !== revision) approvals.clear();
+    seenRevision = revision;
+  };
+  yield* settingsService.streamChanges.pipe(
+    Stream.runForEach((settings) => Effect.sync(() => see(resolve(drivers, settings)))),
+    Effect.forkScoped,
+  );
 
   const current = settingsService.getSettings.pipe(
     Effect.mapError(
@@ -133,21 +159,34 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     ),
     Effect.flatMap((settings) => {
       const resolved = resolve(drivers, settings);
+      see(resolved);
       return resolved instanceof BrowserLoginError
         ? Effect.fail(resolved)
         : Effect.succeed(resolved);
     }),
   );
 
-  const approvalKey = (provider: BrowserLoginProvider, threadId: string) =>
-    provider.approval === "application"
-      ? `${provider.id}\u0000application`
-      : `${provider.id}\u0000thread\u0000${threadId}`;
+  const approvalKey = (resolved: Resolved, threadId: string) =>
+    resolved.provider.approval === "application"
+      ? `${resolved.revision}\u0000application`
+      : `${resolved.revision}\u0000thread\u0000${threadId}`;
+
+  const currentAt = (revision: string) =>
+    current.pipe(
+      Effect.filterOrFail(
+        (resolved) => resolved.revision === revision,
+        () =>
+          new BrowserLoginError({
+            reason: "not_configured",
+            message: "The browser login settings changed. Try again.",
+          }),
+      ),
+    );
 
   const candidates: BrowserLogins["Service"]["candidates"] = Effect.fn("BrowserLogins.candidates")(
     function* (pageUrl) {
       const resolved = yield* current;
-      const key = `${resolved.provider.id}\u0000${encodeConfig(resolved.config)}`;
+      const key = resolved.revision;
       const now = yield* Clock.currentTimeMillis;
       let logins =
         listCache?.key === key && now - listCache.at < LIST_CACHE_MS ? listCache.logins : undefined;
@@ -166,14 +205,15 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
       }
       return {
         provider: resolved.provider,
+        revision: resolved.revision,
         logins: logins.filter((login) => loginCoversPage(login.urls, pageUrl)),
       };
     },
   );
 
   const read: BrowserLogins["Service"]["read"] = Effect.fn("BrowserLogins.read")(
-    function* (login, fields) {
-      const resolved = yield* current;
+    function* (revision, login, fields) {
+      const resolved = yield* currentAt(revision);
       const values = yield* resolved.logins
         .read(resolved.config, login, fields)
         .pipe(Effect.provideContext(driverServices));
@@ -190,16 +230,16 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   return BrowserLogins.of({
     candidates,
     read,
-    needsApproval: Effect.fn("BrowserLogins.needsApproval")(function* (threadId) {
-      const resolved = yield* current.pipe(Effect.option);
-      if (resolved._tag === "None") return true;
-      const { provider } = resolved.value;
-      return provider.approval === "request" || !approvals.has(approvalKey(provider, threadId));
+    needsApproval: Effect.fn("BrowserLogins.needsApproval")(function* (revision, threadId) {
+      const resolved = yield* currentAt(revision);
+      return (
+        resolved.provider.approval === "request" || !approvals.has(approvalKey(resolved, threadId))
+      );
     }),
-    recordApproval: Effect.fn("BrowserLogins.recordApproval")(function* (threadId) {
-      const resolved = yield* current.pipe(Effect.option);
-      if (resolved._tag === "None" || resolved.value.provider.approval === "request") return;
-      approvals.add(approvalKey(resolved.value.provider, threadId));
+    recordApproval: Effect.fn("BrowserLogins.recordApproval")(function* (revision, threadId) {
+      const resolved = yield* currentAt(revision);
+      if (resolved.provider.approval === "request") return;
+      approvals.add(approvalKey(resolved, threadId));
     }),
   });
 });
