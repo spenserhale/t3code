@@ -2,7 +2,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from "playwrig
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { loginCoversPage } from "./BrowserLogins.ts";
-import { fillCovered, pageHoldsSecret } from "./ServerBrowserLogin.ts";
+import { documentId, fillCovered } from "./ServerBrowserLogin.ts";
 
 const frameCovered = (url: string) => loginCoversPage(["https://good.test"], url);
 
@@ -38,6 +38,21 @@ describe("filling a saved login", () => {
   const frameInput = () => page.frameLocator("iframe").locator("#password");
 
   it("fills a field on the login's site, as input the page sees, drawn as dots", async () => {
+    // Script that wrapped the value setter beforehand must not be handed the value.
+    await page.evaluate(() => {
+      const scope = globalThis as unknown as {
+        HTMLInputElement: { prototype: object };
+        hooked?: string;
+      };
+      const native = Object.getOwnPropertyDescriptor(scope.HTMLInputElement.prototype, "value")!;
+      Object.defineProperty(scope.HTMLInputElement.prototype, "value", {
+        ...native,
+        set(this: unknown, value: string) {
+          scope.hooked = value;
+          native.set!.call(this, value);
+        },
+      });
+    });
     await page.locator("#otp").evaluate((element) => {
       const otp = element as unknown as {
         value: string;
@@ -46,7 +61,12 @@ describe("filling a saved login", () => {
       };
       otp.addEventListener("input", () => (otp.dataset.seen = otp.value));
     });
-    await fillCovered({ target: page.locator("#otp"), value: "123456", frameCovered });
+    await fillCovered({
+      target: page.locator("#otp"),
+      value: "123456",
+      frameCovered,
+      timeoutMs: 5_000,
+    });
     const state = await page.locator("#otp").evaluate((otp) => {
       const field = otp as unknown as {
         value: string;
@@ -60,6 +80,7 @@ describe("filling a saved login", () => {
       };
     });
     expect(state).toEqual({ value: "123456", seen: "123456", security: "disc" });
+    expect(await page.evaluate(() => (globalThis as { hooked?: string }).hooked)).toBeUndefined();
   });
 
   it("refuses a frame that moved to another site after the field was chosen", async () => {
@@ -72,23 +93,22 @@ describe("filling a saved login", () => {
       .locator("iframe")
       .evaluate((frame) => ((frame as unknown as { src: string }).src = "https://evil.test/frame"));
     await (await moved).waitForLoadState();
-    await expect(fillCovered({ target, value: "hunter2", frameCovered })).rejects.toThrow(
-      "left the login's site",
-    );
+    await expect(
+      fillCovered({ target, value: "hunter2", frameCovered, timeoutMs: 5_000 }),
+    ).rejects.toThrow("left the login's site");
     expect(await target.inputValue()).toBe("");
   });
 
-  it("sees a filled value in any field, whatever its type", async () => {
-    const secrets = new Set(["hunter2", "123456"]);
-    expect(await pageHoldsSecret(page, secrets)).toBe(false);
-    await fillCovered({ target: page.locator("#otp"), value: "123456", frameCovered });
-    expect(await pageHoldsSecret(page, secrets)).toBe(true);
-    await page.locator("#otp").fill("");
-    await fillCovered({ target: frameInput(), value: "hunter2", frameCovered });
-    // Revealing the password turns it into a text field; it still counts.
-    await frameInput().evaluate((input) => ((input as unknown as { type: string }).type = "text"));
-    expect(await pageHoldsSecret(page, secrets)).toBe(true);
-    await page.frameLocator("iframe").locator("input").fill("");
-    expect(await pageHoldsSecret(page, secrets)).toBe(false);
+  it("names a document until the page loads a new one", async () => {
+    const cdp = await context.newCDPSession(page);
+    const first = await documentId(cdp);
+    await page.evaluate(() =>
+      (
+        globalThis as unknown as { history: { pushState: (...args: unknown[]) => void } }
+      ).history.pushState({}, "", "/next"),
+    );
+    expect(await documentId(cdp)).toBe(first);
+    await page.reload();
+    expect(await documentId(cdp)).not.toBe(first);
   });
 });

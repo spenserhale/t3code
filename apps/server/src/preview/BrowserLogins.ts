@@ -39,7 +39,7 @@ export class BrowserLogins extends Context.Service<
     readonly candidates: (pageUrl: string) => Effect.Effect<
       {
         readonly provider: BrowserLoginProvider;
-        /** The settings these logins came from; later steps fail once it changes. */
+        /** Names the settings these logins came from; later steps fail once they change at all. */
         readonly revision: string;
         readonly logins: ReadonlyArray<SecretProviderLogin>;
       },
@@ -60,6 +60,8 @@ export class BrowserLogins extends Context.Service<
       revision: string,
       threadId: string,
     ) => Effect.Effect<void, BrowserLoginError>;
+    /** Fails if the settings changed since `revision`, for a last check before filling. */
+    readonly check: (revision: string) => Effect.Effect<void, BrowserLoginError>;
   }
 >()("t3/preview/BrowserLogins") {}
 
@@ -138,17 +140,27 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     readonly at: number;
     readonly logins: ReadonlyArray<SecretProviderLogin>;
   } | null = null;
-  // Approvals last for the server's life; any change to the provider, its config, or the approval
-  // setting forgets them all, so turning logins off and on again asks again. Seen both on each
-  // read and on the change stream, which catches an off-and-on between two fills.
+  // Approvals last for the server's life. Any change to the provider, its config, or the approval
+  // setting starts a new generation and forgets them all; a step begun in an older generation
+  // fails, even if the settings have since changed back.
   const approvals = new Set<string>();
+  let generation = 0;
   let seenRevision: string | undefined;
   const see = (resolved: Resolved | BrowserLoginError) => {
     const revision = resolved instanceof BrowserLoginError ? "" : resolved.revision;
-    if (seenRevision !== undefined && seenRevision !== revision) approvals.clear();
+    if (seenRevision !== undefined && seenRevision !== revision) {
+      generation++;
+      approvals.clear();
+    }
     seenRevision = revision;
   };
-  yield* settingsService.streamChanges.pipe(
+  // Subscribed before the first read, so no change between the two is missed.
+  const changes = yield* settingsService.subscribeChanges;
+  yield* settingsService.getSettings.pipe(
+    Effect.tap((settings) => Effect.sync(() => see(resolve(drivers, settings)))),
+    Effect.ignore,
+  );
+  yield* changes.pipe(
     Stream.runForEach((settings) => Effect.sync(() => see(resolve(drivers, settings)))),
     Effect.forkScoped,
   );
@@ -167,14 +179,12 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   );
 
   const approvalKey = (resolved: Resolved, threadId: string) =>
-    resolved.provider.approval === "application"
-      ? `${resolved.revision}\u0000application`
-      : `${resolved.revision}\u0000thread\u0000${threadId}`;
+    resolved.provider.approval === "application" ? "application" : `thread\u0000${threadId}`;
 
   const currentAt = (revision: string) =>
     current.pipe(
       Effect.filterOrFail(
-        (resolved) => resolved.revision === revision,
+        () => String(generation) === revision,
         () =>
           new BrowserLoginError({
             reason: "not_configured",
@@ -186,6 +196,7 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   const candidates: BrowserLogins["Service"]["candidates"] = Effect.fn("BrowserLogins.candidates")(
     function* (pageUrl) {
       const resolved = yield* current;
+      const revision = String(generation);
       const key = resolved.revision;
       const now = yield* Clock.currentTimeMillis;
       let logins =
@@ -205,7 +216,7 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
       }
       return {
         provider: resolved.provider,
-        revision: resolved.revision,
+        revision,
         logins: logins.filter((login) => loginCoversPage(login.urls, pageUrl)),
       };
     },
@@ -223,6 +234,8 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
           message: `${resolved.provider.label} did not return the login. It may be locked, or the request was denied there.`,
         });
       }
+      // The read can wait on the password manager's own prompt; settings may change meanwhile.
+      yield* currentAt(revision);
       return values;
     },
   );
@@ -230,6 +243,9 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   return BrowserLogins.of({
     candidates,
     read,
+    check: Effect.fn("BrowserLogins.check")(function* (revision) {
+      yield* currentAt(revision);
+    }),
     needsApproval: Effect.fn("BrowserLogins.needsApproval")(function* (revision, threadId) {
       const resolved = yield* currentAt(revision);
       return (
