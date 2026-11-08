@@ -88,8 +88,9 @@ if (Test-Path -LiteralPath (Join-Path $Src ".git")) {
   git clone -c core.longpaths=true --branch $SecodeBranch --single-branch $SecodeRepo $Src
   Invoke-Checked "git clone"
 }
-# PATH is process-wide, so it is restored too.
+# PATH is process-wide, so it is restored too, as is the build flag below.
 $savedPath = $env:PATH
+$savedFeatureSecrets = $env:T3CODE_FEATURE_SECRETS
 Push-Location -LiteralPath $Src
 try {
 Write-Host "at $(git log -1 --format='%h %s')"
@@ -146,6 +147,9 @@ $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
   default { Fail "unsupported Windows architecture $env:PROCESSOR_ARCHITECTURE" }
 }
 $artifacts = Join-Path $Built "artifacts"
+# Upstream hides secret providers behind this build flag; SECode turns it on
+# so 1Password can be configured for browser logins. Set it to 0 to hide them.
+if (-not $env:T3CODE_FEATURE_SECRETS) { $env:T3CODE_FEATURE_SECRETS = "1" }
 Step "building the desktop installer ($arch); this takes several minutes"
 if (Test-Path -LiteralPath $artifacts) { Remove-Item -Recurse -Force -LiteralPath $artifacts }
 node scripts/build-desktop-artifact.ts --platform win --target nsis --arch $arch --output-dir $artifacts
@@ -209,5 +213,6 @@ To update, run this installer again.
 } finally {
   Pop-Location
   $env:PATH = $savedPath
+  $env:T3CODE_FEATURE_SECRETS = $savedFeatureSecrets
 }
 }
