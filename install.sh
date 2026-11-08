@@ -17,7 +17,8 @@
 #
 # Environment overrides: SECODE_HOME (default ~/.secode), SECODE_REPO (default
 # the GitHub https URL), SECODE_BRANCH (default secode), SECODE_APPLICATIONS_DIR
-# (default /Applications).
+# (default /Applications), T3CODE_FEATURE_SECRETS (default 1: the build shows
+# Settings > Secrets and the browser Logins section; set 0 to hide them).
 #
 # Windows uses install.ps1 instead. This file lives on `fork-infra` and is
 # merged into `secode`. It is fork-only and never goes upstream.
@@ -37,7 +38,7 @@ for arg in "$@"; do
   case "$arg" in
     --no-build) build=0; install_app=0 ;;
     --no-applications) install_app=0 ;;
-    -h|--help) sed -n '2,23p' "${BASH_SOURCE[0]:-/dev/null}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]:-/dev/null}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "error: unknown option '$arg'" >&2; exit 2 ;;
   esac
 done
@@ -112,6 +113,9 @@ case "$(uname -m)" in
   *) fail "unsupported mac architecture $(uname -m)" ;;
 esac
 artifacts="$BUILT/artifacts"
+# Upstream hides secret providers behind this build flag; SECode turns it on
+# so 1Password can be configured for browser logins.
+export T3CODE_FEATURE_SECRETS="${T3CODE_FEATURE_SECRETS:-1}"
 step "building the desktop app ($arch); this takes several minutes"
 rm -rf "$artifacts"
 node scripts/build-desktop-artifact.ts --platform mac --target zip --arch "$arch" --output-dir "$artifacts"
