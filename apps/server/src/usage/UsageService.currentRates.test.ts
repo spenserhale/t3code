@@ -4,6 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { assert, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
@@ -52,7 +53,7 @@ const usageLayer = (input: {
             Layer.provideMerge(
               ServerConfig.layerTest(process.cwd(), { prefix: "t3-usage-rates-" }),
             ),
-            Layer.provideMerge(NodeServices.layer),
+            Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
             Layer.provideMerge(Layer.succeed(HostProcess.Platform, "linux")),
             Layer.provideMerge(ServerSettings.layerTest(input.settings)),
             Layer.provideMerge(
