@@ -62,6 +62,8 @@ export const DesktopBrowserCommand = Schema.Union([
     threadTitle: Schema.optional(Schema.String),
     agent: Schema.optional(Schema.String),
     scope: Schema.Literals(["request", "thread", "application"]),
+    /** The server stops waiting after this long; a prompt not yet shown by then is never shown. */
+    timeoutMs: Schema.Finite,
   }),
 ]);
 export type DesktopBrowserCommand = typeof DesktopBrowserCommand.Type;
