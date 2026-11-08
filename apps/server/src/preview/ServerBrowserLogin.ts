@@ -1,5 +1,5 @@
 import type { PreviewLoginField } from "@t3tools/contracts";
-import type { Frame, Locator, Page } from "playwright-core";
+import type { CDPSession, Frame, Locator, Page } from "playwright-core";
 
 import { ServerBrowserOperationError } from "./ServerBrowserPage.ts";
 
@@ -81,116 +81,94 @@ export const findLoginTargets = async (input: {
 };
 
 /**
- * Writes one value into the element a locator points at, if its document is still on the site
- * the login covers. The origin is checked in the same page task as the write, and a handle from a
- * document that has since navigated cannot be evaluated, so a redirect cannot catch the value.
- * The field is drawn as dots (even if the page later reveals it) so images and recordings stay clean.
+ * Writes through a handle bound to the element, so a frame that navigates after the site check
+ * cannot receive the value. Playwright types natively, bypassing page wrappers of the value
+ * setter. The field is drawn as dots first, so images stay clean if the page reveals it.
  */
 export const fillCovered = async (input: {
   readonly target: Locator;
   readonly value: string;
   readonly frameCovered: (frameUrl: string) => boolean;
+  readonly timeoutMs: number;
 }) => {
-  const handle = await input.target.elementHandle({ timeout: 10_000 });
+  const timeout = Math.max(1, input.timeoutMs);
+  const handle = await input.target.elementHandle({ timeout });
   if (handle === null) throw loginError("A login field disappeared before it was filled.");
   try {
     const frame = await handle.ownerFrame();
-    const frameUrl = frame?.url() ?? "";
-    if (frame === null || !input.frameCovered(frameUrl)) {
+    if (frame === null || !input.frameCovered(frame.url())) {
       throw loginError("The page left the login's site before it was filled.");
     }
-    const written = await handle.evaluate(
-      (element, { value, origin }) => {
-        // Runs in the page; the server's types have no DOM.
-        const page = globalThis as unknown as {
-          readonly location: { readonly origin: string };
-          readonly Event: new (type: string, init: { readonly bubbles: boolean }) => unknown;
-        };
-        if (page.location.origin !== origin) return false;
-        const field = element as unknown as {
+    await handle.evaluate((element) =>
+      (
+        element as unknown as {
           readonly style: { setProperty: (name: string, value: string) => void };
-          focus: () => void;
-          dispatchEvent: (event: unknown) => boolean;
-        };
-        const setter = Object.getOwnPropertyDescriptor(
-          Object.getPrototypeOf(element),
-          "value",
-        )?.set;
-        if (setter === undefined) return false;
-        field.style.setProperty("-webkit-text-security", "disc");
-        field.focus();
-        // The prototype's setter, so frameworks that track the value (React) see the change.
-        setter.call(element, value);
-        field.dispatchEvent(new page.Event("input", { bubbles: true }));
-        field.dispatchEvent(new page.Event("change", { bubbles: true }));
-        return true;
-      },
-      { value: input.value, origin: new URL(frameUrl).origin },
+        }
+      ).style.setProperty("-webkit-text-security", "disc"),
     );
-    if (!written) throw loginError("The page left the login's site before it was filled.");
+    await handle.fill(input.value, { timeout });
   } finally {
     await handle.dispose().catch(() => undefined);
   }
 };
 
-const filled = new WeakMap<Page, Set<string>>();
-
-/** Secrets filled into a page, kept only to scrub them from what the agent reads back. */
-export const filledSecrets = (page: Page): ReadonlySet<string> => filled.get(page) ?? new Set();
-
-export const rememberFilled = (page: Page, values: ReadonlyArray<string>) => {
-  const secrets = filled.get(page) ?? new Set<string>();
-  for (const value of values) if (value.length > 0) secrets.add(value);
-  filled.set(page, secrets);
+/** The page's current main document; a navigation to a new document changes it. */
+export const documentId = async (cdp: CDPSession): Promise<string> => {
+  const { frameTree } = await cdp.send("Page.getFrameTree");
+  return frameTree.frame.loaderId;
 };
 
-const REDACTED = "[filled by password manager]";
+interface DocumentMarks {
+  /** Documents the agent ran script in, where it could have hooked a later fill. */
+  readonly scripted: Set<string>;
+  /** Documents a login was filled into, where script could read it back. */
+  readonly filled: Set<string>;
+}
+
+const marks = new WeakMap<Page, DocumentMarks>();
+const marksOf = (page: Page) => {
+  const existing = marks.get(page);
+  if (existing) return existing;
+  const created: DocumentMarks = { scripted: new Set(), filled: new Set() };
+  marks.set(page, created);
+  return created;
+};
 
 /**
- * Replaces every filled secret in a value bound for the agent, in keys as well as values. Only
- * image or video bytes (`data` beside a `mimeType`) are left alone: a short secret could match
- * inside them by chance, and the filled fields are drawn as dots.
+ * The agent's script and a filled login never share a document: script ran first means reload
+ * before filling, and a fill means a new document before script runs again.
  */
-export const scrubSecrets = <A>(value: A, secrets: ReadonlySet<string>): A => {
-  if (secrets.size === 0) return value;
+export const markScripted = (page: Page, documentIds: ReadonlyArray<string>) => {
+  for (const id of documentIds) marksOf(page).scripted.add(id);
+};
+export const wasScripted = (page: Page, id: string) => marksOf(page).scripted.has(id);
+export const markFilled = (page: Page, id: string) => marksOf(page).filled.add(id);
+export const holdsFill = (page: Page, id: string) => marksOf(page).filled.has(id);
+
+const REDACTED = "[filled by password manager]";
+/** Shorter values would redact ordinary words and numbers from every result. */
+const MIN_SECRET_LENGTH = 4;
+
+/** Replaces every filled secret, longest first, in the keys and values of something page-derived. */
+export const scrubSecrets = <A>(value: A, secrets: Iterable<string>): A => {
+  const ordered = [...new Set(secrets)]
+    .filter((secret) => secret.length >= MIN_SECRET_LENGTH)
+    .sort((a, b) => b.length - a.length);
+  if (ordered.length === 0) return value;
   const scrubText = (text: string) => {
     let next = text;
-    for (const secret of secrets) next = next.split(secret).join(REDACTED);
+    for (const secret of ordered) next = next.split(secret).join(REDACTED);
     return next;
   };
   const scrub = (current: unknown): unknown => {
     if (typeof current === "string") return scrubText(current);
     if (Array.isArray(current)) return current.map(scrub);
     if (current !== null && typeof current === "object") {
-      const media = typeof (current as { readonly mimeType?: unknown }).mimeType === "string";
       return Object.fromEntries(
-        Object.entries(current).map(([key, entry]) => [
-          scrubText(key),
-          media && key === "data" ? entry : scrub(entry),
-        ]),
+        Object.entries(current).map(([key, entry]) => [scrubText(key), scrub(entry)]),
       );
     }
     return current;
   };
   return scrub(value) as A;
-};
-
-/**
- * Whether a filled secret still sits in any field of the page, where script could read or
- * transform it. A frame that cannot be checked counts as holding one.
- */
-export const pageHoldsSecret = async (page: Page, secrets: ReadonlySet<string>) => {
-  if (secrets.size === 0) return false;
-  for (const frame of page.frames()) {
-    if (frame.isDetached()) continue;
-    const values = await frame
-      .locator("input, textarea")
-      .evaluateAll((fields) =>
-        fields.map((field) => (field as unknown as { readonly value: string }).value),
-      )
-      .catch(() => undefined);
-    if (values === undefined) return !frame.isDetached();
-    if (values.some((value) => [...secrets].some((secret) => value.includes(secret)))) return true;
-  }
-  return false;
 };

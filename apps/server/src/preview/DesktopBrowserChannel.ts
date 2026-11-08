@@ -38,7 +38,7 @@ const keyOf = ({ threadId, tabId }: DesktopTabKey) => `${threadId}\u0000${tabId}
 
 export type DesktopLoginPrompt = Omit<
   Extract<DesktopBrowserCommandType, { readonly type: "loginApproval" }>,
-  "type" | "threadId" | "tabId" | "requestId"
+  "type" | "threadId" | "tabId" | "requestId" | "timeoutMs"
 >;
 
 const LOGIN_APPROVAL_TIMEOUT = Duration.minutes(2);
@@ -260,9 +260,16 @@ const make = Effect.gen(function* () {
         const requestId = NodeCrypto.randomUUID();
         const answer = yield* Deferred.make<boolean>();
         loginApprovals.set(requestId, answer);
-        return yield* command({ type: "loginApproval", ...key, requestId, ...prompt }).pipe(
+        const timeout = Duration.min(Duration.millis(timeoutMs), LOGIN_APPROVAL_TIMEOUT);
+        return yield* command({
+          type: "loginApproval",
+          ...key,
+          requestId,
+          ...prompt,
+          timeoutMs: Duration.toMillis(timeout),
+        }).pipe(
           Effect.andThen(Deferred.await(answer)),
-          Effect.timeoutOption(Duration.min(Duration.millis(timeoutMs), LOGIN_APPROVAL_TIMEOUT)),
+          Effect.timeoutOption(timeout),
           Effect.map((approved) => Option.getOrElse(approved, () => false)),
           Effect.ensuring(Effect.sync(() => loginApprovals.delete(requestId))),
         );

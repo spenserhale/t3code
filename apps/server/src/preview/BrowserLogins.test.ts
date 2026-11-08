@@ -33,28 +33,28 @@ describe("loginCoversPage", () => {
 });
 
 describe("scrubSecrets", () => {
-  it("replaces filled secrets in keys and values, leaving only media bytes", () => {
-    const secrets = new Set(["hunter2", "123456"]);
-    const scrubbed = scrubSecrets(
+  it("replaces filled secrets in keys and values, longest first", () => {
+    const secrets = ["hunter2", "123456", "abcd", "abcdefgh", "ok"];
+    const redacted = "[filled by password manager]";
+    assert.deepStrictEqual<unknown>(
+      scrubSecrets(
+        {
+          visibleText: "code 123456, ok",
+          consoleEntries: [{ text: "pw=hunter2" }],
+          forged: { mimeType: "image/png", data: "hunter2" },
+          result: { hunter2: true, overlap: "abcdefgh" },
+          count: 3,
+        },
+        secrets,
+      ),
       {
-        visibleText: "code 123456",
-        consoleEntries: [{ text: "pw=hunter2" }],
-        screenshot: { mimeType: "image/png", data: "aGVsbG8hunter2", width: 1 },
-        result: { hunter2: true, screenshot: "123456" },
-        error: { message: "Error: 123456" },
+        visibleText: `code ${redacted}, ok`,
+        consoleEntries: [{ text: `pw=${redacted}` }],
+        forged: { mimeType: "image/png", data: redacted },
+        result: { [redacted]: true, overlap: redacted },
         count: 3,
       },
-      secrets,
     );
-    const redacted = "[filled by password manager]";
-    assert.deepStrictEqual<unknown>(scrubbed, {
-      visibleText: `code ${redacted}`,
-      consoleEntries: [{ text: `pw=${redacted}` }],
-      screenshot: { mimeType: "image/png", data: "aGVsbG8hunter2", width: 1 },
-      result: { [redacted]: true, screenshot: redacted },
-      error: { message: `Error: ${redacted}` },
-      count: 3,
-    });
   });
 });
 
@@ -184,8 +184,26 @@ describe("BrowserLogins", () => {
         browserLogins: { secretProviderId: providerId, approval: "thread" },
       });
       const again = yield* logins.candidates("https://github.com/");
-      assert.strictEqual(again.revision, revision);
+      assert.notStrictEqual(again.revision, revision);
       assert.isTrue(yield* logins.needsApproval(again.revision, "thread-a"));
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("rejects an answer begun before the setting changed, even if it changed back", () => {
+    const { layer } = makeService([github]);
+    return Effect.gen(function* () {
+      const settings = yield* Settings.ServerSettingsService;
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const setApproval = (approval: "request" | "thread") =>
+        settings.updateSettings({ browserLogins: { secretProviderId: providerId, approval } });
+      const { revision } = yield* logins.candidates("https://github.com/");
+      yield* setApproval("request");
+      yield* logins.candidates("https://github.com/");
+      yield* setApproval("thread");
+      yield* logins.recordApproval(revision, "thread-a").pipe(Effect.flip);
+      yield* logins.check(revision).pipe(Effect.flip);
+      const now = yield* logins.candidates("https://github.com/");
+      assert.isTrue(yield* logins.needsApproval(now.revision, "thread-a"));
     }).pipe(Effect.provide(layer));
   });
 

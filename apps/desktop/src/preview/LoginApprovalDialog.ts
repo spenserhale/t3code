@@ -1,4 +1,5 @@
 import type { DesktopBrowserCommand } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -48,10 +49,16 @@ const make = Effect.gen(function* () {
         "The agent will not see the password or code.",
         SCOPE_NOTE[prompt.scope],
       ].join("\n\n");
+      const expiresAt = (yield* Clock.currentTimeMillis) + prompt.timeoutMs;
+      // Prompts queue behind each other; one whose call has ended is never shown, and an open one
+      // closes as a Deny when the server stops waiting.
       return yield* oneAtATime.withPermits(1)(
-        dialog
-          .showMessageBox(
+        Effect.gen(function* () {
+          const remaining = expiresAt - (yield* Clock.currentTimeMillis);
+          if (remaining <= 0) return false;
+          const { response } = yield* dialog.showMessageBox(
             {
+              signal: AbortSignal.timeout(remaining),
               type: "question",
               buttons: ["Allow", "Deny"],
               // Deny by default, so an Enter typed into the page cannot approve.
@@ -62,11 +69,9 @@ const make = Effect.gen(function* () {
               detail,
             },
             hostWindow(guest),
-          )
-          .pipe(
-            Effect.map(({ response }) => response === 0),
-            Effect.orElseSucceed(() => false),
-          ),
+          );
+          return response === 0 && (yield* Clock.currentTimeMillis) < expiresAt;
+        }).pipe(Effect.orElseSucceed(() => false)),
       );
     }),
   });

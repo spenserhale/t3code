@@ -30,6 +30,7 @@ import {
   type PreviewAutomationScrollInput,
   type PreviewAutomationSelectInput,
   type PreviewAutomationSetColorSchemeInput,
+  type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
   type PreviewAutomationTypeInput,
   type PreviewAutomationUploadInput,
@@ -133,6 +134,7 @@ const UNATTACHED_FILL_VIEWPORT = { width: 1280, height: 800 } as const;
 const NAVIGATION_TIMEOUT_MS = 15_000;
 const VIEWER_NAVIGATION_OPTIONS = { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS } as const;
 const ACTION_TIMELINE_LIMIT = 50;
+const FILLED_SECRET_LIMIT = 100;
 
 export class ServerBrowserTabNotFoundError extends Schema.TaggedError<ServerBrowserTabNotFoundError>()(
   "ServerBrowserTabNotFoundError",
@@ -2160,6 +2162,19 @@ const make = Effect.gen(function* () {
     );
   };
 
+  const filledSecretLog: string[] = [];
+  const rememberSecrets = (values: ReadonlyArray<string>) => {
+    for (const value of values) {
+      if (value.length === 0 || filledSecretLog.includes(value)) continue;
+      filledSecretLog.push(value);
+      if (filledSecretLog.length > FILLED_SECRET_LIMIT) filledSecretLog.shift();
+    }
+  };
+  const filledPageError = () =>
+    ServerBrowserLogin.loginError(
+      "The password manager filled a login in this page, so script and recording are off until a new page loads. Submit the form, or reload with preview_navigate.",
+    );
+
   const loginStep = <A>(effect: Effect.Effect<A, BrowserLogins.BrowserLoginError>) =>
     runPromise(
       effect.pipe(
@@ -2230,6 +2245,12 @@ const make = Effect.gen(function* () {
         "Stop the recording before filling a login, then start it again after signing in.",
       );
     }
+    const document = await ServerBrowserLogin.documentId(tab.cdp);
+    if (ServerBrowserLogin.wasScripted(tab.page, document)) {
+      throw ServerBrowserLogin.loginError(
+        "preview_evaluate ran in this page, so a login cannot be filled here. Reload the page with preview_navigate, then call preview_fill_login again.",
+      );
+    }
     if (await loginStep(logins.needsApproval(revision, tab.threadId))) {
       const approved = await runPromise(
         desktopChannel.approveLogin(
@@ -2257,20 +2278,29 @@ const make = Effect.gen(function* () {
         `The login "${login.title}" has no ${absent.join(" or ")}.`,
       );
     }
-    if (expired())
-      throw ServerBrowserLogin.loginError("The call ended before the login was filled.");
-    // The page, or a frame in it, may have moved on while the user was deciding.
-    if (!frameCovered(tab.page.url())) {
+    // The page may have moved on, or the settings changed, while the user was deciding.
+    if (
+      !frameCovered(tab.page.url()) ||
+      (await ServerBrowserLogin.documentId(tab.cdp)) !== document
+    ) {
       throw ServerBrowserLogin.loginError("The page left the login's site before it was filled.");
     }
-    ServerBrowserLogin.rememberFilled(
-      tab.page,
-      fields.filter((field) => field !== "username").map((field) => values[field] ?? ""),
-    );
+    await loginStep(logins.check(revision));
+    // Marked before the first write, so even a fill that fails partway blocks script here.
+    ServerBrowserLogin.markFilled(tab.page, document);
+    rememberSecrets(fields.flatMap((field) => (field === "username" ? [] : [values[field] ?? ""])));
     for (const field of fields) {
       const target = targets.get(field);
       if (target === undefined) continue;
-      await ServerBrowserLogin.fillCovered({ target, value: values[field] ?? "", frameCovered });
+      if (expired()) {
+        throw ServerBrowserLogin.loginError("The call ended before the login was filled.");
+      }
+      await ServerBrowserLogin.fillCovered({
+        target,
+        value: values[field] ?? "",
+        frameCovered,
+        timeoutMs: deadlineMs - performance.now(),
+      });
     }
     return { status: "filled", tabId: tab.tabId, login: summary(login), filled: fields };
   };
@@ -2358,17 +2388,20 @@ const make = Effect.gen(function* () {
           ServerBrowserPage.scroll(tab.page, input as PreviewAutomationScrollInput),
         );
       case "evaluate": {
-        const secrets = ServerBrowserLogin.filledSecrets(tab.page);
-        if (await ServerBrowserLogin.pageHoldsSecret(tab.page, secrets)) {
-          throw ServerBrowserLogin.loginError(
-            "A login the password manager filled is still in this page. Submit or leave the form first.",
-          );
+        const evaluateInput = input as PreviewAutomationEvaluateInput;
+        if (Option.isNone(browserLogins)) {
+          return ServerBrowserPage.evaluate(tab.cdp, evaluateInput, request.timeoutMs);
         }
-        return ServerBrowserPage.evaluate(
-          tab.cdp,
-          input as PreviewAutomationEvaluateInput,
-          request.timeoutMs,
-        );
+        const before = await ServerBrowserLogin.documentId(tab.cdp);
+        if (ServerBrowserLogin.holdsFill(tab.page, before)) throw filledPageError();
+        ServerBrowserLogin.markScripted(tab.page, [before]);
+        try {
+          return await ServerBrowserPage.evaluate(tab.cdp, evaluateInput, request.timeoutMs);
+        } finally {
+          // The script may have started a navigation; its next document counts as scripted too.
+          const after = await ServerBrowserLogin.documentId(tab.cdp).catch(() => before);
+          ServerBrowserLogin.markScripted(tab.page, [after]);
+        }
       }
       case "fillLogin":
         return recordAction(tab, "fillLogin", () =>
@@ -2378,14 +2411,10 @@ const make = Effect.gen(function* () {
         return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
       case "recordingStart": {
         if (
-          await ServerBrowserLogin.pageHoldsSecret(
-            tab.page,
-            ServerBrowserLogin.filledSecrets(tab.page),
-          )
+          Option.isSome(browserLogins) &&
+          ServerBrowserLogin.holdsFill(tab.page, await ServerBrowserLogin.documentId(tab.cdp))
         ) {
-          throw ServerBrowserLogin.loginError(
-            "A login the password manager filled is still in this page. Submit the form before recording.",
-          );
+          throw filledPageError();
         }
         const recording = await startRecording(tab);
         return { tabId: tab.tabId, recording: true, startedAt: recording.startedAt };
@@ -2393,13 +2422,42 @@ const make = Effect.gen(function* () {
     }
   };
 
-  // Every tab's secrets, so a value one page copied into another (or into a title) is caught too.
-  const allFilledSecrets = () => {
-    const secrets = new Set<string>();
-    for (const tab of tabs.values()) {
-      for (const secret of ServerBrowserLogin.filledSecrets(tab.page)) secrets.add(secret);
+  // Scrubbing a result catches a value a page copied elsewhere (storage, the title, another tab),
+  // so it outlives the tab it was filled in.
+  const scrubOutcome = (
+    operation: PreviewAutomationRequest["operation"],
+    outcome:
+      | { readonly ok: true; readonly result: unknown }
+      | {
+          readonly ok: false;
+          readonly error: {
+            readonly _tag: string;
+            readonly message: string;
+            readonly detail?: unknown;
+          };
+        },
+  ) => {
+    if (filledSecretLog.length === 0) return outcome;
+    const scrub = <A>(value: A) => ServerBrowserLogin.scrubSecrets(value, filledSecretLog);
+    if (!outcome.ok) {
+      const { detail, ...error } = outcome.error;
+      return {
+        ok: false as const,
+        error: {
+          ...error,
+          message: scrub(error.message),
+          ...(detail === undefined ? {} : { detail: scrub(detail) }),
+        },
+      };
     }
-    return secrets;
+    // The fill's own result holds only titles and field names.
+    if (operation === "fillLogin") return outcome;
+    // Screenshot bytes come from the browser, not the page, and fields are drawn as dots.
+    if (operation === "snapshot") {
+      const { screenshot, ...rest } = outcome.result as PreviewAutomationSnapshot;
+      return { ok: true as const, result: { ...scrub(rest), screenshot } };
+    }
+    return { ok: true as const, result: scrub(outcome.result) };
   };
 
   const handleRequest = (connectionId: string, request: PreviewAutomationRequest) =>
@@ -2421,8 +2479,7 @@ const make = Effect.gen(function* () {
           },
         }),
       }),
-      // Results and errors alike: a page can throw a filled value or copy it anywhere.
-      Effect.map((outcome) => ServerBrowserLogin.scrubSecrets(outcome, allFilledSecrets())),
+      Effect.map((outcome) => scrubOutcome(request.operation, outcome)),
       Effect.flatMap((outcome) =>
         broker.respond({
           clientId: SERVER_HOST_CLIENT_ID,
