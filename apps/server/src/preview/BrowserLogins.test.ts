@@ -72,7 +72,7 @@ const grafana = {
   vault: "Work",
   urls: ["https://grafana.example.com"],
 };
-const github = { id: "h1", title: "GitHub", urls: ["https://github.com"] };
+const github = { id: "h1", title: "GitHub", vaultId: "v9", urls: ["https://github.com"] };
 const bothProviders = { secretProviderIds: [work, personal], approval: "thread" } as const;
 
 /** Logins by the account in a provider's config; an account left out cannot list. */
@@ -86,7 +86,10 @@ const makeService = (
     definition: defineSecretProvider({
       kind,
       label: "Fake Vault",
-      configSchema: Schema.Struct({ account: Schema.String }),
+      configSchema: Schema.Struct({
+        account: Schema.String,
+        serviceAccountToken: Schema.optional(Schema.String),
+      }),
       isReference: () => true,
       referencePlaceholder: "",
       invalidReferenceMessage: "",
@@ -101,7 +104,7 @@ const makeService = (
         }),
       read: ({ account }, login, fields) =>
         Effect.sync(() => {
-          calls.read.push(`${account}:${login.id}`);
+          calls.read.push(`${account}:${login.id}@${login.vaultId ?? ""}`);
           return Object.fromEntries(fields.map((field) => [field, `${field}-${account}`]));
         }),
     },
@@ -136,7 +139,8 @@ describe("BrowserLogins", () => {
 
       const values = yield* logins.read(second.revision, second.logins[0]!, ["password"]);
       assert.deepStrictEqual(values, { password: "password-personal" });
-      assert.deepStrictEqual(calls.read, ["personal:h1"]);
+      // The driver gets its own login back, vault id included.
+      assert.deepStrictEqual(calls.read, ["personal:h1@v9"]);
     }).pipe(Effect.provide(layer));
   });
 
@@ -269,6 +273,29 @@ describe("BrowserLogins", () => {
       yield* logins.check(again.revision).pipe(Effect.flip);
       const widened = yield* logins.candidates("https://github.com/");
       assert.strictEqual(yield* logins.needsApproval(widened.revision, "thread-a"), "thread");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("lists again and forgets approvals when only the service account token changes", () => {
+    const { layer, calls } = makeService({ work: [github] });
+    return Effect.gen(function* () {
+      const settings = yield* Settings.ServerSettingsService;
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const useToken = (serviceAccountToken: string) =>
+        settings.updateSettings({
+          secretProviders: {
+            [work]: { kind, label: "Work", config: { account: "work", serviceAccountToken } },
+          },
+        });
+      yield* useToken("ops_first");
+      const first = yield* logins.candidates("https://github.com/");
+      yield* logins.recordApproval(first.revision, "thread-a");
+
+      yield* useToken("ops_second");
+      yield* logins.check(first.revision).pipe(Effect.flip);
+      const second = yield* logins.candidates("https://github.com/");
+      assert.strictEqual(yield* logins.needsApproval(second.revision, "thread-a"), "thread");
+      assert.strictEqual(calls.list, 2);
     }).pipe(Effect.provide(layer));
   });
 

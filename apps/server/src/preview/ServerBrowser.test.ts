@@ -2383,7 +2383,8 @@ const loginServer = (
     }),
     read: (_config, references) => Effect.succeed(references.map(() => undefined)),
     logins: {
-      list: () => Effect.succeed([{ id: "g1", title: "Good", urls: ["https://good.test"] }]),
+      list: () =>
+        Effect.succeed([{ id: "g1", title: "Good", vaultId: "v1", urls: ["https://good.test"] }]),
       read: (_config, login, fields) =>
         Effect.sync(() => {
           reads.push(login.id);
@@ -2449,10 +2450,12 @@ it.live(
 
           yield* invoke("navigate", { url: "https://good.test/login" });
           const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
-          expect(filled).toMatchObject({
-            status: "filled",
-            login: { id: "work/g1", title: "Good", account: "Work" },
-            filled: ["username", "password"],
+          expect(filled).toMatchObject({ status: "filled", filled: ["username", "password"] });
+          // Nothing else about the login, such as its vault id, reaches the agent.
+          expect(filled.status === "filled" && filled.login).toEqual({
+            id: "work/g1",
+            title: "Good",
+            account: "Work",
           });
           expect(yield* passwordField(context)).toEqual({
             value: "password-value",

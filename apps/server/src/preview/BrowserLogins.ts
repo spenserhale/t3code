@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Digest from "effect/crypto/Digest";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -25,6 +26,7 @@ import * as Settings from "../serverSettings.ts";
 
 const LIST_CACHE_MS = 5 * 60_000;
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const utf8 = new TextEncoder();
 
 export class BrowserLoginError extends Data.TaggedError("BrowserLoginError")<{
   readonly reason: "not_configured" | "unreadable";
@@ -105,7 +107,7 @@ interface Source {
   readonly account: string;
   /** The driver's name, such as "1Password". */
   readonly label: string;
-  /** Names the provider and its config, so a changed config lists again. */
+  /** A digest of the provider and its config: a changed config, token included, lists again. */
   readonly key: string;
   readonly config: unknown;
   readonly logins: SecretProviderLogins;
@@ -117,36 +119,38 @@ interface Resolved {
   readonly sources: ReadonlyArray<Source>;
 }
 
-const resolve = (
+// Configs hold service account tokens, so the keys kept for the server's life are digests.
+const resolve = Effect.fn("BrowserLogins.resolve")(function* (
   drivers: ReadonlyArray<SecretProviderDriver>,
+  digest: Digest.Digest["Service"],
   settings: ServerSettings,
-): Resolved | BrowserLoginError => {
+): Effect.fn.Return<Resolved, BrowserLoginError> {
   const ids = [...new Set(browserLoginProviderIds(settings.browserLogins))];
   if (ids.length === 0) {
-    return new BrowserLoginError({
+    return yield* new BrowserLoginError({
       reason: "not_configured",
       message:
         "Browser logins are off. The user can turn them on in Settings > Browser by choosing a password manager.",
     });
   }
-  const sources = ids.flatMap((id): ReadonlyArray<Source> => {
+  const sources: Array<Source> = [];
+  for (const id of ids) {
     const configured = settings.secretProviders[id];
     const driver = drivers.find((candidate) => candidate.kind === configured?.kind);
-    if (configured === undefined || driver?.logins === undefined) return [];
-    return [
-      {
-        id,
-        account: configured.label,
-        label: driver.definition.label,
-        key: encodeJson([id, configured.kind, configured.config ?? null]),
-        config: configured.config,
-        logins: driver.logins,
-      },
-    ];
-  });
+    if (configured === undefined || driver?.logins === undefined) continue;
+    const identity = encodeJson([id, configured.kind, configured.config ?? null]);
+    sources.push({
+      id,
+      account: configured.label,
+      label: driver.definition.label,
+      key: yield* digest.digestHex(Digest.sha256, utf8.encode(identity)),
+      config: configured.config,
+      logins: driver.logins,
+    });
+  }
   if (sources.length === 0) {
     const named = ids.join(", ");
-    return new BrowserLoginError({
+    return yield* new BrowserLoginError({
       reason: "not_configured",
       message:
         ids.length === 1
@@ -164,12 +168,13 @@ const resolve = (
       ...ids.map((id) => sources.find((source) => source.id === id)?.key ?? id),
     ]),
   };
-};
+});
 
 export const make = Effect.fn("BrowserLogins.make")(function* (
   drivers: ReadonlyArray<SecretProviderDriver>,
 ) {
   const settingsService = yield* Settings.ServerSettingsService;
+  const digest = yield* Digest.Digest;
   const driverServices = yield* Effect.context<SecretProviderDriverServices>();
   const listCache = new Map<
     string,
@@ -181,22 +186,24 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   const approvals = new Set<string>();
   let generation = 0;
   let seenRevision: string | undefined;
-  const see = (resolved: Resolved | BrowserLoginError) => {
-    const revision = resolved instanceof BrowserLoginError ? "" : resolved.revision;
+  const see = (revision: string) => {
     if (seenRevision !== undefined && seenRevision !== revision) {
       generation++;
       approvals.clear();
     }
     seenRevision = revision;
   };
+  // Settings that turn logins off count as one revision too.
+  const observe = (settings: ServerSettings) =>
+    resolve(drivers, digest, settings).pipe(
+      Effect.tap((resolved) => Effect.sync(() => see(resolved.revision))),
+      Effect.tapError(() => Effect.sync(() => see(""))),
+    );
   // Subscribed before the first read, so no change between the two is missed.
   const changes = yield* settingsService.subscribeChanges;
-  yield* settingsService.getSettings.pipe(
-    Effect.tap((settings) => Effect.sync(() => see(resolve(drivers, settings)))),
-    Effect.ignore,
-  );
+  yield* settingsService.getSettings.pipe(Effect.flatMap(observe), Effect.ignore);
   yield* changes.pipe(
-    Stream.runForEach((settings) => Effect.sync(() => see(resolve(drivers, settings)))),
+    Stream.runForEach((settings) => Effect.ignore(observe(settings))),
     Effect.forkScoped,
   );
 
@@ -204,13 +211,7 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     Effect.mapError(
       () => new BrowserLoginError({ reason: "unreadable", message: "Settings could not be read." }),
     ),
-    Effect.flatMap((settings) => {
-      const resolved = resolve(drivers, settings);
-      see(resolved);
-      return resolved instanceof BrowserLoginError
-        ? Effect.fail(resolved)
-        : Effect.succeed(resolved);
-    }),
+    Effect.flatMap(observe),
   );
 
   const approvalKey = (approval: BrowserLoginApproval, threadId: string) =>

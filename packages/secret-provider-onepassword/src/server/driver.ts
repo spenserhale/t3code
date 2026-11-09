@@ -11,6 +11,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { ChildProcess } from "effect/process";
 import * as Redacted from "effect/Redacted";
@@ -26,7 +27,7 @@ const READ_TIMEOUT = Duration.seconds(45);
 // how `op` combines the two is undocumented.
 const runOnePassword = Effect.fn("OnePasswordDriver.runOnePassword")(function* (
   { account, serviceAccountToken }: OnePasswordSecretProviderConfig,
-  command: "read" | "inject" | "item",
+  command: "read" | "inject" | "item" | "vault",
   args: ReadonlyArray<string>,
 ) {
   const spawnCommand = yield* resolveSpawnCommand(ONE_PASSWORD_BINARY, [
@@ -119,6 +120,19 @@ const bounded = <A, E extends { readonly _tag: string }, R>(
     ),
   );
 
+const boundedLogin = <A, E extends { readonly _tag: string }, R>(
+  effect: Effect.Effect<A | undefined, E, R>,
+) =>
+  effect.pipe(
+    Effect.timeoutOption(READ_TIMEOUT),
+    Effect.map(Option.getOrUndefined),
+    Effect.catch((error) =>
+      Effect.logWarning("Could not run 1Password", { stage: "login", error: error._tag }).pipe(
+        Effect.as(undefined),
+      ),
+    ),
+  );
+
 const ListedItem = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
@@ -127,6 +141,9 @@ const ListedItem = Schema.Struct({
 });
 const decodeListedItems = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(ListedItem)),
+);
+const decodeVaults = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(Schema.Struct({ id: Schema.String }))),
 );
 
 const ItemField = Schema.Struct({
@@ -140,14 +157,25 @@ const decodeItem = Schema.decodeUnknownOption(
 );
 
 /** Logins with at least one website; the rest could never match a page. */
-const parseLoginList = (stdout: string): ReadonlyArray<SecretProviderLogin> | undefined =>
+const parseLoginList = (
+  stdout: string,
+  vaultId: string | undefined,
+): ReadonlyArray<SecretProviderLogin> | undefined =>
   Option.getOrUndefined(
     Option.map(decodeListedItems(stdout), (items) =>
       items.flatMap((item) => {
         const urls = (item.urls ?? []).map((url) => url.href).filter((href) => href.length > 0);
         if (urls.length === 0) return [];
         const vault = item.vault?.name;
-        return [{ id: item.id, title: item.title, ...(vault ? { vault } : {}), urls }];
+        return [
+          {
+            id: item.id,
+            title: item.title,
+            ...(vault ? { vault } : {}),
+            ...(vaultId === undefined ? {} : { vaultId }),
+            urls,
+          },
+        ];
       }),
     ),
   );
@@ -171,31 +199,64 @@ const parseLoginValues = (
   return values;
 };
 
-const listLogins = Effect.fn("OnePasswordDriver.listLogins")(function* (
+const listItems = Effect.fn("OnePasswordDriver.listItems")(function* (
   config: OnePasswordSecretProviderConfig,
+  vaultId: string | undefined,
 ) {
   const result = yield* runOnePassword(config, "item", [
     "list",
+    ...(vaultId === undefined ? [] : [`--vault=${vaultId}`]),
     "--categories=Login",
     "--format=json",
   ]);
-  const logins = result.code === 0 ? parseLoginList(result.stdout) : undefined;
+  const logins = result.code === 0 ? parseLoginList(result.stdout, vaultId) : undefined;
   if (logins === undefined) {
     yield* Effect.logWarning("Could not list 1Password logins", { exitCode: result.code });
   }
   return logins;
 });
 
-// The item id alone is unique in an account, and keeps vault names out of the arguments.
+const listVaults = Effect.fn("OnePasswordDriver.listVaults")(function* (
+  config: OnePasswordSecretProviderConfig,
+) {
+  const result = yield* runOnePassword(config, "vault", ["list", "--format=json"]);
+  const vaults = result.code === 0 ? Option.getOrUndefined(decodeVaults(result.stdout)) : undefined;
+  if (vaults === undefined) {
+    yield* Effect.logWarning("Could not list 1Password vaults", { exitCode: result.code });
+  }
+  return vaults;
+});
+
+// A service account must name a vault once it sees more than one, so it lists each vault it was
+// given. Its reads are rate limited: one call for the vaults, then one per vault, two at a time.
+const listLogins = Effect.fn("OnePasswordDriver.listLogins")(function* (
+  config: OnePasswordSecretProviderConfig,
+) {
+  if (!config.serviceAccountToken) return yield* boundedLogin(listItems(config, undefined));
+  const vaults = yield* boundedLogin(listVaults(config));
+  if (vaults === undefined) return undefined;
+  const listed = yield* Effect.forEach(
+    vaults.filter((vault) => !vault.id.startsWith("-")),
+    (vault) => boundedLogin(listItems(config, vault.id)),
+    { concurrency: 2 },
+  );
+  // A vault that cannot be listed hides only its own logins.
+  const usable = listed.filter(Predicate.isNotUndefined);
+  return listed.length > 0 && usable.length === 0 ? undefined : usable.flat();
+});
+
+// An item id is unique in an account. A service account must also name its vault, by id, which
+// keeps vault names out of the arguments.
 const readLogin = Effect.fn("OnePasswordDriver.readLogin")(function* (
   config: OnePasswordSecretProviderConfig,
   login: SecretProviderLogin,
   fields: ReadonlyArray<SecretProviderLoginField>,
 ) {
-  if (login.id.startsWith("-")) return undefined;
+  if (login.id.startsWith("-") || login.vaultId?.startsWith("-")) return undefined;
   const result = yield* runOnePassword(config, "item", [
     "get",
     login.id,
+    ...(login.vaultId === undefined ? [] : [`--vault=${login.vaultId}`]),
     "--reveal",
     "--format=json",
   ]);
@@ -205,19 +266,6 @@ const readLogin = Effect.fn("OnePasswordDriver.readLogin")(function* (
   }
   return values;
 });
-
-const boundedLogin = <A, E extends { readonly _tag: string }, R>(
-  effect: Effect.Effect<A | undefined, E, R>,
-) =>
-  effect.pipe(
-    Effect.timeoutOption(READ_TIMEOUT),
-    Effect.map(Option.getOrUndefined),
-    Effect.catch((error) =>
-      Effect.logWarning("Could not run 1Password", { stage: "login", error: error._tag }).pipe(
-        Effect.as(undefined),
-      ),
-    ),
-  );
 
 export const driver = defineSecretProviderDriver({
   kind: definition.kind,
@@ -234,7 +282,7 @@ export const driver = defineSecretProviderDriver({
     );
   }),
   logins: {
-    list: (config) => boundedLogin(listLogins(config)),
+    list: listLogins,
     read: (config, login, fields) => boundedLogin(readLogin(config, login, fields)),
   },
 });
