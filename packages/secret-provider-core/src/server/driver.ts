@@ -20,6 +20,8 @@ export interface SecretProviderLogin {
   readonly id: string;
   readonly title: string;
   readonly vault?: string;
+  /** For a provider that must name the vault to read the login. Server-side only. */
+  readonly vaultId?: string;
   /** Websites the provider would autofill this login on. */
   readonly urls: ReadonlyArray<string>;
 }
