@@ -472,10 +472,10 @@ export const make = Effect.gen(function* () {
       const tab = tabs.get(keyOf(command.value));
       if (command.value.type === "loginApproval") {
         const { threadId, tabId, requestId } = command.value;
-        const ask =
-          tab && Option.isSome(loginApproval)
-            ? loginApproval.value.ask(tab.debuggee.webContents, command.value)
-            : Effect.succeed(false);
+        // A tab the desktop does not show, such as an agent's headless tab, is asked about too.
+        const ask = Option.isSome(loginApproval)
+          ? loginApproval.value.ask(tab?.debuggee.webContents, command.value)
+          : Effect.succeed(false);
         runFork(
           ask.pipe(
             Effect.flatMap((approved) =>

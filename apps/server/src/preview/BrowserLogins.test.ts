@@ -1,7 +1,11 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { SecretProviderId, SecretProviderKind } from "@t3tools/contracts";
+import {
+  type BrowserLoginApproval,
+  SecretProviderId,
+  SecretProviderKind,
+} from "@t3tools/contracts";
 import { defineSecretProviderDriver } from "@t3tools/secret-provider-core/server/driver";
 import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
 import * as Effect from "effect/Effect";
@@ -137,37 +141,41 @@ describe("BrowserLogins", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("asks once per thread, every time, or once for all threads", () => {
+  it.effect("asks every time, once per thread, once for all threads, or never", () => {
     const { layer } = makeService([github]);
     return Effect.gen(function* () {
       const settings = yield* Settings.ServerSettingsService;
       const logins = yield* BrowserLogins.BrowserLogins;
-      const setApproval = (approval: "request" | "thread" | "application") =>
+      const setApproval = (approval: BrowserLoginApproval) =>
         settings.updateSettings({ browserLogins: { secretProviderId: providerId, approval } });
       const revision = () =>
         logins.candidates("https://github.com/").pipe(Effect.map((found) => found.revision));
 
       let at = yield* revision();
-      assert.isTrue(yield* logins.needsApproval(at, "thread-a"));
+      assert.strictEqual(yield* logins.needsApproval(at, "thread-a"), "thread");
       yield* logins.recordApproval(at, "thread-a");
       assert.isFalse(yield* logins.needsApproval(at, "thread-a"));
-      assert.isTrue(yield* logins.needsApproval(at, "thread-b"));
+      assert.strictEqual(yield* logins.needsApproval(at, "thread-b"), "thread");
 
       yield* setApproval("request");
       at = yield* revision();
       yield* logins.recordApproval(at, "thread-a");
-      assert.isTrue(yield* logins.needsApproval(at, "thread-a"));
+      assert.strictEqual(yield* logins.needsApproval(at, "thread-a"), "request");
 
       // Back to once per thread: the earlier approval is forgotten.
       yield* setApproval("thread");
       at = yield* revision();
-      assert.isTrue(yield* logins.needsApproval(at, "thread-a"));
+      assert.strictEqual(yield* logins.needsApproval(at, "thread-a"), "thread");
 
       yield* setApproval("application");
       at = yield* revision();
-      assert.isTrue(yield* logins.needsApproval(at, "thread-a"));
+      assert.strictEqual(yield* logins.needsApproval(at, "thread-a"), "application");
       yield* logins.recordApproval(at, "thread-a");
       assert.isFalse(yield* logins.needsApproval(at, "thread-b"));
+
+      yield* setApproval("never");
+      at = yield* revision();
+      assert.isFalse(yield* logins.needsApproval(at, "thread-c"));
     }).pipe(Effect.provide(layer));
   });
 
@@ -185,7 +193,7 @@ describe("BrowserLogins", () => {
       });
       const again = yield* logins.candidates("https://github.com/");
       assert.notStrictEqual(again.revision, revision);
-      assert.isTrue(yield* logins.needsApproval(again.revision, "thread-a"));
+      assert.strictEqual(yield* logins.needsApproval(again.revision, "thread-a"), "thread");
     }).pipe(Effect.provide(layer));
   });
 
@@ -203,27 +211,30 @@ describe("BrowserLogins", () => {
       yield* logins.recordApproval(revision, "thread-a").pipe(Effect.flip);
       yield* logins.check(revision).pipe(Effect.flip);
       const now = yield* logins.candidates("https://github.com/");
-      assert.isTrue(yield* logins.needsApproval(now.revision, "thread-a"));
+      assert.strictEqual(yield* logins.needsApproval(now.revision, "thread-a"), "thread");
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("rejects an answer or a read begun under a setting that has since changed", () => {
+  it.effect.each([
+    // The user widens the setting while the "every login" prompt is open.
+    ["request", "application"],
+    // The user turns asking back on while a fill that was not asked about is under way.
+    ["never", "thread"],
+  ] as const)("rejects steps begun under %s once the setting changed to %s", ([from, to]) => {
     const { layer } = makeService([github]);
     return Effect.gen(function* () {
       const settings = yield* Settings.ServerSettingsService;
       const logins = yield* BrowserLogins.BrowserLogins;
-      yield* settings.updateSettings({
-        browserLogins: { secretProviderId: providerId, approval: "request" },
-      });
+      const setApproval = (approval: BrowserLoginApproval) =>
+        settings.updateSettings({ browserLogins: { secretProviderId: providerId, approval } });
+      yield* setApproval(from);
       const { revision } = yield* logins.candidates("https://github.com/");
-      // The user widens the setting while the "every login" prompt is open.
-      yield* settings.updateSettings({
-        browserLogins: { secretProviderId: providerId, approval: "application" },
-      });
+      yield* setApproval(to);
       yield* logins.recordApproval(revision, "thread-a").pipe(Effect.flip);
       yield* logins.read(revision, github, ["password"]).pipe(Effect.flip);
+      yield* logins.check(revision).pipe(Effect.flip);
       const now = yield* logins.candidates("https://github.com/");
-      assert.isTrue(yield* logins.needsApproval(now.revision, "thread-b"));
+      assert.strictEqual(yield* logins.needsApproval(now.revision, "thread-b"), to);
     }).pipe(Effect.provide(layer));
   });
 });

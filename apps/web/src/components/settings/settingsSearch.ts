@@ -853,7 +853,9 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "browser-login-approval",
     title: "Ask before filling",
     to: "/settings/browser",
-    searchTerms: ["login approval every once per thread until restart dialog 1password"],
+    searchTerms: [
+      "login approval every once per thread until restart dialog 1password don't ask never service account",
+    ],
     secretsFeatureOnly: true,
   },
   {

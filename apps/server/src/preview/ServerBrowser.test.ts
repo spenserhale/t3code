@@ -8,14 +8,21 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { it } from "@effect/vitest";
 import {
+  type BrowserLoginApproval,
   type BrowserRecordingFrameRate,
   EnvironmentId,
   PreviewTabId,
   ProviderInstanceId,
+  SecretProviderId,
+  SecretProviderKind,
   ThreadId,
+  type PreviewAutomationFillLoginResult,
+  type PreviewAutomationOperation,
   type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
 } from "@t3tools/contracts";
+import { defineSecretProviderDriver } from "@t3tools/secret-provider-core/server/driver";
+import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
@@ -26,14 +33,17 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import type { BrowserContext, Page } from "playwright-core";
+import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { beforeEach, expect, vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
+import * as Settings from "../serverSettings.ts";
+import * as BrowserLogins from "./BrowserLogins.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
@@ -49,6 +59,7 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     }
     async contextFor(profileId: string, isolationKey?: string) {
       contextRequests.push({ profileId, isolated: isolationKey !== undefined });
+      if (realContext) return realContext;
       if (contextFailure) throw contextFailure;
       await contextGate?.promise;
       const context = makeContext(this.onClose);
@@ -308,6 +319,8 @@ let pageSetupFailure: Error | null = null;
 let initialNavigation: (() => Promise<void>) | null = null;
 let desktopRendersNext = false;
 let desktopPageUrl = "about:blank";
+/** A real headless Chromium context handed out instead of the fakes, when set. */
+let realContext: BrowserContext | null = null;
 /** Replaces the answer to the desktop page's size reads. */
 let desktopSizeAnswer: (() => Promise<Record<string, unknown>>) | null = null;
 const desktopDetaches = new NodeEvents.EventEmitter();
@@ -458,6 +471,7 @@ beforeEach(() => {
   desktopTabs.clear();
   desktopRendersNext = false;
   desktopPageUrl = "about:blank";
+  realContext = null;
   desktopSizeAnswer = null;
   desktopDetachReady = Promise.withResolvers<void>();
   desktopReleased = Promise.withResolvers<void>();
@@ -2327,3 +2341,202 @@ it.live("failed session and browser launches release capacity, as does closing a
     }),
   ).pipe(Effect.provide(layer)),
 );
+
+const loginKind = SecretProviderKind.make("fake_vault");
+const loginProvider = SecretProviderId.make("work");
+const LOGIN_PAGE = `<title>Sign in</title><input id="user" autocomplete="username"><input id="password" type="password" oninput="document.title = this.value">`;
+
+/** Real headless Chromium for the mocked contexts to hand out, serving a login page. */
+const realLoginBrowser = Effect.acquireRelease(
+  Effect.promise(async () => {
+    const browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext();
+    await context.route("https://good.test/**", (route) =>
+      route.fulfill({ contentType: "text/html", body: LOGIN_PAGE }),
+    );
+    realContext = context;
+    return { browser, context };
+  }),
+  ({ browser }) => Effect.promise(() => browser.close()),
+);
+
+/** A server whose one password manager holds a login for https://good.test. */
+const loginServer = (
+  approval: BrowserLoginApproval,
+  desktopChannel: Layer.Layer<
+    DesktopChannel.DesktopBrowserChannel,
+    never,
+    ServerConfig.ServerConfig
+  >,
+) => {
+  const reads: Array<string> = [];
+  const driver = defineSecretProviderDriver({
+    kind: loginKind,
+    definition: defineSecretProvider({
+      kind: loginKind,
+      label: "Fake Vault",
+      configSchema: Schema.Struct({}),
+      isReference: () => true,
+      referencePlaceholder: "",
+      invalidReferenceMessage: "",
+      supportsLogins: true,
+    }),
+    read: (_config, references) => Effect.succeed(references.map(() => undefined)),
+    logins: {
+      list: () => Effect.succeed([{ id: "g1", title: "Good", urls: ["https://good.test"] }]),
+      read: (_config, login, fields) =>
+        Effect.sync(() => {
+          reads.push(login.id);
+          return Object.fromEntries(fields.map((field) => [field, `${field}-value`]));
+        }),
+    },
+  });
+  const logins = Layer.effect(BrowserLogins.BrowserLogins, BrowserLogins.make([driver])).pipe(
+    Layer.provide(
+      Settings.layerTest({
+        secretProviders: { [loginProvider]: { kind: loginKind, label: "Work", config: {} } },
+        browserLogins: { secretProviderId: loginProvider, approval },
+      }),
+    ),
+  );
+  return {
+    reads,
+    layer: ServerBrowser.layer.pipe(
+      Layer.provideMerge(Layer.mergeAll(desktopChannel, logins)),
+      Layer.provideMerge(dependencies),
+    ),
+  };
+};
+
+/** Opens an agent tab on the login page; with no desktop to draw it, it is headless. */
+const openLoginTab = Effect.gen(function* () {
+  const { broker, tabId } = yield* ready;
+  const invoke = <A = void>(operation: PreviewAutomationOperation, input: object = {}) =>
+    broker.invoke<A>({ scope, tabId, operation, input });
+  yield* invoke("navigate", { url: "https://good.test/login" });
+  return { tabId, invoke };
+});
+
+const passwordField = (context: BrowserContext) =>
+  Effect.promise(() =>
+    context
+      .pages()[0]!
+      .locator("#password")
+      .evaluate((element) => {
+        const field = element as unknown as {
+          readonly value: string;
+          readonly style: { getPropertyValue: (name: string) => string };
+        };
+        return {
+          value: field.value,
+          security: field.style.getPropertyValue("-webkit-text-security"),
+        };
+      }),
+  );
+
+it.live(
+  "a headless tab is filled without asking under Don't ask, behind the same page guards",
+  () => {
+    const server = loginServer("never", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          yield* invoke("evaluate", { expression: "document.title" });
+          const scripted = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(scripted.message).toContain("preview_evaluate ran in this page");
+
+          yield* invoke("navigate", { url: "https://good.test/login" });
+          const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
+          expect(filled).toMatchObject({
+            status: "filled",
+            login: { id: "g1", title: "Good" },
+            filled: ["username", "password"],
+          });
+          expect(yield* passwordField(context)).toEqual({
+            value: "password-value",
+            security: "disc",
+          });
+          for (const operation of ["evaluate", "recordingStart"] as const) {
+            const refused = yield* invoke(operation, { expression: "1" }).pipe(Effect.flip);
+            expect(refused.message).toContain("filled a login in this page");
+          }
+          // The page copied the password into its title.
+          const status = yield* invoke<PreviewAutomationStatus>("status");
+          expect(status.title).toBe("[filled by password manager]");
+
+          yield* invoke("navigate", { url: "https://good.test/login" });
+          yield* invoke("recordingStart");
+          const recording = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(recording.message).toContain("Stop the recording before filling a login");
+          expect(server.reads).toEqual(["g1"]);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live(
+  "a headless tab on a server without its desktop app refuses a login that needs approval",
+  () => {
+    const server = loginServer("thread", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(refused.message).toContain("Nobody can approve a login on this machine.");
+          expect(server.reads).toEqual([]);
+          expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live("a headless tab on a server with its desktop app asks there before filling", () => {
+  const asked: Array<{ readonly key: DesktopChannel.DesktopTabKey; readonly prompt: object }> = [];
+  const server = loginServer(
+    "thread",
+    Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
+      available: true,
+      // The desktop never draws the tab.
+      awaitAttached: () => Effect.succeed(false),
+      detached: Stream.empty,
+      attached: Stream.empty,
+      isAttached: () => Effect.succeed(false),
+      endpoint: () => Effect.die("The desktop does not draw this tab."),
+      pointer: () => Effect.void,
+      turn: () => Effect.void,
+      approveLogin: (key, _timeoutMs, prompt) =>
+        Effect.sync(() => {
+          asked.push({ key, prompt });
+          return true;
+        }),
+    }),
+  );
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { tabId, invoke } = yield* openLoginTab;
+        const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
+        expect(filled.status).toBe("filled");
+        expect(asked).toEqual([
+          {
+            key: { threadId: scope.thread.threadId, tabId },
+            prompt: expect.objectContaining({
+              providerLabel: "Fake Vault",
+              loginTitle: "Good",
+              origin: "https://good.test",
+              scope: "thread",
+            }),
+          },
+        ]);
+        expect((yield* passwordField(context)).value).toBe("password-value");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});

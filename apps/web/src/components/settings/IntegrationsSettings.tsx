@@ -1583,6 +1583,7 @@ const LOGIN_APPROVAL_OPTIONS: ReadonlyArray<{
   { value: "request", label: "Every login" },
   { value: "thread", label: "Once per thread" },
   { value: "application", label: "Once until restart" },
+  { value: "never", label: "Don't ask" },
 ];
 
 function BrowserLoginSettings() {
@@ -1606,8 +1607,8 @@ function BrowserLoginSettings() {
         {...searchableSetting("browser-login-provider")}
         description={
           providers.length === 0 && off
-            ? "Add a 1Password provider in Settings > Secrets to let agents sign in to sites. Works in the desktop app's browser."
-            : "Agents can sign the built-in browser in to sites with logins saved here. They never see the values. Works in the desktop app's browser."
+            ? "Add a 1Password provider in Settings > Secrets to let agents sign in to sites."
+            : "Agents can sign the built-in browser in to sites with logins saved here. They never see the values."
         }
         resetAction={
           !off ? (
@@ -1654,7 +1655,12 @@ function BrowserLoginSettings() {
         serverScoped
         settingKeys={["browserLogins"]}
         {...searchableSetting("browser-login-approval")}
-        description="Like 1Password's approval setting. The desktop app asks in a dialog."
+        description="Like 1Password's approval setting. Only the desktop app that runs this environment can ask."
+        status={
+          approval === "never"
+            ? "Agents can fill any login these password managers can see, without asking. Use it with a service account limited to an agents vault."
+            : undefined
+        }
         resetAction={
           approval !== DEFAULT_BROWSER_LOGIN_APPROVAL ? (
             <SettingResetButton

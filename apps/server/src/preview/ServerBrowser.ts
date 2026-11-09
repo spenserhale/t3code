@@ -2194,12 +2194,6 @@ const make = Effect.gen(function* () {
       throw ServerBrowserLogin.loginError("This server cannot fill browser logins.");
     }
     const logins = browserLogins.value;
-    // The approval dialog and the user who answers it live in the desktop app.
-    if (!tab.desktop) {
-      throw ServerBrowserLogin.loginError(
-        "Logins can only be filled in the desktop app's browser. Ask the user to sign in.",
-      );
-    }
     const pageUrl = tab.page.url();
     const origin = URL.canParse(pageUrl) ? new URL(pageUrl).origin : pageUrl;
     const { provider, revision, logins: candidates } = await loginStep(logins.candidates(pageUrl));
@@ -2251,7 +2245,14 @@ const make = Effect.gen(function* () {
         "preview_evaluate ran in this page, so a login cannot be filled here. Reload the page with preview_navigate, then call preview_fill_login again.",
       );
     }
-    if (await loginStep(logins.needsApproval(revision, tab.threadId))) {
+    const ask = await loginStep(logins.needsApproval(revision, tab.threadId));
+    if (ask !== false) {
+      // Only a desktop app attached to this server can ask, also for tabs it does not draw.
+      if (!desktopChannel.available) {
+        throw ServerBrowserLogin.loginError(
+          "Nobody can approve a login on this machine. Ask the user to sign in in the tab, or to choose Don't ask in Settings > Browser > Logins for this environment.",
+        );
+      }
       const approved = await runPromise(
         desktopChannel.approveLogin(
           { threadId: tab.threadId, tabId: tab.tabId },
@@ -2263,7 +2264,7 @@ const make = Effect.gen(function* () {
             origin,
             ...(input.requester?.threadTitle ? { threadTitle: input.requester.threadTitle } : {}),
             ...(input.requester?.provider ? { agent: input.requester.provider } : {}),
-            scope: provider.approval,
+            scope: ask,
           },
         ),
       );
