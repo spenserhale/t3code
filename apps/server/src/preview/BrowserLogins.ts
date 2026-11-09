@@ -6,7 +6,12 @@ import type {
   SecretProviderLoginValues,
   SecretProviderLogins,
 } from "@t3tools/secret-provider-core/server/driver";
-import type { BrowserLoginApproval, ServerSettings } from "@t3tools/contracts";
+import {
+  browserLoginProviderIds,
+  type BrowserLoginApproval,
+  type SecretProviderId,
+  type ServerSettings,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -19,35 +24,36 @@ import { BUILT_IN_SECRET_PROVIDER_DRIVER_LIST } from "../secrets/secretProviderD
 import * as Settings from "../serverSettings.ts";
 
 const LIST_CACHE_MS = 5 * 60_000;
-const encodeConfig = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 export class BrowserLoginError extends Data.TaggedError("BrowserLoginError")<{
   readonly reason: "not_configured" | "unreadable";
   readonly message: string;
 }> {}
 
-export interface BrowserLoginProvider {
+/** A saved login offered for a page, without its secrets. */
+export interface BrowserLoginCandidate extends SecretProviderLogin {
+  /** `<providerId>/<itemId>`, so a read goes back to the provider the login came from. */
   readonly id: string;
-  readonly label: string;
-  readonly approval: BrowserLoginApproval;
+  /** The provider's name in Settings > Secrets, such as "Work 1Password". */
+  readonly account: string;
 }
 
 export class BrowserLogins extends Context.Service<
   BrowserLogins,
   {
-    /** Saved logins whose websites cover `pageUrl`, without their secrets. */
+    /** Saved logins whose websites cover `pageUrl`, from every chosen provider that could list. */
     readonly candidates: (pageUrl: string) => Effect.Effect<
       {
-        readonly provider: BrowserLoginProvider;
         /** Names the settings these logins came from; later steps fail once they change at all. */
         readonly revision: string;
-        readonly logins: ReadonlyArray<SecretProviderLogin>;
+        readonly logins: ReadonlyArray<BrowserLoginCandidate>;
       },
       BrowserLoginError
     >;
     readonly read: (
       revision: string,
-      login: SecretProviderLogin,
+      login: BrowserLoginCandidate,
       fields: ReadonlyArray<SecretProviderLoginField>,
     ) => Effect.Effect<SecretProviderLoginValues, BrowserLoginError>;
     /** The prompt the user must answer before a fill on this thread, or false when none is due. */
@@ -94,39 +100,69 @@ export const loginCoversPage = (urls: ReadonlyArray<string>, pageUrl: string): b
   });
 };
 
-interface Resolved {
-  readonly provider: BrowserLoginProvider;
-  readonly revision: string;
+interface Source {
+  readonly id: SecretProviderId;
+  readonly account: string;
+  /** The driver's name, such as "1Password". */
+  readonly label: string;
+  /** Names the provider and its config, so a changed config lists again. */
+  readonly key: string;
   readonly config: unknown;
   readonly logins: SecretProviderLogins;
+}
+
+interface Resolved {
+  readonly approval: BrowserLoginApproval;
+  readonly revision: string;
+  readonly sources: ReadonlyArray<Source>;
 }
 
 const resolve = (
   drivers: ReadonlyArray<SecretProviderDriver>,
   settings: ServerSettings,
 ): Resolved | BrowserLoginError => {
-  const id = settings.browserLogins.secretProviderId;
-  if (id === undefined) {
+  const ids = [...new Set(browserLoginProviderIds(settings.browserLogins))];
+  if (ids.length === 0) {
     return new BrowserLoginError({
       reason: "not_configured",
       message:
         "Browser logins are off. The user can turn them on in Settings > Browser by choosing a password manager.",
     });
   }
-  const configured = settings.secretProviders[id];
-  const driver = drivers.find((candidate) => candidate.kind === configured?.kind);
-  if (configured === undefined || driver?.logins === undefined) {
+  const sources = ids.flatMap((id): ReadonlyArray<Source> => {
+    const configured = settings.secretProviders[id];
+    const driver = drivers.find((candidate) => candidate.kind === configured?.kind);
+    if (configured === undefined || driver?.logins === undefined) return [];
+    return [
+      {
+        id,
+        account: configured.label,
+        label: driver.definition.label,
+        key: encodeJson([id, configured.kind, configured.config ?? null]),
+        config: configured.config,
+        logins: driver.logins,
+      },
+    ];
+  });
+  if (sources.length === 0) {
+    const named = ids.join(", ");
     return new BrowserLoginError({
       reason: "not_configured",
-      message: `The password manager chosen for browser logins (${id}) is missing or cannot fill logins. The user can fix it in Settings > Browser.`,
+      message:
+        ids.length === 1
+          ? `The password manager chosen for browser logins (${named}) is missing or cannot fill logins. The user can fix it in Settings > Browser.`
+          : `None of the password managers chosen for browser logins (${named}) can fill logins. The user can fix it in Settings > Browser.`,
     });
   }
   const approval = settings.browserLogins.approval;
   return {
-    provider: { id, label: driver.definition.label, approval },
-    revision: [id, configured.kind, encodeConfig(configured.config), approval].join("\u0000"),
-    config: configured.config,
-    logins: driver.logins,
+    approval,
+    sources,
+    // Unusable ids count too, so one becoming usable starts a new generation.
+    revision: encodeJson([
+      approval,
+      ...ids.map((id) => sources.find((source) => source.id === id)?.key ?? id),
+    ]),
   };
 };
 
@@ -135,14 +171,13 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
 ) {
   const settingsService = yield* Settings.ServerSettingsService;
   const driverServices = yield* Effect.context<SecretProviderDriverServices>();
-  let listCache: {
-    readonly key: string;
-    readonly at: number;
-    readonly logins: ReadonlyArray<SecretProviderLogin>;
-  } | null = null;
-  // Approvals last for the server's life. Any change to the provider, its config, or the approval
-  // setting starts a new generation and forgets them all; a step begun in an older generation
-  // fails, even if the settings have since changed back.
+  const listCache = new Map<
+    string,
+    { readonly at: number; readonly logins: ReadonlyArray<SecretProviderLogin> }
+  >();
+  // Approvals last for the server's life. Any change to the providers, their config, or the
+  // approval setting starts a new generation and forgets them all; a step begun in an older
+  // generation fails, even if the settings have since changed back.
   const approvals = new Set<string>();
   let generation = 0;
   let seenRevision: string | undefined;
@@ -193,31 +228,56 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
       ),
     );
 
+  const list = Effect.fn("BrowserLogins.list")(function* (source: Source, now: number) {
+    const cached = listCache.get(source.key);
+    if (cached !== undefined && now - cached.at < LIST_CACHE_MS) return cached.logins;
+    const logins = yield* source.logins
+      .list(source.config)
+      .pipe(Effect.provideContext(driverServices));
+    if (logins === undefined) {
+      listCache.delete(source.key);
+      yield* Effect.logWarning("A password manager did not list its logins", {
+        secretProviderId: source.id,
+      });
+      return undefined;
+    }
+    listCache.set(source.key, { at: now, logins });
+    return logins;
+  });
+
   const candidates: BrowserLogins["Service"]["candidates"] = Effect.fn("BrowserLogins.candidates")(
     function* (pageUrl) {
       const resolved = yield* current;
       const revision = String(generation);
-      const key = resolved.revision;
       const now = yield* Clock.currentTimeMillis;
-      let logins =
-        listCache?.key === key && now - listCache.at < LIST_CACHE_MS ? listCache.logins : undefined;
-      if (logins === undefined) {
-        logins = yield* resolved.logins
-          .list(resolved.config)
-          .pipe(Effect.provideContext(driverServices));
-        if (logins === undefined) {
-          listCache = null;
-          return yield* new BrowserLoginError({
-            reason: "unreadable",
-            message: `${resolved.provider.label} did not list its logins. It may be locked, or its CLI integration may be off.`,
-          });
-        }
-        listCache = { key, at: now, logins };
+      for (const key of listCache.keys()) {
+        if (!resolved.sources.some((source) => source.key === key)) listCache.delete(key);
+      }
+      const listed = yield* Effect.forEach(resolved.sources, (source) => list(source, now), {
+        concurrency: "unbounded",
+      });
+      // A locked or rate-limited provider hides only its own logins.
+      if (listed.every((logins) => logins === undefined)) {
+        const [only, ...others] = resolved.sources;
+        return yield* new BrowserLoginError({
+          reason: "unreadable",
+          message:
+            only !== undefined && others.length === 0
+              ? `${only.label} did not list its logins. It may be locked, or its CLI integration may be off.`
+              : "None of the password managers chosen for browser logins listed their logins. They may be locked, or their CLI integration may be off.",
+        });
       }
       return {
-        provider: resolved.provider,
         revision,
-        logins: logins.filter((login) => loginCoversPage(login.urls, pageUrl)),
+        logins: resolved.sources.flatMap((source, index) =>
+          (listed[index] ?? [])
+            .filter((login) => loginCoversPage(login.urls, pageUrl))
+            .map((login) => ({
+              ...login,
+              id: `${source.id}/${login.id}`,
+              account: source.account,
+            })),
+        ),
       };
     },
   );
@@ -225,13 +285,24 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   const read: BrowserLogins["Service"]["read"] = Effect.fn("BrowserLogins.read")(
     function* (revision, login, fields) {
       const resolved = yield* currentAt(revision);
-      const values = yield* resolved.logins
-        .read(resolved.config, login, fields)
+      const slash = login.id.indexOf("/");
+      const source =
+        slash < 0
+          ? undefined
+          : resolved.sources.find((candidate) => candidate.id === login.id.slice(0, slash));
+      if (source === undefined) {
+        return yield* new BrowserLoginError({
+          reason: "not_configured",
+          message: "That login is not from a password manager chosen for browser logins.",
+        });
+      }
+      const values = yield* source.logins
+        .read(source.config, { ...login, id: login.id.slice(slash + 1) }, fields)
         .pipe(Effect.provideContext(driverServices));
       if (values === undefined) {
         return yield* new BrowserLoginError({
           reason: "unreadable",
-          message: `${resolved.provider.label} did not return the login. It may be locked, or the request was denied there.`,
+          message: `${source.label} did not return the login. It may be locked, or the request was denied there.`,
         });
       }
       // The read can wait on the password manager's own prompt; settings may change meanwhile.
@@ -247,14 +318,14 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
       yield* currentAt(revision);
     }),
     needsApproval: Effect.fn("BrowserLogins.needsApproval")(function* (revision, threadId) {
-      const { approval } = (yield* currentAt(revision)).provider;
+      const { approval } = yield* currentAt(revision);
       if (approval === "never") return false;
       return approval === "request" || !approvals.has(approvalKey(approval, threadId))
         ? approval
         : false;
     }),
     recordApproval: Effect.fn("BrowserLogins.recordApproval")(function* (revision, threadId) {
-      const { approval } = (yield* currentAt(revision)).provider;
+      const { approval } = yield* currentAt(revision);
       if (approval === "request" || approval === "never") return;
       approvals.add(approvalKey(approval, threadId));
     }),

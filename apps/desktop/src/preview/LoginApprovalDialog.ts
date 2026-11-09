@@ -76,7 +76,7 @@ const make = Effect.gen(function* () {
               defaultId: 1,
               cancelId: 1,
               noLink: true,
-              message: `Fill a ${prompt.providerLabel} login?`,
+              message: `Fill a login from ${prompt.providerLabel}?`,
               detail,
             },
             owner,

@@ -2196,11 +2196,12 @@ const make = Effect.gen(function* () {
     const logins = browserLogins.value;
     const pageUrl = tab.page.url();
     const origin = URL.canParse(pageUrl) ? new URL(pageUrl).origin : pageUrl;
-    const { provider, revision, logins: candidates } = await loginStep(logins.candidates(pageUrl));
+    const { revision, logins: candidates } = await loginStep(logins.candidates(pageUrl));
     const summary = (login: (typeof candidates)[number]) => ({
       id: login.id,
       title: login.title,
       ...(login.vault ? { vault: login.vault } : {}),
+      account: login.account,
     });
     const login =
       input.login === undefined
@@ -2258,7 +2259,7 @@ const make = Effect.gen(function* () {
           { threadId: tab.threadId, tabId: tab.tabId },
           Math.max(0, deadlineMs - performance.now()),
           {
-            providerLabel: provider.label,
+            providerLabel: login.account,
             loginTitle: login.title,
             ...(login.vault ? { vault: login.vault } : {}),
             origin,

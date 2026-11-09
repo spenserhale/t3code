@@ -9,6 +9,8 @@ import {
   BROWSER_PROFILE_MAX_COUNT,
   type BrowserLinkTarget,
   type BrowserLoginApproval,
+  BROWSER_LOGIN_PROVIDERS_MAX,
+  browserLoginProviderIds,
   type BrowserProfile,
   BrowserSearchEngine,
   BROWSER_CUSTOM_SEARCH_URL_MAX_LENGTH,
@@ -68,6 +70,7 @@ import { builtInSecretProviderDefinitions } from "@t3tools/secret-provider-defin
 import { Badge } from "../ui/badge";
 import {
   Menu,
+  MenuCheckboxItem,
   MenuGroup,
   MenuGroupLabel,
   MenuItem,
@@ -92,6 +95,7 @@ import { DraftInput } from "../ui/draft-input";
 import { NumberField, NumberFieldGroup, NumberFieldInput } from "../ui/number-field";
 import {
   Select,
+  SelectButton,
   SelectGroup,
   SelectGroupLabel,
   SelectItem,
@@ -1574,8 +1578,6 @@ function BrowserProfilesSetting({ disabled }: { readonly disabled: boolean }) {
   );
 }
 
-const LOGINS_OFF = "off";
-
 const LOGIN_APPROVAL_OPTIONS: ReadonlyArray<{
   readonly value: BrowserLoginApproval;
   readonly label: string;
@@ -1589,15 +1591,29 @@ const LOGIN_APPROVAL_OPTIONS: ReadonlyArray<{
 function BrowserLoginSettings() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const { secretProviderId, approval } = settings.browserLogins;
+  const { approval } = settings.browserLogins;
+  const chosen = browserLoginProviderIds(settings.browserLogins);
   const providers = Object.entries(settings.secretProviders).flatMap(([id, provider]) => {
     const definition = builtInSecretProviderDefinitions.find(provider.kind);
     return definition?.supportsLogins === true
       ? [{ id: id as SecretProviderId, label: `${provider.label} · ${definition.label}` }]
       : [];
   });
-  const selected = providers.find((provider) => provider.id === secretProviderId);
-  const off = secretProviderId === undefined;
+  // A chosen provider that was since removed stays listed, so it can be unchosen.
+  const options = [
+    ...providers,
+    ...chosen
+      .filter((id) => !providers.some((provider) => provider.id === id))
+      .map((id) => ({ id, label: `${id} (unavailable)` })),
+  ];
+  const off = chosen.length === 0;
+  const save = (secretProviderIds: ReadonlyArray<SecretProviderId>, nextApproval = approval) =>
+    updateSettings({
+      browserLogins:
+        secretProviderIds.length === 0
+          ? { approval: nextApproval }
+          : { secretProviderIds: [...secretProviderIds], approval: nextApproval },
+    });
 
   return (
     <>
@@ -1612,43 +1628,42 @@ function BrowserLoginSettings() {
         }
         resetAction={
           !off ? (
-            <SettingResetButton
-              label="password manager for logins"
-              onClick={() => updateSettings({ browserLogins: { approval } })}
-            />
+            <SettingResetButton label="password managers for logins" onClick={() => save([])} />
           ) : null
         }
         control={
-          <Select
-            value={secretProviderId ?? LOGINS_OFF}
-            onValueChange={(value) =>
-              updateSettings({
-                browserLogins:
-                  value === LOGINS_OFF
-                    ? { approval }
-                    : { secretProviderId: value as SecretProviderId, approval },
-              })
-            }
-            disabled={providers.length === 0 && off}
-          >
-            <SelectTrigger
-              size="sm"
+          <Menu>
+            <MenuTrigger
+              render={<SelectButton size="sm" />}
               className="w-full min-w-0 sm:w-56"
-              aria-label="Password manager for logins"
+              aria-label="Password managers for logins"
+              disabled={options.length === 0}
             >
-              <SelectValue>
-                {off ? "Off" : (selected?.label ?? `${secretProviderId} (unavailable)`)}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              <SelectItem value={LOGINS_OFF}>Off</SelectItem>
-              {providers.map((provider) => (
-                <SelectItem key={provider.id} value={provider.id}>
-                  {provider.label}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
+              {off
+                ? "Off"
+                : chosen
+                    .map((id) => options.find((option) => option.id === id)?.label ?? id)
+                    .join(", ")}
+            </MenuTrigger>
+            <MenuPopup align="end">
+              {options.map((option) => {
+                const checked = chosen.includes(option.id);
+                return (
+                  <MenuCheckboxItem
+                    key={option.id}
+                    checked={checked}
+                    closeOnClick={false}
+                    disabled={!checked && chosen.length >= BROWSER_LOGIN_PROVIDERS_MAX}
+                    onCheckedChange={(next) =>
+                      save(next ? [...chosen, option.id] : chosen.filter((id) => id !== option.id))
+                    }
+                  >
+                    {option.label}
+                  </MenuCheckboxItem>
+                );
+              })}
+            </MenuPopup>
+          </Menu>
         }
       />
       <SettingsRow
@@ -1665,28 +1680,14 @@ function BrowserLoginSettings() {
           approval !== DEFAULT_BROWSER_LOGIN_APPROVAL ? (
             <SettingResetButton
               label="ask before filling"
-              onClick={() =>
-                updateSettings({
-                  browserLogins: {
-                    ...(secretProviderId === undefined ? {} : { secretProviderId }),
-                    approval: DEFAULT_BROWSER_LOGIN_APPROVAL,
-                  },
-                })
-              }
+              onClick={() => save(chosen, DEFAULT_BROWSER_LOGIN_APPROVAL)}
             />
           ) : null
         }
         control={
           <Select
             value={approval}
-            onValueChange={(value) =>
-              updateSettings({
-                browserLogins: {
-                  ...(secretProviderId === undefined ? {} : { secretProviderId }),
-                  approval: value as BrowserLoginApproval,
-                },
-              })
-            }
+            onValueChange={(value) => save(chosen, value as BrowserLoginApproval)}
             disabled={off}
           >
             <SelectTrigger

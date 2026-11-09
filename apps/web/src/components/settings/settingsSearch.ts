@@ -844,9 +844,11 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "browser-login-provider",
-    title: "Password manager for logins",
+    title: "Password managers for logins",
     to: "/settings/browser",
-    searchTerms: ["agent sign in log in credentials 1password fill website browser"],
+    searchTerms: [
+      "agent sign in log in credentials 1password fill website browser work personal accounts",
+    ],
     secretsFeatureOnly: true,
   },
   {
