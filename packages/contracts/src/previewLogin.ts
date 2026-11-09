@@ -13,8 +13,11 @@ import { SecretProviderId } from "./secretReference.ts";
 export const PreviewLoginField = Schema.Literals(["username", "password", "totp"]);
 export type PreviewLoginField = typeof PreviewLoginField.Type;
 
-/** How often the user is asked before a login is filled, after 1Password's own approval setting. */
-export const BrowserLoginApproval = Schema.Literals(["request", "thread", "application"]);
+/**
+ * How often the user is asked before a login is filled, after 1Password's own approval setting.
+ * `never` asks nobody, for machines no one can answer on.
+ */
+export const BrowserLoginApproval = Schema.Literals(["request", "thread", "application", "never"]);
 export type BrowserLoginApproval = typeof BrowserLoginApproval.Type;
 export const DEFAULT_BROWSER_LOGIN_APPROVAL: BrowserLoginApproval = "thread";
 

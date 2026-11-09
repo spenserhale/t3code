@@ -50,11 +50,11 @@ export class BrowserLogins extends Context.Service<
       login: SecretProviderLogin,
       fields: ReadonlyArray<SecretProviderLoginField>,
     ) => Effect.Effect<SecretProviderLoginValues, BrowserLoginError>;
-    /** Whether the user must approve before a fill on this thread under the current setting. */
+    /** The prompt the user must answer before a fill on this thread, or false when none is due. */
     readonly needsApproval: (
       revision: string,
       threadId: string,
-    ) => Effect.Effect<boolean, BrowserLoginError>;
+    ) => Effect.Effect<Exclude<BrowserLoginApproval, "never"> | false, BrowserLoginError>;
     /** Records the answer to a prompt shown under `revision`, never under a newer setting. */
     readonly recordApproval: (
       revision: string,
@@ -178,8 +178,8 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     }),
   );
 
-  const approvalKey = (resolved: Resolved, threadId: string) =>
-    resolved.provider.approval === "application" ? "application" : `thread\u0000${threadId}`;
+  const approvalKey = (approval: BrowserLoginApproval, threadId: string) =>
+    approval === "application" ? "application" : `thread\u0000${threadId}`;
 
   const currentAt = (revision: string) =>
     current.pipe(
@@ -247,15 +247,16 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
       yield* currentAt(revision);
     }),
     needsApproval: Effect.fn("BrowserLogins.needsApproval")(function* (revision, threadId) {
-      const resolved = yield* currentAt(revision);
-      return (
-        resolved.provider.approval === "request" || !approvals.has(approvalKey(resolved, threadId))
-      );
+      const { approval } = (yield* currentAt(revision)).provider;
+      if (approval === "never") return false;
+      return approval === "request" || !approvals.has(approvalKey(approval, threadId))
+        ? approval
+        : false;
     }),
     recordApproval: Effect.fn("BrowserLogins.recordApproval")(function* (revision, threadId) {
-      const resolved = yield* currentAt(revision);
-      if (resolved.provider.approval === "request") return;
-      approvals.add(approvalKey(resolved, threadId));
+      const { approval } = (yield* currentAt(revision)).provider;
+      if (approval === "request" || approval === "never") return;
+      approvals.add(approvalKey(approval, threadId));
     }),
   });
 });
