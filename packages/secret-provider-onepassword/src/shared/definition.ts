@@ -1,4 +1,4 @@
-import { SecretProviderKind } from "@t3tools/contracts";
+import { SecretProviderKind, TrimmedString, secretSetting } from "@t3tools/contracts";
 import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
 import * as Schema from "effect/Schema";
 
@@ -20,6 +20,8 @@ export type OnePasswordAccount = typeof OnePasswordAccount.Type;
 
 export const OnePasswordSecretProviderConfig = Schema.Struct({
   account: OnePasswordAccount,
+  /** Signs `op` in as a service account, so no one has to unlock 1Password on the server. */
+  serviceAccountToken: Schema.optionalKey(TrimmedString).pipe(secretSetting),
 });
 export type OnePasswordSecretProviderConfig = typeof OnePasswordSecretProviderConfig.Type;
 

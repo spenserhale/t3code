@@ -4,10 +4,7 @@ import {
   SecretProviderLabel,
   type SecretProviderConfig,
 } from "@t3tools/contracts";
-import {
-  OnePasswordSecretProviderConfig,
-  type OnePasswordAccount,
-} from "@t3tools/secret-provider-onepassword/shared/definition";
+import { OnePasswordSecretProviderConfig } from "@t3tools/secret-provider-onepassword/shared/definition";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -16,7 +13,7 @@ const decodeSecretProviderId = Schema.decodeOption(SecretProviderId);
 const decodeOnePasswordConfig = Schema.decodeUnknownOption(OnePasswordSecretProviderConfig);
 
 export type ClassifiedSecretProvider =
-  | { readonly kind: "one_password"; readonly account: OnePasswordAccount }
+  | ({ readonly kind: "one_password" } & OnePasswordSecretProviderConfig)
   | { readonly kind: "unsupported" };
 
 /** Unknown kinds and configs that no longer decode are shown read-only; removal stays available. */
@@ -24,7 +21,7 @@ export function classifySecretProvider(provider: SecretProviderConfig): Classifi
   if (provider.kind !== "one_password") return { kind: "unsupported" };
   const decoded = decodeOnePasswordConfig(provider.config);
   return decoded._tag === "Some"
-    ? { kind: "one_password", account: decoded.value.account }
+    ? { kind: "one_password", ...decoded.value }
     : { kind: "unsupported" };
 }
 
@@ -42,6 +39,10 @@ function secretProviderIdFromName(name: string): SecretProviderId | null {
 export interface SecretProviderDraft {
   readonly name: string;
   readonly account: string;
+  /** A new service account token; empty keeps the saved one. */
+  readonly serviceAccountToken: string;
+  /** The saved token as the server shows it, a marker it keeps the token for; empty when none. */
+  readonly savedServiceAccountToken: string;
 }
 
 export function draftFromSecretProvider(provider: SecretProviderConfig): SecretProviderDraft {
@@ -49,6 +50,9 @@ export function draftFromSecretProvider(provider: SecretProviderConfig): SecretP
   return {
     name: provider.label,
     account: classified.kind === "one_password" ? classified.account : "",
+    serviceAccountToken: "",
+    savedServiceAccountToken:
+      classified.kind === "one_password" ? (classified.serviceAccountToken ?? "") : "",
   };
 }
 
@@ -108,12 +112,16 @@ export function secretProviderFromDraft(
       ...(Result.isFailure(account) ? { account: account.failure } : {}),
     });
   }
+  const serviceAccountToken = draft.serviceAccountToken.trim() || draft.savedServiceAccountToken;
   return Result.succeed({
     id,
     config: {
       kind: SecretProviderKind.make("one_password"),
       label: label.success,
-      config: { account: account.success },
+      config: {
+        account: account.success,
+        ...(serviceAccountToken === "" ? {} : { serviceAccountToken }),
+      },
     },
   });
 }

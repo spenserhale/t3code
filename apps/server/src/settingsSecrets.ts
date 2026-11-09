@@ -18,6 +18,7 @@ import { kiroClient } from "@t3tools/provider-kiro/client";
 import { museClient } from "@t3tools/provider-muse/client";
 import { openCodeClient } from "@t3tools/provider-opencode/client";
 import { piClient } from "@t3tools/provider-pi/client";
+import { secretProviderDefinitions } from "./secrets/secretProviderDefinitions.ts";
 import {
   readSecretFieldValues,
   SOURCE_CONTROL_HOST_SECRET_FIELDS,
@@ -47,6 +48,11 @@ const providerSecretFields = new Map([
 const usageLimitSecretFields = secretSettingsFields(UsageLimitSourceConfig);
 const easDeviceHostSecretFields = secretSettingsFields(EasDeviceHostConfig);
 const simlockDeviceHostSecretFields = secretSettingsFields(SimlockDeviceHostConfig);
+const secretProviderSecretFields = new Map(
+  secretProviderDefinitions.definitions.map(
+    (definition) => [definition.kind, secretSettingsFields(definition.configSchema)] as const,
+  ),
+);
 const encode = (value: string) => Buffer.from(value, "utf8").toString("base64url");
 
 export interface SettingsSecret {
@@ -230,6 +236,27 @@ function mapSecretFieldGroups(
       ) as SimlockDeviceHostConfig,
   );
 
+  const secretProviders = Object.fromEntries(
+    Object.entries(settings.secretProviders).map(([id, provider]) => {
+      const config = provider.config;
+      return [
+        id,
+        config !== null && typeof config === "object" && !Array.isArray(config)
+          ? {
+              ...provider,
+              config: mapFields(
+                config as Record<string, unknown>,
+                secretProviderSecretFields.get(provider.kind) ?? [],
+                (field, serverHost) =>
+                  `secret-provider-${encode(id)}-${encode(provider.kind)}-${encode(field)}` +
+                  (serverHost === null ? "" : `-${encode(serverHost)}`),
+              ),
+            }
+          : provider,
+      ];
+    }),
+  ) as ServerSettings["secretProviders"];
+
   return {
     ...settings,
     providerInstances,
@@ -237,5 +264,6 @@ function mapSecretFieldGroups(
     usageLimitSources,
     easDeviceHosts,
     simlockDeviceHosts,
+    secretProviders,
   };
 }
