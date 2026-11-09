@@ -36,7 +36,7 @@ import { ModelSelection } from "./modelSelection.ts";
 import { ProjectScript, type ProjectMutation } from "./project.ts";
 import { DEFAULT_RUNTIME_MODE, RuntimeMode } from "./providerPolicy.ts";
 import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
-import { BrowserLoginSettings } from "./previewLogin.ts";
+import { BrowserLoginSettings, BrowserLoginSettingsWrite } from "./previewLogin.ts";
 import {
   BrowserRecordingFrameRate,
   DEFAULT_BROWSER_RECORDING_FRAME_RATE,
@@ -1929,8 +1929,8 @@ export const ServerSettingsPatch = Schema.Struct({
   secretProviders: Schema.optionalKey(
     Schema.Record(SecretProviderId, Schema.NullOr(SecretProviderConfigWrite)),
   ),
-  // Replaced whole, so clearing the provider turns logins off.
-  browserLogins: Schema.optionalKey(BrowserLoginSettings),
+  // Replaced whole, so clearing the providers turns logins off.
+  browserLogins: Schema.optionalKey(BrowserLoginSettingsWrite),
 
   usagePriceOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, Schema.NullOr(UsageModelPriceOverride)),
