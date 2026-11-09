@@ -7,9 +7,11 @@ import {
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
+  PreviewAutomationTimeoutError,
   PreviewTabId,
   ProviderInstanceId,
   ThreadId,
+  type PreviewAutomationError,
   type PreviewAutomationHost,
   type PreviewAutomationRequest,
   type PreviewAutomationStreamEvent,
@@ -18,8 +20,10 @@ import {
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
+import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import { PreviewBrowserRootError } from "../preview/PreviewBrowserHost.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -1008,6 +1012,69 @@ it.effect("fails requests assigned to the stream that is replaced", () =>
       });
     }),
   ),
+);
+
+it.effect.each([
+  {
+    host: "desktop",
+    options: {},
+    otherRequest: "PreviewAutomationClientDisconnectedError",
+    nextRequest: "PreviewAutomationNoAvailableHostError",
+  },
+  {
+    host: "in-process",
+    options: { evictOnTimeout: false },
+    otherRequest: "answered",
+    nextRequest: "answered",
+  },
+])(
+  "a request timeout evicts the host unless it opted out ($host)",
+  ({ options, otherRequest, nextRequest }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* makeBroker;
+        const held = yield* Queue.unbounded<RoutedRequest>();
+        const answer = (request: RoutedRequest) =>
+          broker.respond({
+            clientId: "client-1",
+            connectionId: request.connectionId,
+            requestId: request.requestId,
+            ok: true,
+            result: "answered",
+          });
+        const requests = requestsFrom(yield* broker.connect(makeHost(), options));
+        // Status answers at once so the final call can show whether the host is still connected.
+        yield* Stream.runForEach(requests, (request) =>
+          request.operation === "status" ? answer(request) : Queue.offer(held, request),
+        ).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        const outcome = Effect.match({
+          onFailure: (error: PreviewAutomationError) => error._tag,
+          onSuccess: (result: unknown) => result,
+        });
+        const otherThread = {
+          ...scope,
+          thread: { ...scope.thread, threadId: ThreadId.make("thread-2") },
+        };
+
+        const timedOut = yield* broker
+          .invoke<void>({ scope, operation: "snapshot", input: {}, timeoutMs: 1_000 })
+          .pipe(Effect.flip, Effect.forkScoped);
+        yield* Queue.take(held);
+        const other = yield* broker
+          .invoke({ scope: otherThread, operation: "evaluate", input: {} })
+          .pipe(outcome, Effect.forkScoped);
+        const otherHeld = yield* Queue.take(held);
+        yield* TestClock.adjust("2 seconds");
+
+        expect(yield* Fiber.join(timedOut)).toBeInstanceOf(PreviewAutomationTimeoutError);
+        yield* answer(otherHeld);
+        expect(yield* Fiber.join(other)).toBe(otherRequest);
+        expect(yield* broker.invoke({ scope, operation: "status", input: {} }).pipe(outcome)).toBe(
+          nextRequest,
+        );
+      }),
+    ),
 );
 
 it.effect("accepts responses only from the host that received the request", () =>
