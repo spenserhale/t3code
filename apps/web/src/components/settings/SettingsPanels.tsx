@@ -8,6 +8,7 @@ import { msg, T, useGT, useMessages } from "gt-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import {
+  browserLoginProviderIds,
   type DesktopUpdateChannel,
   IDLE_COMPACTION_MODES,
   type IdleCompactionMode,
@@ -654,7 +655,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.enableAgentBrowserAccess !== DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess
       ? [gt("Agent browser access")]
       : []),
-    ...(settings.browserLogins.secretProviderId !== undefined ||
+    ...(browserLoginProviderIds(settings.browserLogins).length > 0 ||
     settings.browserLogins.approval !== DEFAULT_UNIFIED_SETTINGS.browserLogins.approval
       ? ["Browser logins"]
       : []),

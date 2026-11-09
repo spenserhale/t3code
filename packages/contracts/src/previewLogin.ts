@@ -21,14 +21,32 @@ export const BrowserLoginApproval = Schema.Literals(["request", "thread", "appli
 export type BrowserLoginApproval = typeof BrowserLoginApproval.Type;
 export const DEFAULT_BROWSER_LOGIN_APPROVAL: BrowserLoginApproval = "thread";
 
+export const BROWSER_LOGIN_PROVIDERS_MAX = 8;
+
 export const BrowserLoginSettings = Schema.Struct({
-  /** The configured secret provider logins come from. Unset turns the feature off. */
+  /** Saved before `secretProviderIds` existed; read only when that is absent. */
   secretProviderId: Schema.optional(SecretProviderId),
+  /** The configured secret providers logins come from. None turns the feature off. */
+  secretProviderIds: Schema.optional(Schema.Array(SecretProviderId)),
   approval: BrowserLoginApproval.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_LOGIN_APPROVAL)),
   ),
 });
 export type BrowserLoginSettings = typeof BrowserLoginSettings.Type;
+
+// Like the other settings' limits, the cap applies to writes only, so it can change later.
+export const BrowserLoginSettingsWrite = Schema.Struct({
+  ...BrowserLoginSettings.fields,
+  secretProviderIds: Schema.optional(
+    Schema.Array(SecretProviderId).check(Schema.isMaxLength(BROWSER_LOGIN_PROVIDERS_MAX)),
+  ),
+});
+
+export const browserLoginProviderIds = (
+  settings: BrowserLoginSettings,
+): ReadonlyArray<SecretProviderId> =>
+  settings.secretProviderIds ??
+  (settings.secretProviderId === undefined ? [] : [settings.secretProviderId]);
 
 const LoginLocator = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
 
@@ -76,6 +94,8 @@ export const PreviewLoginCandidate = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
   vault: Schema.optional(Schema.String),
+  /** The password manager it came from, as the user named it in Settings > Secrets. */
+  account: Schema.optional(Schema.String),
 });
 export type PreviewLoginCandidate = typeof PreviewLoginCandidate.Type;
 

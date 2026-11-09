@@ -4788,7 +4788,7 @@ const loginServer = (
     Layer.provide(
       Settings.layerTest({
         secretProviders: { [loginProvider]: { kind: loginKind, label: "Work", config: {} } },
-        browserLogins: { secretProviderId: loginProvider, approval },
+        browserLogins: { secretProviderIds: [loginProvider], approval },
       }),
     ),
   );
@@ -4844,7 +4844,7 @@ it.live(
           const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
           expect(filled).toMatchObject({
             status: "filled",
-            login: { id: "g1", title: "Good" },
+            login: { id: "work/g1", title: "Good", account: "Work" },
             filled: ["username", "password"],
           });
           expect(yield* passwordField(context)).toEqual({
@@ -4922,7 +4922,7 @@ it.live("a headless tab on a server with its desktop app asks there before filli
           {
             key: { threadId: scope.thread.threadId, tabId },
             prompt: expect.objectContaining({
-              providerLabel: "Fake Vault",
+              providerLabel: "Work",
               loginTitle: "Good",
               origin: "https://good.test",
               scope: "thread",
