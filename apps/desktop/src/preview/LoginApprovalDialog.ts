@@ -3,10 +3,12 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 import { BrowserWindow, type WebContents } from "electron";
 
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
+import * as ElectronWindow from "../electron/ElectronWindow.ts";
 
 export type LoginApprovalPrompt = Extract<
   DesktopBrowserCommand,
@@ -16,8 +18,14 @@ export type LoginApprovalPrompt = Extract<
 export class LoginApprovalDialog extends Context.Service<
   LoginApprovalDialog,
   {
-    /** Asks the user before an agent's tab is filled with a saved login; anything but Allow is a no. */
-    readonly ask: (guest: WebContents, prompt: LoginApprovalPrompt) => Effect.Effect<boolean>;
+    /**
+     * Asks the user before an agent's tab is filled with a saved login; anything but Allow is a no.
+     * `guest` is absent for a tab the desktop does not show, such as an agent's headless tab.
+     */
+    readonly ask: (
+      guest: WebContents | undefined,
+      prompt: LoginApprovalPrompt,
+    ) => Effect.Effect<boolean>;
   }
 >()("@t3tools/desktop/preview/LoginApprovalDialog") {}
 
@@ -27,14 +35,15 @@ const SCOPE_NOTE: Record<LoginApprovalPrompt["scope"], string> = {
   application: "Allowing lets every thread fill saved logins until the app restarts.",
 };
 
-const hostWindow = (guest: WebContents) => {
-  if (guest.isDestroyed()) return undefined;
+const hostWindow = (guest: WebContents | undefined) => {
+  if (guest === undefined || guest.isDestroyed()) return undefined;
   const host = guest.hostWebContents ?? guest;
   return host.isDestroyed() ? undefined : (BrowserWindow.fromWebContents(host) ?? undefined);
 };
 
 const make = Effect.gen(function* () {
   const dialog = yield* ElectronDialog.ElectronDialog;
+  const windows = yield* ElectronWindow.ElectronWindow;
   // Several threads may ask at once; one dialog at a time keeps each answer tied to its prompt.
   const oneAtATime = yield* Semaphore.make(1);
   return LoginApprovalDialog.of({
@@ -56,6 +65,8 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const remaining = expiresAt - (yield* Clock.currentTimeMillis);
           if (remaining <= 0) return false;
+          const owner =
+            hostWindow(guest) ?? Option.getOrUndefined(yield* windows.focusedMainOrFirst);
           const { response } = yield* dialog.showMessageBox(
             {
               signal: AbortSignal.timeout(remaining),
@@ -68,7 +79,7 @@ const make = Effect.gen(function* () {
               message: `Fill a ${prompt.providerLabel} login?`,
               detail,
             },
-            hostWindow(guest),
+            owner,
           );
           return response === 0 && (yield* Clock.currentTimeMillis) < expiresAt;
         }).pipe(Effect.orElseSucceed(() => false)),
