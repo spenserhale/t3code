@@ -29,7 +29,7 @@ import * as CommandLine from "effect/process/CommandLine";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as BrowserLogins from "../preview/BrowserLogins.ts";
-import { refusalMessage } from "../preview/BrowserSecretAccess.ts";
+import * as BrowserSecretAccess from "../preview/BrowserSecretAccess.ts";
 import * as DesktopBrowserChannel from "../preview/DesktopBrowserChannel.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { threadWorkspaceRoot } from "../project/threadWorkspaceRoot.ts";
@@ -136,11 +136,17 @@ interface Resolved {
   readonly source: SecretCommandSource;
 }
 
+/** A reference, looked for in the providers of one reach. */
+interface ReferenceItem extends BrowserSecretAccess.SecretItem {
+  readonly reach: BrowserLogins.BrowserLoginReach;
+}
+
 const make = Effect.gen(function* () {
   const logins = yield* BrowserLogins.BrowserLogins;
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
   // Optional, as for the browser, so a server built without the relay refuses at once.
   const relay = Option.getOrUndefined(yield* Effect.serviceOption(SecretRelay.SecretRelay));
+  const access = { logins, desktopChannel, relay };
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const path = yield* Path.Path;
   const threads = yield* ThreadManagementService.ThreadManagementService;
@@ -152,124 +158,58 @@ const make = Effect.gen(function* () {
       Effect.provideService(ProjectService.ProjectService, projects),
     );
 
-  /** This machine's desktop dialog, unless the user allowed this thread's commands already. */
-  const approveHere = Effect.fn("SecretCommands.approveHere")(function* (
-    caller: SecretCommandCaller,
-    revision: string,
-    deadline: number,
-    prompt: Omit<DesktopBrowserChannel.DesktopLoginPrompt, "kind">,
-  ) {
-    const scope = { threadId: caller.threadId };
-    const needed = yield* logins
-      .needsApproval(revision, scope, "secretReference")
-      .pipe(Effect.mapError(fromLogin));
-    if (!needed) return;
-    const answer = yield* desktopChannel.approveLogin(
-      { threadId: caller.threadId },
-      Math.max(0, deadline - (yield* Clock.currentTimeMillis)),
-      { kind: "secretReference", ...prompt },
-    );
-    if (answer === false) return yield* refused(`The user did not allow ${prompt.reference}.`);
-    if ((yield* Clock.currentTimeMillis) >= deadline) {
-      return yield* refused("The approval came after the call ended.");
-    }
-    if (answer === "thread") {
-      yield* logins
-        .recordApproval(revision, scope, "secretReference")
-        .pipe(Effect.mapError(fromLogin));
-    }
-  });
-
+  /** One secret, in the order every secret request follows (see `BrowserSecretAccess`). */
   const resolveSecret = Effect.fn("SecretCommands.resolveSecret")(function* (
     caller: SecretCommandCaller,
     reference: string,
     command: string,
     deadline: number,
   ): Effect.fn.Return<Resolved, SecretCommandError> {
-    // A service account that cannot read now, such as a rate-limited one, leaves it to a person.
-    const unattended = yield* Effect.gen(function* () {
-      const { revision, accounts } = yield* logins.secretSources(reference, "unattended");
-      if (accounts.length === 0) return Option.none<BrowserLogins.BrowserSecret>();
-      return Option.some(yield* logins.readSecret(revision, reference, "unattended"));
-    }).pipe(
-      Effect.catchTags({
-        BrowserLoginError: (error) =>
-          error.reason === "unreadable" ? Effect.succeedNone : Effect.fail(fromLogin(error)),
-      }),
-    );
-    if (Option.isSome(unattended)) {
-      return {
-        value: unattended.value.value,
-        source: { type: "serviceAccount", label: unattended.value.account },
-      };
-    }
     const requester = {
       ...(caller.threadTitle ? { threadTitle: caller.threadTitle } : {}),
       ...(caller.agent ? { agent: caller.agent } : {}),
     };
-
-    if (desktopChannel.available) {
-      // Nothing chosen here that a person unlocks: the user's device may still have it.
-      const attended = yield* logins.secretSources(reference, "attended").pipe(
-        Effect.catchTags({
-          BrowserLoginError: (error) =>
-            error.reason === "not_configured"
-              ? Effect.succeed({ revision: "", accounts: [] })
-              : Effect.fail(fromLogin(error)),
-        }),
-      );
-      if (attended.accounts.length > 0) {
-        const providers = attended.accounts.join(", ");
-        yield* approveHere(caller, attended.revision, deadline, {
-          providerLabel: providers,
-          reference,
-          command,
-          ...requester,
-        });
-        const secret = yield* logins
-          .readSecret(attended.revision, reference, "attended")
-          .pipe(Effect.mapError(fromLogin));
-        return { value: secret.value, source: { type: "device" } };
-      }
-    }
-
-    const { escalation } = yield* logins.escalation.pipe(Effect.mapError(fromLogin));
-    if (escalation === "refuse" || relay === undefined) {
-      return yield* refused(refusalMessage(reference, escalation));
-    }
-    const answer = yield* relay
-      .request(
-        { kind: "secretReference", threadId: caller.threadId, ...requester, reference, command },
-        Math.max(0, deadline - (yield* Clock.currentTimeMillis)),
-      )
-      .pipe(
-        Effect.catchTags({
-          SecretRelayError: (error) =>
-            Effect.fail(
-              refused(
-                error.reason === "no_device"
-                  ? refusalMessage(reference, escalation)
-                  : "The user did not answer on their device before the call ended.",
+    const found = yield* BrowserSecretAccess.resolve(
+      access,
+      { kind: "secretReference", threadId: caller.threadId, ...requester, reference, deadline },
+      {
+        what: reference,
+        // Which providers take the reference is known without reading it.
+        find: (reach) =>
+          logins
+            .secretSources(reference, reach)
+            .pipe(
+              Effect.map(({ accounts }): ReadonlyArray<ReferenceItem> =>
+                accounts.length === 0 ? [] : [{ id: reference, title: reference, reach }],
               ),
             ),
-        }),
-      );
-    switch (answer.type) {
-      case "values": {
-        const value = answer.values.value;
-        if (value === undefined) {
-          return yield* refused(`The user's device did not return ${reference}.`);
-        }
-        return { value, source: { type: "device" } };
-      }
-      case "denied":
-        return yield* refused(`The user did not allow ${reference} on their device.`);
-      case "unavailable":
-        return yield* refused(`The user's device could not answer: ${answer.message}`);
-      case "none":
-      case "choose":
-        return yield* refused(`No password manager on the user's device can open ${reference}.`);
+        read: (revision, item) =>
+          logins.readSecret(revision, reference, item.reach).pipe(
+            Effect.map((secret): Resolved | undefined => ({
+              value: secret.value,
+              source:
+                item.reach === "unattended"
+                  ? { type: "serviceAccount", label: secret.account }
+                  : { type: "device" },
+            })),
+          ),
+        relay: {
+          ask: { kind: "secretReference", threadId: caller.threadId, ...requester, command },
+          values: ({ value }): Resolved | undefined =>
+            value === undefined
+              ? undefined
+              : { value: Redacted.make(value), source: { type: "device" } },
+        },
+        prompt: { command },
+      },
+    ).pipe(Effect.mapError(fromLogin));
+    if (found.status !== "found") {
+      return yield* refused(`No password manager can open ${reference}.`);
     }
+    if (found.values === undefined) {
+      return yield* refused(`The user's device did not return ${reference}.`);
+    }
+    return found.values;
   });
 
   /** Captures at most about `OUTPUT_LIMIT` of a stream, with every secret masked. */

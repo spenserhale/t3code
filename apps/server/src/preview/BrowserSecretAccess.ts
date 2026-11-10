@@ -137,7 +137,10 @@ export interface SecretCatalog<Item extends SecretItem, Values> {
   };
   /** What the dialog names when the catalog knows it before anything is read. */
   readonly prompt?: Partial<
-    Pick<DesktopBrowserChannel.DesktopLoginPrompt, "providerLabel" | "loginTitle" | "vault">
+    Pick<
+      DesktopBrowserChannel.DesktopLoginPrompt,
+      "providerLabel" | "loginTitle" | "vault" | "command"
+    >
   >;
   /** The refusal when nobody could be asked, where the general one does not fit. */
   readonly refusal?: (escalation: BrowserSecretEscalation) => string;
@@ -156,7 +159,7 @@ export type SecretAccess<Item, Values> =
   | { readonly status: "none" };
 
 /** Why nobody could answer, in words an agent can pass on to the user. */
-export const refusalMessage = (what: string, escalation: BrowserSecretEscalation) =>
+const refusalMessage = (what: string, escalation: BrowserSecretEscalation) =>
   `No service account on this machine can open ${what}, and ${
     escalation === "refuse"
       ? "this machine is set not to ask the user's device"
