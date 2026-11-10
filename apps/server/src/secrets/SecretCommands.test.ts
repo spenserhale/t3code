@@ -42,11 +42,18 @@ const FIRECRAWL = "op://Agents/Firecrawl/key";
 const OPENAI = "op://Employee/OpenAI/key";
 
 /** What each account's vault holds. `work` signs in with a service account. */
+const PEM = "-----BEGIN KEY-----\nMIIBsecretline\nxy\n-----END KEY-----\n";
 const vaults: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  work: { [FIRECRAWL]: "fc-work-123", "op://Agents/Padded/key": "  padded-789\n" },
+  work: {
+    [FIRECRAWL]: "fc-work-123",
+    "op://Agents/Padded/key": "  padded-789\n",
+    "op://Agents/Cert/pem": PEM,
+    "op://Agents/Pin/code": "123",
+    "op://Agents/PaddedPin/code": " 12\n",
+  },
   personal: { [OPENAI]: "sk-personal-456" },
 };
-const SECRETS = ["fc-work-123", "padded-789", "sk-personal-456"];
+const SECRETS = ["fc-work-123", "padded-789", "sk-personal-456", "MIIBsecretline"];
 
 interface Spawned {
   readonly command: string;
@@ -520,30 +527,60 @@ describe("SecretCommands", () => {
     }).pipe(Effect.scoped, Effect.provide(fixture.layer));
   });
 
-  it.effect("masks every secret, its trimmed form included, in stdout and stderr", () => {
-    const fixture = setup({
-      run: () => ({
-        stdout: "key=fc-work-123\npadded=  padded-789\n\ntrimmed=padded-789.",
-        stderr: "warning: fc-work-123 is a test key",
-        code: 3,
-      }),
-    });
+  it.effect(
+    "masks every secret, its trimmed form and its lines included, in stdout and stderr",
+    () => {
+      const fixture = setup({
+        run: () => ({
+          stdout: `key=fc-work-123\npadded=  padded-789\n\ntrimmed=padded-789.\n${PEM}line=MIIBsecretline\nshort=xy\n`,
+          stderr: "warning: fc-work-123 is a test key",
+          code: 3,
+        }),
+      });
+      return Effect.gen(function* () {
+        const result = yield* run({
+          command: ["print"],
+          stdin: FIRECRAWL,
+          env: { PADDED: "op://Agents/Padded/key", CERT: "op://Agents/Cert/pem" },
+        });
+        assert.deepStrictEqual(result, {
+          exitCode: 3,
+          // A line of a multi-line secret is masked on its own; one under 4 characters is not.
+          stdout:
+            "key=[secret]\npadded=[secret]\ntrimmed=[secret].\n[secret]line=[secret]\nshort=xy\n",
+          stderr: "warning: [secret] is a test key",
+          truncated: false,
+          sources: {
+            stdin: { type: "serviceAccount", label: "Work" },
+            env: {
+              PADDED: { type: "serviceAccount", label: "Work" },
+              CERT: { type: "serviceAccount", label: "Work" },
+            },
+          },
+        });
+      }).pipe(Effect.provide(fixture.layer));
+    },
+  );
+
+  it.effect("refuses a secret too short to mask, before asking for the next one", () => {
+    const fixture = setup({ desktop: true, answers: ["once"] });
     return Effect.gen(function* () {
-      const result = yield* run({
-        command: ["print"],
-        stdin: FIRECRAWL,
-        env: { PADDED: "op://Agents/Padded/key" },
-      });
-      assert.deepStrictEqual(result, {
-        exitCode: 3,
-        stdout: "key=[secret]\npadded=[secret]\ntrimmed=[secret].",
-        stderr: "warning: [secret] is a test key",
-        truncated: false,
-        sources: {
-          stdin: { type: "serviceAccount", label: "Work" },
-          env: { PADDED: { type: "serviceAccount", label: "Work" } },
-        },
-      });
+      for (const reference of ["op://Agents/Pin/code", "op://Agents/PaddedPin/code"]) {
+        const error = yield* run({
+          command: ["print"],
+          stdin: reference,
+          env: { OPENAI_API_KEY: OPENAI },
+        }).pipe(Effect.flip);
+        assert.deepStrictEqual(
+          { reason: error.reason, message: error.message },
+          {
+            reason: "refused",
+            message: `The secret at ${reference} is shorter than 4 characters, so it could not be masked in the command's output, and the command was not run. Ask the user to run it themselves.`,
+          },
+        );
+      }
+      assert.deepStrictEqual(fixture.prompts, []);
+      assert.lengthOf(fixture.processes.spawned, 0);
     }).pipe(Effect.provide(fixture.layer));
   });
 

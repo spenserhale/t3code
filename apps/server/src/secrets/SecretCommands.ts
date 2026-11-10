@@ -76,8 +76,23 @@ export const SECRET_MASK = "[secret]";
 
 const utf8 = new TextEncoder();
 
+/** Shorter, a mask would hide ordinary words and numbers too, so such a secret is refused. */
+const MIN_SECRET_LENGTH = 4;
+
+/** Each secret whole and trimmed, and each of its lines long enough to mask on its own. */
 const maskForms = (secrets: ReadonlyArray<string>) =>
-  [...new Set(secrets.flatMap((secret) => [secret, secret.trim()]))]
+  [
+    ...new Set(
+      secrets.flatMap((secret) => [
+        secret,
+        secret.trim(),
+        ...secret
+          .split(/\r\n|\r|\n/)
+          .map((line) => line.trim())
+          .filter((line) => line.length >= MIN_SECRET_LENGTH),
+      ]),
+    ),
+  ]
     .filter((form) => form.length > 0)
     .sort((a, b) => b.length - a.length);
 
@@ -315,7 +330,13 @@ const make = Effect.gen(function* () {
       const resolved = new Map<string, Resolved>();
       for (const reference of [input.stdin, ...env.map(([, reference]) => reference)]) {
         if (reference === undefined || resolved.has(reference)) continue;
-        resolved.set(reference, yield* resolveSecret(caller, reference, command, deadline));
+        const secret = yield* resolveSecret(caller, reference, command, deadline);
+        if (Redacted.value(secret.value).trim().length < MIN_SECRET_LENGTH) {
+          return yield* refused(
+            `The secret at ${reference} is shorter than ${MIN_SECRET_LENGTH} characters, so it could not be masked in the command's output, and the command was not run. Ask the user to run it themselves.`,
+          );
+        }
+        resolved.set(reference, secret);
       }
       const secretFor = (reference: string) => resolved.get(reference)!;
       for (const [name, reference] of env) {
