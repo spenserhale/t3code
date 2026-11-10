@@ -12,6 +12,7 @@ import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Latch from "effect/Latch";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -1027,6 +1028,31 @@ describe("runtime command runner", () => {
     }
     registry.dispose();
   });
+
+  it.effect("interrupts the run its caller's signal aborts", () =>
+    Effect.gen(function* () {
+      const started = Latch.makeUnsafe();
+      const interrupted = Latch.makeUnsafe();
+      const runtime = Atom.runtime(Layer.empty);
+      const command = createRuntimeCommand(runtime, {
+        label: "test.cancelled",
+        execute: () =>
+          started.open.pipe(
+            Effect.andThen(Effect.never),
+            Effect.onInterrupt(() => interrupted.open),
+          ),
+      });
+      const registry = AtomRegistry.make();
+      yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
+
+      const caller = yield* Effect.promise((signal) =>
+        command.run(registry, undefined, { signal }),
+      ).pipe(Effect.forkScoped);
+      yield* started.await;
+      yield* Fiber.interrupt(caller);
+      yield* interrupted.await;
+    }).pipe(Effect.scoped),
+  );
 
   it("serializes commands that share a scheduler and lane", async () => {
     const firstLatch = Latch.makeUnsafe();
