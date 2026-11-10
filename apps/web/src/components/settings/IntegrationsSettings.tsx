@@ -9,8 +9,6 @@ import {
   BrowserImportFailureReason,
   BROWSER_PROFILE_MAX_COUNT,
   type BrowserLinkTarget,
-  type BrowserIdentityReadApproval,
-  type BrowserLoginApproval,
   type BrowserLoginSettings as BrowserLoginSettingsValue,
   BROWSER_LOGIN_PROVIDERS_MAX,
   browserLoginProviderIds,
@@ -18,17 +16,17 @@ import {
   type BrowserNewLoginSettings,
   type BrowserProfile,
   BrowserSearchEngine,
+  type BrowserSecretEscalation,
   BROWSER_CUSTOM_SEARCH_URL_MAX_LENGTH,
   type EnvironmentId,
   BROWSER_PROFILE_NAME_MAX_LENGTH,
   BROWSER_RECORDING_FRAME_RATES,
   DEFAULT_BROWSER_AUTO_SHOW_FLOATING_PREVIEW,
-  DEFAULT_BROWSER_IDENTITY_READ_APPROVAL,
-  DEFAULT_BROWSER_LOGIN_APPROVAL,
   DEFAULT_BROWSER_PROFILE_ID,
   DEFAULT_BROWSER_LINK_TARGET,
   DEFAULT_BROWSER_RECORDING_FRAME_RATE,
   DEFAULT_BROWSER_SEARCH_ENGINE,
+  DEFAULT_BROWSER_SECRET_ESCALATION,
   DEFAULT_BROWSER_VIEWPORT,
   DEFAULT_PREVIEW_APPEARANCE,
   DEFAULT_PREVIEW_ZOOM_FACTOR,
@@ -1706,40 +1704,38 @@ function BrowserProfilesSetting({ disabled }: { readonly disabled: boolean }) {
   );
 }
 
-const LOGIN_APPROVAL_LABELS: Readonly<Record<BrowserLoginApproval, string>> = {
-  request: msg("Every login"),
-  thread: msg("Once per thread"),
-  application: msg("Once until restart"),
-  never: msg("Don't ask"),
+const ESCALATION_LABELS: Readonly<Record<BrowserSecretEscalation, string>> = {
+  device: msg("Ask my device"),
+  refuse: msg("Refuse"),
 };
 
-const IDENTITY_READ_LABELS: Readonly<Record<BrowserIdentityReadApproval, string>> = {
-  off: msg("Off", { $context: "agents cannot read identities" }),
-  request: msg("Ask every time"),
-  thread: msg("Once per thread"),
-  application: msg("Once until restart"),
-  never: msg("Don't ask"),
-};
-
-/** The whole `browserLogins` value to write: the server replaces it, so a write keeps the rest. */
+/**
+ * The whole `browserLogins` value to write: the server replaces it, so a write keeps every other
+ * key, including ones only older builds still read.
+ */
 export function browserLoginsWrite(
   current: BrowserLoginSettingsValue,
   change: {
     readonly secretProviderIds?: ReadonlyArray<SecretProviderId>;
-    readonly approval?: BrowserLoginApproval;
-    readonly identityReadApproval?: BrowserIdentityReadApproval;
+    readonly escalation?: BrowserSecretEscalation;
     /** `null` turns new logins off. */
     readonly newLogins?: BrowserNewLoginSettings | null;
   },
 ) {
+  // The single provider saved before several could be chosen moves into the list.
+  const {
+    secretProviderId: _single,
+    secretProviderIds: _chosen,
+    newLogins: _newLogins,
+    ...kept
+  } = current;
   const secretProviderIds = change.secretProviderIds ?? browserLoginProviderIds(current);
-  const identityReadApproval = change.identityReadApproval ?? current.identityReadApproval;
   const newLogins = change.newLogins === undefined ? current.newLogins : change.newLogins;
   return {
+    ...kept,
     ...(secretProviderIds.length === 0 ? {} : { secretProviderIds: [...secretProviderIds] }),
-    approval: change.approval ?? current.approval,
-    ...(identityReadApproval === undefined ? {} : { identityReadApproval }),
     ...(newLogins ? { newLogins } : {}),
+    ...(change.escalation === undefined ? {} : { escalation: change.escalation }),
   };
 }
 
@@ -1751,9 +1747,7 @@ function BrowserLoginSettings() {
   const m = useMessages();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const { approval } = settings.browserLogins;
-  const identityReadApproval =
-    settings.browserLogins.identityReadApproval ?? DEFAULT_BROWSER_IDENTITY_READ_APPROVAL;
+  const escalation = settings.browserLogins.escalation ?? DEFAULT_BROWSER_SECRET_ESCALATION;
   const chosen = browserLoginProviderIds(settings.browserLogins);
   const providers = Object.entries(settings.secretProviders).flatMap(([id, provider]) => {
     const definition = builtInSecretProviderDefinitions.find(provider.kind);
@@ -1840,96 +1834,44 @@ function BrowserLoginSettings() {
           </Menu>
         }
       />
+      {/* Not off with the password managers: a machine without one still asks the user's device. */}
       <SettingsRow
         serverScoped
         settingKeys={["browserLogins"]}
-        {...searchableSetting("browser-login-approval")}
+        {...searchableSetting("browser-secret-escalation")}
         description={gt(
-          "Like 1Password's approval setting. Only the desktop app that runs this environment can ask.",
+          "Logins and identities in a service account's vaults are used without asking. Anything else asks the T3 Code desktop app on your Mac, where 1Password needs Touch ID. Refuse suits unattended machines.",
         )}
-        status={
-          approval === "never"
-            ? gt(
-                "Agents can fill any login these password managers can see, without asking. Use it with a service account limited to an agents vault.",
-              )
-            : undefined
-        }
         resetAction={
-          approval !== DEFAULT_BROWSER_LOGIN_APPROVAL ? (
+          escalation !== DEFAULT_BROWSER_SECRET_ESCALATION ? (
             <SettingResetButton
-              ariaLabel={gt("Reset ask before filling to default")}
-              onClick={() => save({ approval: DEFAULT_BROWSER_LOGIN_APPROVAL })}
+              ariaLabel={gt("Reset outside this machine's service accounts to default")}
+              onClick={() => save({ escalation: DEFAULT_BROWSER_SECRET_ESCALATION })}
             />
           ) : null
         }
         control={
           <Select
-            value={approval}
-            onValueChange={(value) => save({ approval: value as BrowserLoginApproval })}
-            disabled={off}
+            value={escalation}
+            onValueChange={(value) => {
+              if (value !== null) save({ escalation: value as BrowserSecretEscalation });
+            }}
           >
             <SelectTrigger
               size="sm"
               className="w-full min-w-0 sm:w-56"
-              aria-label={gt("Ask before filling")}
+              aria-label={gt("Outside this machine's service accounts")}
             >
-              <SelectValue>{m(LOGIN_APPROVAL_LABELS[approval])}</SelectValue>
+              <SelectValue>{m(ESCALATION_LABELS[escalation])}</SelectValue>
             </SelectTrigger>
             <SelectPopup align="end" alignItemWithTrigger={false}>
-              {(Object.keys(LOGIN_APPROVAL_LABELS) as ReadonlyArray<BrowserLoginApproval>).map(
+              {(Object.keys(ESCALATION_LABELS) as ReadonlyArray<BrowserSecretEscalation>).map(
                 (value) => (
                   <SelectItem key={value} value={value}>
-                    {m(LOGIN_APPROVAL_LABELS[value])}
+                    {m(ESCALATION_LABELS[value])}
                   </SelectItem>
                 ),
               )}
-            </SelectPopup>
-          </Select>
-        }
-      />
-      <SettingsRow
-        serverScoped
-        settingKeys={["browserLogins"]}
-        {...searchableSetting("browser-identity-read")}
-        description={gt(
-          "The built-in browser fills identities under the approval above. This is for browsers T3 Code does not control, and the values reach the agent and its model provider.",
-        )}
-        status={
-          identityReadApproval === "never"
-            ? gt("Agents can read any identity these password managers can see, without asking.")
-            : undefined
-        }
-        resetAction={
-          identityReadApproval !== DEFAULT_BROWSER_IDENTITY_READ_APPROVAL ? (
-            <SettingResetButton
-              ariaLabel={gt("Reset identity details for other browsers to default")}
-              onClick={() => save({ identityReadApproval: DEFAULT_BROWSER_IDENTITY_READ_APPROVAL })}
-            />
-          ) : null
-        }
-        control={
-          <Select
-            value={identityReadApproval}
-            onValueChange={(value) =>
-              save({ identityReadApproval: value as BrowserIdentityReadApproval })
-            }
-            disabled={off}
-          >
-            <SelectTrigger
-              size="sm"
-              className="w-full min-w-0 sm:w-56"
-              aria-label={gt("Identity details for other browsers")}
-            >
-              <SelectValue>{m(IDENTITY_READ_LABELS[identityReadApproval])}</SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              {(
-                Object.keys(IDENTITY_READ_LABELS) as ReadonlyArray<BrowserIdentityReadApproval>
-              ).map((value) => (
-                <SelectItem key={value} value={value}>
-                  {m(IDENTITY_READ_LABELS[value])}
-                </SelectItem>
-              ))}
             </SelectPopup>
           </Select>
         }
