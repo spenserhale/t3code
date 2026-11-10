@@ -2935,6 +2935,8 @@ const make = Effect.gen(function* () {
     ServerBrowserLogin.loginError(
       "The password manager filled a login in this page, so script and recording are off until a new page loads. Submit the form, or reload with preview_navigate.",
     );
+  const IMAGES_OFF =
+    "The password manager filled a login in this page, so images are off until a new page loads. Submit the form, or reload with preview_navigate.";
 
   const loginStep = <A>(effect: Effect.Effect<A, BrowserLogins.BrowserLoginError>) =>
     runPromise(
@@ -3189,13 +3191,31 @@ const make = Effect.gen(function* () {
           fullScreenshot: snapshotInput?.fullScreenshot,
           scrub: filledSecrets.scrub,
         } as const;
+        const withLoadError = <Snapshot extends object>(snapshot: Snapshot) => {
+          const loadError = loadErrorOf(tab);
+          return loadError ? { ...snapshot, url: loadError.url, loadError } : snapshot;
+        };
+        // A text-only snapshot returns no pixels, so it has none to withhold.
+        if (snapshotInput?.pixelsRequired === false) {
+          return withLoadError(
+            await withScreencastsPaused(tab, () => ServerBrowserPage.snapshotMetadata(rendering)),
+          );
+        }
+        // Text is scrubbed, but pixels of a filled page can show a revealed password or code.
+        const document = () =>
+          Option.isNone(browserLogins)
+            ? Promise.resolve(undefined)
+            : ServerBrowserLogin.documentId(tab.cdp).catch(() => null);
+        const holdsFill = (id: string | null | undefined) =>
+          id !== undefined && (id === null || ServerBrowserLogin.holdsFill(tab.page, id));
+        const before = await document();
         const snapshot = await withScreencastsPaused(tab, () =>
-          snapshotInput?.pixelsRequired === false
-            ? ServerBrowserPage.snapshotMetadata(rendering)
-            : ServerBrowserPage.snapshot(rendering),
+          ServerBrowserPage.snapshot({ ...rendering, images: !holdsFill(before) }),
         );
-        const loadError = loadErrorOf(tab);
-        return loadError ? { ...snapshot, url: loadError.url, loadError } : snapshot;
+        // Another agent's fill can begin while an observer's snapshot runs.
+        if (!holdsFill(before) && !holdsFill(await document())) return withLoadError(snapshot);
+        const { screenshot: _withheld, fullScreenshot: _withheldFull, ...text } = snapshot;
+        return withLoadError({ ...text, imagesOff: IMAGES_OFF });
       }
       case "click": {
         // Time spent queued behind other work on this tab counts against the broker's deadline.
@@ -3304,10 +3324,13 @@ const make = Effect.gen(function* () {
     }
     // The fill's own result holds only titles and field names.
     if (operation === "fillLogin") return outcome;
-    // Screenshot bytes come from the browser, not the page, and fields are drawn as dots.
+    // Screenshot bytes are not text, and a page holding a fill gets none taken.
     if (operation === "snapshot") {
       const { screenshot, ...rest } = outcome.result as PreviewAutomationSnapshot;
-      return { ok: true as const, result: { ...scrub(rest), screenshot } };
+      return {
+        ok: true as const,
+        result: { ...scrub(rest), ...(screenshot === undefined ? {} : { screenshot }) },
+      };
     }
     return { ok: true as const, result: scrub(outcome.result) };
   };

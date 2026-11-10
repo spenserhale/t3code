@@ -644,6 +644,8 @@ type SnapshotInput = {
   readonly actionTimeline: PreviewAutomationSnapshot["actionTimeline"];
   /** Removes secrets from page text; it runs before the text is cut to length. */
   readonly scrub?: (text: string) => string;
+  /** False takes no screenshot. */
+  readonly images?: boolean;
 };
 
 /** The scale a page renders at and its viewport in device-independent pixels. */
@@ -704,21 +706,23 @@ const capture = async (
         >,
     ),
     // A cheap real frame still sizes the screenshot; computing it from metrics drifted from the PNG.
-    track("screenshot", () =>
-      metadataOnly
-        ? captureViewport(input.cdp, { format: "jpeg", quality: 10 }).then((data) => ({
-            data,
-            full: undefined,
-          }))
-        : captureViewport(input.cdp, { format: "png" }).then(async (full) =>
-            scale < 1
-              ? {
-                  data: await shrinkPng(input.cdp, full, scale),
-                  full: input.fullScreenshot ? full : undefined,
-                }
-              : { data: full, full: undefined },
-          ),
-    ),
+    input.images === false
+      ? { data: undefined, full: undefined }
+      : track("screenshot", () =>
+          metadataOnly
+            ? captureViewport(input.cdp, { format: "jpeg", quality: 10 }).then((data) => ({
+                data,
+                full: undefined,
+              }))
+            : captureViewport(input.cdp, { format: "png" }).then(async (full) =>
+                scale < 1
+                  ? {
+                      data: await shrinkPng(input.cdp, full, scale),
+                      full: input.fullScreenshot ? full : undefined,
+                    }
+                  : { data: full, full: undefined },
+              ),
+        ),
   ]);
   void pageAndScreenshot.catch(constVoid);
   // Leaves time for the second read; a frame that never loads holds the tree until then.
@@ -770,12 +774,23 @@ const capture = async (
     networkEntries: [...input.networkEntries],
     actionTimeline: [...input.actionTimeline],
     // Reports the size the PNG path would have shrunk to.
-    screenshot: metadataOnly
-      ? scaledSize(jpegSize(data), scale)
-      : { mimeType: "image/png" as const, data, ...pngSize(data) },
+    ...(data === undefined
+      ? {}
+      : {
+          screenshot: metadataOnly
+            ? scaledSize(jpegSize(data), scale)
+            : { mimeType: "image/png" as const, data, ...pngSize(data) },
+        }),
     ...(full !== undefined ? { fullScreenshot: { data: full, ...pngSize(full) } } : {}),
   };
 };
+
+/** A screenshot is taken unless the caller can turn images off. */
+type SnapshotOf<Input> = Input extends { readonly images: boolean }
+  ? PreviewAutomationSnapshot
+  : PreviewAutomationSnapshot & {
+      readonly screenshot: NonNullable<PreviewAutomationSnapshot["screenshot"]>;
+    };
 
 /** Snapshots begun per page; observers' snapshots aren't queued, so two can overlap. */
 const snapshotTurns = new WeakMap<Page, number>();
@@ -806,8 +821,8 @@ const runSnapshot = async (input: SnapshotInput, metadataOnly: boolean) => {
   }
 };
 
-export const snapshot = (input: SnapshotInput) =>
-  runSnapshot(input, false) as Promise<PreviewAutomationSnapshot>;
+export const snapshot = <Input extends SnapshotInput>(input: Input) =>
+  runSnapshot(input, false) as Promise<SnapshotOf<Input>>;
 
 export const snapshotMetadata = (input: SnapshotInput) =>
   runSnapshot(input, true) as Promise<PreviewAutomationSnapshotMetadata>;
