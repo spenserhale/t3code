@@ -1,7 +1,8 @@
 /**
  * Secret requests this server cannot answer itself, relayed to the user's device. A client with a
  * desktop app subscribes for the kinds it can answer, has its own server ask the user and read the
- * item, and answers here. Every subscriber sees a request; the first answer counts.
+ * item, and answers here. Every subscriber sees a request, and a quick `none` from one device must
+ * not beat the user allowing on another.
  */
 import {
   type SecretRelayAnswer,
@@ -38,11 +39,23 @@ export class SecretRelay extends Context.Service<
   {
     /**
      * Requests of the kinds named that are waiting, then new ones, and `ended` once each is
-     * answered or its call ends. Kinds this server does not know are ignored.
+     * answered or its call ends. Kinds this server does not know are ignored. `device` names the
+     * client, the same for its answers, so a request knows which devices it still waits for.
      */
-    readonly subscribe: (kinds: ReadonlyArray<string>) => Stream.Stream<SecretRelayStreamItem>;
-    /** The first answer to a request wins; a later or unknown one is ignored. */
-    readonly answer: (requestId: string, answer: SecretRelayAnswer) => Effect.Effect<void>;
+    readonly subscribe: (
+      kinds: ReadonlyArray<string>,
+      device: string,
+    ) => Stream.Stream<SecretRelayStreamItem>;
+    /**
+     * Values, a choice or a refusal end the request at once. `none` and `unavailable` end it once
+     * every device subscribed for its kind when it started has answered or left: `none` if any
+     * device said so. A late or unknown answer is ignored.
+     */
+    readonly answer: (
+      requestId: string,
+      answer: SecretRelayAnswer,
+      device: string,
+    ) => Effect.Effect<void>;
     /** Fails at once when no subscriber answers this kind, and when no answer comes in time. */
     readonly request: (
       ask: SecretRelayAsk,
@@ -53,30 +66,52 @@ export class SecretRelay extends Context.Service<
 
 interface Subscriber {
   readonly kinds: ReadonlySet<SecretRelayKind>;
+  readonly device: string;
   readonly queue: Queue.Queue<SecretRelayStreamItem, Cause.Done>;
+}
+
+type Inconclusive = Extract<SecretRelayAnswer, { readonly type: "none" | "unavailable" }>;
+
+interface Pending {
+  readonly request: SecretRelayRequest;
+  readonly answer: Deferred.Deferred<SecretRelayAnswer>;
+  /** Devices subscribed for its kind when it started that have neither answered nor left. */
+  readonly waiting: Set<string>;
+  inconclusive: Inconclusive | undefined;
 }
 
 const isKind = Schema.is(SecretRelayKind);
 
 const make = () => {
   const subscribers = new Set<Subscriber>();
-  const pending = new Map<
-    string,
-    { readonly request: SecretRelayRequest; readonly answer: Deferred.Deferred<SecretRelayAnswer> }
-  >();
+  const pending = new Map<string, Pending>();
   const send = (kind: SecretRelayKind, item: SecretRelayStreamItem) => {
     for (const subscriber of subscribers) {
       if (subscriber.kinds.has(kind)) Queue.offerUnsafe(subscriber.queue, item);
     }
   };
+  const devicesFor = (kind: SecretRelayKind) =>
+    new Set(
+      [...subscribers]
+        .filter((subscriber) => subscriber.kinds.has(kind))
+        .map((subscriber) => subscriber.device),
+    );
+  // Once nobody is left to wait for, what was heard is the answer. When every device left without
+  // answering, the request waits on for one that reconnects or joins.
+  const stopWaiting = (waiting: Pending, device: string) => {
+    waiting.waiting.delete(device);
+    if (waiting.waiting.size === 0 && waiting.inconclusive !== undefined) {
+      Deferred.doneUnsafe(waiting.answer, Effect.succeed(waiting.inconclusive));
+    }
+  };
 
   // Registering and sending what waits happen in one step, so a request is neither missed nor
   // sent twice to a subscriber that joins while it is made.
-  const subscribe: SecretRelay["Service"]["subscribe"] = (kinds) =>
+  const subscribe: SecretRelay["Service"]["subscribe"] = (kinds, device) =>
     Stream.callback<SecretRelayStreamItem>((queue) =>
       Effect.acquireRelease(
         Effect.sync(() => {
-          const subscriber: Subscriber = { kinds: new Set(kinds.filter(isKind)), queue };
+          const subscriber: Subscriber = { kinds: new Set(kinds.filter(isKind)), device, queue };
           subscribers.add(subscriber);
           for (const { request } of pending.values()) {
             if (subscriber.kinds.has(request.kind)) {
@@ -85,21 +120,41 @@ const make = () => {
           }
           return subscriber;
         }),
-        (subscriber) => Effect.sync(() => subscribers.delete(subscriber)),
+        (subscriber) =>
+          Effect.sync(() => {
+            subscribers.delete(subscriber);
+            for (const kind of subscriber.kinds) {
+              // The device left that kind only when none of its subscriptions still has it.
+              if (devicesFor(kind).has(subscriber.device)) continue;
+              for (const waiting of pending.values()) {
+                if (waiting.request.kind === kind) stopWaiting(waiting, subscriber.device);
+              }
+            }
+          }),
       ),
     );
 
   const answer: SecretRelay["Service"]["answer"] = Effect.fn("SecretRelay.answer")(
-    function* (requestId, answer) {
+    function* (requestId, answer, device) {
+      yield* Effect.annotateCurrentSpan({ "secret_relay.answer": answer.type });
       const waiting = pending.get(requestId);
-      if (waiting !== undefined) yield* Deferred.succeed(waiting.answer, answer);
+      if (waiting === undefined) return;
+      if (answer.type === "none" || answer.type === "unavailable") {
+        if (answer.type === "none" || waiting.inconclusive === undefined) {
+          waiting.inconclusive = answer;
+        }
+        stopWaiting(waiting, device);
+        return;
+      }
+      yield* Deferred.succeed(waiting.answer, answer);
     },
   );
 
   const request: SecretRelay["Service"]["request"] = Effect.fn("SecretRelay.request")(
     function* (ask, timeoutMs) {
       yield* Effect.annotateCurrentSpan({ "secret_relay.kind": ask.kind });
-      if (![...subscribers].some((subscriber) => subscriber.kinds.has(ask.kind))) {
+      const devices = devicesFor(ask.kind);
+      if (devices.size === 0) {
         return yield* new SecretRelayError({ reason: "no_device" });
       }
       const requestId = yield* randomUuidV4;
@@ -110,7 +165,12 @@ const make = () => {
       };
       const answered = yield* Deferred.make<SecretRelayAnswer>();
       yield* Effect.sync(() => {
-        pending.set(requestId, { request: relayed, answer: answered });
+        pending.set(requestId, {
+          request: relayed,
+          answer: answered,
+          waiting: devices,
+          inconclusive: undefined,
+        });
         send(ask.kind, { type: "request", request: relayed });
       });
       return yield* Deferred.await(answered).pipe(
