@@ -594,6 +594,12 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     return values;
   });
 
+  const invalidate = Effect.sync(() => {
+    loginLists.version++;
+    loginLists.cache.clear();
+    loginLists.running.clear();
+  });
+
   // Logins created here, by thread and id, for the server's life: only these get a new password.
   const createdLogins = new Map<
     string,
@@ -731,7 +737,7 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
       filled: false,
     });
     // Listed again on the next lookup, so preview_fill_login finds it at once.
-    loginLists.cache.delete(source.key);
+    yield* invalidate;
     return yield* passwordOf(source, login, created.login.id, created.password);
   });
 
@@ -768,6 +774,7 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     }
     // No page has the new password yet, so a retry reads it rather than replacing it again.
     created.filled = false;
+    yield* invalidate;
     return yield* passwordOf(source, login, itemId, changed.password);
   });
 
@@ -789,11 +796,7 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     check: Effect.fn("BrowserLogins.check")(function* (revision) {
       yield* currentAt(revision);
     }),
-    invalidate: Effect.sync(() => {
-      loginLists.version++;
-      loginLists.cache.clear();
-      loginLists.running.clear();
-    }),
+    invalidate,
     needsApproval: Effect.fn("BrowserLogins.needsApproval")(function* (revision, threadId, kind) {
       const approval = yield* approvalMode(yield* currentAt(revision), kind);
       if (approval === "never") return false;
