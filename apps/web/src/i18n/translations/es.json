@@ -8737,6 +8737,7 @@
   "4eeb042637c6b0ef": "Gestores de contraseñas para inicios de sesión",
   "bc0ec53e898ec369": "Desactivado",
   "8d7898045b092c04": "Los inicios de sesión y las identidades de las bóvedas de una cuenta de servicio se usan sin preguntar. Para todo lo demás se pregunta a la app de escritorio de T3 Code en tu Mac, donde 1Password pide Touch ID. «Rechazar» conviene en máquinas desatendidas.",
+  "4c7f83b417b1983a": "Actualiza T3 Code en {servers} para que este ajuste se aplique allí.",
   "eba713c66547e04c": "Restablecer «Fuera de las cuentas de servicio de esta máquina» al valor predeterminado",
   "90e071b1778fa1d4": "Fuera de las cuentas de servicio de esta máquina",
   "bda088498300ed59": "Los agentes que se registran en cuentas nuevas guardan aquí la contraseña generada antes de enviar el formulario. Una cuenta de servicio necesita acceso de escritura a esta bóveda; sus permisos no se pueden cambiar después de crearla.",

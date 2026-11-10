@@ -8747,6 +8747,7 @@
   "4eeb042637c6b0ef": "Password managers for logins",
   "bc0ec53e898ec369": "Off",
   "8d7898045b092c04": "Logins and identities in a service account's vaults are used without asking. Anything else asks the T3 Code desktop app on your Mac, where 1Password needs Touch ID. Refuse suits unattended machines.",
+  "4c7f83b417b1983a": "Update T3 Code on {servers} before this setting applies there.",
   "eba713c66547e04c": "Reset outside this machine's service accounts to default",
   "90e071b1778fa1d4": "Outside this machine's service accounts",
   "bda088498300ed59": "Agents signing up for new accounts save the generated password here before sending the form. A service account needs write access to this vault; its permissions cannot be changed after it is created.",

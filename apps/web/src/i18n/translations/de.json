@@ -8739,6 +8739,7 @@
   "4eeb042637c6b0ef": "Passwortmanager für Anmeldedaten",
   "bc0ec53e898ec369": "Aus",
   "8d7898045b092c04": "Anmeldedaten und Identitäten in den Tresoren eines Dienstkontos werden ohne Nachfrage verwendet. Für alles andere wird die T3-Code-Desktop-App auf deinem Mac gefragt, wo 1Password Touch ID verlangt. „Ablehnen“ eignet sich für unbeaufsichtigte Rechner.",
+  "4c7f83b417b1983a": "Aktualisiere T3 Code auf {servers}, bevor diese Einstellung dort gilt.",
   "eba713c66547e04c": "„Außerhalb der Dienstkonten dieses Rechners“ auf Standard zurücksetzen",
   "90e071b1778fa1d4": "Außerhalb der Dienstkonten dieses Rechners",
   "bda088498300ed59": "Agenten, die sich für neue Konten registrieren, speichern das generierte Passwort hier, bevor sie das Formular absenden. Ein Dienstkonto braucht Schreibzugriff auf diesen Tresor; seine Berechtigungen lassen sich nach dem Erstellen nicht mehr ändern.",

@@ -8737,6 +8737,7 @@
   "4eeb042637c6b0ef": "Gerenciadores de senhas para logins",
   "bc0ec53e898ec369": "Desativado",
   "8d7898045b092c04": "Logins e identidades nos cofres de uma conta de serviço são usados sem perguntar. Todo o resto é perguntado no app para desktop do T3 Code no seu Mac, onde o 1Password pede Touch ID. “Recusar” é indicado para máquinas sem supervisão.",
+  "4c7f83b417b1983a": "Atualize o T3 Code em {servers} para que esta configuração valha lá.",
   "eba713c66547e04c": "Redefinir “Fora das contas de serviço desta máquina” para o padrão",
   "90e071b1778fa1d4": "Fora das contas de serviço desta máquina",
   "bda088498300ed59": "Os agentes que se cadastram em novas contas salvam aqui a senha gerada antes de enviar o formulário. Uma conta de serviço precisa de acesso de gravação a este cofre; as permissões dela não podem ser alteradas depois que ela é criada.",

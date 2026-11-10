@@ -8745,6 +8745,7 @@
   "4eeb042637c6b0ef": "Lösenordshanterare för inloggningar",
   "bc0ec53e898ec369": "Av",
   "8d7898045b092c04": "Inloggningar och identiteter i ett tjänstekontos valv används utan att fråga. För allt annat frågar skrivbordsappen T3 Code på din Mac, där 1Password kräver Touch ID. ”Neka” passar datorer som lämnas obevakade.",
+  "4c7f83b417b1983a": "Uppdatera T3 Code på {servers} innan den här inställningen gäller där.",
   "eba713c66547e04c": "Återställ ”Utanför den här datorns tjänstekonton” till standard",
   "90e071b1778fa1d4": "Utanför den här datorns tjänstekonton",
   "bda088498300ed59": "Agenter som registrerar nya konton sparar det genererade lösenordet här innan de skickar formuläret. Ett tjänstekonto behöver skrivbehörighet till det här valvet; dess behörigheter kan inte ändras när det har skapats.",

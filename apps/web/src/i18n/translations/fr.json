@@ -8738,6 +8738,7 @@
   "4eeb042637c6b0ef": "Gestionnaires de mots de passe pour les identifiants",
   "bc0ec53e898ec369": "Désactivé",
   "8d7898045b092c04": "Les identifiants et les identités des coffres d’un compte de service sont utilisés sans demander. Tout le reste passe par l’app desktop T3 Code sur votre Mac, où 1Password demande Touch ID. « Refuser » convient aux machines sans surveillance.",
+  "4c7f83b417b1983a": "Mettez à jour T3 Code sur {servers} pour que ce réglage s’y applique.",
   "eba713c66547e04c": "Réinitialiser « Hors des comptes de service de cette machine » à la valeur par défaut",
   "90e071b1778fa1d4": "Hors des comptes de service de cette machine",
   "bda088498300ed59": "Les agents qui s’inscrivent à de nouveaux comptes enregistrent ici le mot de passe généré avant d’envoyer le formulaire. Un compte de service a besoin d’un accès en écriture à ce coffre ; ses autorisations ne peuvent plus être modifiées après sa création.",

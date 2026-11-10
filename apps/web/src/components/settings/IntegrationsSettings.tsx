@@ -1741,13 +1741,19 @@ export function browserLoginsWrite(
 
 const DEFAULT_NEW_LOGIN_VAULT = "T3 Code Sign-ups";
 
-function BrowserLoginSettings() {
+export function BrowserLoginSettings() {
   const searchableSetting = useSearchableSetting();
   const gt = useGT();
   const m = useMessages();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  const { connectedEnvironments } = useSettingsScope();
   const escalation = settings.browserLogins.escalation ?? DEFAULT_BROWSER_SECRET_ESCALATION;
+  // An older server ignores `escalation` and keeps following the approval setting it reads.
+  const outdated = connectedEnvironments.flatMap((environment) =>
+    environment.serverConfig?.secretRelay === true ? [] : [environment.label],
+  );
+  const escalationApplies = outdated.length < connectedEnvironments.length;
   const chosen = browserLoginProviderIds(settings.browserLogins);
   const providers = Object.entries(settings.secretProviders).flatMap(([id, provider]) => {
     const definition = builtInSecretProviderDefinitions.find(provider.kind);
@@ -1842,8 +1848,15 @@ function BrowserLoginSettings() {
         description={gt(
           "Logins and identities in a service account's vaults are used without asking. Anything else asks the T3 Code desktop app on your Mac, where 1Password needs Touch ID. Refuse suits unattended machines.",
         )}
+        status={
+          outdated.length > 0
+            ? gt("Update T3 Code on {servers} before this setting applies there.", {
+                servers: outdated.join(", "),
+              })
+            : undefined
+        }
         resetAction={
-          escalation !== DEFAULT_BROWSER_SECRET_ESCALATION ? (
+          escalationApplies && escalation !== DEFAULT_BROWSER_SECRET_ESCALATION ? (
             <SettingResetButton
               ariaLabel={gt("Reset outside this machine's service accounts to default")}
               onClick={() => save({ escalation: DEFAULT_BROWSER_SECRET_ESCALATION })}
@@ -1851,29 +1864,31 @@ function BrowserLoginSettings() {
           ) : null
         }
         control={
-          <Select
-            value={escalation}
-            onValueChange={(value) => {
-              if (value !== null) save({ escalation: value as BrowserSecretEscalation });
-            }}
-          >
-            <SelectTrigger
-              size="sm"
-              className="w-full min-w-0 sm:w-56"
-              aria-label={gt("Outside this machine's service accounts")}
+          escalationApplies ? (
+            <Select
+              value={escalation}
+              onValueChange={(value) => {
+                if (value !== null) save({ escalation: value as BrowserSecretEscalation });
+              }}
             >
-              <SelectValue>{m(ESCALATION_LABELS[escalation])}</SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              {(Object.keys(ESCALATION_LABELS) as ReadonlyArray<BrowserSecretEscalation>).map(
-                (value) => (
-                  <SelectItem key={value} value={value}>
-                    {m(ESCALATION_LABELS[value])}
-                  </SelectItem>
-                ),
-              )}
-            </SelectPopup>
-          </Select>
+              <SelectTrigger
+                size="sm"
+                className="w-full min-w-0 sm:w-56"
+                aria-label={gt("Outside this machine's service accounts")}
+              >
+                <SelectValue>{m(ESCALATION_LABELS[escalation])}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {(Object.keys(ESCALATION_LABELS) as ReadonlyArray<BrowserSecretEscalation>).map(
+                  (value) => (
+                    <SelectItem key={value} value={value}>
+                      {m(ESCALATION_LABELS[value])}
+                    </SelectItem>
+                  ),
+                )}
+              </SelectPopup>
+            </Select>
+          ) : null
         }
       />
       <SettingsRow
