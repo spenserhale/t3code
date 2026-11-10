@@ -146,15 +146,18 @@ const decodeVaults = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(Schema.Struct({ id: Schema.String }))),
 );
 
-const ItemField = Schema.Struct({
-  type: Schema.optional(Schema.String),
-  purpose: Schema.optional(Schema.String),
-  value: Schema.optional(Schema.String),
-  totp: Schema.optional(Schema.String),
-});
+// Fields are read one property at a time: an item can hold fields a login never uses, such as an
+// address whose value is an object, and those must not make the whole item unreadable.
 const decodeItem = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Struct({ fields: Schema.optional(Schema.Array(ItemField)) })),
+  Schema.fromJsonString(Schema.Struct({ fields: Schema.optional(Schema.Array(Schema.Unknown)) })),
 );
+const textOf = (field: unknown, key: "type" | "purpose" | "value" | "totp") => {
+  const value =
+    typeof field === "object" && field !== null
+      ? (field as Readonly<Record<string, unknown>>)[key]
+      : undefined;
+  return typeof value === "string" ? value : undefined;
+};
 
 /** Logins with at least one website; the rest could never match a page. */
 const parseLoginList = (
@@ -190,10 +193,14 @@ const parseLoginValues = (
   const itemFields = item.fields ?? [];
   const values: SecretProviderLoginValues = {};
   for (const field of fields) {
-    const value =
+    const [kind, key, wanted] =
       field === "totp"
-        ? itemFields.find((candidate) => candidate.type === "OTP")?.totp
-        : itemFields.find((candidate) => candidate.purpose === field.toUpperCase())?.value;
+        ? (["type", "totp", "OTP"] as const)
+        : (["purpose", "value", field.toUpperCase()] as const);
+    const value = itemFields
+      .filter((candidate) => textOf(candidate, kind) === wanted)
+      .map((candidate) => textOf(candidate, key))
+      .find((text) => text !== undefined);
     if (value !== undefined && value.length > 0) values[field] = value;
   }
   return values;
