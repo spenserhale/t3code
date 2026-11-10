@@ -2485,8 +2485,16 @@ it.live(
           // The page copied the password into its title.
           const status = yield* invoke<PreviewAutomationStatus>("status");
           expect(status.title).toBe("[filled by password manager]");
+          // Its pixels could show the password revealed, so only text comes back.
+          const filledSnapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(filledSnapshot.screenshot).toBeUndefined();
+          expect(filledSnapshot.imagesOff).toContain("preview_navigate");
+          expect(filledSnapshot.title).toBe("[filled by password manager]");
 
           yield* invoke("navigate", { url: "https://good.test/login" });
+          const freshSnapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(freshSnapshot.screenshot?.mimeType).toBe("image/png");
+          expect(freshSnapshot.imagesOff).toBeUndefined();
           yield* invoke("recordingStart");
           const recording = yield* invoke("fillLogin").pipe(Effect.flip);
           expect(recording.message).toContain("Stop the recording before filling a login");

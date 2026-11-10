@@ -2168,6 +2168,8 @@ const make = Effect.gen(function* () {
     ServerBrowserLogin.loginError(
       "The password manager filled a login in this page, so script and recording are off until a new page loads. Submit the form, or reload with preview_navigate.",
     );
+  const IMAGES_OFF =
+    "The password manager filled a login in this page, so images are off until a new page loads. Submit the form, or reload with preview_navigate.";
 
   const loginStep = <A>(effect: Effect.Effect<A, BrowserLogins.BrowserLoginError>) =>
     runPromise(
@@ -2357,13 +2359,26 @@ const make = Effect.gen(function* () {
         return { tabId: tab.tabId, colorScheme };
       }
       case "snapshot": {
-        return withScreencastsPaused(tab, () =>
+        // Text is scrubbed, but pixels of a filled page can show a revealed password or code.
+        const document = () =>
+          Option.isNone(browserLogins)
+            ? Promise.resolve(undefined)
+            : ServerBrowserLogin.documentId(tab.cdp).catch(() => null);
+        const holdsFill = (id: string | null | undefined) =>
+          id !== undefined && (id === null || ServerBrowserLogin.holdsFill(tab.page, id));
+        const before = await document();
+        const snapshot = await withScreencastsPaused(tab, () =>
           ServerBrowserPage.snapshot({
             ...tab,
             renderScale: tab.desktop ? "display" : RENDER_SCALE,
             scrub: filledSecrets.scrub,
+            images: !holdsFill(before),
           }),
         );
+        // Another agent's fill can begin while an observer's snapshot runs.
+        if (!holdsFill(before) && !holdsFill(await document())) return snapshot;
+        const { screenshot: _withheld, ...text } = snapshot;
+        return { ...text, imagesOff: IMAGES_OFF };
       }
       case "click": {
         const clickInput = input as PreviewAutomationClickInput;
@@ -2464,10 +2479,13 @@ const make = Effect.gen(function* () {
     }
     // The fill's own result holds only titles and field names.
     if (operation === "fillLogin") return outcome;
-    // Screenshot bytes come from the browser, not the page, and fields are drawn as dots.
+    // Screenshot bytes are not text, and a page holding a fill gets none taken.
     if (operation === "snapshot") {
       const { screenshot, ...rest } = outcome.result as PreviewAutomationSnapshot;
-      return { ok: true as const, result: { ...scrub(rest), screenshot } };
+      return {
+        ok: true as const,
+        result: { ...scrub(rest), ...(screenshot === undefined ? {} : { screenshot }) },
+      };
     }
     return { ok: true as const, result: scrub(outcome.result) };
   };
