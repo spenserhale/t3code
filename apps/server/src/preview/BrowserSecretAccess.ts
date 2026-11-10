@@ -156,7 +156,7 @@ export type SecretAccess<Item, Values> =
   | { readonly status: "none" };
 
 /** Why nobody could answer, in words an agent can pass on to the user. */
-const refusalMessage = (what: string, escalation: BrowserSecretEscalation) =>
+export const refusalMessage = (what: string, escalation: BrowserSecretEscalation) =>
   `No service account on this machine can open ${what}, and ${
     escalation === "refuse"
       ? "this machine is set not to ask the user's device"
@@ -168,6 +168,7 @@ const ASKED_FOR: Record<BrowserLogins.BrowserApprovalKind, string> = {
   identity: "filling this identity",
   identityRead: "showing this identity",
   newLogin: "this new login",
+  secretReference: "using this secret in a command",
 };
 
 const refused = (message: string) =>

@@ -46,6 +46,7 @@ import * as ThreadSearch from "../../orchestration-v2/ThreadSearch.ts";
 import * as PreviewBrowser from "../../preview/PreviewBrowser.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as ProviderRegistry from "../../provider/ProviderRegistry.ts";
+import * as SecretCommands from "../../secrets/SecretCommands.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../../peer/RemoteDelegation.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
@@ -626,6 +627,71 @@ it.effect("a read-only client reads threads and is refused every write before it
   ),
 );
 const dispatched: Array<string> = [];
+
+it.effect("runs a command with secrets only for a thread in full access outside Plan", () => {
+  const callers: Array<SecretCommands.SecretCommandCaller> = [];
+  let shell = McpToolAccessTestkit.liveThreadShell(threadId);
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const call = server
+      .callTool({
+        name: "run_with_secrets",
+        arguments: { command: ["wide-search", "auth"], stdin: "op://Agents/Firecrawl/key" },
+      })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    // Claude runs T3 tools unasked outside read-only sandboxes, so the tool asks for full access.
+    for (const modes of [
+      { runtimeMode: "approval-required" },
+      { runtimeMode: "auto-accept-edits" },
+      { runtimeMode: "auto" },
+      { runtimeMode: "full-access", interactionMode: "plan" },
+    ] as const) {
+      shell = McpToolAccessTestkit.liveThreadShell(threadId, modes);
+      expect(declaredFailure(yield* call), JSON.stringify(modes)).toMatchObject({
+        code: "capability_denied",
+      });
+    }
+    expect(callers).toEqual([]);
+    shell = McpToolAccessTestkit.liveThreadShell(threadId);
+    const result = yield* call;
+    expect(result.isError).toBe(false);
+    expect(callers).toEqual([{ threadId, threadTitle: threadId, agent: "codex" }]);
+  }).pipe(
+    Effect.provide(
+      layerOrchestratorToolkit.pipe(
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(
+          Layer.succeed(SecretCommands.SecretCommands, {
+            run: (caller) =>
+              Effect.sync(() => {
+                callers.push(caller);
+                return { exitCode: 0, stdout: "", stderr: "", truncated: false, sources: {} };
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: () => Effect.sync(() => shell),
+          }),
+        ),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
+        Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+        Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+        Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+        Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+        Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+        Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+        Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+        Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+      ),
+    ),
+  );
+});
 
 it.effect("refuses act-as-caller tools to a client caller", () =>
   Effect.gen(function* () {

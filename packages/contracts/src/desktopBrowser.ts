@@ -46,19 +46,24 @@ export const DesktopBrowserCommand = Schema.Union([
   }),
   /**
    * Ask the user, in a native dialog, before a password manager login or identity is filled into
-   * the tab, or before an identity is shown to the agent (no tab, no origin).
+   * the tab, before an identity is shown to the agent, or before a secret goes to an agent's
+   * command (no tab, no origin).
    */
   Schema.Struct({
     type: Schema.Literal("loginApproval"),
     ...ApprovalKey,
     requestId: TrimmedNonEmptyString,
-    kind: Schema.optional(Schema.Literals(["login", "identity", "identityRead", "newLogin"])),
+    kind: Schema.optional(
+      Schema.Literals(["login", "identity", "identityRead", "newLogin", "secretReference"]),
+    ),
     /** The password managers that would be opened. */
     providerLabel: Schema.String,
     /** The item's title, when known before anything is read, such as a new login's. */
     loginTitle: Schema.optional(Schema.String),
-    /** The item the agent named, such as `op://Vault/Item`. */
+    /** The item the agent named, such as `op://Vault/Item`, or the secret a command uses. */
     reference: Schema.optional(Schema.String),
+    /** The command a secret is for, as the user reads it. */
+    command: Schema.optional(Schema.String),
     vault: Schema.optional(Schema.String),
     origin: Schema.optional(Schema.String),
     threadTitle: Schema.optional(Schema.String),

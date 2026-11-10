@@ -1,11 +1,13 @@
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import { OrchestratorToolkit } from "./tools.ts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
-import { readCaller } from "../../threadAccess.ts";
+import * as SecretCommands from "../../../secrets/SecretCommands.ts";
+import { assertFullAccess, readCaller } from "../../threadAccess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
@@ -223,6 +225,59 @@ const handlers = {
         return yield* service.interruptThread(scope, input);
       }),
   ),
-} satisfies McpToolAccess.Handlers<typeof OrchestratorToolkit.tools>;
+} satisfies Omit<McpToolAccess.Handlers<typeof OrchestratorToolkit.tools>, "run_with_secrets">;
 
-export const layer = McpToolAccess.toLayer(OrchestratorToolkit, handlers);
+// Claude pre-approves T3 tools outside read-only sandboxes, so a Supervised thread would run the
+// command without anyone asking. Like t3_project_clone, it needs full access.
+const RUN_WITH_SECRETS_ACCESS =
+  "run_with_secrets runs a command without asking, so it needs a thread in Full access outside Plan mode. The user can change this thread's permissions.";
+
+const secretCommandFailure = (error: SecretCommands.SecretCommandError) =>
+  new OrchestratorMcpFailure({
+    code:
+      error.reason === "invalid"
+        ? "invalid_request"
+        : error.reason === "refused"
+          ? "capability_denied"
+          : "orchestration_error",
+    message: error.message,
+  });
+
+export const layer = McpToolAccess.toLayer(
+  OrchestratorToolkit,
+  Effect.gen(function* () {
+    // Optional, so the toolkit builds without it, as in tests, and says so when called.
+    const secretCommands = Option.getOrUndefined(
+      yield* Effect.serviceOption(SecretCommands.SecretCommands),
+    );
+    return {
+      ...handlers,
+      run_with_secrets: McpToolAccess.actsAsCaller((input) =>
+        Effect.gen(function* () {
+          const context = yield* readCaller();
+          yield* assertFullAccess(context, RUN_WITH_SECRETS_ACCESS);
+          const { thread } = yield* McpInvocationContext.requireThreadScope(
+            context.scope,
+            "run_with_secrets",
+          );
+          if (secretCommands === undefined) {
+            return yield* new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "This environment cannot run commands with secrets.",
+            });
+          }
+          return yield* secretCommands
+            .run(
+              {
+                threadId: thread.threadId,
+                threadTitle: context.caller?.title.slice(0, 200),
+                agent: String(thread.providerInstanceId).slice(0, 100),
+              },
+              input,
+            )
+            .pipe(Effect.mapError(secretCommandFailure));
+        }),
+      ),
+    } satisfies McpToolAccess.Handlers<typeof OrchestratorToolkit.tools>;
+  }),
+);
