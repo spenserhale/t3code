@@ -525,6 +525,8 @@ type SnapshotInput = {
   readonly actionTimeline: PreviewAutomationSnapshot["actionTimeline"];
   /** Removes secrets from page text; it runs before the text is cut to length. */
   readonly scrub?: (text: string) => string;
+  /** False takes no screenshot. */
+  readonly images?: boolean;
 };
 
 /** The scale a page renders at and its viewport in device-independent pixels. */
@@ -565,14 +567,16 @@ const capture = async (
         "url" | "title" | "loading" | "visibleText" | "interactiveElements"
       >
     >,
-    captureViewport(input.cdp, { format: "png" }).then(async (full) =>
-      scale < 1
-        ? {
-            data: await shrinkPng(input.cdp, full, scale),
-            full: input.fullScreenshot ? full : undefined,
-          }
-        : { data: full, full: undefined },
-    ),
+    input.images === false
+      ? { data: undefined, full: undefined }
+      : captureViewport(input.cdp, { format: "png" }).then(async (full) =>
+          scale < 1
+            ? {
+                data: await shrinkPng(input.cdp, full, scale),
+                full: input.fullScreenshot ? full : undefined,
+              }
+            : { data: full, full: undefined },
+        ),
   ]);
   void pageAndScreenshot.catch(constVoid);
   // Leaves time for the second read; a frame that never loads holds the tree until then.
@@ -619,19 +623,26 @@ const capture = async (
     consoleEntries: [...input.consoleEntries],
     networkEntries: [...input.networkEntries],
     actionTimeline: [...input.actionTimeline],
-    screenshot: {
-      mimeType: "image/png",
-      data,
-      ...pngSize(data),
-    },
+    ...(data === undefined
+      ? {}
+      : { screenshot: { mimeType: "image/png", data, ...pngSize(data) } }),
     ...(full !== undefined ? { fullScreenshot: { data: full, ...pngSize(full) } } : {}),
   };
 };
 
+/** A screenshot is taken unless the caller can turn images off. */
+type SnapshotOf<Input> = Input extends { readonly images: boolean }
+  ? PreviewAutomationSnapshot
+  : PreviewAutomationSnapshot & {
+      readonly screenshot: NonNullable<PreviewAutomationSnapshot["screenshot"]>;
+    };
+
 /** Snapshots begun per page; observers' snapshots aren't queued, so two can overlap. */
 const snapshotTurns = new WeakMap<Page, number>();
 
-export const snapshot = async (input: SnapshotInput): Promise<PreviewAutomationSnapshot> => {
+export const snapshot = async <Input extends SnapshotInput>(
+  input: Input,
+): Promise<SnapshotOf<Input>> => {
   const deadline = Date.now() + SNAPSHOT_TIMEOUT_MS;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
@@ -648,7 +659,7 @@ export const snapshot = async (input: SnapshotInput): Promise<PreviewAutomationS
       : Promise.reject(cause),
   );
   try {
-    return await Promise.race([captured, expired]);
+    return (await Promise.race([captured, expired])) as SnapshotOf<Input>;
   } catch (cause) {
     throw cause instanceof Error && cause.name === "TimeoutError" ? tooBusy() : cause;
   } finally {
