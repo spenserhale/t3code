@@ -36,6 +36,12 @@ export interface DesktopTabKey {
 
 const keyOf = ({ threadId, tabId }: DesktopTabKey) => `${threadId}\u0000${tabId}`;
 
+/** Filling names its tab, so the desktop can ask in the window showing it; a read names none. */
+export interface DesktopApprovalKey {
+  readonly threadId: string;
+  readonly tabId?: string | undefined;
+}
+
 export type DesktopLoginPrompt = Omit<
   Extract<DesktopBrowserCommandType, { readonly type: "loginApproval" }>,
   "type" | "threadId" | "tabId" | "requestId" | "timeoutMs"
@@ -64,7 +70,7 @@ export class DesktopBrowserChannel extends Context.Service<
      * `timeoutMs` (at most two minutes) is a no.
      */
     readonly approveLogin: (
-      key: DesktopTabKey,
+      key: DesktopApprovalKey,
       timeoutMs: number,
       prompt: DesktopLoginPrompt,
     ) => Effect.Effect<boolean>;
@@ -144,15 +150,15 @@ const make = Effect.gen(function* () {
     Stream.runForEach((decoded) => {
       if (Option.isNone(decoded)) return Effect.void;
       const event = decoded.value;
+      if (event.type === "loginApproval") {
+        const pending = loginApprovals.get(event.requestId);
+        return pending
+          ? Deferred.succeed(pending, event.approved).pipe(Effect.asVoid)
+          : Effect.void;
+      }
       const key = { threadId: event.threadId, tabId: event.tabId };
       const id = keyOf(key);
       switch (event.type) {
-        case "loginApproval": {
-          const pending = loginApprovals.get(event.requestId);
-          return pending
-            ? Deferred.succeed(pending, event.approved).pipe(Effect.asVoid)
-            : Effect.void;
-        }
         case "cdp": {
           const queue = inbound.get(id);
           return queue ? Queue.offer(queue, event.message).pipe(Effect.asVoid) : Effect.void;

@@ -135,7 +135,7 @@ const watchPainting = (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) =
   });
 
 describe("DesktopBrowserHost", () => {
-  it.effect("asks before a login is filled into a tab it does not show", () =>
+  it.effect("asks about a tab it does not show, and about an identity read with no tab", () =>
     Effect.gen(function* () {
       const guests: Array<Electron.WebContents | undefined> = [];
       const host = yield* DesktopBrowserHost.make.pipe(
@@ -146,7 +146,7 @@ describe("DesktopBrowserHost", () => {
           }),
         ),
       );
-      const reader = yield* takeEvents(host, 1).pipe(Effect.forkScoped);
+      const reader = yield* takeEvents(host, 2).pipe(Effect.forkScoped);
 
       yield* Effect.yieldNow;
       yield* host.handleCommandLine(
@@ -161,11 +161,25 @@ describe("DesktopBrowserHost", () => {
           timeoutMs: 60_000,
         }),
       );
+      yield* host.handleCommandLine(
+        encodeJson({
+          type: "loginApproval",
+          threadId: key.threadId,
+          requestId: "request-2",
+          kind: "identityRead",
+          providerLabel: "Work",
+          loginTitle: "Me",
+          scope: "request",
+          timeoutMs: 60_000,
+        }),
+      );
 
-      expect(yield* Fiber.join(reader)).toEqual([
+      const answers = yield* Fiber.join(reader);
+      expect(answers).toEqual([
         { type: "loginApproval", ...key, requestId: "request-1", approved: true },
+        { type: "loginApproval", threadId: key.threadId, requestId: "request-2", approved: true },
       ]);
-      expect(guests).toEqual([undefined]);
+      expect(guests).toEqual([undefined, undefined]);
     }).pipe(Effect.scoped),
   );
 

@@ -6,6 +6,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import {
   browserLoginProviderIds,
+  DEFAULT_BROWSER_IDENTITY_READ_APPROVAL,
   type DesktopUpdateChannel,
   IDLE_COMPACTION_MODES,
   globalIdleCompaction,
@@ -572,7 +573,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ? ["Agent browser access"]
       : []),
     ...(browserLoginProviderIds(settings.browserLogins).length > 0 ||
-    settings.browserLogins.approval !== DEFAULT_UNIFIED_SETTINGS.browserLogins.approval
+    settings.browserLogins.approval !== DEFAULT_UNIFIED_SETTINGS.browserLogins.approval ||
+    (settings.browserLogins.identityReadApproval ?? DEFAULT_BROWSER_IDENTITY_READ_APPROVAL) !==
+      DEFAULT_BROWSER_IDENTITY_READ_APPROVAL
       ? ["Browser logins"]
       : []),
   ];

@@ -12,8 +12,12 @@ import {
   OrchestratorMcpFailure,
   type ToolActivityIcon,
   type ThreadId,
+  type PreviewAutomationFillIdentityInput,
+  type PreviewAutomationFillIdentityResult,
   type PreviewAutomationFillLoginInput,
   type PreviewAutomationFillLoginResult,
+  type PreviewAutomationReadIdentityInput,
+  type PreviewAutomationReadIdentityResult,
   type PreviewAutomationOperation,
   type PreviewAutomationOpenInput,
   type PreviewAutomationRecordingStatus,
@@ -118,29 +122,60 @@ const invokeTargeted = <A extends object>(
 const LOGIN_TIMEOUT_MS = 120_000;
 
 /** The approval prompt names the thread and agent; they come from the caller, not the tool input. */
-const fillLogin = Effect.fn("PreviewToolkit.fillLogin")(function* (
-  input: PreviewAutomationFillLoginInput,
+const requesterOf = Effect.fn("PreviewToolkit.requesterOf")(function* (
+  scope: McpInvocationContext.McpThreadInvocationScope,
 ) {
-  const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const threadTitle = yield* threadManagement.getThreadRecords(scope.thread.threadId, []).pipe(
     Effect.map((records) => records.thread.title.slice(0, 200)),
     Effect.orElseSucceed(() => undefined),
   );
+  return {
+    ...(threadTitle ? { threadTitle } : {}),
+    provider: String(scope.thread.providerInstanceId).slice(0, 100),
+  };
+});
+
+const fillLogin = Effect.fn("PreviewToolkit.fillLogin")(function* (
+  input: PreviewAutomationFillLoginInput,
+) {
+  const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
   const { tabId, ...loginInput } = input;
   const { result, toolIcon } = yield* invoke<PreviewAutomationFillLoginResult>(
     "fillLogin",
-    {
-      ...loginInput,
-      requester: {
-        ...(threadTitle ? { threadTitle } : {}),
-        provider: String(scope.thread.providerInstanceId).slice(0, 100),
-      },
-    },
+    { ...loginInput, requester: yield* requesterOf(scope) },
     input.timeoutMs ?? LOGIN_TIMEOUT_MS,
     tabId,
   );
   return { ...result, ...(toolIcon ? { toolIcon } : {}) };
+});
+
+const fillIdentity = Effect.fn("PreviewToolkit.fillIdentity")(function* (
+  input: PreviewAutomationFillIdentityInput,
+) {
+  const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+  const { tabId, ...identityInput } = input;
+  const { result, toolIcon } = yield* invoke<PreviewAutomationFillIdentityResult>(
+    "fillIdentity",
+    { ...identityInput, requester: yield* requesterOf(scope) },
+    input.timeoutMs ?? LOGIN_TIMEOUT_MS,
+    tabId,
+  );
+  return { ...result, ...(toolIcon ? { toolIcon } : {}) };
+});
+
+/** Involves no tab, so none is targeted and no page icon is attached. */
+const readIdentity = Effect.fn("PreviewToolkit.readIdentity")(function* (
+  input: PreviewAutomationReadIdentityInput,
+) {
+  const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+  return yield* broker.invoke<PreviewAutomationReadIdentityResult>({
+    scope,
+    operation: "readIdentity",
+    input: { ...input, requester: yield* requesterOf(scope) },
+    timeoutMs: input.timeoutMs ?? LOGIN_TIMEOUT_MS,
+  });
 });
 
 const decodeActInput = Record.map(PreviewAutomationActInputs, (schema) =>
@@ -278,6 +313,8 @@ const handlers = {
     ),
   ),
   preview_fill_login: McpToolAccess.actsAsCaller(fillLogin),
+  preview_fill_identity: McpToolAccess.actsAsCaller(fillIdentity),
+  preview_read_identity: McpToolAccess.actsAsCaller(readIdentity),
   preview_wait_for: McpToolAccess.readsAsCaller((input) =>
     invokeTargeted<object>("waitFor", input, input.timeoutMs),
   ),

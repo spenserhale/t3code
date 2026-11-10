@@ -52,6 +52,8 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "select",
   "drag",
   "fillLogin",
+  "fillIdentity",
+  "readIdentity",
 ] as const;
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_SERVER_OPERATIONS);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;

@@ -1,6 +1,9 @@
 import type {
   SecretProviderDriver,
   SecretProviderDriverServices,
+  SecretProviderIdentities,
+  SecretProviderIdentity,
+  SecretProviderIdentityValues,
   SecretProviderLogin,
   SecretProviderLoginField,
   SecretProviderLoginValues,
@@ -8,6 +11,8 @@ import type {
 } from "@t3tools/secret-provider-core/server/driver";
 import {
   browserLoginProviderIds,
+  DEFAULT_BROWSER_IDENTITY_READ_APPROVAL,
+  type BrowserIdentityReadApproval,
   type BrowserLoginApproval,
   type SecretProviderId,
   type ServerSettings,
@@ -42,6 +47,17 @@ export interface BrowserLoginCandidate extends SecretProviderLogin {
   readonly account: string;
 }
 
+/** A saved identity, without its values. */
+export interface BrowserIdentityCandidate extends SecretProviderIdentity {
+  /** `<providerId>/<itemId>`, so a read goes back to the provider the identity came from. */
+  readonly id: string;
+  /** The provider's name in Settings > Secrets, such as "Work 1Password". */
+  readonly account: string;
+}
+
+/** What a prompt allows: filling a login, filling an identity, or showing one to the agent. */
+export type BrowserApprovalKind = "login" | "identity" | "identityRead";
+
 export class BrowserLogins extends Context.Service<
   BrowserLogins,
   {
@@ -59,15 +75,35 @@ export class BrowserLogins extends Context.Service<
       login: BrowserLoginCandidate,
       fields: ReadonlyArray<SecretProviderLoginField>,
     ) => Effect.Effect<SecretProviderLoginValues, BrowserLoginError>;
-    /** The prompt the user must answer before a fill on this thread, or false when none is due. */
+    /**
+     * Saved identities from every chosen provider that could list, for filling one or for
+     * showing one to the agent. Showing fails here when the user turned it off.
+     */
+    readonly identityCandidates: (kind: Exclude<BrowserApprovalKind, "login">) => Effect.Effect<
+      {
+        readonly revision: string;
+        readonly identities: ReadonlyArray<BrowserIdentityCandidate>;
+      },
+      BrowserLoginError
+    >;
+    readonly readIdentity: (
+      revision: string,
+      identity: BrowserIdentityCandidate,
+    ) => Effect.Effect<SecretProviderIdentityValues, BrowserLoginError>;
+    /**
+     * The prompt the user must answer before this kind of step on this thread, or false when
+     * none is due. Each kind is approved on its own.
+     */
     readonly needsApproval: (
       revision: string,
       threadId: string,
+      kind: BrowserApprovalKind,
     ) => Effect.Effect<Exclude<BrowserLoginApproval, "never"> | false, BrowserLoginError>;
     /** Records the answer to a prompt shown under `revision`, never under a newer setting. */
     readonly recordApproval: (
       revision: string,
       threadId: string,
+      kind: BrowserApprovalKind,
     ) => Effect.Effect<void, BrowserLoginError>;
     /** Fails if the settings changed since `revision`, for a last check before filling. */
     readonly check: (revision: string) => Effect.Effect<void, BrowserLoginError>;
@@ -114,10 +150,12 @@ interface Source {
   readonly key: string;
   readonly config: unknown;
   readonly logins: SecretProviderLogins;
+  readonly identities?: SecretProviderIdentities;
 }
 
 interface Resolved {
   readonly approval: BrowserLoginApproval;
+  readonly identityReadApproval: BrowserIdentityReadApproval;
   readonly revision: string;
   readonly sources: ReadonlyArray<Source>;
 }
@@ -149,6 +187,7 @@ const resolve = Effect.fn("BrowserLogins.resolve")(function* (
       key: yield* digest.digestHex(Digest.sha256, utf8.encode(identity)),
       config: configured.config,
       logins: driver.logins,
+      ...(driver.identities === undefined ? {} : { identities: driver.identities }),
     });
   }
   if (sources.length === 0) {
@@ -161,17 +200,50 @@ const resolve = Effect.fn("BrowserLogins.resolve")(function* (
           : `None of the password managers chosen for browser logins (${named}) can fill logins. The user can fix it in Settings > Browser.`,
     });
   }
-  const approval = settings.browserLogins.approval;
+  const { approval } = settings.browserLogins;
+  const identityReadApproval =
+    settings.browserLogins.identityReadApproval ?? DEFAULT_BROWSER_IDENTITY_READ_APPROVAL;
   return {
     approval,
+    identityReadApproval,
     sources,
     // Unusable ids count too, so one becoming usable starts a new generation.
     revision: encodeJson([
       approval,
+      identityReadApproval,
       ...ids.map((id) => sources.find((source) => source.id === id)?.key ?? id),
     ]),
   };
 });
+
+interface Listed<A> {
+  readonly at: number;
+  readonly items: ReadonlyArray<A>;
+}
+
+/** One kind of item's listings, kept per source. */
+interface ItemLists<A> {
+  readonly what: "logins" | "identities";
+  readonly cache: Map<string, Listed<A>>;
+  /** Listing is rate limited (service accounts), so requests that arrive meanwhile share one. */
+  readonly running: Map<string, Deferred.Deferred<ReadonlyArray<A> | undefined>>;
+  /** Raised by `invalidate`, so a listing begun earlier cannot refill the cache. */
+  version: number;
+}
+
+const itemLists = <A>(what: ItemLists<A>["what"]): ItemLists<A> => ({
+  what,
+  cache: new Map(),
+  running: new Map(),
+  version: 0,
+});
+
+const identityReadOff = () =>
+  new BrowserLoginError({
+    reason: "not_configured",
+    message:
+      "Showing identity details to the agent is off. Fill the built-in browser with preview_fill_identity instead, or ask the user to allow it under Identity details for other browsers in Settings > Browser > Logins.",
+  });
 
 export const make = Effect.fn("BrowserLogins.make")(function* (
   drivers: ReadonlyArray<SecretProviderDriver>,
@@ -180,16 +252,10 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   const digest = yield* Digest.Digest;
   const driverServices = yield* Effect.context<SecretProviderDriverServices>();
   const scope = yield* Effect.scope;
-  type Listed = ReadonlyArray<SecretProviderLogin> | undefined;
-  const listCache = new Map<
-    string,
-    { readonly at: number; readonly logins: ReadonlyArray<SecretProviderLogin> }
-  >();
-  // Listing is rate limited (service accounts), so requests that arrive meanwhile share one.
-  const listings = new Map<string, Deferred.Deferred<Listed>>();
-  let listVersion = 0;
+  const loginLists = itemLists<SecretProviderLogin>("logins");
+  const identityLists = itemLists<SecretProviderIdentity>("identities");
   // Approvals last for the server's life. Any change to the providers, their config, or the
-  // approval setting starts a new generation and forgets them all; a step begun in an older
+  // approval settings starts a new generation and forgets them all; a step begun in an older
   // generation fails, even if the settings have since changed back.
   const approvals = new Set<string>();
   let generation = 0;
@@ -222,8 +288,24 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     Effect.flatMap(observe),
   );
 
-  const approvalKey = (approval: BrowserLoginApproval, threadId: string) =>
-    approval === "application" ? "application" : `thread\u0000${threadId}`;
+  const approvalKey = (
+    kind: BrowserApprovalKind,
+    approval: BrowserLoginApproval,
+    threadId: string,
+  ) =>
+    approval === "application"
+      ? `${kind}\u0000application`
+      : `${kind}\u0000thread\u0000${threadId}`;
+
+  const approvalMode = (
+    resolved: Resolved,
+    kind: BrowserApprovalKind,
+  ): Effect.Effect<BrowserLoginApproval, BrowserLoginError> =>
+    kind !== "identityRead"
+      ? Effect.succeed(resolved.approval)
+      : resolved.identityReadApproval === "off"
+        ? Effect.fail(identityReadOff())
+        : Effect.succeed(resolved.identityReadApproval);
 
   const currentAt = (revision: string) =>
     current.pipe(
@@ -237,31 +319,36 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
       ),
     );
 
-  const list = Effect.fn("BrowserLogins.list")(function* (source: Source, now: number) {
-    const cached = listCache.get(source.key);
-    if (cached !== undefined && now - cached.at < LIST_CACHE_MS) return cached.logins;
-    const running = listings.get(source.key);
+  const listOne = Effect.fn("BrowserLogins.listOne")(function* <A>(
+    lists: ItemLists<A>,
+    source: Source,
+    list: Effect.Effect<ReadonlyArray<A> | undefined, never, SecretProviderDriverServices>,
+    now: number,
+  ): Effect.fn.Return<ReadonlyArray<A> | undefined> {
+    const cached = lists.cache.get(source.key);
+    if (cached !== undefined && now - cached.at < LIST_CACHE_MS) return cached.items;
+    const running = lists.running.get(source.key);
     if (running !== undefined) return yield* Deferred.await(running);
-    const done = yield* Deferred.make<Listed>();
-    listings.set(source.key, done);
-    const version = listVersion;
+    const done = yield* Deferred.make<ReadonlyArray<A> | undefined>();
+    lists.running.set(source.key, done);
+    const version = lists.version;
     // Forked, so a caller that gives up does not end the listing the others wait on.
-    yield* source.logins.list(source.config).pipe(
+    yield* list.pipe(
       Effect.provideContext(driverServices),
-      Effect.tap((logins) => {
-        if (version !== listVersion) return Effect.void;
-        if (logins !== undefined) {
-          listCache.set(source.key, { at: now, logins });
+      Effect.tap((items) => {
+        if (version !== lists.version) return Effect.void;
+        if (items !== undefined) {
+          lists.cache.set(source.key, { at: now, items });
           return Effect.void;
         }
-        listCache.delete(source.key);
-        return Effect.logWarning("A password manager did not list its logins", {
+        lists.cache.delete(source.key);
+        return Effect.logWarning(`A password manager did not list its ${lists.what}`, {
           secretProviderId: source.id,
         });
       }),
       Effect.onExit((exit) =>
         Effect.suspend(() => {
-          if (listings.get(source.key) === done) listings.delete(source.key);
+          if (lists.running.get(source.key) === done) lists.running.delete(source.key);
           return Deferred.done(done, exit);
         }),
       ),
@@ -270,28 +357,61 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     return yield* Deferred.await(done);
   });
 
+  /**
+   * Lists each source once per config, keeping a list five minutes. A locked or rate-limited
+   * provider hides only its own items; all of them failing is an error.
+   */
+  const listAll = Effect.fn("BrowserLogins.listAll")(function* <A>(
+    lists: ItemLists<A>,
+    sources: ReadonlyArray<{
+      readonly source: Source;
+      readonly list: Effect.Effect<
+        ReadonlyArray<A> | undefined,
+        never,
+        SecretProviderDriverServices
+      >;
+    }>,
+  ): Effect.fn.Return<ReadonlyArray<ReadonlyArray<A>>, BrowserLoginError> {
+    const now = yield* Clock.currentTimeMillis;
+    for (const key of lists.cache.keys()) {
+      if (!sources.some(({ source }) => source.key === key)) lists.cache.delete(key);
+    }
+    const listed = yield* Effect.forEach(
+      sources,
+      ({ source, list }) => listOne(lists, source, list, now),
+      { concurrency: "unbounded" },
+    );
+    if (listed.every((items) => items === undefined)) {
+      const [only, ...others] = sources;
+      return yield* new BrowserLoginError({
+        reason: "unreadable",
+        message:
+          only !== undefined && others.length === 0
+            ? `${only.source.label} did not list its ${lists.what}. It may be locked, or its CLI integration may be off.`
+            : `None of the password managers chosen for browser logins listed their ${lists.what}. They may be locked, or their CLI integration may be off.`,
+      });
+    }
+    return listed.map((items) => items ?? []);
+  });
+
+  /** The chosen provider an item id names, and the provider's own id for it. */
+  const sourceOf = (resolved: Resolved, id: string) => {
+    const slash = id.indexOf("/");
+    const source =
+      slash < 0
+        ? undefined
+        : resolved.sources.find((candidate) => candidate.id === id.slice(0, slash));
+    return source === undefined ? undefined : { source, itemId: id.slice(slash + 1) };
+  };
+
   const candidates: BrowserLogins["Service"]["candidates"] = Effect.fn("BrowserLogins.candidates")(
     function* (pageUrl) {
       const resolved = yield* current;
       const revision = String(generation);
-      const now = yield* Clock.currentTimeMillis;
-      for (const key of listCache.keys()) {
-        if (!resolved.sources.some((source) => source.key === key)) listCache.delete(key);
-      }
-      const listed = yield* Effect.forEach(resolved.sources, (source) => list(source, now), {
-        concurrency: "unbounded",
-      });
-      // A locked or rate-limited provider hides only its own logins.
-      if (listed.every((logins) => logins === undefined)) {
-        const [only, ...others] = resolved.sources;
-        return yield* new BrowserLoginError({
-          reason: "unreadable",
-          message:
-            only !== undefined && others.length === 0
-              ? `${only.label} did not list its logins. It may be locked, or its CLI integration may be off.`
-              : "None of the password managers chosen for browser logins listed their logins. They may be locked, or their CLI integration may be off.",
-        });
-      }
+      const listed = yield* listAll(
+        loginLists,
+        resolved.sources.map((source) => ({ source, list: source.logins.list(source.config) })),
+      );
       return {
         revision,
         logins: resolved.sources.flatMap((source, index) =>
@@ -309,20 +429,16 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
 
   const read: BrowserLogins["Service"]["read"] = Effect.fn("BrowserLogins.read")(
     function* (revision, login, fields) {
-      const resolved = yield* currentAt(revision);
-      const slash = login.id.indexOf("/");
-      const source =
-        slash < 0
-          ? undefined
-          : resolved.sources.find((candidate) => candidate.id === login.id.slice(0, slash));
-      if (source === undefined) {
+      const found = sourceOf(yield* currentAt(revision), login.id);
+      if (found === undefined) {
         return yield* new BrowserLoginError({
           reason: "not_configured",
           message: "That login is not from a password manager chosen for browser logins.",
         });
       }
+      const { source, itemId } = found;
       const values = yield* source.logins
-        .read(source.config, { ...login, id: login.id.slice(slash + 1) }, fields)
+        .read(source.config, { ...login, id: itemId }, fields)
         .pipe(Effect.provideContext(driverServices));
       if (values === undefined) {
         return yield* new BrowserLoginError({
@@ -336,28 +452,85 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     },
   );
 
+  const identityCandidates: BrowserLogins["Service"]["identityCandidates"] = Effect.fn(
+    "BrowserLogins.identityCandidates",
+  )(function* (kind) {
+    const resolved = yield* current;
+    yield* approvalMode(resolved, kind);
+    const revision = String(generation);
+    const sources = resolved.sources.flatMap((source) =>
+      source.identities === undefined
+        ? []
+        : [{ source, list: source.identities.list(source.config) }],
+    );
+    if (sources.length === 0) {
+      return yield* new BrowserLoginError({
+        reason: "not_configured",
+        message:
+          "None of the password managers chosen for browser logins can fill identities. The user can choose one in Settings > Browser.",
+      });
+    }
+    const listed = yield* listAll(identityLists, sources);
+    return {
+      revision,
+      identities: sources.flatMap(({ source }, index) =>
+        (listed[index] ?? []).map((identity) => ({
+          ...identity,
+          id: `${source.id}/${identity.id}`,
+          account: source.account,
+        })),
+      ),
+    };
+  });
+
+  const readIdentity: BrowserLogins["Service"]["readIdentity"] = Effect.fn(
+    "BrowserLogins.readIdentity",
+  )(function* (revision, identity) {
+    const found = sourceOf(yield* currentAt(revision), identity.id);
+    const identities = found?.source.identities;
+    if (found === undefined || identities === undefined) {
+      return yield* new BrowserLoginError({
+        reason: "not_configured",
+        message: "That identity is not from a password manager chosen for browser logins.",
+      });
+    }
+    const values = yield* identities
+      .read(found.source.config, { ...identity, id: found.itemId })
+      .pipe(Effect.provideContext(driverServices));
+    if (values === undefined) {
+      return yield* new BrowserLoginError({
+        reason: "unreadable",
+        message: `${found.source.label} did not return the identity. It may be locked, or the request was denied there.`,
+      });
+    }
+    yield* currentAt(revision);
+    return values;
+  });
+
   return BrowserLogins.of({
     candidates,
     read,
+    identityCandidates,
+    readIdentity,
     check: Effect.fn("BrowserLogins.check")(function* (revision) {
       yield* currentAt(revision);
     }),
     invalidate: Effect.sync(() => {
-      listVersion++;
-      listCache.clear();
-      listings.clear();
+      loginLists.version++;
+      loginLists.cache.clear();
+      loginLists.running.clear();
     }),
-    needsApproval: Effect.fn("BrowserLogins.needsApproval")(function* (revision, threadId) {
-      const { approval } = yield* currentAt(revision);
+    needsApproval: Effect.fn("BrowserLogins.needsApproval")(function* (revision, threadId, kind) {
+      const approval = yield* approvalMode(yield* currentAt(revision), kind);
       if (approval === "never") return false;
-      return approval === "request" || !approvals.has(approvalKey(approval, threadId))
+      return approval === "request" || !approvals.has(approvalKey(kind, approval, threadId))
         ? approval
         : false;
     }),
-    recordApproval: Effect.fn("BrowserLogins.recordApproval")(function* (revision, threadId) {
-      const { approval } = yield* currentAt(revision);
+    recordApproval: Effect.fn("BrowserLogins.recordApproval")(function* (revision, threadId, kind) {
+      const approval = yield* approvalMode(yield* currentAt(revision), kind);
       if (approval === "request" || approval === "never") return;
-      approvals.add(approvalKey(approval, threadId));
+      approvals.add(approvalKey(kind, approval, threadId));
     }),
   });
 });
