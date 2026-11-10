@@ -52,5 +52,15 @@ export const DesktopBrowserCommand = Schema.Union([
     /** The server stops waiting after this long; a prompt not yet shown by then is never shown. */
     timeoutMs: Schema.Finite,
   }),
+  /**
+   * A login was filled into the tab's main document, or a filled document showed another address.
+   * Sent before the fill writes, so captures of the tab can be refused from then on.
+   */
+  Schema.Struct({
+    type: Schema.Literal("loginFilled"),
+    ...TabKey,
+    document: TrimmedNonEmptyString,
+    url: Schema.String,
+  }),
 ]);
 export type DesktopBrowserCommand = typeof DesktopBrowserCommand.Type;

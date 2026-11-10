@@ -397,6 +397,7 @@ const dependencies = Layer.mergeAll(
     ),
     isAttached: (key) => Effect.sync(() => desktopRenders(key.tabId)),
     approveLogin: () => Effect.succeed(false),
+    loginFilled: () => Effect.void,
     endpoint: (key) =>
       Effect.acquireRelease(Effect.succeed(`ws://desktop/${key.tabId}`), () =>
         Effect.sync(() => {
@@ -2730,6 +2731,7 @@ it.live("a headless tab on a server with its desktop app asks there before filli
       endpoint: () => Effect.die("The desktop does not draw this tab."),
       pointer: () => Effect.void,
       turn: () => Effect.void,
+      loginFilled: () => Effect.void,
       approveLogin: (key, _timeoutMs, prompt) =>
         Effect.sync(() => {
           asked.push({ key, prompt });

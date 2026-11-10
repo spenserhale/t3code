@@ -169,6 +169,36 @@ describe("DesktopBrowserHost", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("knows which of a tab's pages may show a login the server filled", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const page = { loaderId: "doc-1", url: "https://good.test/login", refuse: false };
+      const asked: Array<string> = [];
+      const guest = {
+        debugger: {
+          sendCommand: async (method: string) => {
+            asked.push(method);
+            if (page.refuse) throw new Error("No debugger attached.");
+            return { frameTree: { frame: { id: "main", ...page } } };
+          },
+        },
+      } as unknown as Electron.WebContents;
+      // A tab never filled is not asked about.
+      expect(yield* host.mayShowFill(key, guest)).toBe(false);
+      expect(asked).toEqual([]);
+      yield* host.handleCommandLine(
+        encodeJson({ type: "loginFilled", ...key, document: "doc-1", url: page.url }),
+      );
+      expect(yield* host.mayShowFill(key, guest)).toBe(true);
+      expect(yield* host.mayShowFill({ ...key, tabId: "tab-2" }, guest)).toBe(false);
+      Object.assign(page, { loaderId: "doc-2", url: "https://good.test/home" });
+      expect(yield* host.mayShowFill(key, guest)).toBe(false);
+      // A page that cannot be asked counts as showing it.
+      page.refuse = true;
+      expect(yield* host.mayShowFill(key, guest)).toBe(true);
+    }),
+  );
+
   it.effect("announces tabs already attached to a backend that starts later", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;

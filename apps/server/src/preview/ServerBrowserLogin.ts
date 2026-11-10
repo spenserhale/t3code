@@ -372,10 +372,12 @@ export const makeDocumentMarks = () => {
       filled.documents.add(id);
       filled.urls.add(withoutFragment(url));
     },
-    /** A later address of a filled document, such as one `pushState` gave it. */
+    /** Keeps a later address of a filled document, such as one `pushState` gave it. */
     noteAddress: (tab: string, id: string, url: string) => {
       const filled = tabs.get(tab)?.filled;
-      if (filled?.documents.has(id)) filled.urls.add(withoutFragment(url));
+      if (!filled?.documents.has(id)) return false;
+      filled.urls.add(withoutFragment(url));
+      return true;
     },
     filled: (tab: string): FilledDocuments | undefined => {
       const filled = tabs.get(tab)?.filled;

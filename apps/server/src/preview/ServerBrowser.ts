@@ -849,7 +849,9 @@ const make = Effect.gen(function* () {
       if (tab.recordingGate && documentMarks.filled(key)) void checkGate(tab, tab.recordingGate);
     });
     tab.cdp.on("Page.navigatedWithinDocument", ({ frameId, url }) => {
-      if (main?.frameId === frameId) documentMarks.noteAddress(key, main.id, url);
+      if (main?.frameId !== frameId || !documentMarks.noteAddress(key, main.id, url)) return;
+      const desktopKey = { threadId: tab.threadId, tabId: tab.tabId };
+      if (tab.desktop) runFork(desktopChannel.loginFilled(desktopKey, main.id, url));
     });
     await tab.cdp.send("Page.enable");
     const loads = tab.documentLoads;
@@ -2375,6 +2377,11 @@ const make = Effect.gen(function* () {
     await loginStep(logins.check(revision));
     // Marked before the first write, so even a fill that fails partway blocks script here.
     documentMarks.markFilled(tabKey(tab.threadId, tab.tabId), document, tab.page.url());
+    // Before the write, so the desktop refuses to capture the tab from then on.
+    if (tab.desktop) {
+      const desktopKey = { threadId: tab.threadId, tabId: tab.tabId };
+      await runPromise(desktopChannel.loginFilled(desktopKey, document, tab.page.url()));
+    }
     filledSecrets.remember(
       fields.flatMap((field) => (field === "username" ? [] : [values[field] ?? ""])),
     );

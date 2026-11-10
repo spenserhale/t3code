@@ -1780,6 +1780,90 @@ describe("PreviewManager", () => {
     }).pipe(Effect.provide(managerLayer()), Effect.scoped),
   );
 
+  effectIt.effect("takes no screenshot of a page the password manager filled a login in", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.DesktopBrowserHost;
+      const serverTab = { threadId: "thread-1", tabId: "server-tab-1" };
+      let onPicked: ((event: unknown, ...args: unknown[]) => void) | undefined;
+      const capturePage = vi.fn(async () => ({
+        isEmpty: () => false,
+        getSize: () => ({ width: 2000, height: 1200 }),
+        toPNG: () => Buffer.from("png"),
+        toJPEG: () => Buffer.from("jpeg"),
+        toDataURL: () => "data:image/png;base64,full",
+      }));
+      fromId.mockReturnValue(
+        Object.assign(makeTestPreviewWebContents(capturePage, 42), {
+          isDevToolsOpened: () => false,
+          getUserAgent: () => "Electron",
+          isFocused: () => true,
+          once: vi.fn(),
+          ipc: {
+            on: vi.fn((channel: string, listener: typeof onPicked) => {
+              if (channel === "preview:element-picked") onPicked = listener;
+            }),
+            off: vi.fn(),
+            removeListener: vi.fn(),
+          },
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand: vi.fn(async (method: string) =>
+              method === "Page.getFrameTree"
+                ? {
+                    frameTree: {
+                      frame: { id: "main", loaderId: "doc-1", url: "https://good.test/" },
+                    },
+                  }
+                : undefined,
+            ),
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        }),
+      );
+      const manager = yield* PreviewManager.PreviewManager;
+      yield* manager.createTab("tab_1", { serverTab });
+      yield* manager.registerWebview("tab_1", 42);
+      yield* host.handleCommandLine(
+        JSON.stringify({
+          type: "loginFilled",
+          ...serverTab,
+          document: "doc-1",
+          url: "https://good.test/",
+        }),
+      );
+
+      const pick = yield* manager.pickElement("tab_1").pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      onPicked?.(
+        {},
+        {
+          id: "annotation_1",
+          pageUrl: "https://good.test/",
+          pageTitle: "Sign in",
+          comment: "Why is this red?",
+          elements: [],
+          regions: [],
+          strokes: [],
+          styleChanges: [],
+          screenshot: null,
+          createdAt: "2026-11-10T00:00:00.000Z",
+        },
+        null,
+        "send",
+        2,
+      );
+      const picked = yield* Fiber.join(pick);
+      expect(picked?.screenshotWithheld).toBe(true);
+      expect(picked?.annotation.screenshot).toBeNull();
+      for (const capture of [manager.captureScreenshot("tab_1"), manager.startRecording("tab_1")]) {
+        expect((yield* Effect.flip(capture))._tag).toBe("PreviewCaptureWithheldError");
+      }
+      expect(capturePage).not.toHaveBeenCalled();
+    }).pipe(Effect.provide(managerLayer()), Effect.scoped),
+  );
+
   effectIt.effect(
     "asks the client to paint a navigated server tab while the agent captures it",
     () =>
