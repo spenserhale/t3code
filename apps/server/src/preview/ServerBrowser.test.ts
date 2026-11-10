@@ -20,6 +20,7 @@ import {
   type PreviewAutomationOperation,
   type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
+  type PreviewNavStatus,
 } from "@t3tools/contracts";
 import { defineSecretProviderDriver } from "@t3tools/secret-provider-core/server/driver";
 import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
@@ -2348,6 +2349,13 @@ const LOGIN_PAGE = `<title>Sign in</title><input id="user" autocomplete="usernam
 /** Pages other than the login page, by path. */
 const LOGIN_SITE: Partial<Record<string, string>> = {
   "/first": "<title>password-1</title>",
+  // Copies the password into its log and text near their length limits, then clears the field.
+  "/echo": `<input id="user" autocomplete="username"><input id="password" type="password" oninput="
+    const value = this.value;
+    console.log('x'.repeat(1995) + value);
+    setTimeout(() => { this.value = ''; document.body.append('x'.repeat(19995) + value); });
+  ">`,
+  "/long": `<title>${"x".repeat(508)}password-value</title>`,
 };
 
 /** Real headless Chromium for the mocked contexts to hand out, serving a login page. */
@@ -2525,6 +2533,42 @@ it.live("scrubs every password filled since the server started, however many", (
         yield* invoke("navigate", { url: "https://good.test/first" });
         const status = yield* invoke<PreviewAutomationStatus>("status");
         expect(status.title).toBe("[filled by password manager]");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("scrubs a filled password from page text before cutting it to length", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { tabId, invoke } = yield* openLoginTab;
+        yield* invoke("navigate", { url: "https://good.test/echo" });
+        yield* invoke("fillLogin");
+        yield* invoke("waitFor", { text: "xxxx" });
+        // A cut through "password-value" would leave its start, which no exact match finds.
+        const snapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        expect(snapshot.visibleText).not.toContain("passw");
+        expect(snapshot.consoleEntries.map((entry) => entry.text).join("\n")).not.toContain(
+          "passw",
+        );
+        // The title and address the tab list shows, which no result scrubbing reaches.
+        const events = yield* (yield* Manager.PreviewManager).subscribeEvents;
+        yield* invoke("navigate", {
+          url: `https://good.test/long?pad=${"x".repeat(2017)}password-value`,
+        });
+        const shown: Array<PreviewNavStatus> = [];
+        const loaded = (status: PreviewNavStatus | undefined) =>
+          status?._tag === "Success" && status.url.startsWith("https://good.test/long");
+        while (!loaded(shown.at(-1))) {
+          const event = yield* PubSub.take(events);
+          if (event.type === "navigated" && event.tabId === tabId) {
+            shown.push(event.snapshot.navStatus);
+          }
+        }
+        expect(JSON.stringify(shown)).not.toContain("pass");
       }).pipe(Effect.provide(server.layer));
     }),
   );
