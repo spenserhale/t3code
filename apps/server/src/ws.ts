@@ -2310,7 +2310,7 @@ export const layerWsRpc = (
         [WS_METHODS.secretRelayAnswer]: (input) =>
           Option.match(secretRelay, {
             onNone: () => Effect.void,
-            onSome: (relay) => relay.answer(input.requestId, input.answer),
+            onSome: (relay) => relay.answer(input.requestId, input.answer, currentSessionId),
           }),
         [WS_METHODS.secretRelayResolve]: (input) =>
           Option.match(secretRelayDevice, {
@@ -3415,7 +3415,8 @@ export const layerWsRpc = (
         [WS_METHODS.subscribeSecretRelay]: (input) =>
           Option.match(secretRelay, {
             onNone: () => Stream.never,
-            onSome: (relay) => relay.subscribe(input.kinds),
+            // A device is its auth session, so a reconnected socket is still the same device.
+            onSome: (relay) => relay.subscribe(input.kinds, currentSessionId),
           }),
         [WS_METHODS.subscribeResourceTelemetry]: (_input) =>
           Stream.unwrap(

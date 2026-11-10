@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import type { SecretRelayStreamItem } from "@t3tools/contracts";
+import type { SecretRelayAnswer, SecretRelayStreamItem } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
@@ -15,15 +15,19 @@ const loginAsk = {
   origin: "https://grafana.example.com",
 } as const;
 
-/** Subscribes for `kinds`, collecting what arrives. */
-const subscriber = (relay: SecretRelay.SecretRelay["Service"], kinds: ReadonlyArray<string>) =>
+/** A device subscribing for `kinds`, collecting what arrives until it leaves. */
+const subscriber = (
+  relay: SecretRelay.SecretRelay["Service"],
+  kinds: ReadonlyArray<string>,
+  device = "laptop",
+) =>
   Effect.gen(function* () {
     const items = yield* Queue.unbounded<SecretRelayStreamItem>();
-    yield* relay.subscribe(kinds).pipe(
+    const subscription = yield* relay.subscribe(kinds, device).pipe(
       Stream.runForEach((item) => Queue.offer(items, item)),
       Effect.forkScoped({ startImmediately: true }),
     );
-    return items;
+    return { items, leave: Fiber.interrupt(subscription) };
   });
 
 const takeRequest = (items: Queue.Queue<SecretRelayStreamItem>) =>
@@ -48,12 +52,12 @@ describe("SecretRelay", () => {
   );
 
   it.effect(
-    "sends a request only to its kind's subscribers, waiting ones first, and the first answer wins",
+    "sends a request only to its kind's subscribers, waiting ones first, and values end it at once",
     () =>
       Effect.gen(function* () {
         const relay = yield* SecretRelay.SecretRelay;
-        const early = yield* subscriber(relay, ["login", "card"]);
-        const identities = yield* subscriber(relay, ["identity"]);
+        const { items: early } = yield* subscriber(relay, ["login", "card"]);
+        const { items: identities } = yield* subscriber(relay, ["identity"], "phone");
         const call = yield* relay.request(loginAsk, 60_000).pipe(Effect.forkScoped);
         const asked = yield* takeRequest(early);
         assert.deepStrictEqual(asked, {
@@ -62,7 +66,7 @@ describe("SecretRelay", () => {
           expiresAt: 60_000,
         });
         // A device that connects while the request waits gets it on subscribing.
-        const late = yield* subscriber(relay, ["login"]);
+        const { items: late } = yield* subscriber(relay, ["login"], "desktop");
         assert.deepStrictEqual(yield* takeRequest(late), asked);
 
         const values = { password: Redacted.make("hunter2") };
@@ -71,9 +75,9 @@ describe("SecretRelay", () => {
           title: "Grafana",
           urls: ["https://grafana.example.com"],
         };
-        yield* relay.answer(asked.requestId, { type: "values", item, values });
-        yield* relay.answer(asked.requestId, { type: "denied" });
-        yield* relay.answer("unknown", { type: "none" });
+        yield* relay.answer(asked.requestId, { type: "values", item, values }, "laptop");
+        yield* relay.answer(asked.requestId, { type: "denied" }, "desktop");
+        yield* relay.answer("unknown", { type: "none" }, "laptop");
         assert.deepStrictEqual(yield* Fiber.join(call), { type: "values", item, values });
         for (const items of [early, late]) {
           assert.deepStrictEqual(yield* Queue.take(items), {
@@ -85,10 +89,72 @@ describe("SecretRelay", () => {
       }).pipe(Effect.scoped, Effect.provide(SecretRelay.layer)),
   );
 
+  it.effect(
+    "ends a request on nothing found only once every device asked has answered or left",
+    () =>
+      Effect.gen(function* () {
+        const relay = yield* SecretRelay.SecretRelay;
+        const laptop = yield* subscriber(relay, ["login"]);
+        const desktop = yield* subscriber(relay, ["login"], "desktop");
+        const ask = Effect.gen(function* () {
+          const call = yield* relay.request(loginAsk, 60_000).pipe(Effect.forkScoped);
+          const { requestId } = yield* takeRequest(laptop.items);
+          const answer = (device: string, answer: SecretRelayAnswer) =>
+            relay.answer(requestId, answer, device);
+          const result = Fiber.join(call).pipe(
+            Effect.tap(() =>
+              Queue.take(laptop.items).pipe(
+                Effect.map((item) => assert.deepStrictEqual(item, { type: "ended", requestId })),
+              ),
+            ),
+          );
+          return { answer, result };
+        });
+        const locked = { type: "unavailable", message: "1Password is locked." } as const;
+
+        // A refusal does not wait for the laptop.
+        const refused = yield* ask;
+        yield* refused.answer("desktop", { type: "denied" });
+        assert.deepStrictEqual(yield* refused.result, { type: "denied" });
+
+        // A quick "none" on the laptop does not beat the user allowing on the desktop.
+        const allowed = yield* ask;
+        yield* allowed.answer("laptop", { type: "none" });
+        const choose = { type: "choose", candidates: [] } as const;
+        yield* allowed.answer("desktop", choose);
+        assert.deepStrictEqual(yield* allowed.result, choose);
+
+        const missing = yield* ask;
+        yield* missing.answer("laptop", locked);
+        yield* missing.answer("desktop", { type: "none" });
+        assert.deepStrictEqual(yield* missing.result, { type: "none" });
+
+        const unavailable = yield* ask;
+        yield* unavailable.answer("laptop", locked);
+        yield* unavailable.answer("desktop", { type: "unavailable", message: "No app." });
+        assert.deepStrictEqual(yield* unavailable.result, locked);
+
+        // A device is still waited for while another of its subscriptions has the kind, as
+        // after a reconnect.
+        const reconnected = yield* subscriber(relay, ["login"], "desktop");
+        const reconnecting = yield* ask;
+        yield* reconnecting.answer("laptop", { type: "none" });
+        yield* desktop.leave;
+        yield* reconnecting.answer("desktop", choose);
+        assert.deepStrictEqual(yield* reconnecting.result, choose);
+
+        // Once it has none left, the laptop's answer stands.
+        const leaving = yield* ask;
+        yield* leaving.answer("laptop", { type: "none" });
+        yield* reconnected.leave;
+        assert.deepStrictEqual(yield* leaving.result, { type: "none" });
+      }).pipe(Effect.scoped, Effect.provide(SecretRelay.layer)),
+  );
+
   it.effect("ends a request nobody answers by its deadline, and one whose call ended", () =>
     Effect.gen(function* () {
       const relay = yield* SecretRelay.SecretRelay;
-      const items = yield* subscriber(relay, ["login"]);
+      const { items } = yield* subscriber(relay, ["login"]);
 
       const unanswered = yield* relay
         .request(loginAsk, 30_000)
@@ -101,7 +167,7 @@ describe("SecretRelay", () => {
         requestId: first.requestId,
       });
       // An answer after the end changes nothing.
-      yield* relay.answer(first.requestId, { type: "none" });
+      yield* relay.answer(first.requestId, { type: "none" }, "laptop");
 
       const abandoned = yield* relay.request(loginAsk, 30_000).pipe(Effect.forkScoped);
       const second = yield* takeRequest(items);
@@ -112,7 +178,7 @@ describe("SecretRelay", () => {
       });
       // Nothing waits any more, so a new subscriber gets nothing.
       const after = yield* subscriber(relay, ["login"]);
-      assert.strictEqual(yield* Queue.size(after), 0);
+      assert.strictEqual(yield* Queue.size(after.items), 0);
     }).pipe(Effect.scoped, Effect.provide(SecretRelay.layer)),
   );
 });

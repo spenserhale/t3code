@@ -2508,10 +2508,10 @@ const connectedDevice = (answers: ReadonlyArray<SecretRelayAnswer>) =>
   Effect.gen(function* () {
     const relay = yield* SecretRelay.SecretRelay;
     const asked: Array<SecretRelayRequest> = [];
-    yield* relay.subscribe(["login", "identity"]).pipe(
+    yield* relay.subscribe(["login", "identity"], "device").pipe(
       Stream.runForEach((item) =>
         item.type === "request"
-          ? relay.answer(item.request.requestId, answers[asked.push(item.request) - 1]!)
+          ? relay.answer(item.request.requestId, answers[asked.push(item.request) - 1]!, "device")
           : Effect.void,
       ),
       Effect.forkScoped({ startImmediately: true }),
