@@ -17,6 +17,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
@@ -121,6 +122,8 @@ const setup = (
     /** Whether a desktop app is attached to this server, and what its dialog answers in turn. */
     readonly desktop?: boolean;
     readonly answers?: Array<DesktopBrowserChannel.DesktopApproval>;
+    /** The dialog itself, in place of answering from `answers`. */
+    readonly approve?: DesktopBrowserChannel.DesktopBrowserChannel["Service"]["approveLogin"];
     readonly escalation?: "device" | "refuse";
     readonly workspaceRoot?: string;
     /** A real process instead of the fake. */
@@ -130,6 +133,8 @@ const setup = (
 ) => {
   const reads: Array<string> = [];
   const prompts: Array<DesktopBrowserChannel.DesktopLoginPrompt> = [];
+  /** How many password manager reads had run when each prompt was shown. */
+  const readsBefore: Array<number> = [];
   const logs: Array<string> = [];
   const driver = defineSecretProviderDriver({
     kind,
@@ -182,10 +187,14 @@ const setup = (
     endpoint: () => Effect.die("No tab is drawn here."),
     pointer: () => Effect.void,
     turn: () => Effect.void,
-    approveLogin: (_key, _timeoutMs, prompt) =>
-      Effect.sync(() => {
+    approveLogin: (key, timeoutMs, prompt) =>
+      Effect.suspend(() => {
         prompts.push(prompt);
-        return options.answers?.shift() ?? false;
+        readsBefore.push(reads.length);
+        return (
+          options.approve?.(key, timeoutMs, prompt) ??
+          Effect.succeed(options.answers?.shift() ?? false)
+        );
       }),
   });
   const thread = Layer.mergeAll(
@@ -216,7 +225,7 @@ const setup = (
       }),
     ),
   );
-  return { layer, reads, prompts, logs, processes };
+  return { layer, reads, prompts, readsBefore, logs, processes };
 };
 
 const run = (input: SecretCommandInput) =>
@@ -309,10 +318,11 @@ describe("SecretCommands", () => {
       const denied = yield* run(input).pipe(Effect.flip);
       assert.deepStrictEqual(
         { reason: denied.reason, message: denied.message },
-        { reason: "refused", message: `The user did not allow ${OPENAI}.` },
+        { reason: "refused", message: "The user did not approve using this secret in a command." },
       );
       // The service account is tried first; the person's password manager only once allowed.
       assert.deepStrictEqual(fixture.reads, [`work:${OPENAI}`]);
+      assert.deepStrictEqual(fixture.readsBefore, [1]);
       assert.deepStrictEqual(fixture.prompts, [
         {
           kind: "secretReference",
@@ -326,6 +336,8 @@ describe("SecretCommands", () => {
       assert.lengthOf(fixture.processes.spawned, 0);
 
       const allowed = yield* run(input);
+      assert.deepStrictEqual(fixture.readsBefore, [1, 2]);
+      assert.deepStrictEqual(fixture.reads.slice(1), [`work:${OPENAI}`, `personal:${OPENAI}`]);
       assert.deepStrictEqual(allowed.sources, { env: { OPENAI_API_KEY: { type: "device" } } });
       assert.deepStrictEqual(reveal(fixture.processes.spawned[0]?.options.env), {
         OPENAI_API_KEY: "sk-personal-456",
@@ -403,10 +415,108 @@ describe("SecretCommands", () => {
       );
       assert.lengthOf(fixture.processes.spawned, 0);
       assert.deepStrictEqual(messages, [
-        `The user did not allow ${OPENAI} on their device.`,
-        `No password manager on the user's device can open ${OPENAI}.`,
+        "The user did not approve using this secret in a command on their device.",
+        `No password manager can open ${OPENAI}.`,
         "The user's device could not answer: Personal did not return it.",
       ]);
+    }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+  });
+
+  it.effect("set to refuse, stops after the service accounts, before any dialog or read", () => {
+    const fixture = setup({ desktop: true, escalation: "refuse", answers: ["once"] });
+    return Effect.gen(function* () {
+      const asked = yield* device(() => ({
+        type: "values",
+        item: { id: OPENAI, title: OPENAI, urls: [] },
+        values: { value: Redacted.make("sk-from-device") },
+      }));
+      const error = yield* run({ command: ["openai", "models", "list"], stdin: OPENAI }).pipe(
+        Effect.flip,
+      );
+      assert.strictEqual(error.reason, "refused");
+      assert.include(error.message, "this machine is set not to ask the user's device");
+      assert.deepStrictEqual(fixture.reads, [`work:${OPENAI}`]);
+      assert.deepStrictEqual(fixture.prompts, []);
+      assert.isTrue(Option.isNone(yield* Queue.poll(asked)));
+      assert.lengthOf(fixture.processes.spawned, 0);
+    }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+  });
+
+  it.effect(
+    "passes a secret this machine's password managers do not have on to the user's device",
+    () => {
+      const missing = "op://Employee/Elsewhere/key";
+      const fixture = setup({ desktop: true, answers: ["once"] });
+      return Effect.gen(function* () {
+        const asked = yield* device(() => ({
+          type: "values",
+          item: { id: missing, title: missing, urls: [] },
+          values: { value: Redacted.make("sk-from-device") },
+        }));
+        const result = yield* run({ command: ["openai", "models", "list"], stdin: missing });
+        assert.deepStrictEqual(result.sources, { stdin: { type: "device" } });
+        assert.deepStrictEqual(fixture.processes.spawned[0]?.stdin, ["sk-from-device\n"]);
+        // Asked here first, read here, and only then relayed.
+        assert.deepStrictEqual(fixture.reads, [`work:${missing}`, `personal:${missing}`]);
+        assert.lengthOf(fixture.prompts, 1);
+        assert.strictEqual((yield* Queue.take(asked)).type, "request");
+      }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+    },
+  );
+
+  it.effect("cancelling the call closes this machine's dialog before anything is read", () => {
+    const opened = Deferred.makeUnsafe<void>();
+    const closed = Deferred.makeUnsafe<void>();
+    const fixture = setup({
+      desktop: true,
+      approve: () =>
+        Deferred.succeed(opened, undefined).pipe(
+          Effect.andThen(Effect.never),
+          Effect.onInterrupt(() => Deferred.succeed(closed, undefined)),
+        ),
+    });
+    return Effect.gen(function* () {
+      const call = yield* run({ command: ["true"], stdin: OPENAI }).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Deferred.await(opened);
+      yield* Fiber.interrupt(call);
+      yield* Deferred.await(closed);
+      assert.deepStrictEqual(fixture.reads, [`work:${OPENAI}`]);
+      assert.lengthOf(fixture.processes.spawned, 0);
+    }).pipe(Effect.provide(fixture.layer));
+  });
+
+  it.effect("cancelling the call ends its request on the user's device", () => {
+    const fixture = setup();
+    return Effect.gen(function* () {
+      const relay = yield* SecretRelay.SecretRelay;
+      const items = yield* Queue.unbounded<SecretRelayStreamItem>();
+      yield* relay.subscribe(["secretReference"], "laptop").pipe(
+        Stream.runForEach((item) => Queue.offer(items, item)),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      const call = yield* run({ command: ["true"], stdin: OPENAI }).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      const asked = yield* Queue.take(items);
+      if (asked.type !== "request") throw new Error("Expected the relayed request first.");
+      yield* Fiber.interrupt(call);
+      assert.deepStrictEqual(yield* Queue.take(items), {
+        type: "ended",
+        requestId: asked.request.requestId,
+      });
+      // A late answer runs nothing.
+      yield* relay.answer(
+        asked.request.requestId,
+        {
+          type: "values",
+          item: { id: OPENAI, title: OPENAI, urls: [] },
+          values: { value: Redacted.make("sk-late") },
+        },
+        "laptop",
+      );
+      assert.lengthOf(fixture.processes.spawned, 0);
     }).pipe(Effect.scoped, Effect.provide(fixture.layer));
   });
 
