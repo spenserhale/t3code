@@ -4,6 +4,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   type BrowserLoginApproval,
   type BrowserLoginSettings,
+  type BrowserNewLoginSettings,
   SecretProviderId,
   SecretProviderKind,
 } from "@t3tools/contracts";
@@ -134,6 +135,13 @@ const makeService = (
     identityList: 0,
     listing: Deferred.makeUnsafe<void>(),
   };
+  // Logins `create` saved, listed with their account's others from then on.
+  const created: Array<{
+    readonly account: string;
+    readonly login: typeof github & { readonly vault: string };
+    readonly notes: string;
+  }> = [];
+  const renewed: Array<string> = [];
   const driver = defineSecretProviderDriver({
     kind,
     definition: defineSecretProvider({
@@ -152,16 +160,37 @@ const makeService = (
     logins: {
       list: ({ account }) =>
         Effect.gen(function* () {
-          const logins = listed[account];
+          // What the account holds when the listing starts, as with a real provider.
+          const own = listed[account];
+          const saved = created.flatMap((entry) =>
+            entry.account === account ? [entry.login] : [],
+          );
           calls.list++;
           Deferred.doneUnsafe(calls.listing, Effect.void);
           if (gate !== undefined) yield* Deferred.await(gate);
-          return logins;
+          return own && [...own, ...saved];
         }),
       read: ({ account }, login, fields) =>
         Effect.sync(() => {
           calls.read.push(`${account}:${login.id}@${login.vaultId ?? ""}`);
           return Object.fromEntries(fields.map((field) => [field, `${field}-${account}`]));
+        }),
+      create: ({ account }, { title, vault, url, notes }) =>
+        Effect.sync(() => {
+          const login = {
+            id: `n${created.length + 1}`,
+            title,
+            vault,
+            vaultId: "v-new",
+            urls: [url],
+          };
+          created.push({ account, login, notes });
+          return { login, password: `generated-${login.id}` };
+        }),
+      regeneratePassword: ({ account }, login, recipe) =>
+        Effect.sync(() => {
+          renewed.push(`${account}:${login.id}@${login.vaultId ?? ""}:${recipe.length}`);
+          return `renewed-${login.id}`;
         }),
     },
     identities: {
@@ -189,7 +218,7 @@ const makeService = (
     ),
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
-  return { layer, calls };
+  return { layer, calls, created, renewed };
 };
 
 describe("BrowserLogins", () => {
@@ -575,6 +604,127 @@ describe("BrowserLogins identities", () => {
         yield* logins.needsApproval(now.revision, "thread-a", "identityRead"),
         "thread",
       );
+    }).pipe(Effect.provide(layer));
+  });
+});
+
+describe("BrowserLogins new logins", () => {
+  const signUps: BrowserNewLoginSettings = { secretProviderId: work, vault: "Sign-ups" };
+  const savingTo = (
+    newLogins: BrowserNewLoginSettings,
+    approval: BrowserLoginApproval = "thread",
+  ) => ({ secretProviderIds: [work], approval, newLogins }) as const;
+  const shop = {
+    threadId: "thread-a",
+    threadTitle: "Sign up\nfor hosting",
+    title: "shop.test",
+    url: "https://shop.test",
+    username: "ada@example.com",
+    recipe: { length: 24, digits: true, symbols: true },
+  };
+
+  it.effect("saves a login where the user chose, lists it at once, and asks about it apart", () => {
+    const { layer, calls, created } = makeService({ work: [grafana] }, savingTo(signUps));
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      assert.deepStrictEqual((yield* logins.candidates("https://shop.test/signup")).logins, []);
+      const { revision, ...destination } = yield* logins.newLoginDestination("thread-a", undefined);
+      assert.deepStrictEqual(destination, { account: "Work", vault: "Sign-ups" });
+
+      // Approving a login fill on this thread does not approve creating one.
+      yield* logins.recordApproval(revision, "thread-a", "login");
+      assert.strictEqual(yield* logins.needsApproval(revision, "thread-a", "newLogin"), "thread");
+      yield* logins.recordApproval(revision, "thread-a", "newLogin");
+      assert.isFalse(yield* logins.needsApproval(revision, "thread-a", "newLogin"));
+
+      const login = {
+        id: "work/n1",
+        title: "shop.test",
+        vault: "Sign-ups",
+        vaultId: "v-new",
+        urls: ["https://shop.test"],
+        account: "Work",
+      };
+      assert.deepStrictEqual(yield* logins.createLogin(revision, shop), {
+        login,
+        password: "generated-n1",
+      });
+      assert.deepStrictEqual(
+        created.map((entry) => entry.notes),
+        [
+          'Created by T3 Code for the thread "Sign up for hosting" on 1970-01-01 for https://shop.test. It can be deleted if the sign-up did not finish.',
+        ],
+      );
+      // The list cached before the login existed is dropped, so preview_fill_login offers it now.
+      assert.deepStrictEqual((yield* logins.candidates("https://shop.test/login")).logins, [login]);
+      assert.strictEqual(calls.list, 2);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("gives a new password only to a login this thread created", () => {
+    const { layer, renewed } = makeService({ work: [grafana] }, savingTo(signUps, "never"));
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const { revision } = yield* logins.newLoginDestination("thread-a", undefined);
+      const { login } = yield* logins.createLogin(revision, shop);
+      const shorter = { length: 12, digits: true, symbols: false };
+      assert.deepStrictEqual(yield* logins.newLoginDestination("thread-a", login.id), {
+        revision,
+        account: "Work",
+        vault: "Sign-ups",
+        login,
+      });
+      assert.deepStrictEqual(
+        yield* logins.regeneratePassword(revision, "thread-a", login.id, shorter),
+        { login, password: "renewed-n1" },
+      );
+      // The driver gets its own id back, in the vault the login was saved in.
+      assert.deepStrictEqual(renewed, ["work:n1@v-new:12"]);
+
+      // Another thread's login, or one the user saved, may be in use on its site.
+      for (const [threadId, loginId] of [
+        ["thread-b", login.id],
+        ["thread-a", "work/g1"],
+      ] as const) {
+        const refused = yield* logins
+          .regeneratePassword(revision, threadId, loginId, shorter)
+          .pipe(Effect.flip);
+        assert.include(refused.message, "Omit `login` to create a new one.");
+        yield* logins.newLoginDestination(threadId, loginId).pipe(Effect.flip);
+      }
+      assert.deepStrictEqual(renewed, ["work:n1@v-new:12"]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("is off until the user chooses where, among the chosen password managers", () => {
+    const { layer, created } = makeService({ work: [grafana] });
+    return Effect.gen(function* () {
+      const settings = yield* Settings.ServerSettingsService;
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const choose = (newLogins: BrowserNewLoginSettings) =>
+        settings.updateSettings({ browserLogins: savingTo(newLogins) });
+
+      const off = yield* logins.newLoginDestination("thread-a", undefined).pipe(Effect.flip);
+      assert.include(
+        off.message,
+        "choose where new logins are saved in Settings > Browser > Logins",
+      );
+      const { revision } = yield* logins.candidates("https://shop.test/");
+      yield* logins.createLogin(revision, shop).pipe(Effect.flip);
+
+      yield* choose({ secretProviderId: personal, vault: "Sign-ups" });
+      const unchosen = yield* logins.newLoginDestination("thread-a", undefined).pipe(Effect.flip);
+      assert.include(unchosen.message, "is not one chosen for browser logins");
+
+      yield* choose(signUps);
+      const first = yield* logins.newLoginDestination("thread-a", undefined);
+      // Moving new logins to another vault starts a new generation, like any change here.
+      yield* choose({ ...signUps, vault: "Other" });
+      yield* logins.createLogin(first.revision, shop).pipe(Effect.flip);
+      const second = yield* logins.newLoginDestination("thread-a", undefined);
+      assert.strictEqual(second.vault, "Other");
+      yield* logins.createLogin(second.revision, shop);
+      assert.strictEqual(created.length, 1);
     }).pipe(Effect.provide(layer));
   });
 });
