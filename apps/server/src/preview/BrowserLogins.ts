@@ -8,12 +8,14 @@ import type {
   SecretProviderLoginField,
   SecretProviderLoginValues,
   SecretProviderLogins,
+  SecretProviderPasswordRecipe,
 } from "@t3tools/secret-provider-core/server/driver";
 import {
   browserLoginProviderIds,
   DEFAULT_BROWSER_IDENTITY_READ_APPROVAL,
   type BrowserIdentityReadApproval,
   type BrowserLoginApproval,
+  type BrowserNewLoginSettings,
   type SecretProviderId,
   type ServerSettings,
 } from "@t3tools/contracts";
@@ -21,6 +23,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as Data from "effect/Data";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -56,7 +59,24 @@ export interface BrowserIdentityCandidate extends SecretProviderIdentity {
 }
 
 /** What a prompt allows: filling a login, filling an identity, or showing one to the agent. */
-export type BrowserApprovalKind = "login" | "identity" | "identityRead";
+export type BrowserApprovalKind = "login" | "identity" | "identityRead" | "newLogin";
+
+/** A login to save for a sign-up, in the vault the user chose for new logins. */
+export interface BrowserNewLogin {
+  readonly threadId: string;
+  /** Named in the saved item's notes. */
+  readonly threadTitle?: string | undefined;
+  readonly title: string;
+  readonly url: string;
+  readonly username: string;
+  readonly recipe: SecretProviderPasswordRecipe;
+}
+
+/** A login saved for a sign-up, with the password its password manager generated. */
+export interface BrowserNewPassword {
+  readonly login: BrowserLoginCandidate;
+  readonly password: string;
+}
 
 export class BrowserLogins extends Context.Service<
   BrowserLogins,
@@ -109,6 +129,38 @@ export class BrowserLogins extends Context.Service<
     readonly check: (revision: string) => Effect.Effect<void, BrowserLoginError>;
     /** Forgets listed logins, for after one is saved; a listing begun earlier cannot refill them. */
     readonly invalidate: Effect.Effect<void>;
+    /**
+     * Where a new login would be saved, for the approval prompt; with `loginId`, a login
+     * `createLogin` made for this thread. Fails until the user chooses where new logins go.
+     */
+    readonly newLoginDestination: (
+      threadId: string,
+      loginId: string | undefined,
+    ) => Effect.Effect<
+      {
+        readonly revision: string;
+        /** The provider's name in Settings > Secrets. */
+        readonly account: string;
+        readonly vault?: string;
+        readonly login?: BrowserLoginCandidate;
+      },
+      BrowserLoginError
+    >;
+    /** Saves a new login whose password the password manager generates. */
+    readonly createLogin: (
+      revision: string,
+      input: BrowserNewLogin,
+    ) => Effect.Effect<BrowserNewPassword, BrowserLoginError>;
+    /**
+     * Gives a login `createLogin` made for this thread a newly generated password. Any other login
+     * is refused: its site may still expect the password it has.
+     */
+    readonly regeneratePassword: (
+      revision: string,
+      threadId: string,
+      loginId: string,
+      recipe: SecretProviderPasswordRecipe,
+    ) => Effect.Effect<BrowserNewPassword, BrowserLoginError>;
   }
 >()("t3/preview/BrowserLogins") {}
 
@@ -156,6 +208,7 @@ interface Source {
 interface Resolved {
   readonly approval: BrowserLoginApproval;
   readonly identityReadApproval: BrowserIdentityReadApproval;
+  readonly newLogins: BrowserNewLoginSettings | undefined;
   readonly revision: string;
   readonly sources: ReadonlyArray<Source>;
 }
@@ -203,18 +256,35 @@ const resolve = Effect.fn("BrowserLogins.resolve")(function* (
   const { approval } = settings.browserLogins;
   const identityReadApproval =
     settings.browserLogins.identityReadApproval ?? DEFAULT_BROWSER_IDENTITY_READ_APPROVAL;
+  const newLogins = settings.browserLogins.newLogins;
   return {
     approval,
     identityReadApproval,
+    newLogins,
     sources,
     // Unusable ids count too, so one becoming usable starts a new generation.
     revision: encodeJson([
       approval,
       identityReadApproval,
+      newLogins ?? null,
       ...ids.map((id) => sources.find((source) => source.id === id)?.key ?? id),
     ]),
   };
 });
+
+const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+
+/** What the saved item says about itself, so the user can tell a login left by a sign-up. */
+const newLoginNotes = (input: BrowserNewLogin, today: string) =>
+  [
+    "Created by T3 Code",
+    input.threadTitle ? ` for the thread "${oneLine(input.threadTitle)}"` : "",
+    ` on ${today} for ${input.url}.`,
+    " It can be deleted if the sign-up did not finish.",
+  ].join("");
+
+const newLoginsError = (message: string) =>
+  new BrowserLoginError({ reason: "not_configured", message });
 
 interface Listed<A> {
   readonly at: number;
@@ -507,11 +577,125 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     return values;
   });
 
+  // Logins created here, by thread and id, for the server's life: only these get a new password.
+  const createdLogins = new Map<string, BrowserLoginCandidate>();
+  const createdKey = (threadId: string, loginId: string) => `${threadId}\u0000${loginId}`;
+
+  const newLoginSource = Effect.fn("BrowserLogins.newLoginSource")(function* (resolved: Resolved) {
+    const chosen = resolved.newLogins;
+    if (chosen === undefined) {
+      return yield* newLoginsError(
+        "New logins are off. The user can choose where new logins are saved in Settings > Browser > Logins.",
+      );
+    }
+    const source = resolved.sources.find((candidate) => candidate.id === chosen.secretProviderId);
+    if (source === undefined) {
+      return yield* newLoginsError(
+        `The password manager chosen for new logins (${chosen.secretProviderId}) is not one chosen for browser logins. The user can fix it in Settings > Browser > Logins.`,
+      );
+    }
+    const create = source.logins.create;
+    if (create === undefined) {
+      return yield* newLoginsError(
+        `${source.label} cannot create logins. The user can choose another password manager for new logins in Settings > Browser > Logins.`,
+      );
+    }
+    return { source, vault: chosen.vault, create };
+  });
+
+  const createdLogin = Effect.fn("BrowserLogins.createdLogin")(function* (
+    resolved: Resolved,
+    threadId: string,
+    loginId: string,
+  ) {
+    const login = createdLogins.get(createdKey(threadId, loginId));
+    if (login === undefined) {
+      return yield* newLoginsError(
+        "Only a login preview_fill_new_login created in this thread since the server started can get a new password, so a password a site already uses is never replaced. Omit `login` to create a new one.",
+      );
+    }
+    const found = sourceOf(resolved, login.id);
+    const regenerate = found?.source.logins.regeneratePassword;
+    if (found === undefined || regenerate === undefined) {
+      return yield* newLoginsError(
+        "The password manager that saved this login cannot give it a new password now. Omit `login` to create a new one.",
+      );
+    }
+    return { login, source: found.source, itemId: found.itemId, regenerate };
+  });
+
+  const newLoginDestination: BrowserLogins["Service"]["newLoginDestination"] = Effect.fn(
+    "BrowserLogins.newLoginDestination",
+  )(function* (threadId, loginId) {
+    const resolved = yield* current;
+    const revision = String(generation);
+    const { source, vault } = yield* newLoginSource(resolved);
+    if (loginId === undefined) return { revision, account: source.account, vault };
+    const { login } = yield* createdLogin(resolved, threadId, loginId);
+    return {
+      revision,
+      account: login.account,
+      ...(login.vault ? { vault: login.vault } : {}),
+      login,
+    };
+  });
+
+  const createLogin: BrowserLogins["Service"]["createLogin"] = Effect.fn(
+    "BrowserLogins.createLogin",
+  )(function* (revision, input) {
+    const { source, vault, create } = yield* newLoginSource(yield* currentAt(revision));
+    const today = DateTime.formatIsoDateUtc(yield* DateTime.now);
+    const created = yield* create(source.config, {
+      vault,
+      title: input.title,
+      url: input.url,
+      username: input.username,
+      recipe: input.recipe,
+      notes: newLoginNotes(input, today),
+    }).pipe(Effect.provideContext(driverServices));
+    if (created === undefined) {
+      return yield* new BrowserLoginError({
+        reason: "unreadable",
+        message: `${source.label} did not save the new login. It may be locked, the vault "${vault}" may not exist, or the account may not be allowed to write to it.`,
+      });
+    }
+    // Listed again on the next lookup, so preview_fill_login finds it at once.
+    loginLists.cache.delete(source.key);
+    const login: BrowserLoginCandidate = {
+      ...created.login,
+      id: `${source.id}/${created.login.id}`,
+      account: source.account,
+    };
+    createdLogins.set(createdKey(input.threadId, login.id), login);
+    return { login, password: created.password };
+  });
+
+  const regeneratePassword: BrowserLogins["Service"]["regeneratePassword"] = Effect.fn(
+    "BrowserLogins.regeneratePassword",
+  )(function* (revision, threadId, loginId, recipe) {
+    const resolved = yield* currentAt(revision);
+    yield* newLoginSource(resolved);
+    const { login, source, itemId, regenerate } = yield* createdLogin(resolved, threadId, loginId);
+    const password = yield* regenerate(source.config, { ...login, id: itemId }, recipe).pipe(
+      Effect.provideContext(driverServices),
+    );
+    if (password === undefined) {
+      return yield* new BrowserLoginError({
+        reason: "unreadable",
+        message: `${source.label} did not give the login a new password. It may be locked, or the account may not be allowed to change it.`,
+      });
+    }
+    return { login, password };
+  });
+
   return BrowserLogins.of({
     candidates,
     read,
     identityCandidates,
     readIdentity,
+    newLoginDestination,
+    createLogin,
+    regeneratePassword,
     check: Effect.fn("BrowserLogins.check")(function* (revision) {
       yield* currentAt(revision);
     }),

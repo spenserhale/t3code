@@ -219,6 +219,122 @@ describe("1Password logins", () => {
     ],
   });
   const grafana = { id: "abc123", title: "Grafana", vault: "Work", urls: ["https://x"] };
+  const generated = "Xk3$pQ9!vB2@mN7#tR5&wL8*";
+  const recipe = { length: 24, digits: true, symbols: true };
+  const newLogin = {
+    vault: "Sign-ups",
+    title: "-shop.test",
+    url: "https://shop.test",
+    username: "-ada@example.com",
+    recipe,
+    notes: "Created for a sign-up.",
+  };
+  /** What `op item create` or `op item edit` prints, with the password field's value if given. */
+  const savedItem = (password?: string) =>
+    JSON.stringify({
+      id: "new1",
+      title: "-shop.test",
+      vault: { id: "v7", name: "Sign-ups" },
+      urls: [{ primary: true, href: "https://shop.test" }],
+      fields: [
+        { id: "username", type: "STRING", purpose: "USERNAME", value: "-ada@example.com" },
+        {
+          id: "password",
+          type: "CONCEALED",
+          purpose: "PASSWORD",
+          ...(password === undefined ? {} : { value: password }),
+        },
+      ],
+    });
+  const saved = {
+    id: "new1",
+    title: "-shop.test",
+    vault: "Sign-ups",
+    vaultId: "v7",
+    urls: ["https://shop.test"],
+  };
+  const readBack = [
+    "--cache=false",
+    "item",
+    "--account=my.1password.com",
+    "get",
+    "new1",
+    "--vault=v7",
+    "--reveal",
+    "--format=json",
+  ];
+
+  it.effect("creates a login whose password 1Password generates, never on the command line", () => {
+    const op = fakeOp(() => ({ stdout: savedItem(generated) }));
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(yield* driver.logins!.create!({ account }, newLogin), {
+        login: saved,
+        password: generated,
+      });
+      // Values that look like flags stay inside `--flag=value` and `field=value` arguments.
+      assert.deepStrictEqual(op.invocations, [
+        [
+          "--cache=false",
+          "item",
+          "--account=my.1password.com",
+          "create",
+          "--category=login",
+          "--vault=Sign-ups",
+          "--title=-shop.test",
+          "--url=https://shop.test",
+          "--generate-password=letters,digits,symbols,24",
+          "--tags=T3 Code",
+          "--format=json",
+          "username=-ada@example.com",
+          "notesPlain=Created for a sign-up.",
+        ],
+      ]);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect.each([
+    ["no value", undefined],
+    ["a concealment hint", "[use 'op item get new1 --reveal' to reveal]"],
+    ["a value the recipe could not make", "hunter2"],
+  ] as const)("reads the new password back when the output shows %s", ([, shown]) => {
+    const op = fakeOp((args) =>
+      args.includes("create") ? { stdout: savedItem(shown) } : { stdout: savedItem(generated) },
+    );
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(yield* driver.logins!.create!({ account }, newLogin), {
+        login: saved,
+        password: generated,
+      });
+      assert.deepStrictEqual(op.invocations[1], readBack);
+      assert.strictEqual(op.invocations.length, 2);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect("regenerates the password of a login in its vault, then reads it back", () => {
+    const shorter = { length: 12, digits: true, symbols: false };
+    const op = fakeOp((args) =>
+      args.includes("edit") ? { stdout: savedItem() } : { stdout: savedItem("abc123DEF456") },
+    );
+    return Effect.gen(function* () {
+      assert.strictEqual(
+        yield* driver.logins!.regeneratePassword!({ account }, saved, shorter),
+        "abc123DEF456",
+      );
+      assert.deepStrictEqual(op.invocations, [
+        [
+          "--cache=false",
+          "item",
+          "--account=my.1password.com",
+          "edit",
+          "new1",
+          "--vault=v7",
+          "--generate-password=letters,digits,12",
+          "--format=json",
+        ],
+        readBack,
+      ]);
+    }).pipe(Effect.provide(op.layer));
+  });
 
   it.effect("lists logins that have a website, without reading secrets", () => {
     const op = fakeOp(() => ({ stdout: listed }));
@@ -434,6 +550,11 @@ describe("1Password logins", () => {
       assert.strictEqual(yield* driver.logins!.read({ account }, grafana, ["password"]), undefined);
       assert.strictEqual(yield* driver.identities!.list({ account }), undefined);
       assert.strictEqual(yield* driver.identities!.read({ account }, grafana), undefined);
+      assert.strictEqual(yield* driver.logins!.create!({ account }, newLogin), undefined);
+      assert.strictEqual(
+        yield* driver.logins!.regeneratePassword!({ account }, saved, recipe),
+        undefined,
+      );
     }).pipe(Effect.provide(op.layer));
   });
 
@@ -446,6 +567,10 @@ describe("1Password logins", () => {
       ]) {
         assert.strictEqual(yield* driver.logins!.read({ account }, flag, ["password"]), undefined);
         assert.strictEqual(yield* driver.identities!.read({ account }, flag), undefined);
+        assert.strictEqual(
+          yield* driver.logins!.regeneratePassword!({ account }, flag, recipe),
+          undefined,
+        );
       }
       assert.strictEqual(op.invocations.length, 0);
     }).pipe(Effect.provide(op.layer));

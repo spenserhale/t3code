@@ -19,6 +19,7 @@ import {
   type BrowserIdentityReadApproval,
   type PreviewAutomationFillIdentityResult,
   type PreviewAutomationFillLoginResult,
+  type PreviewAutomationFillNewLoginResult,
   type PreviewAutomationOperation,
   type PreviewAutomationReadIdentityResult,
   type PreviewAutomationSnapshot,
@@ -2431,6 +2432,19 @@ const loginServer = (
           reads.push(login.id);
           return Object.fromEntries(fields.map((field) => [field, secret(field, reads.length)]));
         }),
+      create: (_config, { title, url, username, vault, recipe }) =>
+        Effect.sync(() => {
+          reads.push(`create ${title} ${url} ${username} ${recipe.length}`);
+          return {
+            login: { id: "n1", title, vault, vaultId: "v2", urls: [url] },
+            password: `generated-${recipe.length}`,
+          };
+        }),
+      regeneratePassword: (_config, login, recipe) =>
+        Effect.sync(() => {
+          reads.push(`regenerate ${login.id}@${login.vaultId} ${recipe.length}`);
+          return `renewed-${recipe.length}`;
+        }),
     },
     identities: {
       list: () => Effect.succeed([{ id: "me", title: "Me", vaultId: "v1" }]),
@@ -2448,6 +2462,7 @@ const loginServer = (
         browserLogins: {
           secretProviderIds: [loginProvider],
           approval,
+          newLogins: { secretProviderId: loginProvider, vault: "Sign-ups" },
           ...(identityReadApproval === undefined ? {} : { identityReadApproval }),
         },
       }),
@@ -2727,6 +2742,8 @@ it.live(
           const { invoke } = yield* openLoginTab;
           const refused = yield* invoke("fillLogin").pipe(Effect.flip);
           expect(refused.message).toContain("Nobody can approve a login on this machine.");
+          const refusedNew = yield* invoke("fillNewLogin", { username: "ada" }).pipe(Effect.flip);
+          expect(refusedNew.message).toContain("Nobody can approve a new login on this machine.");
           expect(server.reads).toEqual([]);
           expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
         }).pipe(Effect.provide(server.layer));
@@ -2915,5 +2932,119 @@ it.live.each([
       }
       expect(server.reads).toEqual(reads ? ["me"] : []);
     }).pipe(Effect.provide(server.layer), Effect.scoped);
+  },
+);
+
+const NEW_ACCOUNT_PAGE = `<title>Create account</title><input id="new" type="password" oninput="document.title = this.value"><input id="again" type="password">`;
+
+const newPasswordFields = (context: BrowserContext) =>
+  Effect.promise(() =>
+    context
+      .pages()[0]!
+      .locator("input[type=password]")
+      .evaluateAll((fields) =>
+        fields.map((element) => {
+          const field = element as unknown as {
+            readonly value: string;
+            readonly style: { getPropertyValue: (name: string) => string };
+          };
+          return {
+            value: field.value,
+            security: field.style.getPropertyValue("-webkit-text-security"),
+          };
+        }),
+      ),
+  );
+
+it.live(
+  "a new login is saved before its generated password is filled, behind the login guards",
+  () => {
+    const asked: Array<{
+      readonly key: DesktopChannel.DesktopApprovalKey;
+      readonly prompt: object;
+    }> = [];
+    const server = loginServer("thread", approvingDesktop(asked));
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.promise(() =>
+          context.route("https://www.good.test/signup", (route) =>
+            route.fulfill({ contentType: "text/html", body: NEW_ACCOUNT_PAGE }),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const { tabId, invoke } = yield* openLoginTab;
+          const signUp = { url: "https://www.good.test/signup" };
+          const input = {
+            username: "ada@example.com",
+            requester: { threadTitle: "Sign up for hosting", provider: "codex" },
+          };
+          yield* invoke("navigate", signUp);
+          yield* invoke("evaluate", { expression: "document.title" });
+          const scripted = yield* invoke("fillNewLogin", input).pipe(Effect.flip);
+          expect(scripted.message).toContain("preview_evaluate ran in this page");
+
+          yield* invoke("navigate", signUp);
+          const filled = yield* invoke<PreviewAutomationFillNewLoginResult>("fillNewLogin", input);
+          expect(filled).toEqual({
+            status: "filled",
+            tabId,
+            login: { id: "work/n1", title: "good.test", vault: "Sign-ups", account: "Work" },
+            filled: ["password", "confirm"],
+            created: true,
+          });
+          // Saved for the whole site, after the user allowed it, and before anything was filled.
+          expect(server.reads).toEqual(["create good.test https://good.test ada@example.com 24"]);
+          expect(asked).toEqual([
+            {
+              key: { threadId: scope.thread.threadId, tabId },
+              prompt: {
+                kind: "newLogin",
+                providerLabel: "Work",
+                loginTitle: "good.test",
+                vault: "Sign-ups",
+                origin: "https://www.good.test",
+                threadTitle: "Sign up for hosting",
+                agent: "codex",
+                scope: "thread",
+              },
+            },
+          ]);
+          expect(yield* newPasswordFields(context)).toEqual([
+            { value: "generated-24", security: "disc" },
+            { value: "generated-24", security: "disc" },
+          ]);
+          // The page holds a fill, and its copy of the password is scrubbed from what the agent reads.
+          for (const operation of ["evaluate", "recordingStart"] as const) {
+            const refused = yield* invoke(operation, { expression: "1" }).pipe(Effect.flip);
+            expect(refused.message).toContain("filled a login in this page");
+          }
+          const status = yield* invoke<PreviewAutomationStatus>("status");
+          expect(status.title).toBe("[filled by password manager]");
+
+          // The site wants another password: the same login gets one, without asking again.
+          const renewed = yield* invoke<PreviewAutomationFillNewLoginResult>("fillNewLogin", {
+            ...input,
+            login: "work/n1",
+            recipe: { length: 12, symbols: false },
+          });
+          expect(renewed).toMatchObject({ login: { id: "work/n1" }, created: false });
+          expect(server.reads.at(-1)).toBe("regenerate n1@v2 12");
+          expect((yield* newPasswordFields(context)).map((field) => field.value)).toEqual([
+            "renewed-12",
+            "renewed-12",
+          ]);
+          const renewedStatus = yield* invoke<PreviewAutomationStatus>("status");
+          expect(renewedStatus.title).toBe("[filled by password manager]");
+          expect(asked).toHaveLength(1);
+
+          yield* invoke("navigate", signUp);
+          yield* invoke("recordingStart");
+          const recording = yield* invoke("fillNewLogin", input).pipe(Effect.flip);
+          expect(recording.message).toContain("Stop the recording before filling a new password");
+          expect(server.reads).toHaveLength(2);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
   },
 );

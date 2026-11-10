@@ -10,6 +10,8 @@ import {
   PreviewAutomationFillIdentityResult,
   PreviewAutomationFillLoginInput,
   PreviewAutomationFillLoginResult,
+  PreviewAutomationFillNewLoginInput,
+  PreviewAutomationFillNewLoginResult,
   PreviewAutomationNavigateInput,
   PreviewAutomationOpenInput,
   PreviewAutomationReadIdentityInput,
@@ -211,10 +213,24 @@ const PreviewFillLoginTool = browserTool(
   }).annotate(Tool.Title, "Fill a saved login"),
 );
 
+const PreviewFillNewLoginTool = browserTool(
+  Tool.make("preview_fill_new_login", {
+    description:
+      "On a sign-up form, create and save a new login with a generated password, then fill the password fields. You never see the password. Pass the username you entered. If the site rejects the password, call again with the returned `login` and another `recipe`. Then submit the form.",
+    parameters: PreviewAutomationFillNewLoginInput,
+    success: Schema.Struct({
+      ...PreviewAutomationFillNewLoginResult.fields,
+      ...presentationFields,
+    }),
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Fill a new login"),
+);
+
 const PreviewFillIdentityTool = browserTool(
   Tool.make("preview_fill_identity", {
     description:
-      "Fill the user's saved identity (name, email, phone, address) into this tab's fields. Pass `fields` with `aria-ref` locators from `preview_snapshot`; without them only autocomplete-tagged fields are filled. Returns `choose` when several identities exist.",
+      "Fill the user's saved identity (name, email, phone, address) into this tab's fields. Pass `fields` with `aria-ref` locators from `preview_snapshot`; without them only autocomplete-tagged fields are filled. Returns `choose` when several identities exist. For the password, use `preview_fill_new_login`.",
     parameters: PreviewAutomationFillIdentityInput,
     success: Schema.Union(
       PreviewAutomationFillIdentityResult.members.map((member) =>
@@ -280,6 +296,7 @@ export const PreviewToolkit = Toolkit.make(
   PreviewActTool,
   PreviewEvaluateTool,
   PreviewFillLoginTool,
+  PreviewFillNewLoginTool,
   PreviewFillIdentityTool,
   PreviewReadIdentityTool,
   PreviewWaitForTool,
@@ -297,6 +314,7 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewActTool,
   PreviewEvaluateTool,
   PreviewFillLoginTool,
+  PreviewFillNewLoginTool,
   PreviewFillIdentityTool,
   PreviewReadIdentityTool,
   PreviewWaitForTool,

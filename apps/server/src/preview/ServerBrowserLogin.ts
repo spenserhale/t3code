@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Playwright callbacks run outside the Effect runtime.
-import type { PreviewLoginField } from "@t3tools/contracts";
+import type { PreviewLoginField, PreviewNewPasswordField } from "@t3tools/contracts";
 import { type FilledDocuments, withoutFragment } from "@t3tools/shared/browserLoginExposure";
 import * as NodeCrypto from "node:crypto";
 import type { CDPSession, ElementHandle, Frame, Locator, Page } from "playwright-core";
@@ -85,6 +85,61 @@ export const findLoginTargets = async (input: {
     else targets.set(field, found);
   }
   return { targets, missing };
+};
+
+/**
+ * Where a sign-up's new password goes, only in frames on the page's own site: the agent's
+ * locators, or else the visible password fields, one for the password and a second for its
+ * confirmation. Any other number needs the agent's locators.
+ */
+export const findNewPasswordTargets = async (input: {
+  readonly page: Page;
+  readonly locators:
+    | { readonly password: Locator; readonly confirm?: Locator | undefined }
+    | undefined;
+  readonly frameCovered: (frameUrl: string) => boolean;
+  /** In `Date.now()` time. */
+  readonly deadline: number;
+}): Promise<
+  ReadonlyArray<{ readonly field: PreviewNewPasswordField; readonly target: Locator }>
+> => {
+  if (input.locators !== undefined) {
+    const { password, confirm } = input.locators;
+    const named = [
+      { field: "password" as const, target: password },
+      ...(confirm === undefined ? [] : [{ field: "confirm" as const, target: confirm }]),
+    ];
+    for (const { field, target } of named) {
+      const handle = await target.elementHandle({
+        timeout: Math.max(1, Math.min(5_000, input.deadline - Date.now())),
+      });
+      const frame = await handle?.ownerFrame();
+      await handle?.dispose();
+      if (frame === null || frame === undefined || !input.frameCovered(frame.url())) {
+        throw loginError(
+          `The ${field} locator points outside this page's site. Take a fresh snapshot.`,
+        );
+      }
+    }
+    return named;
+  }
+  const frames = [input.page.mainFrame(), ...input.page.frames()].filter(
+    (frame, index, all) => all.indexOf(frame) === index && input.frameCovered(frame.url()),
+  );
+  const found: Locator[] = [];
+  for (const frame of frames) {
+    const fields = frame.locator('input[type="password"]:visible');
+    const count = await fields.count().catch(() => 0);
+    for (let index = 0; index < count; index++) found.push(fields.nth(index));
+  }
+  if (found.length === 0 || found.length > 2) {
+    throw loginError(
+      found.length === 0
+        ? "No password field was found on this page's site. Pass `locators` with aria-refs from preview_snapshot."
+        : `This page has ${found.length} password fields. Pass \`locators\` for the new password and its confirmation, with aria-refs from preview_snapshot.`,
+    );
+  }
+  return found.map((target, index) => ({ field: index === 0 ? "password" : "confirm", target }));
 };
 
 const FILL_WORLD = "t3-preview-login-fill";

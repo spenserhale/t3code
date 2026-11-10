@@ -51,7 +51,7 @@ export const DesktopBrowserCommand = Schema.Union([
     type: Schema.Literal("loginApproval"),
     ...ApprovalKey,
     requestId: TrimmedNonEmptyString,
-    kind: Schema.optional(Schema.Literals(["login", "identity", "identityRead"])),
+    kind: Schema.optional(Schema.Literals(["login", "identity", "identityRead", "newLogin"])),
     providerLabel: Schema.String,
     /** The saved item's title, a login's or an identity's. */
     loginTitle: Schema.String,

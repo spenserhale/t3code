@@ -8,7 +8,7 @@ import {
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { loginCoversPage } from "./BrowserLogins.ts";
-import { documentId, fillCovered } from "./ServerBrowserLogin.ts";
+import { documentId, fillCovered, findNewPasswordTargets } from "./ServerBrowserLogin.ts";
 
 const frameCovered = (url: string) => loginCoversPage(["https://good.test"], url);
 const NO_DEADLINE = Number.MAX_SAFE_INTEGER;
@@ -280,6 +280,62 @@ describe("filling a saved login", () => {
     await page.waitForURL("**/away");
     await page.goBack();
     expect(await page.locator("#otp").inputValue()).toBe("");
+  });
+
+  describe("finding where a new password goes", () => {
+    const servePage = (path: string, body: string) =>
+      context.route(`https://good.test${path}`, (route) =>
+        route.fulfill({ contentType: "text/html", body }),
+      );
+    const fieldsOn = async (url: string) => {
+      await page.goto(url);
+      await page.frameLocator("iframe").first().locator("#password").waitFor({ state: "attached" });
+      const targets = await findNewPasswordTargets({
+        page,
+        locators: undefined,
+        frameCovered: (frameUrl) => loginCoversPage([new URL(url).origin], frameUrl),
+        deadline: NO_DEADLINE,
+      });
+      return Promise.all(
+        targets.map(async ({ field, target }) => [field, await target.getAttribute("id")]),
+      );
+    };
+
+    it("finds the password and its confirmation on the page's site, never another site's", async () => {
+      await servePage(
+        "/signup",
+        `<input id="new" type="password"><input id="honeypot" type="password" style="display: none">
+         <input id="again" type="password"><iframe src="https://evil.test/frame"></iframe>`,
+      );
+      expect(await fieldsOn("https://good.test/signup")).toEqual([
+        ["password", "new"],
+        ["confirm", "again"],
+      ]);
+      // Named, the other site's field is refused before anyone is asked or anything is saved.
+      await expect(
+        findNewPasswordTargets({
+          page,
+          locators: { password: frameInput() },
+          frameCovered,
+          deadline: NO_DEADLINE,
+        }),
+      ).rejects.toThrow("The password locator points outside this page's site.");
+      // One field, in a frame on the same site, is the password alone.
+      expect(await fieldsOn("https://good.test/")).toEqual([["password", "password"]]);
+    });
+
+    it("asks for locators when the page has no password field, or too many", async () => {
+      await servePage(
+        "/three",
+        `<input type="password"><input type="password"><input type="password">
+         <iframe src="https://good.test/frame"></iframe>`,
+      );
+      await expect(fieldsOn("https://good.test/three")).rejects.toThrow(
+        "This page has 4 password fields.",
+      );
+      // The only password field on this page is in a frame of another site.
+      await expect(fieldsOn("https://evil.test/")).rejects.toThrow("No password field was found");
+    });
   });
 
   it("names a document until the page loads a new one", async () => {

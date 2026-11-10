@@ -870,6 +870,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     secretsFeatureOnly: true,
   },
   {
+    id: "browser-new-logins",
+    title: "Save new logins to",
+    to: "/settings/browser",
+    searchTerms: [
+      "sign up register new account create login generated password vault 1password service account write",
+    ],
+    secretsFeatureOnly: true,
+  },
+  {
     id: "device-sources",
     title: "Device sources",
     to: "/settings/devices",
