@@ -691,6 +691,23 @@ describe("BrowserLogins new logins", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("lists a saved login at once, past a listing begun before the save", () => {
+    const gate = Deferred.makeUnsafe<void>();
+    const { layer, calls } = makeService({ work: [grafana] }, savingTo(signUps, "never"), {}, gate);
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const { revision } = yield* logins.newLoginDestination(fresh);
+      const early = yield* logins
+        .candidates("https://shop.test/login")
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(calls.listing);
+      const { login } = yield* logins.createLogin(revision, shop);
+      yield* Deferred.succeed(gate, undefined);
+      assert.deepStrictEqual((yield* Fiber.join(early)).logins, []);
+      assert.deepStrictEqual((yield* logins.candidates("https://shop.test/login")).logins, [login]);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("gives a new password only to a login this thread created", () => {
     const { layer, renewed } = makeService({ work: [grafana] }, savingTo(signUps, "never"));
     return Effect.gen(function* () {
