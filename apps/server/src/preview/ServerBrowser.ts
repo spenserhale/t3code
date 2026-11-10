@@ -54,6 +54,7 @@ import {
 } from "@t3tools/contracts";
 import { AgentScope, agentScopeLauncherScript } from "@t3tools/shared/AgentScope";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import { mayShowFill } from "@t3tools/shared/browserLoginExposure";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { appLinkUrl } from "@t3tools/shared/appLinks";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
@@ -451,6 +452,12 @@ interface Recording {
   readonly framesInFlight: Set<Promise<void>>;
 }
 
+/** A recording takes frames while its page is known not to show a filled login, and never after. */
+interface RecordingGate {
+  state: "open" | "checking" | "shut";
+  check: number;
+}
+
 interface ServerTab {
   readonly threadId: ThreadId;
   readonly tabId: string;
@@ -526,6 +533,10 @@ interface ServerTab {
   } | null;
 
   recordingStart: Promise<Recording> | null;
+  /** Kept only while browser logins are on. */
+  recordingGate: RecordingGate | null;
+  /** Main documents loaded, counted only while browser logins are on. */
+  documentLoads: number;
   captureLock: Promise<void>;
   capturing: number;
 }
@@ -700,6 +711,16 @@ const make = Effect.gen(function* () {
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
   const browserLogins = yield* Effect.serviceOption(BrowserLogins.BrowserLogins);
   const filledSecrets = ServerBrowserLogin.makeFilledSecrets();
+  const documentMarks = ServerBrowserLogin.makeDocumentMarks();
+  /** Whether the tab's main document may show a filled password or code. */
+  const exposed = async (tab: ServerTab) => {
+    const filled = documentMarks.filled(tabKey(tab.threadId, tab.tabId));
+    if (filled === undefined) return false;
+    return mayShowFill(
+      (method, params) => tab.cdp.send(method as "Page.getFrameTree", params as never),
+      filled,
+    );
+  };
   // Scrubbed before the cut, so a filled secret crossing it cannot leave its start showing.
   const pageText = (text: string, limit: number) => filledSecrets.scrub(text).slice(0, limit);
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
@@ -1142,6 +1163,7 @@ const make = Effect.gen(function* () {
     // A desktop page outlives the connection unless its session closed with it.
     const end =
       (tab.desktop || reopening) && !closeSession && sessionOpen(tab) ? "reconnect" : "gone";
+    if (end === "gone") documentMarks.forget(key);
     for (const viewer of tab.viewers) viewer.push({ _tag: end });
     void tab.control.close().catch(constVoid);
     if (tab.desktop) void tab.desktop.close().catch(constVoid);
@@ -1221,6 +1243,38 @@ const make = Effect.gen(function* () {
       for (const close of opened.reverse()) await close().catch(constVoid);
       throw cause;
     }
+  };
+
+  /** Checks the page a recording now shows; one that may show a filled login shuts it for good. */
+  const checkGate = async (tab: ServerTab, gate: RecordingGate) => {
+    if (gate.state === "shut") return;
+    const check = ++gate.check;
+    gate.state = "checking";
+    const shows = await exposed(tab).catch(() => true);
+    if (gate.check === check && gate.state === "checking") gate.state = shows ? "shut" : "open";
+  };
+
+  /**
+   * Follows the main document over CDP, whose events come in order: a filled document's later
+   * addresses are kept for Back, and a recording stops taking frames as each new document loads.
+   */
+  const watchDocuments = async (tab: ServerTab) => {
+    const key = tabKey(tab.threadId, tab.tabId);
+    let main: { readonly frameId: string; readonly id: string } | undefined;
+    tab.cdp.on("Page.frameNavigated", ({ frame }) => {
+      if (frame.parentId !== undefined) return;
+      main = { frameId: frame.id, id: frame.loaderId };
+      tab.documentLoads += 1;
+      if (tab.recordingGate && documentMarks.filled(key)) void checkGate(tab, tab.recordingGate);
+    });
+    tab.cdp.on("Page.navigatedWithinDocument", ({ frameId, url }) => {
+      if (main?.frameId === frameId) documentMarks.noteAddress(key, main.id, url);
+    });
+    await tab.cdp.send("Page.enable");
+    const loads = tab.documentLoads;
+    const { frameTree } = await tab.cdp.send("Page.getFrameTree");
+    if (tab.documentLoads === loads)
+      main = { frameId: frameTree.frame.id, id: frameTree.frame.loaderId };
   };
 
   const setUpTab = async (
@@ -1329,6 +1383,8 @@ const make = Effect.gen(function* () {
       closing: false,
       recording: null,
       recordingStart: null,
+      recordingGate: null,
+      documentLoads: 0,
       initialNavigation: null,
       pendingInitialRequestUrl: null,
       navigationGeneration: 0,
@@ -1365,6 +1421,7 @@ const make = Effect.gen(function* () {
       });
       await cdp.send("Page.enable");
     }
+    if (Option.isSome(browserLogins)) await watchDocuments(tab);
     // Playwright's `request.frame()` throws for a request issued before its frame exists, and a
     // throw from a page listener is uncaught, so such a request is not a main-frame navigation.
     const isMainFrameNavigation = (request: {
@@ -2379,11 +2436,17 @@ const make = Effect.gen(function* () {
     return run;
   };
 
-  const startRecording = (tab: ServerTab): Promise<Recording> => {
+  /** `loadsBefore` is `documentLoads` from before the caller checked the page. */
+  const startRecording = (tab: ServerTab, loadsBefore: number): Promise<Recording> => {
     const started = withCaptureLock(tab, async () => {
       if (tab.recording) return tab.recording;
       const encoder = await contexts.scratchPage();
       let session: CDPSession | null = null;
+      const gate: RecordingGate | null = Option.isSome(browserLogins)
+        ? { state: "open", check: 0 }
+        : null;
+      tab.recordingGate = gate;
+      if (gate && tab.documentLoads !== loadsBefore) void checkGate(tab, gate);
       try {
         await encoder.evaluate(ServerBrowserPage.recordingEncoderScript(recordingFrameRate));
         // Seed idle pages before returning so an immediate stop has a frame to encode.
@@ -2391,6 +2454,13 @@ const make = Effect.gen(function* () {
           format: "jpeg",
           quality: RECORDING_SCREENCAST.quality,
         });
+        // A new document loaded since the page was checked, and the seed may show it.
+        if (gate && gate.state !== "open") {
+          throw new ServerBrowserPage.ServerBrowserOperationError(
+            "PreviewAutomationExecutionError",
+            "The page loaded another document as the recording started. Start it again.",
+          );
+        }
         await encoder.evaluate(
           ([data, width]) =>
             (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
@@ -2423,6 +2493,7 @@ const make = Effect.gen(function* () {
           void opened
             .send("Page.screencastFrameAck", { sessionId: frame.sessionId })
             .catch(constVoid);
+          if (gate && gate.state !== "open") return;
           const cssWidth = tab.page.viewportSize()?.width ?? frame.metadata.deviceWidth;
           const delivering = framesInFlight.size > 0;
           pendingFrame = [frame.data, cssWidth];
@@ -2443,6 +2514,7 @@ const make = Effect.gen(function* () {
         tab.recording = recording;
         return recording;
       } catch (cause) {
+        if (tab.recordingGate === gate) tab.recordingGate = null;
         await encoder.close().catch(constVoid);
         await session?.detach().catch(constVoid);
         throw cause;
@@ -2573,6 +2645,7 @@ const make = Effect.gen(function* () {
       } finally {
         await recording.encoder.close().catch(constVoid);
         tab.recording = null;
+        tab.recordingGate = null;
       }
     });
 
@@ -3007,7 +3080,7 @@ const make = Effect.gen(function* () {
       );
     }
     const document = await ServerBrowserLogin.documentId(tab.cdp);
-    if (ServerBrowserLogin.wasScripted(tab.page, document)) {
+    if (documentMarks.wasScripted(tabKey(tab.threadId, tab.tabId), document)) {
       throw ServerBrowserLogin.loginError(
         "preview_evaluate ran in this page, so a login cannot be filled here. Reload the page with preview_navigate, then call preview_fill_login again.",
       );
@@ -3063,7 +3136,7 @@ const make = Effect.gen(function* () {
     }
     await loginStep(logins.check(revision));
     // Marked before the first write, so even a fill that fails partway blocks script here.
-    ServerBrowserLogin.markFilled(tab.page, document);
+    documentMarks.markFilled(tabKey(tab.threadId, tab.tabId), document, tab.page.url());
     filledSecrets.remember(
       fields.flatMap((field) => (field === "username" ? [] : [values[field] ?? ""])),
     );
@@ -3203,18 +3276,13 @@ const make = Effect.gen(function* () {
           );
         }
         // Text is scrubbed, but pixels of a filled page can show a revealed password or code.
-        const document = () =>
-          Option.isNone(browserLogins)
-            ? Promise.resolve(undefined)
-            : ServerBrowserLogin.documentId(tab.cdp).catch(() => null);
-        const holdsFill = (id: string | null | undefined) =>
-          id !== undefined && (id === null || ServerBrowserLogin.holdsFill(tab.page, id));
-        const before = await document();
+        const shows = () => exposed(tab).catch(() => true);
+        const before = await shows();
         const snapshot = await withScreencastsPaused(tab, () =>
-          ServerBrowserPage.snapshot({ ...rendering, images: !holdsFill(before) }),
+          ServerBrowserPage.snapshot({ ...rendering, images: !before }),
         );
-        // Another agent's fill can begin while an observer's snapshot runs.
-        if (!holdsFill(before) && !holdsFill(await document())) return withLoadError(snapshot);
+        // Another agent's fill, or Back, can come while an observer's snapshot runs.
+        if (!before && !(await shows())) return withLoadError(snapshot);
         const { screenshot: _withheld, fullScreenshot: _withheldFull, ...text } = snapshot;
         return withLoadError({ ...text, imagesOff: IMAGES_OFF });
       }
@@ -3266,15 +3334,16 @@ const make = Effect.gen(function* () {
         if (Option.isNone(browserLogins)) {
           return ServerBrowserPage.evaluate(tab.cdp, evaluateInput, request.timeoutMs);
         }
+        const key = tabKey(tab.threadId, tab.tabId);
         const before = await ServerBrowserLogin.documentId(tab.cdp);
-        if (ServerBrowserLogin.holdsFill(tab.page, before)) throw filledPageError();
-        ServerBrowserLogin.markScripted(tab.page, [before]);
+        if (await exposed(tab).catch(() => true)) throw filledPageError();
+        documentMarks.markScripted(key, [before]);
         try {
           return await ServerBrowserPage.evaluate(tab.cdp, evaluateInput, request.timeoutMs);
         } finally {
           // The script may have started a navigation; its next document counts as scripted too.
           const after = await ServerBrowserLogin.documentId(tab.cdp).catch(() => before);
-          ServerBrowserLogin.markScripted(tab.page, [after]);
+          documentMarks.markScripted(key, [after]);
         }
       }
       case "fillLogin":
@@ -3284,13 +3353,9 @@ const make = Effect.gen(function* () {
       case "waitFor":
         return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
       case "recordingStart": {
-        if (
-          Option.isSome(browserLogins) &&
-          ServerBrowserLogin.holdsFill(tab.page, await ServerBrowserLogin.documentId(tab.cdp))
-        ) {
-          throw filledPageError();
-        }
-        const recording = await startRecording(tab);
+        const loads = tab.documentLoads;
+        if (await exposed(tab).catch(() => true)) throw filledPageError();
+        const recording = await startRecording(tab, loads);
         return { tabId: tab.tabId, recording: true, startedAt: recording.startedAt };
       }
     }

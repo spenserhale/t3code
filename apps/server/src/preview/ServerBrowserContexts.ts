@@ -159,6 +159,9 @@ export class ServerBrowserContexts {
         "--force-device-scale-factor=2",
         "--disable-blink-features=AutomationControlled",
         ...(userAgent ? [`--user-agent=${userAgent}`] : []),
+        // Chromium merges this with Playwright's own list. Back then loads every page afresh, so
+        // a page holding a filled login never comes back whole.
+        "--disable-features=BackForwardCache",
       ],
       ignoreDefaultArgs: ["--enable-automation"],
       headless: true,
