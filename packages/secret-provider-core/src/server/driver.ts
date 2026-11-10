@@ -63,22 +63,30 @@ export interface SecretProviderLogins<Config = unknown> {
   ) => Effect.Effect<SecretProviderLoginValues | undefined, never, SecretProviderDriverServices>;
   /**
    * Optional: saves a new login with a password the provider generates, so the password is never
-   * on a command line. `undefined` when it could not be saved or its password not read back.
+   * on a command line. `undefined` when it was not saved. The password comes back only when the
+   * save showed it; otherwise the caller reads it with `read`, keeping the saved login if that fails.
    */
   readonly create?: (
     config: Config,
     login: SecretProviderNewLogin,
   ) => Effect.Effect<
-    { readonly login: SecretProviderLogin; readonly password: string } | undefined,
+    { readonly login: SecretProviderLogin; readonly password: string | undefined } | undefined,
     never,
     SecretProviderDriverServices
   >;
-  /** Optional: replaces a login's password with a newly generated one, and returns it. */
+  /**
+   * Optional: replaces a login's password with a newly generated one. `undefined` when it was not
+   * replaced; the password comes back only when the change showed it, as with `create`.
+   */
   readonly regeneratePassword?: (
     config: Config,
     login: SecretProviderLogin,
     recipe: SecretProviderPasswordRecipe,
-  ) => Effect.Effect<string | undefined, never, SecretProviderDriverServices>;
+  ) => Effect.Effect<
+    { readonly password: string | undefined } | undefined,
+    never,
+    SecretProviderDriverServices
+  >;
 }
 
 export type SecretProviderIdentityField =
