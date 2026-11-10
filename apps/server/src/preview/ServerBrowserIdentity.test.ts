@@ -1,6 +1,14 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import { it } from "@effect/vitest";
 import type { SecretProviderIdentityValues } from "@t3tools/secret-provider-core/server/driver";
+import * as OnePassword from "@t3tools/secret-provider-onepassword/server/driver";
+import { OnePasswordAccount } from "@t3tools/secret-provider-onepassword/shared/definition";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import { ChildProcessSpawner } from "effect/process";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect } from "vite-plus/test";
 
@@ -11,6 +19,7 @@ import {
   fillIdentityField,
   makeIdentityContext,
   matchOption,
+  readIdentity,
   type IdentityContext,
 } from "./ServerBrowserIdentity.ts";
 
@@ -72,9 +81,47 @@ const ADA: SecretProviderIdentityValues = {
 /** The calls here end only when they finish; each field still has its own short timeout. */
 const NO_DEADLINE = Number.MAX_SAFE_INTEGER;
 
+/** `op` printing one Identity item, so its values go through the real 1Password driver. */
+const onePasswordItem = (fields: ReadonlyArray<object>) =>
+  Layer.mergeAll(
+    Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make(() =>
+        Effect.succeed(
+          ChildProcessSpawner.makeHandle({
+            pid: ChildProcessSpawner.ProcessId(1),
+            exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+            isRunning: Effect.succeed(false),
+            kill: () => Effect.void,
+            unref: Effect.succeed(Effect.void),
+            stdin: Sink.drain,
+            stdout: Stream.make(new TextEncoder().encode(JSON.stringify({ fields }))),
+            stderr: Stream.empty,
+            all: Stream.empty,
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+          }),
+        ),
+      ),
+    ),
+    NodeFileSystem.layer,
+    NodeCrypto.layer,
+  );
+
+const fromOnePassword = (fields: ReadonlyArray<object>) =>
+  OnePassword.driver
+    .identities!.read(
+      { account: OnePasswordAccount.make("my.1password.com") },
+      { id: "me1", title: "Me" },
+    )
+    .pipe(
+      Effect.map((values) => values ?? {}),
+      Effect.provide(onePasswordItem(fields)),
+    );
+
 /** A server with one identity whose fills need no approval. */
 const identityServer = Effect.fn("identityServer")(function* (
-  values: SecretProviderIdentityValues,
+  values: SecretProviderIdentityValues | Effect.Effect<SecretProviderIdentityValues>,
 ) {
   const reads: Array<string> = [];
   const logins: IdentityContext["logins"] = {
@@ -84,9 +131,9 @@ const identityServer = Effect.fn("identityServer")(function* (
         identities: [{ id: "work/me", title: "Me", account: "Work" }],
       }),
     readIdentity: (_revision, identity) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         reads.push(identity.id);
-        return values;
+        return Effect.isEffect(values) ? values : Effect.succeed(values);
       }),
     needsApproval: () => Effect.succeed(false),
     recordApproval: () => Effect.void,
@@ -207,6 +254,36 @@ describe("filling a saved identity", () => {
       // A subdomain of the page's site is filled; another site's frame never is.
       expect(yield* Effect.promise(() => valueOf("#subTel", "#sub"))).toBe("+1 555 0100");
       expect(yield* Effect.promise(() => valueOf("#adEmail", "#ad"))).toBe("");
+    }),
+  );
+
+  it.live("never reads or fills a credential stored in the identity", () =>
+    Effect.gen(function* () {
+      const { context: identity } = yield* identityServer(
+        fromOnePassword([
+          { id: "firstname", type: "STRING", label: "first name", value: "Ada" },
+          { id: "k2x9", type: "CONCEALED", label: "email", value: "hunter2-secret" },
+          { id: "lastname", type: "CONCEALED", label: "last name", value: "hunter3-secret" },
+        ]),
+      );
+      const read = yield* Effect.promise(() => readIdentity(identity, "thread-1", {}, NO_DEADLINE));
+      expect(read).toEqual({
+        status: "read",
+        identity: { id: "work/me", title: "Me", account: "Work" },
+        values: { firstName: "Ada", fullName: "Ada" },
+      });
+      const filled = yield* Effect.promise(async () =>
+        fillIdentity(identity, await tab(), {}, NO_DEADLINE),
+      );
+      expect(filled).toMatchObject({ status: "filled" });
+      const state = yield* Effect.promise(async () => ({
+        first: await valueOf("#first"),
+        last: await valueOf("#last"),
+        email: await valueOf("#email"),
+        frames: await Promise.all(page.frames().map((frame) => frame.content())),
+      }));
+      expect(state).toMatchObject({ first: "Ada", last: "", email: "" });
+      expect(JSON.stringify(state)).not.toMatch(/hunter\d-secret/);
     }),
   );
 

@@ -348,7 +348,11 @@ describe("1Password logins", () => {
                     : [],
                 ),
               }
-            : { stdout: JSON.stringify({ fields: [{ id: "firstname", value: "Ada" }] }) },
+            : {
+                stdout: JSON.stringify({
+                  fields: [{ id: "firstname", type: "STRING", value: "Ada" }],
+                }),
+              },
       );
       return Effect.gen(function* () {
         const identities = yield* driver.identities!.list(config);
@@ -385,7 +389,6 @@ describe("1Password logins", () => {
           "get",
           "me1",
           "--vault=v1",
-          "--reveal",
           "--format=json",
         ]);
       }).pipe(Effect.provide(op.layer));
@@ -516,6 +519,38 @@ describe("1Password identities", () => {
         postalCode: "62701",
         country: "us",
       });
+    }),
+  );
+
+  it.effect("never reads a credential as a person's details, by id or by label", () =>
+    Effect.gen(function* () {
+      const names = [
+        "firstname",
+        "first name",
+        "initial",
+        "middle initial",
+        "lastname",
+        "last name",
+        "email",
+        "defphone",
+        "cellphone",
+        "phone",
+        "company",
+        "jobtitle",
+        "job title",
+        "birthdate",
+        "birth date",
+        "username",
+        "address",
+      ];
+      const fields = names.flatMap((name, index) => [
+        { id: name, type: "CONCEALED", label: name, value: `secret-${index}` },
+        { id: `c${index}`, type: "CONCEALED", label: name, value: `secret-${index}` },
+        { id: `o${index}`, type: "OTP", label: name, value: "otpauth://x", totp: "123456" },
+        { id: `p${index}`, type: "STRING", purpose: "PASSWORD", label: name, value: `pw-${index}` },
+        { id: `u${index}`, label: name, value: `untyped-${index}` },
+      ]);
+      assert.deepStrictEqual(yield* readFields(fields), {});
     }),
   );
 
