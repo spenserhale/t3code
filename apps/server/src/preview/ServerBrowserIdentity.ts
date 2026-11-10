@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Playwright steps run outside the Effect runtime, on the page's wall clock.
 import type {
   PreviewAutomationFillIdentityRequest,
   PreviewAutomationFillIdentityResult,
@@ -13,7 +14,7 @@ import type { CDPSession, ElementHandle, Locator, Page } from "playwright-core";
 
 import * as BrowserLogins from "./BrowserLogins.ts";
 import type * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
-import { documentId, loginError } from "./ServerBrowserLogin.ts";
+import { before, callOnElement, documentId, LATE, loginError } from "./ServerBrowserLogin.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
 /** The provider's values plus `fullName`, which is first plus last name. */
@@ -173,6 +174,53 @@ export const matchOption = (
 
 const TEXT_INPUT_TYPES = new Set(["text", "email", "tel", "search", "url", "number"]);
 const ELEMENT_TIMEOUT_MS = 5_000;
+const NO_ANSWER = "The field did not answer in time. Use preview_act.";
+const REFUSED = "The field changed or refused the value. Use preview_act.";
+const MOVED =
+  "The page loaded another document before the field was filled. Take a fresh snapshot.";
+const LEFT_SITE = "The page left its site before the identity was filled.";
+
+// Run by `callOnElement`, so a value goes into this element alone however the page moves focus.
+// Identity values are not secret, so unlike a login the field is not drawn as dots.
+const WRITE_TEXT = `function (value, deadline, origin) {
+  if (location.origin !== origin) return "left";
+  const types = ["text", "email", "tel", "search", "url", "number", "date"];
+  const proto =
+    this instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : this instanceof HTMLInputElement && types.includes(this.type)
+        ? HTMLInputElement.prototype
+        : undefined;
+  if (proto === undefined) return "not_field";
+  if (this.disabled || this.readOnly) return "not_editable";
+  const native = Object.getOwnPropertyDescriptor(proto, "value");
+  if (Date.now() >= deadline) return "expired";
+  this.focus();
+  // The page's focus handlers have run, and may have taken the time, the field or the page.
+  if (Date.now() >= deadline) return "expired";
+  if (location.origin !== origin) return "left";
+  if (!this.isConnected || this.ownerDocument !== document) return "gone";
+  native.set.call(this, value);
+  this.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+  this.dispatchEvent(new Event("change", { bubbles: true }));
+  return native.get.call(this) === value ? "filled" : "changed";
+}`;
+
+// Chooses the option probed earlier, only while it still holds the same value.
+const WRITE_OPTION = `function (index, value, deadline, origin) {
+  if (location.origin !== origin) return "left";
+  if (!(this instanceof HTMLSelectElement)) return "not_field";
+  if (this.disabled) return "not_editable";
+  if (!this.isConnected || this.ownerDocument !== document) return "gone";
+  const option = this.options[index];
+  if (option === undefined || option.disabled || option.value !== value) return "changed";
+  if (Date.now() >= deadline) return "expired";
+  const native = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "selectedIndex");
+  native.set.call(this, index);
+  this.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+  this.dispatchEvent(new Event("change", { bubbles: true }));
+  return native.get.call(this) === index ? "filled" : "changed";
+}`;
 
 interface FieldInfo {
   readonly tag: string;
@@ -221,17 +269,15 @@ interface IdentityTarget {
   readonly handle?: ElementHandle;
 }
 
-/**
- * Visible, editable, empty fields whose `autocomplete` names an identity value, in frames on the
- * page's own site. Fields in any other frame, such as an ad or a chat widget, are never used.
- */
-const findAutocompleteFields = async (
+const callEnded = () => loginError("The call ended before the identity was filled.");
+
+type FoundField = { readonly value: PreviewIdentityValue; readonly handle: ElementHandle };
+
+const scanAutocompleteFields = async (
   page: Page,
   frameAllowed: (frameUrl: string) => boolean,
-): Promise<
-  ReadonlyArray<{ readonly value: PreviewIdentityValue; readonly handle: ElementHandle }>
-> => {
-  const found: Array<{ readonly value: PreviewIdentityValue; readonly handle: ElementHandle }> = [];
+): Promise<ReadonlyArray<FoundField>> => {
+  const found: Array<FoundField> = [];
   for (const frame of page.frames()) {
     if (!frameAllowed(frame.url())) continue;
     const handles = await frame
@@ -253,17 +299,37 @@ const findAutocompleteFields = async (
 };
 
 /**
+ * Visible, editable, empty fields whose `autocomplete` names an identity value, in frames on the
+ * page's own site. Fields in any other frame, such as an ad or a chat widget, are never used.
+ */
+const findAutocompleteFields = async (
+  page: Page,
+  frameAllowed: (frameUrl: string) => boolean,
+  deadline: number,
+) => {
+  const scan = scanAutocompleteFields(page, frameAllowed);
+  const found = await before(scan, deadline);
+  if (found !== LATE) return found;
+  void scan
+    .then((fields) => Promise.all(fields.map(({ handle }) => handle.dispose())))
+    .catch(() => undefined);
+  throw callEnded();
+};
+
+/**
  * Checks that each of the agent's locators points into a frame on the page's own site, before
  * anyone is asked to approve. A locator into another site's frame refuses the whole fill.
  */
 export const checkIdentityLocators = async (
   fields: ReadonlyArray<{ readonly value: PreviewIdentityValue; readonly locator: Locator }>,
   frameAllowed: (frameUrl: string) => boolean,
-  timeoutMs: number,
+  /** In `Date.now()` time. */
+  deadline: number,
 ) => {
   for (const { value, locator } of fields) {
+    if (Date.now() >= deadline) throw callEnded();
     const handle = await locator.elementHandle({
-      timeout: Math.max(1, Math.min(ELEMENT_TIMEOUT_MS, timeoutMs)),
+      timeout: Math.max(1, Math.min(ELEMENT_TIMEOUT_MS, deadline - Date.now())),
     });
     const frame = await handle?.ownerFrame();
     await handle?.dispose();
@@ -289,49 +355,89 @@ const missing = (value: PreviewIdentityValue, values: PreviewIdentityValues) =>
     ? `The identity's address is stored as one line, so its ${value} is not filled on its own. Get the address with preview_read_identity, then fill the field with preview_act.`
     : `The identity has no ${value}.`;
 
-/**
- * Puts one value in one field, through a handle bound to the element, after checking its frame
- * is still on the page's site. Returns why it was skipped, or undefined once filled.
- */
-export const fillIdentityField = async (input: {
+/** The write a field needs for a value, or why it gets none. */
+const chooseWrite = async (handle: ElementHandle, value: PreviewIdentityValue, stored: string) => {
+  const field = await fieldInfo(handle);
+  if (field.tag === "select") {
+    const options = await selectOptions(handle);
+    const index = matchOption(options, value, stored);
+    const option = index === undefined ? undefined : options[index];
+    if (index === undefined || option === undefined) {
+      return `No option matches the identity's ${value}. Use preview_act.`;
+    }
+    return { functionDeclaration: WRITE_OPTION, args: [index, option.value] };
+  }
+  if (field.tag === "input" && field.type === "date") {
+    const date = /^\d{4}-\d{2}-\d{2}/.exec(stored)?.[0];
+    if (date === undefined) return `The ${value} is not a YYYY-MM-DD date. Use preview_act.`;
+    return { functionDeclaration: WRITE_TEXT, args: [date] };
+  }
+  if (field.tag === "textarea" || (field.tag === "input" && TEXT_INPUT_TYPES.has(field.type))) {
+    const text = value === "country" ? (countryName(stored) ?? stored) : stored;
+    return { functionDeclaration: WRITE_TEXT, args: [text] };
+  }
+  return "Not a text field or a native dropdown. Use preview_act.";
+};
+
+interface FieldWrite {
+  readonly page: Page;
+  readonly cdp: CDPSession;
   readonly handle: ElementHandle;
   readonly value: PreviewIdentityValue;
   readonly values: PreviewIdentityValues;
   readonly frameAllowed: (frameUrl: string) => boolean;
-  readonly timeoutMs: number;
-}): Promise<string | undefined> => {
+  /** The main document the fill is for, as `documentId` named it. */
+  readonly document: string;
+  /** In `Date.now()` time. */
+  readonly deadline: number;
+}
+
+const writeIdentityField = async (input: FieldWrite): Promise<string | undefined> => {
   const { handle, value } = input;
   const frame = await handle.ownerFrame();
-  if (frame === null || !input.frameAllowed(frame.url())) {
-    throw loginError("The page left its site before the identity was filled.");
-  }
+  if (frame === null || !input.frameAllowed(frame.url())) throw loginError(LEFT_SITE);
   const stored = input.values[value];
   if (stored === undefined) return missing(value, input.values);
-  const timeout = Math.max(1, input.timeoutMs);
-  try {
-    const field = await fieldInfo(handle);
-    if (field.tag === "select") {
-      const index = matchOption(await selectOptions(handle), value, stored);
-      if (index === undefined) return `No option matches the identity's ${value}. Use preview_act.`;
-      await handle.selectOption({ index }, { timeout });
-      return undefined;
-    }
-    if (field.tag === "input" && field.type === "date") {
-      const date = /^\d{4}-\d{2}-\d{2}/.exec(stored)?.[0];
-      if (date === undefined) return `The ${value} is not a YYYY-MM-DD date. Use preview_act.`;
-      await handle.fill(date, { timeout });
-      return undefined;
-    }
-    if (field.tag === "textarea" || (field.tag === "input" && TEXT_INPUT_TYPES.has(field.type))) {
-      await handle.fill(value === "country" ? (countryName(stored) ?? stored) : stored, {
-        timeout,
-      });
-      return undefined;
-    }
-    return "Not a text field or a native dropdown. Use preview_act.";
-  } catch {
-    return "The field changed or refused the value. Use preview_act.";
+  const write = await chooseWrite(handle, value, stored).catch(() => REFUSED);
+  if (typeof write === "string") return write;
+  const call = await callOnElement({
+    page: input.page,
+    cdp: input.cdp,
+    handle,
+    frameAllowed: input.frameAllowed,
+    document: input.document,
+    deadline: input.deadline,
+    ...write,
+  });
+  switch (call.status) {
+    case "expired":
+      return NO_ANSWER;
+    case "moved":
+      return MOVED;
+    case "left":
+    case "threw":
+      return REFUSED;
   }
+  switch (call.value) {
+    case "filled":
+      return undefined;
+    case "expired":
+      return NO_ANSWER;
+    case "left":
+      throw loginError(LEFT_SITE);
+    default:
+      return REFUSED;
+  }
+};
+
+/**
+ * Puts one value into the handle's element alone, in a frame on the page's site and the document
+ * the fill is for, and never after the deadline, which also bounds looking at the field. Returns
+ * why it was skipped, or undefined once filled.
+ */
+export const fillIdentityField = async (input: FieldWrite): Promise<string | undefined> => {
+  const written = await before(writeIdentityField(input), input.deadline);
+  return written === LATE ? NO_ANSWER : written;
 };
 
 export interface IdentityContext {
@@ -427,15 +533,17 @@ export const fillIdentity = async (
   if (!frameAllowed(pageUrl)) {
     throw loginError("Open the sign-up page first: identities fill only http and https pages.");
   }
-  const remaining = () => deadlineMs - performance.now();
+  // The page sees wall-clock time, so every step that reaches into it shares this deadline.
+  const deadline = Date.now() + (deadlineMs - performance.now());
+  const remaining = () => deadline - Date.now();
   const named = (input.fields ?? []).flatMap(({ locator, value }) => {
     const target = ServerBrowserPage.targetLocator(tab.page, { locator });
     return target === null ? [] : [{ value, locator: target }];
   });
   if (named.length > 0) {
-    await checkIdentityLocators(named, frameAllowed, remaining());
+    await checkIdentityLocators(named, frameAllowed, deadline);
   } else {
-    const found = await findAutocompleteFields(tab.page, frameAllowed);
+    const found = await findAutocompleteFields(tab.page, frameAllowed, deadline);
     await Promise.all(found.map(({ handle }) => handle.dispose().catch(() => undefined)));
     if (found.length === 0) {
       throw loginError(
@@ -480,17 +588,19 @@ export const fillIdentity = async (
   }
   await step(logins.check(revision));
   const targets = countryFirst<IdentityTarget>(
-    named.length > 0 ? named : await findAutocompleteFields(tab.page, frameAllowed),
+    named.length > 0 ? named : await findAutocompleteFields(tab.page, frameAllowed, deadline),
   );
   const filled: Array<PreviewIdentityValue> = [];
   const skipped: Array<{ readonly value: PreviewIdentityValue; readonly reason: string }> = [];
   try {
     for (const target of targets) {
-      if (remaining() <= 0) throw loginError("The call ended before the identity was filled.");
+      if (remaining() <= 0) throw callEnded();
+      // One field that never answers must not use up the whole call.
+      const fieldDeadline = Math.min(deadline, Date.now() + ELEMENT_TIMEOUT_MS);
       const handle =
         target.handle ??
         (await target.locator
-          ?.elementHandle({ timeout: Math.max(1, Math.min(ELEMENT_TIMEOUT_MS, remaining())) })
+          ?.elementHandle({ timeout: Math.max(1, fieldDeadline - Date.now()) })
           .catch(() => null));
       if (handle === undefined || handle === null) {
         skipped.push({ value: target.value, reason: "The field is gone. Take a fresh snapshot." });
@@ -498,12 +608,14 @@ export const fillIdentity = async (
       }
       try {
         const reason = await fillIdentityField({
+          page: tab.page,
+          cdp: tab.cdp,
           handle,
           value: target.value,
           values,
           frameAllowed,
-          // One field that never becomes editable must not use up the whole call.
-          timeoutMs: Math.min(ELEMENT_TIMEOUT_MS, remaining()),
+          document,
+          deadline: fieldDeadline,
         });
         if (reason === undefined) filled.push(target.value);
         else skipped.push({ value: target.value, reason });
