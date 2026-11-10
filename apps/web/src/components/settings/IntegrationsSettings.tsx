@@ -1783,14 +1783,14 @@ export function BrowserLoginSettings() {
           providers.length === 0 && off
             ? gt("Add a 1Password provider in Settings > Secrets to let agents sign in to sites.")
             : gt(
-                "Agents can sign the built-in browser in to sites and fill sign-up forms with what is saved here. They never see passwords.",
+                "Agents can sign the built-in browser in to sites, fill sign-up forms, and pass secrets to commands with what is saved here. They never see passwords or keys.",
               )
         }
         status={
           off
             ? undefined
             : gt(
-                "Agents can use every login and identity the chosen password managers can open, so a vault just for agents is recommended.",
+                "Agents can use every login, identity and secret the chosen password managers can open, so a vault just for agents is recommended.",
               )
         }
         resetAction={
@@ -1846,7 +1846,7 @@ export function BrowserLoginSettings() {
         settingKeys={["browserLogins"]}
         {...searchableSetting("browser-secret-escalation")}
         description={gt(
-          "Logins and identities in a service account's vaults are used without asking. Anything else asks the T3 Code desktop app on your Mac, where 1Password needs Touch ID. Refuse suits unattended machines.",
+          "A service account's logins, identities and command secrets need no approval. Anything else asks the T3 Code desktop app on your Mac, where 1Password needs Touch ID. Refuse suits unattended machines.",
         )}
         status={
           outdated.length > 0

@@ -1142,7 +1142,9 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Password managers for logins"),
     to: "/settings/browser",
     searchTerms: [
-      msg("agent sign in log in credentials 1password fill website browser work personal accounts"),
+      msg(
+        "agent sign in log in credentials 1password fill website browser work personal accounts api key secret command",
+      ),
     ],
     secretProvidersOnly: true,
   },
@@ -1152,7 +1154,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/browser",
     searchTerms: [
       msg(
-        "login identity approval ask my device refuse touch id mac desktop app relay remote unattended 1password service account",
+        "login identity api key secret command approval ask my device refuse touch id mac desktop app relay remote unattended 1password service account",
       ),
     ],
     secretProvidersOnly: true,
