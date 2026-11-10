@@ -1621,10 +1621,16 @@ export function browserLoginsWrite(
 
 const DEFAULT_NEW_LOGIN_VAULT = "T3 Code Sign-ups";
 
-function BrowserLoginSettings() {
+export function BrowserLoginSettings() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  const { connectedEnvironments } = useSettingsScope();
   const escalation = settings.browserLogins.escalation ?? DEFAULT_BROWSER_SECRET_ESCALATION;
+  // An older server ignores `escalation` and keeps following the approval setting it reads.
+  const outdated = connectedEnvironments.flatMap((environment) =>
+    environment.serverConfig?.secretRelay === true ? [] : [environment.label],
+  );
+  const escalationApplies = outdated.length < connectedEnvironments.length;
   const chosen = browserLoginProviderIds(settings.browserLogins);
   const providers = Object.entries(settings.secretProviders).flatMap(([id, provider]) => {
     const definition = builtInSecretProviderDefinitions.find(provider.kind);
@@ -1713,8 +1719,13 @@ function BrowserLoginSettings() {
         settingKeys={["browserLogins"]}
         {...searchableSetting("browser-secret-escalation")}
         description="Logins and identities in a service account's vaults are used without asking. Anything else asks the T3 Code desktop app on your Mac, where 1Password needs Touch ID. Refuse suits machines left unattended."
+        status={
+          outdated.length > 0
+            ? `Update T3 Code on ${outdated.join(", ")} before this setting applies there.`
+            : undefined
+        }
         resetAction={
-          escalation !== DEFAULT_BROWSER_SECRET_ESCALATION ? (
+          escalationApplies && escalation !== DEFAULT_BROWSER_SECRET_ESCALATION ? (
             <SettingResetButton
               label="outside this machine's service accounts"
               onClick={() => save({ escalation: DEFAULT_BROWSER_SECRET_ESCALATION })}
@@ -1722,29 +1733,31 @@ function BrowserLoginSettings() {
           ) : null
         }
         control={
-          <Select
-            value={escalation}
-            onValueChange={(value) => {
-              if (value !== null) save({ escalation: value as BrowserSecretEscalation });
-            }}
-          >
-            <SelectTrigger
-              size="sm"
-              className="w-full min-w-0 sm:w-56"
-              aria-label="Outside this machine's service accounts"
+          escalationApplies ? (
+            <Select
+              value={escalation}
+              onValueChange={(value) => {
+                if (value !== null) save({ escalation: value as BrowserSecretEscalation });
+              }}
             >
-              <SelectValue>
-                {ESCALATION_OPTIONS.find((option) => option.value === escalation)?.label}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              {ESCALATION_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectPopup>
-          </Select>
+              <SelectTrigger
+                size="sm"
+                className="w-full min-w-0 sm:w-56"
+                aria-label="Outside this machine's service accounts"
+              >
+                <SelectValue>
+                  {ESCALATION_OPTIONS.find((option) => option.value === escalation)?.label}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {ESCALATION_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          ) : null
         }
       />
       <SettingsRow
