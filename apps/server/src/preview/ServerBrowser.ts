@@ -483,6 +483,8 @@ const make = Effect.gen(function* () {
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
   const browserLogins = yield* Effect.serviceOption(BrowserLogins.BrowserLogins);
   const filledSecrets = ServerBrowserLogin.makeFilledSecrets();
+  // Scrubbed before the cut, so a filled secret crossing it cannot leave its start showing.
+  const pageText = (text: string, limit: number) => filledSecrets.scrub(text).slice(0, limit);
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
@@ -545,8 +547,8 @@ const make = Effect.gen(function* () {
     tab.dialog
       ? {
           type: tab.dialog.type(),
-          message: tab.dialog.message().slice(0, 4000),
-          defaultValue: tab.dialog.defaultValue().slice(0, 4000),
+          message: pageText(tab.dialog.message(), 4000),
+          defaultValue: pageText(tab.dialog.defaultValue(), 4000),
         }
       : null;
 
@@ -616,11 +618,11 @@ const make = Effect.gen(function* () {
     if (url === "about:blank" || url.startsWith("chrome-error://")) return;
     // A navigation that starts and fails during the title read leaves the URL unchanged.
     const generation = tab.navigationGeneration;
-    const title = (await tab.page.title().catch(() => "")).slice(0, 512);
+    const title = pageText(await tab.page.title().catch(() => ""), 512);
     if (tab.navigationGeneration !== generation || tab.loading || tab.page.url() !== url) return;
     report(tab, {
       _tag: "Success",
-      url: ServerBrowserPage.withoutDataPayload(url).slice(0, 2048),
+      url: pageText(ServerBrowserPage.withoutDataPayload(url), 2048),
       title,
     });
   };
@@ -941,7 +943,7 @@ const make = Effect.gen(function* () {
       tab.loading = true;
       report(tab, {
         _tag: "Loading",
-        url: ServerBrowserPage.withoutDataPayload(request.url()).slice(0, 2048),
+        url: pageText(ServerBrowserPage.withoutDataPayload(request.url()), 2048),
         title: "",
       });
     });
@@ -965,7 +967,7 @@ const make = Effect.gen(function* () {
     page.on("requestfailed", (request) => {
       const errorText = request.failure()?.errorText ?? "";
       pushBounded(tab.networkEntries, {
-        url: ServerBrowserPage.withoutDataPayload(request.url()),
+        url: filledSecrets.scrub(ServerBrowserPage.withoutDataPayload(request.url())),
         method: request.method(),
         status: null,
         failed: true,
@@ -996,7 +998,7 @@ const make = Effect.gen(function* () {
       const { code, description } = ServerBrowserPage.parseNetError(errorText);
       report(tab, {
         _tag: "LoadFailed",
-        url: ServerBrowserPage.withoutDataPayload(request.url()).slice(0, 2048),
+        url: pageText(ServerBrowserPage.withoutDataPayload(request.url()), 2048),
         title: "",
         code,
         description,
@@ -1004,7 +1006,7 @@ const make = Effect.gen(function* () {
     });
     page.on("response", (response) => {
       pushBounded(tab.networkEntries, {
-        url: ServerBrowserPage.withoutDataPayload(response.url()),
+        url: filledSecrets.scrub(ServerBrowserPage.withoutDataPayload(response.url())),
         method: response.request().method(),
         status: response.status(),
         failed: false,
@@ -1014,7 +1016,7 @@ const make = Effect.gen(function* () {
     page.on("console", (message) => {
       pushBounded(tab.consoleEntries, {
         level: message.type(),
-        text: ServerBrowserPage.consoleText(message).slice(0, 2_000),
+        text: pageText(ServerBrowserPage.consoleText(message), 2_000),
         timestamp: new Date().toISOString(),
       });
     });
@@ -1094,7 +1096,7 @@ const make = Effect.gen(function* () {
     }
     report(tab, {
       _tag: "LoadFailed",
-      url: ServerBrowserPage.withoutDataPayload(url).slice(0, 2048),
+      url: pageText(ServerBrowserPage.withoutDataPayload(url), 2048),
       title: "",
       code: -3,
       description: "ERR_ABORTED",
@@ -1124,10 +1126,10 @@ const make = Effect.gen(function* () {
       }
       const saved: ServerDownload = {
         id,
-        fileName: download.suggestedFilename().slice(0, 255) || "download",
+        fileName: pageText(download.suggestedFilename(), 255) || "download",
         path,
         sizeBytes: size,
-        url: ServerBrowserPage.withoutDataPayload(download.url()).slice(0, 2048),
+        url: pageText(ServerBrowserPage.withoutDataPayload(download.url()), 2048),
         completedAt: new Date().toISOString(),
       };
       tab.downloads.push(saved);
@@ -1190,7 +1192,7 @@ const make = Effect.gen(function* () {
     tab.fileChooser = {
       id: NodeCrypto.randomUUID(),
       chooser,
-      accept: accept.slice(0, 1024),
+      accept: pageText(accept, 1024),
       offeredTo: null,
     };
     pushFileChooser(tab);
@@ -2414,6 +2416,7 @@ const make = Effect.gen(function* () {
             ...tab,
             renderScale: tab.desktop ? "display" : RENDER_SCALE,
             fullScreenshot: (input as PreviewAutomationSnapshotInput | undefined)?.fullScreenshot,
+            scrub: filledSecrets.scrub,
           }),
         );
       }
