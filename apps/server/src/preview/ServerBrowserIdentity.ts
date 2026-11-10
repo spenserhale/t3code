@@ -132,9 +132,32 @@ const regionNames = new Intl.DisplayNames(["en"], { type: "region", fallback: "n
 const countryName = (stored: string) =>
   /^[a-z]{2}$/i.test(stored) ? regionNames.of(stored.toUpperCase()) : undefined;
 
+let countryCodes: ReadonlyMap<string, string> | undefined;
+
+/**
+ * The ISO code of a country's English name. A withdrawn code shares its successor's name, as FX
+ * does France's, so only codes that are their own canonical form are kept.
+ */
+const countryCode = (name: string) => {
+  countryCodes ??= new Map(
+    Array.from({ length: 26 * 26 }, (_, index) =>
+      String.fromCharCode(65 + Math.floor(index / 26), 65 + (index % 26)),
+    ).flatMap((code) => {
+      const english = regionNames.of(code);
+      const canonical = new Intl.Locale(Intl.getCanonicalLocales(`und-${code}`)[0] ?? "und").region;
+      return english === undefined || canonical !== code ? [] : [[comparable(english), code]];
+    }),
+  );
+  return countryCodes.get(comparable(name));
+};
+
 /** What a dropdown option may say for a value, best first. Matching ignores case. */
 const optionTexts = (value: PreviewIdentityValue, stored: string): ReadonlyArray<string> => {
-  if (value === "country") return [stored, countryName(stored) ?? ""];
+  if (value === "country") {
+    // Either way round: a stored code matches the country's name, and a stored name its code.
+    const code = countryName(stored) === undefined ? countryCode(stored) : stored.toUpperCase();
+    return [stored, code ?? "", (code && regionNames.of(code)) ?? ""];
+  }
   if (value === "state") {
     const region = REGIONS.find((names) =>
       names.some((name) => comparable(name) === comparable(stored)),
