@@ -36,11 +36,13 @@ describe("secretProviderFromDraft", () => {
     ]);
   });
 
-  it("keeps the id, and the saved token unless a new one is typed, when an edit renames it", () => {
+  it("keeps the id, and the saved token unless a new one is typed or it is cleared, when an edit renames it", () => {
     const id = SecretProviderId.make("personal");
     for (const [tokens, saved] of [
       [{ serviceAccountToken: "", savedServiceAccountToken: "••••••" }, "••••••"],
       [{ serviceAccountToken: " ops_new ", savedServiceAccountToken: "••••••" }, "ops_new"],
+      // The server keeps a saved token the config leaves out, so a clear must be sent.
+      [{ ...noToken, clearServiceAccountToken: true }, ""],
     ] as const) {
       const result = secretProviderFromDraft(
         { name: "Personal (team)", account: "team.1password.com", ...tokens },

@@ -5,6 +5,7 @@ import {
   EasDeviceHostConfig,
   type ProviderInstanceConfig,
   type ServerSettings,
+  type ServerSettingsPatch,
   type SettingsSecretValue,
   SimlockDeviceHostConfig,
   UsageLimitSourceConfig,
@@ -121,6 +122,45 @@ export function mapSettingsSecrets(
       };
     }),
   );
+}
+
+const isFields = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
+/**
+ * A secret provider rewritten without one of its secret fields keeps the saved value, so an older
+ * client that does not know the field cannot delete it. Only an empty value clears it.
+ */
+export function keepOmittedSecretProviderSecrets(
+  current: ServerSettings,
+  patch: ServerSettingsPatch,
+): ServerSettingsPatch {
+  if (patch.secretProviders === undefined) return patch;
+  const saved = new Map(Object.entries(current.secretProviders));
+  const secretProviders = Object.fromEntries(
+    Object.entries(patch.secretProviders).map(([id, entry]) => {
+      const previous = saved.get(id);
+      const previousConfig = previous?.config;
+      const config = entry?.config;
+      if (entry === null || previous?.kind !== entry.kind) return [id, entry];
+      if (!isFields(previousConfig) || !isFields(config)) return [id, entry];
+      const kept = (secretProviderSecretFields.get(entry.kind) ?? []).filter(
+        (field) => field in previousConfig && !(field in config),
+      );
+      if (kept.length === 0) return [id, entry];
+      return [
+        id,
+        {
+          ...entry,
+          config: {
+            ...config,
+            ...Object.fromEntries(kept.map((field) => [field, previousConfig[field]])),
+          },
+        },
+      ];
+    }),
+  );
+  return { ...patch, secretProviders };
 }
 
 /**

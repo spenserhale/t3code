@@ -63,6 +63,7 @@ import {
 } from "./sourceControl/sourceControlHostSecrets.ts";
 
 import {
+  keepOmittedSecretProviderSecrets,
   mapSettingsSecrets,
   mapSettingsSecretValues,
   SECRET_REDACTED,
@@ -1338,7 +1339,9 @@ const make = Effect.gen(function* () {
     updateSettings: (patch) =>
       updateAndPersistSettings(patch, (current) =>
         ensureSecretProviderWritesAllowed(patch, settingsPath).pipe(
-          Effect.as(applyServerSettingsPatch(current, patch)),
+          Effect.as(
+            applyServerSettingsPatch(current, keepOmittedSecretProviderSecrets(current, patch)),
+          ),
         ),
       ),
     updateProviderInstance: (mutation, patch = {}) =>
@@ -1346,7 +1349,10 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           yield* ensureSecretProviderWritesAllowed(patch, settingsPath);
           yield* ensureProviderInstanceMutationAllowed(current, mutation, settingsPath);
-          const patched = applyServerSettingsPatch(current, patch);
+          const patched = applyServerSettingsPatch(
+            current,
+            keepOmittedSecretProviderSecrets(current, patch),
+          );
           return applyProviderInstanceMutation(patched, mutation);
         }),
       ),

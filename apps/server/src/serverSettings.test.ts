@@ -1403,6 +1403,21 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
           "serviceAccountToken",
           "ops_service-secret",
         );
+        // An older client's dialog renames the provider without the token field it does not know.
+        yield* service.updateSettings({
+          secretProviders: {
+            [headless]: {
+              kind: SecretProviderKind.make("one_password"),
+              label: "Renamed",
+              config: { account: "my.1password.com" },
+            },
+          },
+        });
+        assert.propertyVal(
+          (yield* service.getSettings).secretProviders[headless]?.config,
+          "serviceAccountToken",
+          "ops_service-secret",
+        );
         const renamed = yield* service.updateProviderInstance({
           operation: "upsert",
           instanceId,

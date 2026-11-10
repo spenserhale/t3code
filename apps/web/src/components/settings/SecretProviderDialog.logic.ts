@@ -43,6 +43,8 @@ export interface SecretProviderDraft {
   readonly serviceAccountToken: string;
   /** The saved token as the server shows it, a marker it keeps the token for; empty when none. */
   readonly savedServiceAccountToken: string;
+  /** The saved token was removed. The server keeps a token the config leaves out. */
+  readonly clearServiceAccountToken?: boolean;
 }
 
 export function draftFromSecretProvider(provider: SecretProviderConfig): SecretProviderDraft {
@@ -120,7 +122,9 @@ export function secretProviderFromDraft(
       label: label.success,
       config: {
         account: account.success,
-        ...(serviceAccountToken === "" ? {} : { serviceAccountToken }),
+        ...(serviceAccountToken === "" && !draft.clearServiceAccountToken
+          ? {}
+          : { serviceAccountToken }),
       },
     },
   });
