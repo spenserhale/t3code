@@ -679,6 +679,29 @@ describe("SecretCommands", () => {
 });
 
 describe("maskSecrets", () => {
+  it("masks overlapping, contained, touching and repeated matches as one, leaving no part", () => {
+    const mask = SecretCommands.SECRET_MASK;
+    for (const [text, secrets, masked] of [
+      // Two secrets overlapping, in either order.
+      ["abcde", ["abc", "bcde"], mask],
+      ["xxabcdeyy", ["bcde", "abc"], `xx${mask}yy`],
+      // One inside another.
+      ["xabcdefx", ["bcd", "abcdef"], `x${mask}x`],
+      // Touching, and a secret overlapping its own next copy.
+      ["abcdwxyz", ["abcd", "wxyz"], mask],
+      ["ababab-abab", ["abab"], `${mask}-${mask}`],
+      // A trimmed form, and a line of a multi-line secret, overlapping another secret.
+      ["key=padded-789xyz", ["  padded-789\n", "789xyz"], `key=${mask}`],
+      ["BBBBCCDDDD", ["AAAA\nBBBBCC", "CCDDDD"], mask],
+    ] as const) {
+      assert.deepStrictEqual(
+        SecretCommands.maskSecrets(text, secrets, 100),
+        { text: masked, cut: false },
+        text,
+      );
+    }
+  });
+
   it("masks whole any secret that starts before the cut, and never leaves part of one", () => {
     const secrets = ["abcdef", " pad "];
     assert.deepStrictEqual(SecretCommands.maskSecrets("xx abcdef yy pad", secrets, 100), {
