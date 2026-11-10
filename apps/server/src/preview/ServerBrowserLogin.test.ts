@@ -1,15 +1,48 @@
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type CDPSession,
+  type Page,
+} from "playwright-core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { loginCoversPage } from "./BrowserLogins.ts";
 import { documentId, fillCovered } from "./ServerBrowserLogin.ts";
 
 const frameCovered = (url: string) => loginCoversPage(["https://good.test"], url);
+const NO_DEADLINE = Number.MAX_SAFE_INTEGER;
+
+const PAGES: Partial<Record<string, string>> = {
+  "/": `<input id="otp" type="text"><iframe src="https://good.test/frame"></iframe>`,
+  // Focusing the field hands focus to another site's frame, which focuses its own field.
+  "/focus": `<input id="password" type="password"><iframe src="https://evil.test/catch"></iframe>
+    <script>
+      document.getElementById("password").addEventListener("focus", () =>
+        document.querySelector("iframe").contentWindow.focus());
+    </script>`,
+  "/catch": `<input id="password" type="password">
+    <script>addEventListener("focus", () => document.getElementById("password").focus());</script>`,
+  // The field appears after most of the call's time is gone, and focusing it stalls the page.
+  "/late": `<script>
+      setTimeout(() => {
+        const field = document.createElement("input");
+        field.id = "password";
+        field.type = "password";
+        field.addEventListener("focus", () => {
+          const end = Date.now() + 700;
+          while (Date.now() < end);
+        });
+        document.body.append(field);
+      }, 600);
+    </script>`,
+};
 
 describe("filling a saved login", () => {
   let browser: Browser;
   let context: BrowserContext;
   let page: Page;
+  let cdp: CDPSession;
 
   beforeAll(async () => {
     browser = await chromium.launch({ headless: true });
@@ -22,13 +55,11 @@ describe("filling a saved login", () => {
     // Two fake sites, so origins are real without a network.
     await context.route(/^https:\/\/(good|evil)\.test\//, (route) => {
       const url = new URL(route.request().url());
-      const body =
-        url.pathname === "/"
-          ? `<input id="otp" type="text"><iframe src="https://good.test/frame"></iframe>`
-          : `<input id="password" type="password">`;
+      const body = PAGES[url.pathname] ?? `<input id="password" type="password">`;
       return route.fulfill({ contentType: "text/html", body });
     });
     page = await context.newPage();
+    cdp = await context.newCDPSession(page);
     await page.goto("https://good.test/");
   });
   afterEach(async () => {
@@ -53,34 +84,90 @@ describe("filling a saved login", () => {
         },
       });
     });
+    // React tracks a field's value through a setter on the element itself, and fires onChange
+    // when an input event finds the value changed behind it.
     await page.locator("#otp").evaluate((element) => {
       const otp = element as unknown as {
         value: string;
-        dataset: { seen?: string };
+        dataset: { seen?: string; tracked?: string };
         addEventListener: (type: string, listener: () => void) => void;
       };
-      otp.addEventListener("input", () => (otp.dataset.seen = otp.value));
+      const native = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(otp), "value")!;
+      let tracked = "";
+      Object.defineProperty(otp, "value", {
+        configurable: true,
+        get(this: unknown) {
+          return native.get!.call(this);
+        },
+        set(this: unknown, value: string) {
+          tracked = value;
+          native.set!.call(this, value);
+        },
+      });
+      otp.addEventListener("input", () => {
+        otp.dataset.seen = otp.value;
+        otp.dataset.tracked = tracked;
+      });
     });
     await fillCovered({
+      page,
+      cdp,
+      field: "totp",
       target: page.locator("#otp"),
       value: "123456",
       frameCovered,
-      timeoutMs: 5_000,
+      deadline: NO_DEADLINE,
     });
     const state = await page.locator("#otp").evaluate((otp) => {
       const field = otp as unknown as {
         value: string;
-        dataset: { seen?: string };
+        dataset: { seen?: string; tracked?: string };
         style: { getPropertyValue: (name: string) => string };
       };
       return {
         value: field.value,
         seen: field.dataset.seen,
+        tracked: field.dataset.tracked,
         security: field.style.getPropertyValue("-webkit-text-security"),
       };
     });
-    expect(state).toEqual({ value: "123456", seen: "123456", security: "disc" });
+    // The tracker still holds the old value, so React would report the change.
+    expect(state).toEqual({ value: "123456", seen: "123456", tracked: "", security: "disc" });
     expect(await page.evaluate(() => (globalThis as { hooked?: string }).hooked)).toBeUndefined();
+  });
+
+  it("writes only into the chosen field, wherever the page moves focus", async () => {
+    await page.goto("https://good.test/focus");
+    const caught = page.frameLocator("iframe").locator("#password");
+    await caught.waitFor();
+    await fillCovered({
+      page,
+      cdp,
+      field: "password",
+      target: page.locator("#password"),
+      value: "hunter22",
+      frameCovered,
+      deadline: NO_DEADLINE,
+    });
+    expect(await caught.inputValue()).toBe("");
+    expect(await page.locator("#password").inputValue()).toBe("hunter22");
+  });
+
+  it("never writes after the call's deadline, even once the write has begun", async () => {
+    await page.goto("https://good.test/late");
+    await expect(
+      fillCovered({
+        page,
+        cdp,
+        field: "password",
+        target: page.locator("#password"),
+        value: "hunter22",
+        frameCovered,
+        // The page's clock, which the write checks.
+        deadline: ((await page.evaluate("Date.now()")) as number) + 1_000,
+      }),
+    ).rejects.toThrow("The call ended before the login was filled.");
+    expect(await page.locator("#password").inputValue()).toBe("");
   });
 
   it("refuses a frame that moved to another site after the field was chosen", async () => {
@@ -94,13 +181,20 @@ describe("filling a saved login", () => {
       .evaluate((frame) => ((frame as unknown as { src: string }).src = "https://evil.test/frame"));
     await (await moved).waitForLoadState();
     await expect(
-      fillCovered({ target, value: "hunter2", frameCovered, timeoutMs: 5_000 }),
+      fillCovered({
+        page,
+        cdp,
+        field: "password",
+        target,
+        value: "hunter2",
+        frameCovered,
+        deadline: NO_DEADLINE,
+      }),
     ).rejects.toThrow("left the login's site");
     expect(await target.inputValue()).toBe("");
   });
 
   it("names a document until the page loads a new one", async () => {
-    const cdp = await context.newCDPSession(page);
     const first = await documentId(cdp);
     await page.evaluate(() =>
       (
