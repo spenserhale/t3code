@@ -16,6 +16,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as Data from "effect/Data";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -70,6 +71,8 @@ export class BrowserLogins extends Context.Service<
     ) => Effect.Effect<void, BrowserLoginError>;
     /** Fails if the settings changed since `revision`, for a last check before filling. */
     readonly check: (revision: string) => Effect.Effect<void, BrowserLoginError>;
+    /** Forgets listed logins, for after one is saved; a listing begun earlier cannot refill them. */
+    readonly invalidate: Effect.Effect<void>;
   }
 >()("t3/preview/BrowserLogins") {}
 
@@ -176,10 +179,15 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   const settingsService = yield* Settings.ServerSettingsService;
   const digest = yield* Digest.Digest;
   const driverServices = yield* Effect.context<SecretProviderDriverServices>();
+  const scope = yield* Effect.scope;
+  type Listed = ReadonlyArray<SecretProviderLogin> | undefined;
   const listCache = new Map<
     string,
     { readonly at: number; readonly logins: ReadonlyArray<SecretProviderLogin> }
   >();
+  // Listing is rate limited (service accounts), so requests that arrive meanwhile share one.
+  const listings = new Map<string, Deferred.Deferred<Listed>>();
+  let listVersion = 0;
   // Approvals last for the server's life. Any change to the providers, their config, or the
   // approval setting starts a new generation and forgets them all; a step begun in an older
   // generation fails, even if the settings have since changed back.
@@ -232,18 +240,34 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   const list = Effect.fn("BrowserLogins.list")(function* (source: Source, now: number) {
     const cached = listCache.get(source.key);
     if (cached !== undefined && now - cached.at < LIST_CACHE_MS) return cached.logins;
-    const logins = yield* source.logins
-      .list(source.config)
-      .pipe(Effect.provideContext(driverServices));
-    if (logins === undefined) {
-      listCache.delete(source.key);
-      yield* Effect.logWarning("A password manager did not list its logins", {
-        secretProviderId: source.id,
-      });
-      return undefined;
-    }
-    listCache.set(source.key, { at: now, logins });
-    return logins;
+    const running = listings.get(source.key);
+    if (running !== undefined) return yield* Deferred.await(running);
+    const done = yield* Deferred.make<Listed>();
+    listings.set(source.key, done);
+    const version = listVersion;
+    // Forked, so a caller that gives up does not end the listing the others wait on.
+    yield* source.logins.list(source.config).pipe(
+      Effect.provideContext(driverServices),
+      Effect.tap((logins) => {
+        if (version !== listVersion) return Effect.void;
+        if (logins !== undefined) {
+          listCache.set(source.key, { at: now, logins });
+          return Effect.void;
+        }
+        listCache.delete(source.key);
+        return Effect.logWarning("A password manager did not list its logins", {
+          secretProviderId: source.id,
+        });
+      }),
+      Effect.onExit((exit) =>
+        Effect.suspend(() => {
+          if (listings.get(source.key) === done) listings.delete(source.key);
+          return Deferred.done(done, exit);
+        }),
+      ),
+      Effect.forkIn(scope),
+    );
+    return yield* Deferred.await(done);
   });
 
   const candidates: BrowserLogins["Service"]["candidates"] = Effect.fn("BrowserLogins.candidates")(
@@ -317,6 +341,11 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     read,
     check: Effect.fn("BrowserLogins.check")(function* (revision) {
       yield* currentAt(revision);
+    }),
+    invalidate: Effect.sync(() => {
+      listVersion++;
+      listCache.clear();
+      listings.clear();
     }),
     needsApproval: Effect.fn("BrowserLogins.needsApproval")(function* (revision, threadId) {
       const { approval } = yield* currentAt(revision);
