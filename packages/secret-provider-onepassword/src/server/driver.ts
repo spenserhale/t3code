@@ -303,16 +303,23 @@ const findIdentityField = (
   return undefined;
 };
 
-// `op` may give a DATE field as epoch seconds; forms want the calendar date.
-const toBirthDate = (text: string) =>
-  /^-?\d+$/.test(text)
-    ? Option.getOrUndefined(
-        DateTime.make(Number(text) * 1000).pipe(
-          Option.map(DateTime.formatIsoDateUtc),
-          Option.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)),
-        ),
-      )
-    : text;
+// `op` may give a DATE field as epoch seconds, as text or as a number; forms want the date.
+const toBirthDate = (value: unknown) => {
+  const text = trimmedText(value);
+  const seconds =
+    typeof value === "number"
+      ? value
+      : text !== undefined && /^-?\d+$/.test(text)
+        ? Number(text)
+        : undefined;
+  if (seconds === undefined) return text;
+  return Option.getOrUndefined(
+    DateTime.make(seconds * 1000).pipe(
+      Option.map(DateTime.formatIsoDateUtc),
+      Option.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)),
+    ),
+  );
+};
 
 /**
  * How `op` prints an Identity's ADDRESS field is unverified. Parts come only from an object; a
@@ -361,8 +368,16 @@ const parseIdentityValues = (stdout: string): SecretProviderIdentityValues | und
   ] as const) {
     set(field, trimmedText(findIdentityField(fields, IDENTITY_FIELDS[field])));
   }
-  const birthDate = trimmedText(findIdentityField(fields, IDENTITY_FIELDS.birthDate));
-  set("birthDate", birthDate === undefined ? undefined : toBirthDate(birthDate));
+  set(
+    "birthDate",
+    toBirthDate(
+      findIdentityField(
+        fields,
+        IDENTITY_FIELDS.birthDate,
+        (value) => isText(value) || Number.isFinite(value),
+      ),
+    ),
+  );
   const address = parseAddress(
     findIdentityField(
       fields,
