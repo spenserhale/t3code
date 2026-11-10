@@ -92,29 +92,44 @@ const maskForms = (secrets: ReadonlyArray<string>) =>
           .filter((line) => line.length >= MIN_SECRET_LENGTH),
       ]),
     ),
-  ]
-    .filter((form) => form.length > 0)
-    .sort((a, b) => b.length - a.length);
+  ].filter((form) => form.length > 0);
 
 /**
- * `text` with every secret, and every secret's trimmed form, masked in one pass, then cut at
- * `limit`. One that starts before the cut is masked whole, so a cut never leaves part of one.
+ * Where `text` holds any form of any secret, as `[start, end)` runs in order. Every match counts,
+ * overlapping ones included, and matches that overlap or touch make one run.
+ */
+const secretRuns = (text: string, secrets: ReadonlyArray<string>) => {
+  // +1 where a match starts and -1 where it ends: a run is where the sum stays above zero.
+  const edges = new Int32Array(text.length + 1);
+  for (const form of maskForms(secrets)) {
+    for (let at = text.indexOf(form); at !== -1; at = text.indexOf(form, at + 1)) {
+      edges[at]! += 1;
+      edges[at + form.length]! -= 1;
+    }
+  }
+  const runs: Array<readonly [start: number, end: number]> = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index <= text.length; index++) {
+    const before = depth;
+    depth += edges[index]!;
+    if (before === 0 && depth > 0) start = index;
+    if (before > 0 && depth === 0) runs.push([start, index]);
+  }
+  return runs;
+};
+
+/**
+ * `text` with each run of secrets replaced by one mask, then cut at `limit`. A run that starts
+ * before the cut is masked whole, so a cut never leaves part of one.
  */
 export const maskSecrets = (text: string, secrets: ReadonlyArray<string>, limit: number) => {
-  const forms = maskForms(secrets);
-  const next = forms.map((form) => text.indexOf(form));
   let masked = "";
   let at = 0;
-  for (;;) {
-    let found = -1;
-    for (let index = 0; index < forms.length; index++) {
-      if (next[index]! !== -1 && next[index]! < at) next[index] = text.indexOf(forms[index]!, at);
-      if (next[index]! !== -1 && (found === -1 || next[index]! < next[found]!)) found = index;
-    }
-    const start = found === -1 ? -1 : next[found]!;
-    if (start === -1 || start >= limit) break;
+  for (const [start, end] of secretRuns(text, secrets)) {
+    if (start >= limit) break;
     masked += `${text.slice(at, start)}${SECRET_MASK}`;
-    at = start + forms[found]!.length;
+    at = end;
   }
   const end = Math.max(at, Math.min(limit, text.length));
   return { text: `${masked}${text.slice(at, end)}`, cut: end < text.length };
