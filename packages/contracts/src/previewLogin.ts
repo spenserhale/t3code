@@ -16,7 +16,7 @@ export type PreviewLoginField = typeof PreviewLoginField.Type;
 /** The approval modes before `BrowserSecretEscalation`; still decoded, no longer read. */
 export const BrowserLoginApproval = Schema.Literals(["request", "thread", "application", "never"]);
 export type BrowserLoginApproval = typeof BrowserLoginApproval.Type;
-export const DEFAULT_BROWSER_LOGIN_APPROVAL: BrowserLoginApproval = "thread";
+const DEFAULT_BROWSER_LOGIN_APPROVAL: BrowserLoginApproval = "thread";
 
 /** Showing identities to the agent, before `BrowserSecretEscalation`; no longer read. */
 export const BrowserIdentityReadApproval = Schema.Literals([
@@ -27,7 +27,6 @@ export const BrowserIdentityReadApproval = Schema.Literals([
   "never",
 ]);
 export type BrowserIdentityReadApproval = typeof BrowserIdentityReadApproval.Type;
-export const DEFAULT_BROWSER_IDENTITY_READ_APPROVAL: BrowserIdentityReadApproval = "request";
 
 /**
  * Where a request goes that no service account on this machine can answer: the user's connected
