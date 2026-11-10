@@ -74,6 +74,31 @@ describe("scrubSecrets", () => {
   ])("leaves no part of a secret showing on %s", (_case, secrets, text, expected) => {
     assert.strictEqual(scrubSecrets(text, secrets), expected);
   });
+
+  // The ways pages, consoles and snapshots write a secret holding quotes, a backslash, a
+  // doubled space or a control character.
+  const escaped = [String.raw`pa"ss\w0rd  x`, "it's: ok!", "tab\u0001code"];
+  it.each([
+    ["console JSON", String.raw`{"password":"pa\"ss\\w0rd  x"}`, `{"password":"${redacted}"}`],
+    [
+      "a snapshot name, whitespace collapsed",
+      String.raw`- button "pa\"ss\\w0rd x" [ref=e3]`,
+      `- button "${redacted}" [ref=e3]`,
+    ],
+    [
+      "a quoted snapshot key",
+      `- 'button "it''s: ok!" [ref=e1]'`,
+      `- 'button "${redacted}" [ref=e1]'`,
+    ],
+    ["a snapshot text value", String.raw`- text: "tab\x01code"`, `- text: "${redacted}"`],
+    [
+      "a form sent in the address",
+      "/login?password=pa%22ss%5Cw0rd++x&next=1",
+      `/login?password=${redacted}&next=1`,
+    ],
+  ])("scrubs a secret written as %s", (_case, text, expected) => {
+    assert.strictEqual(scrubSecrets(text, escaped), expected);
+  });
 });
 
 const kind = SecretProviderKind.make("fake_vault");
