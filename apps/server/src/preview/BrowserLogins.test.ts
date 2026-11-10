@@ -39,7 +39,8 @@ describe("loginCoversPage", () => {
 
 describe("scrubSecrets", () => {
   it("replaces filled secrets in keys and values, longest first", () => {
-    const secrets = ["hunter2", "123456", "abcd", "abcdefgh", "ok"];
+    // Fills refuse anything shorter than 4 characters, so every secret given is scrubbed.
+    const secrets = ["hunter2", "123456", "abcd", "abcdefgh"];
     const redacted = "[filled by password manager]";
     assert.deepStrictEqual<unknown>(
       scrubSecrets(
