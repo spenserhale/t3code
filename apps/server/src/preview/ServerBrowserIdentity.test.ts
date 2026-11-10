@@ -67,6 +67,13 @@ const SIGNUP_PAGE = `
   <iframe id="ad" src="https://ads.test/frame"></iframe>
   <iframe id="sub" src="https://accounts.shop.test/frame"></iframe>`;
 
+/** The shop's pages by path; any other path is a frame of the subdomain or the ad network. */
+const PAGES: Partial<Record<string, string>> = {
+  "/signup": SIGNUP_PAGE,
+  "/address": `<input id="street" autocomplete="street-address">
+    <input id="city" autocomplete="address-level2"><textarea id="whole"></textarea>`,
+};
+
 const ADA: SecretProviderIdentityValues = {
   firstName: "Ada",
   lastName: "Lovelace",
@@ -163,11 +170,10 @@ describe("filling a saved identity", () => {
     await context.route(/^https:\/\/(shop|accounts\.shop|ads)\.test\//, (route) => {
       const url = new URL(route.request().url());
       const body =
-        url.pathname === "/signup"
-          ? SIGNUP_PAGE
-          : url.hostname === "ads.test"
-            ? `<input id="adEmail" autocomplete="email">`
-            : `<input id="subTel" type="tel" autocomplete="tel">`;
+        PAGES[url.pathname] ??
+        (url.hostname === "ads.test"
+          ? `<input id="adEmail" autocomplete="email">`
+          : `<input id="subTel" type="tel" autocomplete="tel">`);
       return route.fulfill({ contentType: "text/html", body });
     });
     page = await context.newPage();
@@ -287,6 +293,40 @@ describe("filling a saved identity", () => {
     }),
   );
 
+  it.live("leaves the parts of an address kept on one line to the agent", () =>
+    Effect.gen(function* () {
+      const address = "1 Main St, Apt 4, Springfield, IL 62701, us";
+      const { context: identity } = yield* identityServer({ firstName: "Ada", address });
+      yield* Effect.promise(() => page.goto("https://shop.test/address"));
+      const parts = yield* Effect.promise(async () =>
+        fillIdentity(identity, await tab(), {}, NO_DEADLINE),
+      );
+      const oneLine = (value: string) =>
+        `The identity's address is stored as one line, so its ${value} is not filled on its own. Get the address with preview_read_identity, then fill the field with preview_act.`;
+      expect(parts).toMatchObject({
+        filled: [],
+        skipped: [
+          { value: "street", reason: oneLine("street") },
+          { value: "city", reason: oneLine("city") },
+        ],
+      });
+      // Named, the whole address goes into one field.
+      const whole = yield* Effect.promise(async () =>
+        fillIdentity(
+          identity,
+          await tab(),
+          { fields: [{ locator: "#whole", value: "address" }] },
+          NO_DEADLINE,
+        ),
+      );
+      expect(whole).toMatchObject({ filled: ["address"], skipped: [] });
+      const values = yield* Effect.promise(async () =>
+        Promise.all(["#street", "#city", "#whole"].map((selector) => valueOf(selector))),
+      );
+      expect(values).toEqual(["", "", address]);
+    }),
+  );
+
   it.live("refuses a locator into another site's frame before reading the identity", () =>
     Effect.gen(function* () {
       const { context: identity, reads } = yield* identityServer(ADA);
@@ -332,7 +372,7 @@ describe("filling a saved identity", () => {
       fillIdentityField({
         handle: handle!,
         value: "email",
-        stored: "ada@example.com",
+        values: { email: "ada@example.com" },
         frameAllowed,
         timeoutMs: 5_000,
       }),

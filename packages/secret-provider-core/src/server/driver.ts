@@ -54,6 +54,7 @@ export type SecretProviderIdentityField =
   | "company"
   | "jobTitle"
   | "birthDate"
+  | "address"
   | "street"
   | "city"
   | "state"
@@ -70,7 +71,10 @@ export interface SecretProviderIdentity {
   readonly vaultId?: string;
 }
 
-/** `birthDate` is `YYYY-MM-DD` when the provider stores a date; `country` is as stored. */
+/**
+ * `birthDate` is `YYYY-MM-DD` when the provider stores a date; `country` is as stored. `address`
+ * is the whole address on one line, given instead of its parts when the provider has no parts.
+ */
 export type SecretProviderIdentityValues = Partial<Record<SecretProviderIdentityField, string>>;
 
 /** Optional: a provider that can fill personal details into sign-up forms. */

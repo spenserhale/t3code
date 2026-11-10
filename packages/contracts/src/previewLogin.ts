@@ -153,6 +153,7 @@ export const PreviewIdentityValue = Schema.Literals([
   "company",
   "jobTitle",
   "birthDate",
+  "address",
   "street",
   "city",
   "state",
