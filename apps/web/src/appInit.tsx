@@ -48,6 +48,7 @@ import {
 import { startProviderAuthDelivery } from "./providerAuthDelivery";
 import { getRouter, type AppRouter } from "./router";
 import { appAtomRegistry } from "./rpc/atomRegistry";
+import { startSecretRelay } from "./state/secretRelay";
 import { primaryServerConfigAtom } from "./state/server";
 import { environmentShell } from "./state/shell";
 import { installChatRouteCommands } from "./shortcuts/chatRouteCommands";
@@ -190,6 +191,8 @@ export function startAppServices(): AppRouter {
   if (isElectron) startElectronBrowserHost();
   startPreviewTitleRecording();
   startBrowserProfileReporting();
+  // Only the desktop app can have its own server ask the user for a secret.
+  if (isElectron) startSecretRelay();
   installChatRouteCommands(router);
   installCommandPaletteCommands(router);
   registerOpenFavoriteEditorCommand();
