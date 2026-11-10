@@ -37,10 +37,8 @@ import {
   type PreviewAutomationWaitForInput,
   type PreviewAutomationFillIdentityRequest,
   type PreviewAutomationFillLoginRequest,
-  type PreviewAutomationFillLoginResult,
   type PreviewAutomationFillNewLoginRequest,
   type PreviewAutomationReadIdentityRequest,
-  type PreviewLoginField,
   PreviewClearProfileError,
   type PreviewEvent,
   type PreviewNavStatus,
@@ -85,12 +83,14 @@ import * as ServerConfig from "../config.ts";
 import { resolveRootCliCommand } from "../cli/invocation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+import * as SecretRelay from "../secrets/SecretRelay.ts";
 import * as BrowserLogins from "./BrowserLogins.ts";
 import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as PreviewManager from "./Manager.ts";
 import * as ServerBrowserIdentity from "./ServerBrowserIdentity.ts";
 import * as ServerBrowserLogin from "./ServerBrowserLogin.ts";
+import * as ServerBrowserLoginFill from "./ServerBrowserLoginFill.ts";
 import * as ServerBrowserNewLogin from "./ServerBrowserNewLogin.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
@@ -488,6 +488,7 @@ const make = Effect.gen(function* () {
   const previewBrowser = yield* PreviewBrowser.PreviewBrowser;
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
   const browserLogins = yield* Effect.serviceOption(BrowserLogins.BrowserLogins);
+  const secretRelay = Option.getOrUndefined(yield* Effect.serviceOption(SecretRelay.SecretRelay));
   const filledSecrets = ServerBrowserLogin.makeFilledSecrets();
   const documentMarks = ServerBrowserLogin.makeDocumentMarks();
   /** Whether the tab's main document may show a filled password or code. */
@@ -503,7 +504,11 @@ const make = Effect.gen(function* () {
   const pageText = (text: string, limit: number) => filledSecrets.scrub(text).slice(0, limit);
   const identities = Option.isNone(browserLogins)
     ? undefined
-    : yield* ServerBrowserIdentity.makeIdentityContext(browserLogins.value, desktopChannel);
+    : yield* ServerBrowserIdentity.makeIdentityContext(
+        browserLogins.value,
+        desktopChannel,
+        secretRelay,
+      );
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
@@ -2311,142 +2316,18 @@ const make = Effect.gen(function* () {
     };
   };
 
-  const fillLogin = async (
-    tab: ServerTab,
-    input: PreviewAutomationFillLoginRequest,
-    deadlineMs: number,
-  ): Promise<PreviewAutomationFillLoginResult> => {
+  const loginFillContext = (): ServerBrowserLoginFill.LoginFillContext => {
     if (Option.isNone(browserLogins)) {
       throw ServerBrowserLogin.loginError("This server cannot fill browser logins.");
     }
-    const logins = browserLogins.value;
-    const pageUrl = tab.page.url();
-    const origin = URL.canParse(pageUrl) ? new URL(pageUrl).origin : pageUrl;
-    const { revision, logins: candidates } = await loginStep(logins.candidates(pageUrl));
-    const summary = (login: (typeof candidates)[number]) => ({
-      id: login.id,
-      title: login.title,
-      ...(login.vault ? { vault: login.vault } : {}),
-      account: login.account,
-    });
-    const login =
-      input.login === undefined
-        ? candidates.length === 1
-          ? candidates[0]
-          : undefined
-        : candidates.find((candidate) => candidate.id === input.login);
-    if (login === undefined) {
-      return candidates.length === 0
-        ? { status: "no_login", tabId: tab.tabId, origin }
-        : { status: "choose", tabId: tab.tabId, origin, candidates: candidates.map(summary) };
-    }
-    const fields = [...new Set<PreviewLoginField>(input.fields ?? ["username", "password"])];
-    const locators = Object.fromEntries(
-      Object.entries(input.locators ?? {}).flatMap(([field, locator]) => {
-        const target = ServerBrowserPage.targetLocator(tab.page, { locator });
-        return target === null ? [] : [[field, target]];
-      }),
-    );
-    const frameCovered = (frameUrl: string) => BrowserLogins.loginCoversPage(login.urls, frameUrl);
-    // The page sees wall-clock time, so the steps that reach into it share this deadline.
-    const deadline = Date.now() + (deadlineMs - performance.now());
-    const { targets, missing } = await ServerBrowserLogin.findLoginTargets({
-      page: tab.page,
-      fields,
-      locators,
-      frameCovered,
-      deadline,
-    });
-    if (missing.length > 0) {
-      throw ServerBrowserLogin.loginError(
-        `No ${missing.join(" or ")} field was found. Pass its aria-ref from preview_snapshot in \`locators\`, or leave it out of \`fields\`.`,
-      );
-    }
-    // A caller that gave up must not leave an approval or a fill behind.
-    const expired = () => performance.now() >= deadlineMs;
-    if (tab.recording || tab.recordingStart) {
-      throw ServerBrowserLogin.loginError(
-        "Stop the recording before filling a login, then start it again after signing in.",
-      );
-    }
-    const document = await ServerBrowserLogin.documentId(tab.cdp);
-    if (documentMarks.wasScripted(tabKey(tab.threadId, tab.tabId), document)) {
-      throw ServerBrowserLogin.loginError(
-        "preview_evaluate ran in this page, so a login cannot be filled here. Reload the page with preview_navigate, then call preview_fill_login again.",
-      );
-    }
-    const ask = await loginStep(logins.needsApproval(revision, tab.threadId, "login"));
-    if (ask !== false) {
-      // Only a desktop app attached to this server can ask, also for tabs it does not draw.
-      if (!desktopChannel.available) {
-        throw ServerBrowserLogin.loginError(
-          "Nobody can approve a login on this machine. Ask the user to sign in in the tab, or to choose Don't ask in Settings > Browser > Logins for this environment.",
-        );
-      }
-      const approved = await runPromise(
-        desktopChannel.approveLogin(
-          { threadId: tab.threadId, tabId: tab.tabId },
-          Math.max(0, deadlineMs - performance.now()),
-          {
-            providerLabel: login.account,
-            loginTitle: login.title,
-            ...(login.vault ? { vault: login.vault } : {}),
-            origin,
-            ...(input.requester?.threadTitle ? { threadTitle: input.requester.threadTitle } : {}),
-            ...(input.requester?.provider ? { agent: input.requester.provider } : {}),
-            scope: ask,
-          },
-        ),
-      );
-      if (!approved) throw ServerBrowserLogin.loginError("The user did not approve this login.");
-      if (expired()) throw ServerBrowserLogin.loginError("The approval came after the call ended.");
-      await loginStep(logins.recordApproval(revision, tab.threadId, "login"));
-    }
-    const values = await loginStep(logins.read(revision, login, fields));
-    const absent = fields.filter((field) => values[field] === undefined);
-    if (absent.length > 0) {
-      throw ServerBrowserLogin.loginError(
-        `The login "${login.title}" has no ${absent.join(" or ")}.`,
-      );
-    }
-    const unsafe = fields.filter(
-      (field) => field !== "username" && !ServerBrowserLogin.scrubbable(values[field] ?? ""),
-    );
-    if (unsafe.length > 0) {
-      throw ServerBrowserLogin.loginError(
-        `The login "${login.title}" cannot be filled: its ${unsafe.join(" and ")} could not be kept out of what you read, being shorter than 4 characters or holding a line break. Ask the user to sign in in the tab.`,
-      );
-    }
-    // The page may have moved on, or the settings changed, while the user was deciding.
-    if (
-      !frameCovered(tab.page.url()) ||
-      (await ServerBrowserLogin.documentId(tab.cdp)) !== document
-    ) {
-      throw ServerBrowserLogin.loginError("The page left the login's site before it was filled.");
-    }
-    await loginStep(logins.check(revision));
-    await markFilled(tab, document);
-    filledSecrets.remember(
-      fields.flatMap((field) => (field === "username" ? [] : [values[field] ?? ""])),
-    );
-    for (const field of fields) {
-      const target = targets.get(field);
-      if (target === undefined) continue;
-      if (expired()) {
-        throw ServerBrowserLogin.loginError("The call ended before the login was filled.");
-      }
-      await ServerBrowserLogin.fillCovered({
-        page: tab.page,
-        cdp: tab.cdp,
-        field,
-        target,
-        value: values[field] ?? "",
-        frameCovered,
-        document,
-        deadline,
-      });
-    }
-    return { status: "filled", tabId: tab.tabId, login: summary(login), filled: fields };
+    return {
+      logins: browserLogins.value,
+      desktopChannel,
+      relay: secretRelay,
+      step: loginStep,
+      runPromise,
+      rememberSecrets: filledSecrets.remember,
+    };
   };
 
   const executeTabOperation = async (
@@ -2559,7 +2440,12 @@ const make = Effect.gen(function* () {
       }
       case "fillLogin":
         return recordAction(tab, "fillLogin", () =>
-          fillLogin(tab, input as PreviewAutomationFillLoginRequest, deadlineMs),
+          ServerBrowserLoginFill.fillLogin(
+            loginFillContext(),
+            tab,
+            input as PreviewAutomationFillLoginRequest,
+            deadlineMs,
+          ),
         );
       case "fillIdentity":
         return recordAction(tab, "fillIdentity", () =>

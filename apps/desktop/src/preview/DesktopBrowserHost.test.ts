@@ -135,52 +135,75 @@ const watchPainting = (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) =
   });
 
 describe("DesktopBrowserHost", () => {
-  it.effect("asks about a tab it does not show, and about an identity read with no tab", () =>
-    Effect.gen(function* () {
-      const guests: Array<Electron.WebContents | undefined> = [];
-      const host = yield* DesktopBrowserHost.make.pipe(
-        Effect.provideService(
-          LoginApprovalDialog.LoginApprovalDialog,
-          LoginApprovalDialog.LoginApprovalDialog.of({
-            ask: (guest) => Effect.sync(() => guests.push(guest) > 0),
-          }),
-        ),
-      );
-      const reader = yield* takeEvents(host, 2).pipe(Effect.forkScoped);
-
-      yield* Effect.yieldNow;
-      yield* host.handleCommandLine(
-        encodeJson({
+  it.effect(
+    "asks about a tab it does not show and a read with no tab, and closes a prompt the server stops waiting for",
+    () =>
+      Effect.gen(function* () {
+        const guests: Array<Electron.WebContents | undefined> = [];
+        const host = yield* DesktopBrowserHost.make.pipe(
+          Effect.provideService(
+            LoginApprovalDialog.LoginApprovalDialog,
+            LoginApprovalDialog.LoginApprovalDialog.of({
+              ask: (guest, prompt, cancelled) =>
+                prompt.requestId === "request-3"
+                  ? // Open until the server cancels it, as a dialog nobody answers.
+                    Effect.callback<LoginApprovalDialog.LoginApprovalAnswer>((resume) => {
+                      cancelled?.addEventListener("abort", () => resume(Effect.succeed(false)));
+                    })
+                  : Effect.sync(() => {
+                      guests.push(guest);
+                      return prompt.kind === "identityRead" ? "thread" : "once";
+                    }),
+            }),
+          ),
+        );
+        const reader = yield* takeEvents(host, 3).pipe(Effect.forkScoped);
+        const prompt = {
           type: "loginApproval",
-          ...key,
-          requestId: "request-1",
           providerLabel: "Work",
           loginTitle: "Grafana",
           origin: "https://grafana.example.com",
-          scope: "thread",
           timeoutMs: 60_000,
-        }),
-      );
-      yield* host.handleCommandLine(
-        encodeJson({
-          type: "loginApproval",
-          threadId: key.threadId,
-          requestId: "request-2",
-          kind: "identityRead",
-          providerLabel: "Work",
-          loginTitle: "Me",
-          scope: "request",
-          timeoutMs: 60_000,
-        }),
-      );
+        };
 
-      const answers = yield* Fiber.join(reader);
-      expect(answers).toEqual([
-        { type: "loginApproval", ...key, requestId: "request-1", approved: true },
-        { type: "loginApproval", threadId: key.threadId, requestId: "request-2", approved: true },
-      ]);
-      expect(guests).toEqual([undefined, undefined]);
-    }).pipe(Effect.scoped),
+        yield* Effect.yieldNow;
+        yield* host.handleCommandLine(encodeJson({ ...prompt, ...key, requestId: "request-1" }));
+        yield* host.handleCommandLine(
+          encodeJson({
+            type: "loginApproval",
+            threadId: key.threadId,
+            requestId: "request-2",
+            kind: "identityRead",
+            providerLabel: "Work",
+            loginTitle: "Me",
+            timeoutMs: 60_000,
+          }),
+        );
+        yield* host.handleCommandLine(
+          encodeJson({ ...prompt, threadId: "remote-thread", requestId: "request-3" }),
+        );
+        yield* host.handleCommandLine(
+          encodeJson({ type: "loginApprovalCancel", requestId: "request-3" }),
+        );
+
+        const answers = yield* Fiber.join(reader);
+        expect(answers).toEqual([
+          { type: "loginApproval", ...key, requestId: "request-1", approved: "once" },
+          {
+            type: "loginApproval",
+            threadId: key.threadId,
+            requestId: "request-2",
+            approved: "thread",
+          },
+          {
+            type: "loginApproval",
+            threadId: "remote-thread",
+            requestId: "request-3",
+            approved: false,
+          },
+        ]);
+        expect(guests).toEqual([undefined, undefined]);
+      }).pipe(Effect.scoped),
   );
 
   it.effect("knows which of a tab's pages may show a login the server filled", () =>

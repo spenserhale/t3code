@@ -542,9 +542,82 @@ describe("1Password logins", () => {
     }).pipe(Effect.provide(op.layer));
   });
 
+  it.effect("looks up the item a reference names, by category, without revealing it", () => {
+    const referenced = (category: string) =>
+      JSON.stringify({
+        id: "abc123",
+        title: "Grafana",
+        category,
+        vault: { id: "v2", name: "Agents Vault" },
+        urls: [{ primary: true, href: "https://grafana.example.com/login" }],
+        fields: [{ id: "password", type: "CONCEALED", purpose: "PASSWORD" }],
+      });
+    const op = fakeOp((args) =>
+      args.includes("Me") ? { stdout: referenced("IDENTITY") } : { stdout: referenced("LOGIN") },
+    );
+    const token = { account, serviceAccountToken: "ops_test-token" };
+    return Effect.gen(function* () {
+      const login = {
+        id: "abc123",
+        title: "Grafana",
+        vault: "Agents Vault",
+        vaultId: "v2",
+        urls: ["https://grafana.example.com/login"],
+      };
+      assert.deepStrictEqual(
+        yield* driver.logins!.lookup!({ account }, "op://Agents Vault/Grafana"),
+        login,
+      );
+      // A field after the item is ignored; a service account names no account.
+      assert.deepStrictEqual(
+        yield* driver.logins!.lookup!(token, "op://Agents Vault/Grafana/password"),
+        login,
+      );
+      assert.deepStrictEqual(
+        yield* driver.identities!.lookup!({ account }, "op://Agents Vault/Me"),
+        {
+          id: "abc123",
+          title: "Grafana",
+          vault: "Agents Vault",
+          vaultId: "v2",
+        },
+      );
+      // Another category is not what was asked for.
+      assert.strictEqual(
+        yield* driver.identities!.lookup!({ account }, "op://Agents Vault/Grafana"),
+        undefined,
+      );
+      assert.strictEqual(
+        yield* driver.logins!.lookup!({ account }, "op://Agents Vault/Me"),
+        undefined,
+      );
+      assert.deepStrictEqual(op.invocations.slice(0, 2), [
+        [
+          "--cache=false",
+          "item",
+          "--account=my.1password.com",
+          "get",
+          "Grafana",
+          "--vault=Agents Vault",
+          "--format=json",
+        ],
+        ["--cache=false", "item", "get", "Grafana", "--vault=Agents Vault", "--format=json"],
+      ]);
+      assert.isFalse(op.invocations.some((args) => args.includes("--reveal")));
+      // Only a service account is used without asking anyone.
+      assert.isFalse(driver.unattended!({ account }));
+      assert.isTrue(driver.unattended!(token));
+      assert.isFalse(driver.unattended!({ account, serviceAccountToken: "" }));
+    }).pipe(Effect.provide(op.layer));
+  });
+
   it.effect("reads a locked or failed account as undefined", () => {
     const op = fakeOp(() => ({ code: 1, stderr: "[ERROR] account is locked" }));
     return Effect.gen(function* () {
+      assert.strictEqual(
+        yield* driver.logins!.lookup!({ account }, "op://Work/Grafana"),
+        undefined,
+      );
       assert.strictEqual(yield* driver.logins!.list({ account }), undefined);
       assert.strictEqual(yield* driver.logins!.read({ account }, grafana, ["password"]), undefined);
       assert.strictEqual(yield* driver.identities!.list({ account }), undefined);
@@ -570,6 +643,14 @@ describe("1Password logins", () => {
           yield* driver.logins!.regeneratePassword!({ account }, flag, recipe),
           undefined,
         );
+      }
+      for (const reference of [
+        "op://--help/Grafana",
+        "op://Work/--help",
+        "op://Work",
+        "Work/Grafana",
+      ]) {
+        assert.strictEqual(yield* driver.logins!.lookup!({ account }, reference), undefined);
       }
       assert.strictEqual(op.invocations.length, 0);
     }).pipe(Effect.provide(op.layer));

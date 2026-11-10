@@ -8,6 +8,7 @@ import type * as Effect from "effect/Effect";
 import type { CDPSession, Page } from "playwright-core";
 
 import * as BrowserLogins from "./BrowserLogins.ts";
+import * as BrowserSecretAccess from "./BrowserSecretAccess.ts";
 import type * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import {
   documentId,
@@ -125,33 +126,29 @@ export const fillNewLogin = async (
     );
   }
   const title = earlier?.title ?? input.title ?? site;
-  const ask = await step(logins.needsApproval(destination.revision, tab.threadId, "newLogin"));
-  if (ask !== false) {
-    // Only a desktop app attached to this server can ask, also for tabs it does not draw.
+  // A service account saving where the user chose needs no one; anything else needs this
+  // machine's desktop app. New logins are not relayed to the user's device.
+  if (!destination.unattended) {
     if (!context.desktopChannel.available) {
       throw loginError(
-        "Nobody can approve a new login on this machine. Ask the user to sign up in the tab, or to choose Don't ask in Settings > Browser > Logins for this environment.",
+        `Saving a new login to ${destination.account} needs the user's approval in the T3 Code desktop app on this machine. Ask the user to sign up in the tab, or to save new logins with a service account on this machine in Settings > Browser > Logins.`,
       );
     }
-    const approved = await context.runPromise(
-      context.desktopChannel.approveLogin(
-        { threadId: tab.threadId, tabId: tab.tabId },
-        Math.max(0, remaining()),
-        {
-          kind: "newLogin",
-          providerLabel: destination.account,
-          loginTitle: title,
-          ...(destination.vault ? { vault: destination.vault } : {}),
-          origin: page.origin,
-          ...(input.requester?.threadTitle ? { threadTitle: input.requester.threadTitle } : {}),
-          ...(input.requester?.provider ? { agent: input.requester.provider } : {}),
-          scope: ask,
-        },
-      ),
-    );
-    if (!approved) throw loginError("The user did not approve this new login.");
-    if (remaining() <= 0) throw loginError("The approval came after the call ended.");
-    await step(logins.recordApproval(destination.revision, tab.threadId, "newLogin"));
+    await BrowserSecretAccess.approveHere(context, {
+      revision: destination.revision,
+      kind: "newLogin",
+      key: { threadId: tab.threadId, tabId: tab.tabId },
+      prompt: {
+        providerLabel: destination.account,
+        loginTitle: title,
+        ...(destination.vault ? { vault: destination.vault } : {}),
+        origin: page.origin,
+        ...(input.requester?.threadTitle ? { threadTitle: input.requester.threadTitle } : {}),
+        ...(input.requester?.provider ? { agent: input.requester.provider } : {}),
+      },
+      deadlineMs,
+      denied: "The user did not approve this new login.",
+    });
   }
   // A caller that gave up must not leave a login behind.
   if (remaining() <= 0) throw loginError("The call ended before the login was saved.");

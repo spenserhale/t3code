@@ -564,6 +564,62 @@ const editPassword = Effect.fn("OnePasswordDriver.editPassword")(function* (
   return result.stdout;
 });
 
+// What `op item get` prints without `--reveal`: enough to name the item, never its secrets.
+const ReferencedItem = Schema.Struct({
+  id: Schema.String,
+  title: Schema.String,
+  category: Schema.optional(Schema.String),
+  vault: Schema.optional(
+    Schema.Struct({ id: Schema.optional(Schema.String), name: Schema.optional(Schema.String) }),
+  ),
+  urls: Schema.optional(Schema.Array(Schema.Struct({ href: Schema.String }))),
+});
+const decodeReferencedItem = Schema.decodeUnknownOption(Schema.fromJsonString(ReferencedItem));
+
+const ITEM_REFERENCE = /^op:\/\/([^/]+)\/([^/]+)(?:\/.*)?$/;
+
+/** The vault and item of `op://Vault/Item`; anything after the item, such as a field, is ignored. */
+const parseItemReference = (reference: string) => {
+  const [, vault, item] = ITEM_REFERENCE.exec(reference) ?? [];
+  // The item is a positional argument, so neither name may read as a flag.
+  return vault === undefined || item === undefined || vault.startsWith("-") || item.startsWith("-")
+    ? undefined
+    : { vault, item };
+};
+
+/** The item a reference names, if it is of `category`; its vault id lets later reads name it. */
+const lookupItem = Effect.fn("OnePasswordDriver.lookupItem")(function* (
+  config: OnePasswordSecretProviderConfig,
+  reference: string,
+  category: "LOGIN" | "IDENTITY",
+) {
+  const target = parseItemReference(reference);
+  if (target === undefined) return undefined;
+  const result = yield* runOnePassword(config, "item", [
+    "get",
+    target.item,
+    `--vault=${target.vault}`,
+    "--format=json",
+  ]);
+  const item =
+    result.code === 0 ? Option.getOrUndefined(decodeReferencedItem(result.stdout)) : undefined;
+  if (item === undefined) {
+    yield* Effect.logWarning("Could not look up a 1Password item", { exitCode: result.code });
+    return undefined;
+  }
+  if (item.category?.toUpperCase() !== category) return undefined;
+  const vault = item.vault?.name;
+  const vaultId = item.vault?.id;
+  // An identity is a login without websites.
+  const named: SecretProviderIdentity = {
+    id: item.id,
+    title: item.title,
+    ...(vault ? { vault } : {}),
+    ...(vaultId ? { vaultId } : {}),
+  };
+  return { named, urls: (item.urls ?? []).map((url) => url.href).filter((href) => href) };
+});
+
 const readIdentity = Effect.fn("OnePasswordDriver.readIdentity")(function* (
   config: OnePasswordSecretProviderConfig,
   identity: SecretProviderIdentity,
@@ -582,6 +638,7 @@ const readIdentity = Effect.fn("OnePasswordDriver.readIdentity")(function* (
 export const driver = defineSecretProviderDriver({
   kind: definition.kind,
   definition,
+  unattended: (config) => Boolean(config.serviceAccountToken),
   read: Effect.fn("OnePasswordDriver.read")(function* (config, references) {
     if (references.length > 1) {
       const together = yield* bounded("inject", readTogether(config, references));
@@ -599,6 +656,10 @@ export const driver = defineSecretProviderDriver({
         Effect.map((listed) => (listed === undefined ? undefined : toLogins(listed))),
       ),
     read: (config, login, fields) => boundedItem("login", readLogin(config, login, fields)),
+    lookup: (config, reference) =>
+      boundedItem("login", lookupItem(config, reference, "LOGIN")).pipe(
+        Effect.map((found) => found && { ...found.named, urls: found.urls }),
+      ),
     create: Effect.fn("OnePasswordDriver.create")(function* (config, login) {
       const saved = yield* boundedItem("login", saveLogin(config, login));
       if (saved === undefined) return undefined;
@@ -617,5 +678,9 @@ export const driver = defineSecretProviderDriver({
         Effect.map((listed) => (listed === undefined ? undefined : toIdentities(listed))),
       ),
     read: (config, identity) => boundedItem("identity", readIdentity(config, identity)),
+    lookup: (config, reference) =>
+      boundedItem("identity", lookupItem(config, reference, "IDENTITY")).pipe(
+        Effect.map((found) => found?.named),
+      ),
   },
 });

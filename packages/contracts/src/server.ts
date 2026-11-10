@@ -650,6 +650,11 @@ export const ServerConfig = Schema.Struct({
    * in the secret store. Older servers would save one in settings and send it to every client.
    */
   secretProviderCredentials: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Requests this server's service accounts cannot answer can be relayed to the user's device,
+   * and this server can answer them for another one: the `secretRelay` RPC methods.
+   */
+  secretRelay: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**

@@ -2,9 +2,11 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
-  type BrowserLoginApproval,
   type BrowserLoginSettings,
   type BrowserNewLoginSettings,
+  EnvironmentId,
+  type SecretRelayAnswer,
+  type SecretRelayRequest,
   SecretProviderId,
   SecretProviderKind,
 } from "@t3tools/contracts";
@@ -17,10 +19,15 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import * as Settings from "../serverSettings.ts";
 import * as BrowserLogins from "./BrowserLogins.ts";
+import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
+import * as SecretRelayDevice from "./SecretRelayDevice.ts";
 import { scrubSecrets } from "./ServerBrowserLogin.ts";
 
 describe("loginCoversPage", () => {
@@ -128,7 +135,11 @@ const makeService = (
   identities: Partial<Record<string, ReadonlyArray<SecretProviderIdentity>>> = {},
   /** Holds every listing until it opens. */
   gate?: Deferred.Deferred<void>,
+  /** Accounts with a service account token, used without asking anyone. */
+  unattended: ReadonlyArray<string> = [],
 ) => {
+  const config = (account: string) =>
+    unattended.includes(account) ? { account, serviceAccountToken: `ops_${account}` } : { account };
   const calls = {
     list: 0,
     read: [] as Array<string>,
@@ -167,7 +178,13 @@ const makeService = (
       supportsLogins: true,
     }),
     read: (_config, references) => Effect.succeed(references.map(() => undefined)),
+    unattended: ({ serviceAccountToken }) => serviceAccountToken !== undefined,
     logins: {
+      // `op://<account>/<id>` names a login of that account.
+      lookup: ({ account }, reference) =>
+        Effect.sync(() =>
+          (listed[account] ?? []).find((login) => reference === `op://${account}/${login.id}`),
+        ),
       list: ({ account }) =>
         Effect.gen(function* () {
           // What the account holds when the listing starts, as with a real provider.
@@ -217,6 +234,12 @@ const makeService = (
         }),
     },
     identities: {
+      lookup: ({ account }, reference) =>
+        Effect.sync(() =>
+          (identities[account] ?? []).find(
+            (identity) => reference === `op://${account}/${identity.id}`,
+          ),
+        ),
       list: ({ account }) =>
         Effect.sync(() => {
           calls.identityList++;
@@ -233,8 +256,8 @@ const makeService = (
     Layer.provideMerge(
       Settings.layerTest({
         secretProviders: {
-          [work]: { kind, label: "Work", config: { account: "work" } },
-          [personal]: { kind, label: "Personal", config: { account: "personal" } },
+          [work]: { kind, label: "Work", config: config("work") },
+          [personal]: { kind, label: "Personal", config: config("personal") },
         },
         browserLogins,
       }),
@@ -249,9 +272,9 @@ describe("BrowserLogins", () => {
     const { layer, calls } = makeService({ work: [grafana], personal: [github] }, bothProviders);
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
-      const first = yield* logins.candidates("https://grafana.example.com/login");
+      const first = yield* logins.candidates("https://grafana.example.com/login", "all");
       assert.deepStrictEqual(first.logins, [{ ...grafana, id: "work/g1", account: "Work" }]);
-      const second = yield* logins.candidates("https://github.com/login");
+      const second = yield* logins.candidates("https://github.com/login", "all");
       assert.deepStrictEqual(second.logins, [
         { ...github, id: "personal/h1", account: "Personal" },
       ]);
@@ -271,7 +294,9 @@ describe("BrowserLogins", () => {
       const logins = yield* BrowserLogins.BrowserLogins;
       // Each request runs until it waits, so all five arrive before any listing ends.
       const requests = yield* Effect.forEach(Array.from({ length: 5 }), () =>
-        logins.candidates("https://github.com/").pipe(Effect.forkChild({ startImmediately: true })),
+        logins
+          .candidates("https://github.com/", "all")
+          .pipe(Effect.forkChild({ startImmediately: true })),
       );
       yield* Deferred.await(calls.listing);
       yield* Deferred.succeed(gate, undefined);
@@ -293,7 +318,7 @@ describe("BrowserLogins", () => {
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
       const early = yield* logins
-        .candidates("https://grafana.example.com/")
+        .candidates("https://grafana.example.com/", "all")
         .pipe(Effect.forkChild({ startImmediately: true }));
       yield* Deferred.await(calls.listing);
       // A login is saved while that listing runs.
@@ -301,12 +326,12 @@ describe("BrowserLogins", () => {
       yield* logins.invalidate;
       yield* Deferred.succeed(gate, undefined);
       assert.deepStrictEqual((yield* Fiber.join(early)).logins, []);
-      const after = yield* logins.candidates("https://grafana.example.com/");
+      const after = yield* logins.candidates("https://grafana.example.com/", "all");
       assert.deepStrictEqual(
         after.logins.map((login) => login.id),
         ["work/g1"],
       );
-      yield* logins.candidates("https://grafana.example.com/");
+      yield* logins.candidates("https://grafana.example.com/", "all");
       assert.strictEqual(calls.list, 2);
     }).pipe(Effect.provide(layer));
   });
@@ -316,11 +341,11 @@ describe("BrowserLogins", () => {
     return Effect.gen(function* () {
       const settings = yield* Settings.ServerSettingsService;
       const logins = yield* BrowserLogins.BrowserLogins;
-      const [personalLogin] = (yield* logins.candidates("https://github.com/")).logins;
+      const [personalLogin] = (yield* logins.candidates("https://github.com/", "all")).logins;
       yield* settings.updateSettings({
         browserLogins: { secretProviderIds: [work], approval: "thread" },
       });
-      const { revision } = yield* logins.candidates("https://github.com/");
+      const { revision } = yield* logins.candidates("https://github.com/", "all");
       for (const id of ["personal/h1", "stranger/h1", "h1"]) {
         const error = yield* logins
           .read(revision, { ...personalLogin!, id }, ["password"])
@@ -338,7 +363,7 @@ describe("BrowserLogins", () => {
     );
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
-      const found = yield* logins.candidates("https://grafana.example.com/");
+      const found = yield* logins.candidates("https://grafana.example.com/", "all");
       assert.deepStrictEqual(found.logins, [{ ...grafana, id: "work/g1", account: "Work" }]);
       const values = yield* logins.read(found.revision, found.logins[0]!, ["username"]);
       assert.deepStrictEqual(values, { username: "username-work" });
@@ -349,9 +374,9 @@ describe("BrowserLogins", () => {
     const { layer } = makeService({ work: [grafana] }, bothProviders);
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
-      const found = yield* logins.candidates("https://grafana.example.com/");
+      const found = yield* logins.candidates("https://grafana.example.com/", "all");
       assert.deepStrictEqual(found.logins, [{ ...grafana, id: "work/g1", account: "Work" }]);
-      assert.deepStrictEqual((yield* logins.candidates("https://github.com/")).logins, []);
+      assert.deepStrictEqual((yield* logins.candidates("https://github.com/", "all")).logins, []);
     }).pipe(Effect.provide(layer));
   });
 
@@ -359,12 +384,12 @@ describe("BrowserLogins", () => {
     const { layer } = makeService({}, bothProviders);
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
-      const error = yield* logins.candidates("https://github.com/").pipe(Effect.flip);
+      const error = yield* logins.candidates("https://github.com/", "all").pipe(Effect.flip);
       assert.strictEqual(error.reason, "unreadable");
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("is off until a provider is chosen", () => {
+  it.effect("is off until a provider is chosen, finding nothing unattended meanwhile", () => {
     const { layer } = makeService({ work: [github] });
     return Effect.gen(function* () {
       const settings = yield* Settings.ServerSettingsService;
@@ -375,47 +400,99 @@ describe("BrowserLogins", () => {
         { secretProviderId: work, secretProviderIds: [], approval: "thread" },
       ] as const) {
         yield* settings.updateSettings({ browserLogins });
-        const error = yield* logins.candidates("https://github.com/").pipe(Effect.flip);
-        assert.strictEqual(error.reason, "not_configured");
+        for (const reach of ["attended", "all"] as const) {
+          const error = yield* logins.candidates("https://github.com/", reach).pipe(Effect.flip);
+          assert.strictEqual(error.reason, "not_configured");
+        }
+        // Tried first everywhere, so a machine with nothing chosen moves on to the user.
+        const unattended = yield* logins.candidates("https://github.com/", "unattended");
+        assert.deepStrictEqual(unattended.logins, []);
+        const { escalation } = yield* logins.escalation;
+        assert.strictEqual(escalation, "device");
       }
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("asks every time, once per thread, once for all threads, or never", () => {
+  it.effect("tells a provider with a service account from one a person must approve", () => {
+    const { layer, calls } = makeService(
+      { work: [github], personal: [github] },
+      bothProviders,
+      { work: [me], personal: [partner] },
+      undefined,
+      ["work"],
+    );
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const ids = (reach: BrowserLogins.BrowserLoginReach) =>
+        logins
+          .candidates("https://github.com/", reach)
+          .pipe(Effect.map((found) => found.logins.map((login) => login.id)));
+      assert.deepStrictEqual(yield* ids("unattended"), ["work/h1"]);
+      assert.deepStrictEqual(yield* ids("attended"), ["personal/h1"]);
+      assert.deepStrictEqual(yield* ids("all"), ["work/h1", "personal/h1"]);
+      // The unattended step lists only its own providers.
+      assert.strictEqual(calls.list, 2);
+      const identities = yield* logins.identityCandidates("attended");
+      assert.deepStrictEqual(
+        identities.identities.map((identity) => identity.id),
+        ["personal/i2"],
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("finds what a reference names, only from providers of the reach asked", () => {
+    const { layer, calls } = makeService(
+      { work: [grafana], personal: [github] },
+      bothProviders,
+      { personal: [partner] },
+      undefined,
+      ["work"],
+    );
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const unattended = yield* logins.lookupLogin("op://work/g1", "unattended");
+      assert.deepStrictEqual(unattended.login, { ...grafana, id: "work/g1", account: "Work" });
+      // A login only an attended provider holds is left to a person.
+      assert.isUndefined((yield* logins.lookupLogin("op://personal/h1", "unattended")).login);
+      const attended = yield* logins.lookupLogin("op://personal/h1", "attended");
+      assert.strictEqual(attended.login?.id, "personal/h1");
+      assert.isUndefined((yield* logins.lookupLogin("op://work/missing", "all")).login);
+      const identity = yield* logins.lookupIdentity("op://personal/i2", "all");
+      assert.deepStrictEqual(identity.identity, {
+        ...partner,
+        id: "personal/i2",
+        account: "Personal",
+      });
+      // Looking up reads no secrets and lists nothing.
+      assert.deepStrictEqual(
+        { list: calls.list, read: calls.read, identityList: calls.identityList },
+        { list: 0, read: [], identityList: 0 },
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("remembers Allow for this thread for that thread, machine and kind only", () => {
     const { layer } = makeService({ work: [github] });
     return Effect.gen(function* () {
-      const settings = yield* Settings.ServerSettingsService;
       const logins = yield* BrowserLogins.BrowserLogins;
-      const setApproval = (approval: BrowserLoginApproval) =>
-        settings.updateSettings({ browserLogins: { secretProviderIds: [work], approval } });
-      const revision = () =>
-        logins.candidates("https://github.com/").pipe(Effect.map((found) => found.revision));
-
-      let at = yield* revision();
-      assert.strictEqual(yield* logins.needsApproval(at, "thread-a", "login"), "thread");
-      yield* logins.recordApproval(at, "thread-a", "login");
-      assert.isFalse(yield* logins.needsApproval(at, "thread-a", "login"));
-      assert.strictEqual(yield* logins.needsApproval(at, "thread-b", "login"), "thread");
-
-      yield* setApproval("request");
-      at = yield* revision();
-      yield* logins.recordApproval(at, "thread-a", "login");
-      assert.strictEqual(yield* logins.needsApproval(at, "thread-a", "login"), "request");
-
-      // Back to once per thread: the earlier approval is forgotten.
-      yield* setApproval("thread");
-      at = yield* revision();
-      assert.strictEqual(yield* logins.needsApproval(at, "thread-a", "login"), "thread");
-
-      yield* setApproval("application");
-      at = yield* revision();
-      assert.strictEqual(yield* logins.needsApproval(at, "thread-a", "login"), "application");
-      yield* logins.recordApproval(at, "thread-a", "login");
-      assert.isFalse(yield* logins.needsApproval(at, "thread-b", "login"));
-
-      yield* setApproval("never");
-      at = yield* revision();
-      assert.isFalse(yield* logins.needsApproval(at, "thread-c", "login"));
+      const { revision } = yield* logins.candidates("https://github.com/", "all");
+      const threadA = { threadId: "thread-a" };
+      assert.isTrue(yield* logins.needsApproval(revision, threadA, "login"));
+      yield* logins.recordApproval(revision, threadA, "login");
+      assert.isFalse(yield* logins.needsApproval(revision, threadA, "login"));
+      for (const [scope, kind] of [
+        [{ threadId: "thread-b" }, "login"],
+        // The same thread id relayed from another machine is another thread.
+        [{ threadId: "thread-a", requester: "env-remote" }, "login"],
+        [threadA, "identity"],
+        [threadA, "identityRead"],
+        [threadA, "newLogin"],
+      ] as const) {
+        assert.isTrue(yield* logins.needsApproval(revision, scope, kind));
+      }
+      const relayed = { threadId: "thread-a", requester: "env-remote" };
+      yield* logins.recordApproval(revision, relayed, "login");
+      assert.isFalse(yield* logins.needsApproval(revision, relayed, "login"));
     }).pipe(Effect.provide(layer));
   });
 
@@ -424,28 +501,23 @@ describe("BrowserLogins", () => {
     return Effect.gen(function* () {
       const settings = yield* Settings.ServerSettingsService;
       const logins = yield* BrowserLogins.BrowserLogins;
+      const threadA = { threadId: "thread-a" };
       const choose = (secretProviderIds: ReadonlyArray<SecretProviderId>) =>
         settings.updateSettings({ browserLogins: { secretProviderIds, approval: "thread" } });
-      const { revision } = yield* logins.candidates("https://github.com/");
-      yield* logins.recordApproval(revision, "thread-a", "login");
+      const { revision } = yield* logins.candidates("https://github.com/", "all");
+      yield* logins.recordApproval(revision, threadA, "login");
       yield* choose([]);
-      yield* logins.candidates("https://github.com/").pipe(Effect.flip);
+      yield* logins.candidates("https://github.com/", "all").pipe(Effect.flip);
       yield* choose([work]);
-      const again = yield* logins.candidates("https://github.com/");
+      const again = yield* logins.candidates("https://github.com/", "all");
       assert.notStrictEqual(again.revision, revision);
-      assert.strictEqual(
-        yield* logins.needsApproval(again.revision, "thread-a", "login"),
-        "thread",
-      );
+      assert.isTrue(yield* logins.needsApproval(again.revision, threadA, "login"));
 
-      yield* logins.recordApproval(again.revision, "thread-a", "login");
+      yield* logins.recordApproval(again.revision, threadA, "login");
       yield* choose([work, personal]);
       yield* logins.check(again.revision).pipe(Effect.flip);
-      const widened = yield* logins.candidates("https://github.com/");
-      assert.strictEqual(
-        yield* logins.needsApproval(widened.revision, "thread-a", "login"),
-        "thread",
-      );
+      const widened = yield* logins.candidates("https://github.com/", "all");
+      assert.isTrue(yield* logins.needsApproval(widened.revision, threadA, "login"));
     }).pipe(Effect.provide(layer));
   });
 
@@ -461,60 +533,43 @@ describe("BrowserLogins", () => {
           },
         });
       yield* useToken("ops_first");
-      const first = yield* logins.candidates("https://github.com/");
-      yield* logins.recordApproval(first.revision, "thread-a", "login");
+      const first = yield* logins.candidates("https://github.com/", "unattended");
+      yield* logins.recordApproval(first.revision, { threadId: "thread-a" }, "login");
 
       yield* useToken("ops_second");
       yield* logins.check(first.revision).pipe(Effect.flip);
-      const second = yield* logins.candidates("https://github.com/");
-      assert.strictEqual(
-        yield* logins.needsApproval(second.revision, "thread-a", "login"),
-        "thread",
+      const second = yield* logins.candidates("https://github.com/", "unattended");
+      assert.isTrue(
+        yield* logins.needsApproval(second.revision, { threadId: "thread-a" }, "login"),
       );
       assert.strictEqual(calls.list, 2);
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("rejects an answer begun before the setting changed, even if it changed back", () => {
-    const { layer } = makeService({ work: [github] });
-    return Effect.gen(function* () {
-      const settings = yield* Settings.ServerSettingsService;
-      const logins = yield* BrowserLogins.BrowserLogins;
-      const setApproval = (approval: BrowserLoginApproval) =>
-        settings.updateSettings({ browserLogins: { secretProviderIds: [work], approval } });
-      const { revision } = yield* logins.candidates("https://github.com/");
-      yield* setApproval("request");
-      yield* logins.candidates("https://github.com/");
-      yield* setApproval("thread");
-      yield* logins.recordApproval(revision, "thread-a", "login").pipe(Effect.flip);
-      yield* logins.check(revision).pipe(Effect.flip);
-      const now = yield* logins.candidates("https://github.com/");
-      assert.strictEqual(yield* logins.needsApproval(now.revision, "thread-a", "login"), "thread");
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect.each([
-    // The user widens the setting while the "every login" prompt is open.
-    ["request", "application"],
-    // The user turns asking back on while a fill that was not asked about is under way.
-    ["never", "thread"],
-  ] as const)("rejects steps begun under %s once the setting changed to %s", ([from, to]) => {
-    const { layer } = makeService({ work: [github] });
-    return Effect.gen(function* () {
-      const settings = yield* Settings.ServerSettingsService;
-      const logins = yield* BrowserLogins.BrowserLogins;
-      const setApproval = (approval: BrowserLoginApproval) =>
-        settings.updateSettings({ browserLogins: { secretProviderIds: [work], approval } });
-      yield* setApproval(from);
-      const { revision, logins: found } = yield* logins.candidates("https://github.com/");
-      yield* setApproval(to);
-      yield* logins.recordApproval(revision, "thread-a", "login").pipe(Effect.flip);
-      yield* logins.read(revision, found[0]!, ["password"]).pipe(Effect.flip);
-      yield* logins.check(revision).pipe(Effect.flip);
-      const now = yield* logins.candidates("https://github.com/");
-      assert.strictEqual(yield* logins.needsApproval(now.revision, "thread-b", "login"), to);
-    }).pipe(Effect.provide(layer));
-  });
+  it.effect(
+    "rejects steps begun before the escalation setting changed, even if it changed back",
+    () => {
+      const { layer } = makeService({ work: [github] });
+      return Effect.gen(function* () {
+        const settings = yield* Settings.ServerSettingsService;
+        const logins = yield* BrowserLogins.BrowserLogins;
+        const escalate = (escalation: "device" | "refuse") =>
+          settings.updateSettings({
+            browserLogins: { secretProviderIds: [work], approval: "thread", escalation },
+          });
+        const { revision, logins: found } = yield* logins.candidates("https://github.com/", "all");
+        yield* escalate("refuse");
+        assert.strictEqual((yield* logins.escalation).escalation, "refuse");
+        yield* escalate("device");
+        yield* logins.recordApproval(revision, { threadId: "thread-a" }, "login").pipe(Effect.flip);
+        yield* logins.read(revision, found[0]!, ["password"]).pipe(Effect.flip);
+        yield* logins.check(revision).pipe(Effect.flip);
+        const now = yield* logins.escalation;
+        assert.notStrictEqual(now.revision, revision);
+        assert.strictEqual(now.escalation, "device");
+      }).pipe(Effect.provide(layer));
+    },
+  );
 });
 
 describe("BrowserLogins identities", () => {
@@ -525,14 +580,14 @@ describe("BrowserLogins identities", () => {
     });
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
-      const found = yield* logins.identityCandidates("identity");
+      const found = yield* logins.identityCandidates("all");
       assert.deepStrictEqual(found.identities, [
         { ...me, id: "work/i1", account: "Work" },
         { ...partner, id: "personal/i2", account: "Personal" },
       ]);
-      yield* logins.identityCandidates("identityRead");
+      yield* logins.identityCandidates("attended");
       // Identities have their own list, so listing logins did not list them, nor the reverse.
-      yield* logins.candidates("https://grafana.example.com/");
+      yield* logins.candidates("https://grafana.example.com/", "all");
       assert.deepStrictEqual(
         { list: calls.list, read: calls.read, identityList: calls.identityList },
         { list: 2, read: [], identityList: 2 },
@@ -554,78 +609,10 @@ describe("BrowserLogins identities", () => {
     const { layer } = makeService({}, bothProviders, { personal: [partner] });
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
-      const found = yield* logins.identityCandidates("identity");
+      const found = yield* logins.identityCandidates("all");
       assert.deepStrictEqual(
         found.identities.map((identity) => identity.id),
         ["personal/i2"],
-      );
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("approves logins, identity fills and identity reads each on their own", () => {
-    const { layer } = makeService({ work: [github] }, undefined, { work: [me] });
-    return Effect.gen(function* () {
-      const logins = yield* BrowserLogins.BrowserLogins;
-      const { revision } = yield* logins.identityCandidates("identity");
-      yield* logins.recordApproval(revision, "thread-a", "login");
-      assert.strictEqual(yield* logins.needsApproval(revision, "thread-a", "identity"), "thread");
-      yield* logins.recordApproval(revision, "thread-a", "identity");
-      assert.isFalse(yield* logins.needsApproval(revision, "thread-a", "identity"));
-      // Reading has its own setting, which asks every time unless the user chose otherwise.
-      yield* logins.recordApproval(revision, "thread-a", "identityRead");
-      assert.strictEqual(
-        yield* logins.needsApproval(revision, "thread-a", "identityRead"),
-        "request",
-      );
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("showing identities to the agent can be turned off, apart from filling them", () => {
-    const { layer, calls } = makeService(
-      { work: [github] },
-      { secretProviderIds: [work], approval: "never", identityReadApproval: "off" },
-      { work: [me] },
-    );
-    return Effect.gen(function* () {
-      const logins = yield* BrowserLogins.BrowserLogins;
-      const off = yield* logins.identityCandidates("identityRead").pipe(Effect.flip);
-      assert.strictEqual(off.reason, "not_configured");
-      assert.include(off.message, "preview_fill_identity");
-      // Nothing was listed for a read that cannot happen.
-      assert.strictEqual(calls.identityList, 0);
-      const { revision } = yield* logins.identityCandidates("identity");
-      assert.isFalse(yield* logins.needsApproval(revision, "thread-a", "identity"));
-      const refused = yield* logins
-        .needsApproval(revision, "thread-a", "identityRead")
-        .pipe(Effect.flip);
-      assert.strictEqual(refused.reason, "not_configured");
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("changing the identity read setting forgets approvals of every kind", () => {
-    const { layer } = makeService({ work: [github] }, undefined, { work: [me] });
-    return Effect.gen(function* () {
-      const settings = yield* Settings.ServerSettingsService;
-      const logins = yield* BrowserLogins.BrowserLogins;
-      const setRead = (identityReadApproval: "thread" | "request") =>
-        settings.updateSettings({
-          browserLogins: { secretProviderIds: [work], approval: "thread", identityReadApproval },
-        });
-      yield* setRead("thread");
-      const first = yield* logins.identityCandidates("identityRead");
-      yield* logins.recordApproval(first.revision, "thread-a", "login");
-      yield* logins.recordApproval(first.revision, "thread-a", "identityRead");
-
-      yield* setRead("request");
-      yield* logins.check(first.revision).pipe(Effect.flip);
-      yield* logins.readIdentity(first.revision, first.identities[0]!).pipe(Effect.flip);
-      yield* setRead("thread");
-      const now = yield* logins.identityCandidates("identityRead");
-      assert.notStrictEqual(now.revision, first.revision);
-      assert.strictEqual(yield* logins.needsApproval(now.revision, "thread-a", "login"), "thread");
-      assert.strictEqual(
-        yield* logins.needsApproval(now.revision, "thread-a", "identityRead"),
-        "thread",
       );
     }).pipe(Effect.provide(layer));
   });
@@ -633,10 +620,8 @@ describe("BrowserLogins identities", () => {
 
 describe("BrowserLogins new logins", () => {
   const signUps: BrowserNewLoginSettings = { secretProviderId: work, vault: "Sign-ups" };
-  const savingTo = (
-    newLogins: BrowserNewLoginSettings,
-    approval: BrowserLoginApproval = "thread",
-  ) => ({ secretProviderIds: [work], approval, newLogins }) as const;
+  const savingTo = (newLogins: BrowserNewLoginSettings) =>
+    ({ secretProviderIds: [work], approval: "thread", newLogins }) as const;
   const shop = {
     threadId: "thread-a",
     threadTitle: "Sign up\nfor hosting",
@@ -657,15 +642,23 @@ describe("BrowserLogins new logins", () => {
     const { layer, calls, created } = makeService({ work: [grafana] }, savingTo(signUps));
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
-      assert.deepStrictEqual((yield* logins.candidates("https://shop.test/signup")).logins, []);
+      const threadA = { threadId: "thread-a" };
+      assert.deepStrictEqual(
+        (yield* logins.candidates("https://shop.test/signup", "all")).logins,
+        [],
+      );
       const { revision, ...destination } = yield* logins.newLoginDestination(fresh);
-      assert.deepStrictEqual(destination, { account: "Work", vault: "Sign-ups" });
+      assert.deepStrictEqual(destination, {
+        account: "Work",
+        vault: "Sign-ups",
+        unattended: false,
+      });
 
-      // Approving a login fill on this thread does not approve creating one.
-      yield* logins.recordApproval(revision, "thread-a", "login");
-      assert.strictEqual(yield* logins.needsApproval(revision, "thread-a", "newLogin"), "thread");
-      yield* logins.recordApproval(revision, "thread-a", "newLogin");
-      assert.isFalse(yield* logins.needsApproval(revision, "thread-a", "newLogin"));
+      // Allowing login fills on this thread does not allow creating logins.
+      yield* logins.recordApproval(revision, threadA, "login");
+      assert.isTrue(yield* logins.needsApproval(revision, threadA, "newLogin"));
+      yield* logins.recordApproval(revision, threadA, "newLogin");
+      assert.isFalse(yield* logins.needsApproval(revision, threadA, "newLogin"));
 
       const login = {
         id: "work/n1",
@@ -686,33 +679,46 @@ describe("BrowserLogins new logins", () => {
         ],
       );
       // The list cached before the login existed is dropped, so preview_fill_login offers it now.
-      assert.deepStrictEqual((yield* logins.candidates("https://shop.test/login")).logins, [login]);
+      assert.deepStrictEqual((yield* logins.candidates("https://shop.test/login", "all")).logins, [
+        login,
+      ]);
       assert.strictEqual(calls.list, 2);
     }).pipe(Effect.provide(layer));
   });
 
   it.effect("lists a saved login at once, past a listing begun before the save", () => {
     const gate = Deferred.makeUnsafe<void>();
-    const { layer, calls } = makeService({ work: [grafana] }, savingTo(signUps, "never"), {}, gate);
+    const { layer, calls } = makeService({ work: [grafana] }, savingTo(signUps), {}, gate);
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
       const { revision } = yield* logins.newLoginDestination(fresh);
       const early = yield* logins
-        .candidates("https://shop.test/login")
+        .candidates("https://shop.test/login", "all")
         .pipe(Effect.forkChild({ startImmediately: true }));
       yield* Deferred.await(calls.listing);
       const { login } = yield* logins.createLogin(revision, shop);
       yield* Deferred.succeed(gate, undefined);
       assert.deepStrictEqual((yield* Fiber.join(early)).logins, []);
-      assert.deepStrictEqual((yield* logins.candidates("https://shop.test/login")).logins, [login]);
+      assert.deepStrictEqual(
+        (yield* logins.candidates("https://shop.test/login", "all")).logins,
+        [login],
+      );
     }).pipe(Effect.provide(layer));
   });
 
   it.effect("gives a new password only to a login this thread created", () => {
-    const { layer, renewed } = makeService({ work: [grafana] }, savingTo(signUps, "never"));
+    const { layer, renewed } = makeService(
+      { work: [grafana] },
+      savingTo(signUps),
+      {},
+      undefined,
+      ["work"],
+    );
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
-      const { revision } = yield* logins.newLoginDestination(fresh);
+      const { revision, unattended } = yield* logins.newLoginDestination(fresh);
+      // A service account saves new logins without asking anyone.
+      assert.isTrue(unattended);
       const { login } = yield* logins.createLogin(revision, shop);
       yield* logins.newLoginFilled("thread-a", login.id);
       const shorter = { length: 12, digits: true, symbols: false };
@@ -722,6 +728,7 @@ describe("BrowserLogins new logins", () => {
         vault: "Sign-ups",
         login,
         filled: true,
+        unattended: true,
       });
       assert.deepStrictEqual(
         yield* logins.regeneratePassword(revision, "thread-a", login.id, shorter),
@@ -748,7 +755,7 @@ describe("BrowserLogins new logins", () => {
   it.effect("keeps a login whose password could not be read back, and gives it to a retry", () => {
     const { layer, created, renewed, newLogins } = makeService(
       { work: [grafana] },
-      savingTo(signUps, "never"),
+      savingTo(signUps),
     );
     newLogins.printsPassword = false;
     newLogins.failedReads = 1;
@@ -797,7 +804,7 @@ describe("BrowserLogins new logins", () => {
   it.effect("a caller that gives up after the save still leaves the login to its thread", () => {
     const { layer, created, newLogins } = makeService(
       { work: [grafana] },
-      savingTo(signUps, "never"),
+      savingTo(signUps),
     );
     newLogins.printsPassword = false;
     newLogins.readGate = Deferred.makeUnsafe<void>();
@@ -832,7 +839,7 @@ describe("BrowserLogins new logins", () => {
         off.message,
         "choose where new logins are saved in Settings > Browser > Logins",
       );
-      const { revision } = yield* logins.candidates("https://shop.test/");
+      const { revision } = yield* logins.candidates("https://shop.test/", "all");
       yield* logins.createLogin(revision, shop).pipe(Effect.flip);
 
       yield* choose({ secretProviderId: personal, vault: "Sign-ups" });
@@ -850,4 +857,198 @@ describe("BrowserLogins new logins", () => {
       assert.strictEqual(created.length, 1);
     }).pipe(Effect.provide(layer));
   });
+});
+
+describe("SecretRelayDevice", () => {
+  const linkMini = { environmentId: EnvironmentId.make("env-linkmini"), label: "LinkMini" };
+  const request = (overrides: Partial<SecretRelayRequest> = {}): SecretRelayRequest => ({
+    requestId: "request-1",
+    kind: "login",
+    threadId: "thread-a",
+    threadTitle: "Deploy",
+    agent: "codex",
+    origin: "https://github.com",
+    expiresAt: 60_000,
+    ...overrides,
+  });
+  /** A values answer as plain text, so a test can compare it. */
+  const reveal = (answer: SecretRelayAnswer) =>
+    answer.type === "values"
+      ? {
+          ...answer,
+          values: Object.fromEntries(
+            Object.entries(answer.values).map(([key, value]) => [key, Redacted.value(value)]),
+          ),
+        }
+      : answer;
+
+  /** This device's server: the fake password managers, and a desktop app answering in turn. */
+  const deviceServer = (
+    service: ReturnType<typeof makeService>,
+    options: {
+      readonly available: boolean;
+      readonly answers?: Array<DesktopBrowserChannel.DesktopApproval>;
+    },
+  ) => {
+    const prompts: Array<DesktopBrowserChannel.DesktopLoginPrompt> = [];
+    const logs: Array<string> = [];
+    const channel = Layer.succeed(DesktopBrowserChannel.DesktopBrowserChannel, {
+      available: options.available,
+      awaitAttached: () => Effect.succeed(false),
+      detached: Stream.empty,
+      attached: Stream.empty,
+      isAttached: () => Effect.succeed(false),
+      endpoint: () => Effect.die("The device draws no tab here."),
+      pointer: () => Effect.void,
+      turn: () => Effect.void,
+      approveLogin: (_key, _timeoutMs, prompt) =>
+        Effect.sync(() => {
+          prompts.push(prompt);
+          return options.answers?.shift() ?? false;
+        }),
+    });
+    const layer = SecretRelayDevice.layer.pipe(
+      Layer.provideMerge(Layer.merge(service.layer, channel)),
+      Layer.provideMerge(
+        Logger.layer([Logger.map(Logger.formatJson, (line) => void logs.push(line))], {
+          mergeWithExisting: false,
+        }),
+      ),
+    );
+    return { layer, prompts, logs };
+  };
+
+  it.effect("answers unavailable when no desktop app is attached to ask", () => {
+    const service = makeService({ work: [github] });
+    const device = deviceServer(service, { available: false });
+    return Effect.gen(function* () {
+      const relay = yield* SecretRelayDevice.SecretRelayDevice;
+      const answer = yield* relay.resolve({ request: request(), requester: linkMini });
+      assert.strictEqual(answer.type, "unavailable");
+      assert.deepStrictEqual(device.prompts, []);
+      assert.deepStrictEqual(
+        {
+          list: service.calls.list,
+          read: service.calls.read,
+          identityList: service.calls.identityList,
+        },
+        { list: 0, read: [], identityList: 0 },
+      );
+    }).pipe(Effect.provide(device.layer));
+  });
+
+  it.effect(
+    "asks before reading, and remembers Allow for this thread per machine and thread",
+    () => {
+      const service = makeService({ work: [github] });
+      const device = deviceServer(service, {
+        available: true,
+        answers: ["thread", "once", "once"],
+      });
+      return Effect.gen(function* () {
+        const relay = yield* SecretRelayDevice.SecretRelayDevice;
+        const first = yield* relay.resolve({ request: request(), requester: linkMini });
+        assert.deepStrictEqual(reveal(first), {
+          type: "values",
+          item: {
+            id: "device:work/h1",
+            title: "GitHub",
+            account: "Work",
+            urls: ["https://github.com"],
+          },
+          values: { username: "username-work", password: "password-work" },
+        });
+        assert.deepStrictEqual(device.prompts, [
+          {
+            kind: "login",
+            providerLabel: "Work",
+            loginTitle: "GitHub",
+            origin: "https://github.com",
+            machine: "LinkMini",
+            threadTitle: "Deploy",
+            agent: "codex",
+          },
+        ]);
+        // Allowed for this thread on LinkMini: read again without asking.
+        yield* relay.resolve({ request: request(), requester: linkMini });
+        assert.lengthOf(device.prompts, 1);
+        // The same thread id from another machine, and another thread, are asked about.
+        const rw = { environmentId: EnvironmentId.make("env-rw"), label: "RW" };
+        yield* relay.resolve({ request: request(), requester: rw });
+        yield* relay.resolve({ request: request({ threadId: "thread-b" }), requester: linkMini });
+        assert.lengthOf(device.prompts, 3);
+        assert.lengthOf(service.calls.read, 4);
+        // Values leave as redacted strings and never reach a log.
+        assert.isTrue(first.type === "values" && Redacted.isRedacted(first.values.password));
+        assert.isFalse(device.logs.some((line) => line.includes("password-work")));
+      }).pipe(Effect.provide(device.layer));
+    },
+  );
+
+  it.effect("offers device ids to choose from, and reads only the one chosen once allowed", () => {
+    const service = makeService({ work: [github], personal: [github] }, bothProviders);
+    const device = deviceServer(service, { available: true, answers: [false, "once"] });
+    return Effect.gen(function* () {
+      const relay = yield* SecretRelayDevice.SecretRelayDevice;
+      assert.deepStrictEqual(yield* relay.resolve({ request: request(), requester: linkMini }), {
+        type: "choose",
+        candidates: [
+          { id: "device:work/h1", title: "GitHub", account: "Work" },
+          { id: "device:personal/h1", title: "GitHub", account: "Personal" },
+        ],
+      });
+      const chosen = request({ item: "device:personal/h1" });
+      assert.deepStrictEqual(yield* relay.resolve({ request: chosen, requester: linkMini }), {
+        type: "denied",
+      });
+      assert.deepStrictEqual(service.calls.read, []);
+      const answer = yield* relay.resolve({ request: chosen, requester: linkMini });
+      assert.strictEqual(answer.type === "values" && answer.item.account, "Personal");
+      assert.deepStrictEqual(service.calls.read, ["personal:h1@v9"]);
+    }).pipe(Effect.provide(device.layer));
+  });
+
+  it.effect("resolves a reference, never filling a login saved for another site", () => {
+    const service = makeService({ work: [grafana, github] });
+    const device = deviceServer(service, { available: true, answers: ["once"] });
+    return Effect.gen(function* () {
+      const relay = yield* SecretRelayDevice.SecretRelayDevice;
+      const resolve = (reference: string) =>
+        relay.resolve({ request: request({ reference }), requester: linkMini });
+      const elsewhere = yield* resolve("op://work/g1");
+      assert.deepStrictEqual(elsewhere, {
+        type: "unavailable",
+        message: 'The login "Grafana" is saved for another site.',
+      });
+      assert.deepStrictEqual(yield* resolve("op://work/missing"), { type: "none" });
+      assert.deepStrictEqual(device.prompts, []);
+      assert.strictEqual((yield* resolve("op://work/h1")).type, "values");
+      assert.deepStrictEqual(service.calls.read, ["work:h1@v9"]);
+    }).pipe(Effect.provide(device.layer));
+  });
+
+  it.effect(
+    "says an identity read shows the agent the details, and asks about it on its own",
+    () => {
+      const service = makeService({ work: [github] }, undefined, { work: [me] });
+      const device = deviceServer(service, { available: true, answers: ["thread", "once"] });
+      return Effect.gen(function* () {
+        const relay = yield* SecretRelayDevice.SecretRelayDevice;
+        const identity = request({ kind: "identity", purpose: "read", origin: undefined });
+        const read = yield* relay.resolve({ request: identity, requester: linkMini });
+        assert.deepStrictEqual(reveal(read), {
+          type: "values",
+          item: { id: "device:work/i1", title: "Me", vault: "Work", account: "Work", urls: [] },
+          values: { firstName: "first-work" },
+        });
+        assert.strictEqual(device.prompts[0]?.kind, "identityRead");
+        // Allowing reads for this thread does not allow fills.
+        yield* relay.resolve({ request: { ...identity, purpose: "fill" }, requester: linkMini });
+        assert.deepStrictEqual(
+          device.prompts.map((prompt) => prompt.kind),
+          ["identityRead", "identity"],
+        );
+      }).pipe(Effect.provide(device.layer));
+    },
+  );
 });

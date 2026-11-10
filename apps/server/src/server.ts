@@ -86,6 +86,8 @@ import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as PreviewAgentActivity from "./preview/PreviewAgentActivity.ts";
 import * as BrowserLogins from "./preview/BrowserLogins.ts";
 import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
+import * as SecretRelayDevice from "./preview/SecretRelayDevice.ts";
+import * as SecretRelay from "./secrets/SecretRelay.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
 import * as ProcessRunner from "./processRunner.ts";
@@ -796,15 +798,18 @@ const layerMakeRoutes = Layer.mergeAll(
   // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.
   Layer.provide(layerPullRequestService),
   // The same activity instance RunExecutionService reports to, by layer memoization.
+  // The browser and the socket share one relay, so a device answers the call that asked.
   Layer.provide(
     ServerBrowser.layer.pipe(
-      Layer.provide(
+      Layer.provideMerge(
         Layer.mergeAll(
-          DesktopBrowserChannel.layer,
-          PreviewAgentActivity.layer,
-          BrowserLogins.layer,
+          SecretRelayDevice.layer.pipe(
+            Layer.provideMerge(Layer.mergeAll(DesktopBrowserChannel.layer, BrowserLogins.layer)),
+          ),
+          SecretRelay.layer,
         ),
       ),
+      Layer.provide(PreviewAgentActivity.layer),
     ),
   ),
   Layer.provide(PreviewBrowser.layer),

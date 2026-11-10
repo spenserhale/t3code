@@ -15,55 +15,49 @@ export type LoginApprovalPrompt = Extract<
   { readonly type: "loginApproval" }
 >;
 
+/** Allow once, allow for this thread, or false for Deny. */
+export type LoginApprovalAnswer = "once" | "thread" | false;
+
 export class LoginApprovalDialog extends Context.Service<
   LoginApprovalDialog,
   {
     /**
-     * Asks the user before an agent's tab is filled with a saved login or identity, or before an
-     * identity is shown to the agent; anything but Allow is a no. `guest` is absent for a tab the
-     * desktop does not show, such as an agent's headless tab, and for a read, which has no tab.
+     * Asks the user before an agent's tab is filled with a saved login or identity, before an
+     * identity is shown to the agent, or before either is sent to another machine. Closing the
+     * dialog, or `cancelled` aborting, is a Deny. `guest` is absent for a tab the desktop does not
+     * show, such as an agent's headless tab, and for a request with no tab.
      */
     readonly ask: (
       guest: WebContents | undefined,
       prompt: LoginApprovalPrompt,
-    ) => Effect.Effect<boolean>;
+      cancelled?: AbortSignal,
+    ) => Effect.Effect<LoginApprovalAnswer>;
   }
 >()("@t3tools/desktop/preview/LoginApprovalDialog") {}
 
 type ApprovalKind = NonNullable<LoginApprovalPrompt["kind"]>;
 
-const SCOPE_NOTE: Record<ApprovalKind, Record<LoginApprovalPrompt["scope"], string>> = {
-  login: {
-    request: "You will be asked again for every login.",
-    thread: "Allowing lets this thread fill saved logins until the app restarts.",
-    application: "Allowing lets every thread fill saved logins until the app restarts.",
-  },
-  identity: {
-    request: "You will be asked again for every identity.",
-    thread: "Allowing lets this thread fill saved identities until the app restarts.",
-    application: "Allowing lets every thread fill saved identities until the app restarts.",
-  },
-  identityRead: {
-    request: "You will be asked again every time.",
-    thread: "Allowing lets this thread see saved identities until the app restarts.",
-    application: "Allowing lets every thread see saved identities until the app restarts.",
-  },
-  newLogin: {
-    request: "You will be asked again for every new login.",
-    thread:
-      "Allowing lets this thread create logins and fill their passwords until the app restarts.",
-    application:
-      "Allowing lets every thread create logins and fill their passwords until the app restarts.",
-  },
+const THREAD_NOTE: Record<ApprovalKind, string> = {
+  login: "Allow for this thread lets it fill saved logins until the app restarts.",
+  identity: "Allow for this thread lets it fill saved identities until the app restarts.",
+  identityRead: "Allow for this thread lets it see saved identities until the app restarts.",
+  newLogin:
+    "Allow for this thread lets it create logins and fill their passwords until the app restarts.",
 };
+
+const ANSWERS: ReadonlyArray<LoginApprovalAnswer> = [false, "once", "thread"];
 
 const wording = (prompt: LoginApprovalPrompt, who: string) => {
   const site = prompt.origin ?? "a website";
   const vault = prompt.vault ? ` (${prompt.vault})` : "";
+  const from = prompt.providerLabel;
+  // A relayed request sends the item to another machine, which fills it or shows it there.
+  const to = prompt.machine;
   switch (prompt.kind ?? "login") {
     case "login":
       return {
-        message: `Fill a login from ${prompt.providerLabel}?`,
+        message:
+          to === undefined ? `Fill a login from ${from}?` : `Send a login from ${from} to ${to}?`,
         detail: [
           `${who} wants to sign in to ${site} with "${prompt.loginTitle}"${
             prompt.vault ? ` from ${prompt.vault}` : ""
@@ -73,23 +67,26 @@ const wording = (prompt: LoginApprovalPrompt, who: string) => {
       };
     case "identity":
       return {
-        message: `Fill an identity from ${prompt.providerLabel}?`,
+        message:
+          to === undefined
+            ? `Fill an identity from ${from}?`
+            : `Send an identity from ${from} to ${to}?`,
         detail: [
-          `${who} wants to fill identity "${prompt.loginTitle}"${vault} from ${prompt.providerLabel} into ${site}.`,
+          `${who} wants to fill identity "${prompt.loginTitle}"${vault} from ${from} into ${site}.`,
           "The agent can read the filled fields.",
         ],
       };
     case "identityRead":
       return {
-        message: `Show an identity from ${prompt.providerLabel} to the agent?`,
+        message: `Show an identity from ${from} to the agent${to === undefined ? "" : ` on ${to}`}?`,
         detail: [
-          `${who} wants to see identity "${prompt.loginTitle}"${vault} from ${prompt.providerLabel}.`,
+          `${who} wants to see identity "${prompt.loginTitle}"${vault} from ${from}.`,
           "The agent will see your name, birth date, email, phone and address, and so will its model provider.",
         ],
       };
     case "newLogin":
       return {
-        message: `Create a new login for ${site} in ${prompt.providerLabel}${
+        message: `Create a new login for ${site} in ${from}${
           prompt.vault ? ` / ${prompt.vault}` : ""
         } and fill its generated password?`,
         detail: [
@@ -112,36 +109,41 @@ const make = Effect.gen(function* () {
   // Several threads may ask at once; one dialog at a time keeps each answer tied to its prompt.
   const oneAtATime = yield* Semaphore.make(1);
   return LoginApprovalDialog.of({
-    ask: Effect.fn("LoginApprovalDialog.ask")(function* (guest, prompt) {
-      const who = [prompt.agent, prompt.threadTitle ? `"${prompt.threadTitle}"` : undefined]
+    ask: Effect.fn("LoginApprovalDialog.ask")(function* (guest, prompt, cancelled) {
+      const agent = [prompt.agent, prompt.threadTitle ? `"${prompt.threadTitle}"` : undefined]
         .filter(Boolean)
         .join(" in ");
-      const { message, detail } = wording(prompt, who || "An agent");
+      const who = `${agent || "An agent"}${prompt.machine === undefined ? "" : ` on ${prompt.machine}`}`;
+      const { message, detail } = wording(prompt, who);
       const expiresAt = (yield* Clock.currentTimeMillis) + prompt.timeoutMs;
       // Prompts queue behind each other; one whose call has ended is never shown, and an open one
       // closes as a Deny when the server stops waiting.
       return yield* oneAtATime.withPermits(1)(
         Effect.gen(function* () {
           const remaining = expiresAt - (yield* Clock.currentTimeMillis);
-          if (remaining <= 0) return false;
+          if (remaining <= 0 || cancelled?.aborted) return false;
           const owner =
             hostWindow(guest) ?? Option.getOrUndefined(yield* windows.focusedMainOrFirst);
           const { response } = yield* dialog.showMessageBox(
             {
-              signal: AbortSignal.timeout(remaining),
+              signal: AbortSignal.any([
+                AbortSignal.timeout(remaining),
+                ...(cancelled === undefined ? [] : [cancelled]),
+              ]),
               type: "question",
-              buttons: ["Allow", "Deny"],
+              buttons: ["Deny", "Allow once", "Allow for this thread"],
               // Deny by default, so an Enter typed into the page cannot approve.
-              defaultId: 1,
-              cancelId: 1,
+              defaultId: 0,
+              cancelId: 0,
               noLink: true,
               message,
-              detail: [...detail, SCOPE_NOTE[prompt.kind ?? "login"][prompt.scope]].join("\n\n"),
+              detail: [...detail, THREAD_NOTE[prompt.kind ?? "login"]].join("\n\n"),
             },
             owner,
           );
-          return response === 0 && (yield* Clock.currentTimeMillis) < expiresAt;
-        }).pipe(Effect.orElseSucceed(() => false)),
+          const late = (yield* Clock.currentTimeMillis) >= expiresAt || cancelled?.aborted;
+          return late ? false : (ANSWERS[response] ?? false);
+        }).pipe(Effect.orElseSucceed((): LoginApprovalAnswer => false)),
       );
     }),
   });

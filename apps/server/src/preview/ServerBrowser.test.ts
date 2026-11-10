@@ -8,15 +8,14 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { it } from "@effect/vitest";
 import {
-  type BrowserLoginApproval,
   type BrowserRecordingFrameRate,
+  type BrowserSecretEscalation,
   EnvironmentId,
   PreviewTabId,
   ProviderInstanceId,
   SecretProviderId,
   SecretProviderKind,
   ThreadId,
-  type BrowserIdentityReadApproval,
   type PreviewAutomationFillIdentityResult,
   type PreviewAutomationFillLoginResult,
   type PreviewAutomationFillNewLoginResult,
@@ -25,6 +24,8 @@ import {
   type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
   type PreviewNavStatus,
+  type SecretRelayAnswer,
+  type SecretRelayRequest,
 } from "@t3tools/contracts";
 import { defineSecretProviderDriver } from "@t3tools/secret-provider-core/server/driver";
 import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
@@ -34,10 +35,12 @@ import * as Scope from "effect/Scope";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -47,6 +50,7 @@ import { beforeEach, expect, vi } from "vite-plus/test";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
+import * as SecretRelay from "../secrets/SecretRelay.ts";
 import * as Settings from "../serverSettings.ts";
 import * as BrowserLogins from "./BrowserLogins.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
@@ -2404,19 +2408,24 @@ const realLoginBrowser = Effect.acquireRelease(
 
 /** A server whose one password manager holds a login for https://good.test and one identity. */
 const loginServer = (
-  approval: BrowserLoginApproval,
   desktopChannel: Layer.Layer<
     DesktopChannel.DesktopBrowserChannel,
     never,
     ServerConfig.ServerConfig
   >,
-  /** What the password manager holds for a field, on its nth read. */
-  secret: (field: string, read: number) => string = (field) => `${field}-value`,
-  identityReadApproval?: BrowserIdentityReadApproval,
-  /** Whether saving a new login, or giving it a new password, shows the password. */
-  showsNewPassword = true,
+  options: {
+    /** The password manager signs in with a service account, so nobody is asked. */
+    readonly unattended?: boolean;
+    readonly escalation?: BrowserSecretEscalation;
+    /** What the password manager holds for a field, on its nth read. */
+    readonly secret?: (field: string, read: number) => string;
+    /** Whether saving a new login, or giving it a new password, shows the password. */
+    readonly showsNewPassword?: boolean;
+  } = {},
 ) => {
+  const { secret = (field: string) => `${field}-value`, showsNewPassword = true } = options;
   const reads: Array<string> = [];
+  const logs: Array<string> = [];
   const driver = defineSecretProviderDriver({
     kind: loginKind,
     definition: defineSecretProvider({
@@ -2429,6 +2438,7 @@ const loginServer = (
       supportsLogins: true,
     }),
     read: (_config, references) => Effect.succeed(references.map(() => undefined)),
+    unattended: () => options.unattended === true,
     logins: {
       list: () =>
         Effect.succeed([{ id: "g1", title: "Good", vaultId: "v1", urls: ["https://good.test"] }]),
@@ -2468,21 +2478,46 @@ const loginServer = (
         secretProviders: { [loginProvider]: { kind: loginKind, label: "Work", config: {} } },
         browserLogins: {
           secretProviderIds: [loginProvider],
-          approval,
+          approval: "thread",
           newLogins: { secretProviderId: loginProvider, vault: "Sign-ups" },
-          ...(identityReadApproval === undefined ? {} : { identityReadApproval }),
+          ...(options.escalation === undefined ? {} : { escalation: options.escalation }),
         },
       }),
     ),
   );
   return {
     reads,
+    logs,
     layer: ServerBrowser.layer.pipe(
-      Layer.provideMerge(Layer.mergeAll(desktopChannel, logins)),
+      Layer.provideMerge(Layer.mergeAll(desktopChannel, logins, SecretRelay.layer)),
       Layer.provideMerge(dependencies),
+      Layer.provideMerge(
+        Logger.layer([Logger.map(Logger.formatJson, (line) => void logs.push(line))], {
+          mergeWithExisting: false,
+        }),
+      ),
     ),
   };
 };
+
+/**
+ * The user's device, connected to the server: it answers each relayed request in turn and
+ * records what it was asked.
+ */
+const connectedDevice = (answers: ReadonlyArray<SecretRelayAnswer>) =>
+  Effect.gen(function* () {
+    const relay = yield* SecretRelay.SecretRelay;
+    const asked: Array<SecretRelayRequest> = [];
+    yield* relay.subscribe(["login", "identity"]).pipe(
+      Stream.runForEach((item) =>
+        item.type === "request"
+          ? relay.answer(item.request.requestId, answers[asked.push(item.request) - 1]!)
+          : Effect.void,
+      ),
+      Effect.forkScoped({ startImmediately: true }),
+    );
+    return asked;
+  });
 
 /** Opens an agent tab on the login page; with no desktop to draw it, it is headless. */
 const openLoginTab = Effect.gen(function* () {
@@ -2511,9 +2546,9 @@ const passwordField = (context: BrowserContext) =>
   );
 
 it.live(
-  "a headless tab is filled without asking under Don't ask, behind the same page guards",
+  "a headless tab is filled from a service account without asking, behind the same page guards",
   () => {
-    const server = loginServer("never", DesktopChannel.layer);
+    const server = loginServer(DesktopChannel.layer, { unattended: true });
     return Effect.scoped(
       Effect.gen(function* () {
         const { context } = yield* realLoginBrowser;
@@ -2564,9 +2599,11 @@ it.live(
 );
 
 it.live("refuses a password or code too short or too broken to keep out of results", () => {
-  const server = loginServer("never", DesktopChannel.layer, (field, read) =>
-    field === "password" ? (["abc", "pass\nword"][read - 1] ?? "") : `${field}-value`,
-  );
+  const server = loginServer(DesktopChannel.layer, {
+    unattended: true,
+    secret: (field, read) =>
+      field === "password" ? (["abc", "pass\nword"][read - 1] ?? "") : `${field}-value`,
+  });
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
@@ -2586,7 +2623,10 @@ it.live("refuses a password or code too short or too broken to keep out of resul
 });
 
 it.live("scrubs every password filled since the server started, however many", () => {
-  const server = loginServer("never", DesktopChannel.layer, (field, read) => `${field}-${read}`);
+  const server = loginServer(DesktopChannel.layer, {
+    unattended: true,
+    secret: (field, read) => `${field}-${read}`,
+  });
   return Effect.scoped(
     Effect.gen(function* () {
       yield* realLoginBrowser;
@@ -2605,7 +2645,7 @@ it.live("scrubs every password filled since the server started, however many", (
 });
 
 it.live("scrubs a filled password from page text before cutting it to length", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       yield* realLoginBrowser;
@@ -2641,9 +2681,10 @@ it.live("scrubs a filled password from page text before cutting it to length", (
 });
 
 it.live("scrubs a filled password in the escaped forms a log or snapshot writes it in", () => {
-  const server = loginServer("never", DesktopChannel.layer, (field) =>
-    field === "password" ? String.raw`pa"ss\w0rd  x` : `${field}-value`,
-  );
+  const server = loginServer(DesktopChannel.layer, {
+    unattended: true,
+    secret: (field) => (field === "password" ? String.raw`pa"ss\w0rd  x` : `${field}-value`),
+  });
   return Effect.scoped(
     Effect.gen(function* () {
       yield* realLoginBrowser;
@@ -2674,7 +2715,7 @@ const fillCodeAndLeave = (invoke: Effect.Success<typeof openLoginTab>["invoke"])
 it.live(
   "a page Back restores at an address that held a fill takes no images, script or recording",
   () => {
-    const server = loginServer("never", DesktopChannel.layer);
+    const server = loginServer(DesktopChannel.layer, { unattended: true });
     return Effect.scoped(
       Effect.gen(function* () {
         const { context } = yield* realLoginBrowser;
@@ -2703,7 +2744,7 @@ it.live(
 );
 
 it.live("a running recording takes no frame of a page Back restores where a fill was", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
@@ -2738,19 +2779,37 @@ it.live("a running recording takes no frame of a page Back restores where a fill
   );
 });
 
-it.live(
-  "a headless tab on a server without its desktop app refuses a login that needs approval",
-  () => {
-    const server = loginServer("thread", DesktopChannel.layer);
+it.live.each([
+  [
+    "with no device connected",
+    undefined,
+    "no T3 Code desktop app that can ask the user is connected",
+  ],
+  [
+    "when set to refuse, even with a device connected",
+    "refuse",
+    "this machine is set not to ask the user's device",
+  ],
+] as const)(
+  "a server without its desktop app refuses a login only a person can approve %s",
+  ([, escalation, reason]) => {
+    const server = loginServer(DesktopChannel.layer, escalation ? { escalation } : {});
     return Effect.scoped(
       Effect.gen(function* () {
         const { context } = yield* realLoginBrowser;
         yield* Effect.gen(function* () {
+          const asked = escalation ? yield* connectedDevice([{ type: "none" }]) : [];
           const { invoke } = yield* openLoginTab;
           const refused = yield* invoke("fillLogin").pipe(Effect.flip);
-          expect(refused.message).toContain("Nobody can approve a login on this machine.");
+          expect(refused.message).toContain(
+            `No service account on this machine can open a login for https://good.test, and ${reason}. It needs Touch ID on a connected Mac, or a service account on this machine with access to that item.`,
+          );
+          // New logins are never relayed.
           const refusedNew = yield* invoke("fillNewLogin", { username: "ada" }).pipe(Effect.flip);
-          expect(refusedNew.message).toContain("Nobody can approve a new login on this machine.");
+          expect(refusedNew.message).toContain(
+            "Saving a new login to Work needs the user's approval in the T3 Code desktop app on this machine.",
+          );
+          expect(asked).toEqual([]);
           expect(server.reads).toEqual([]);
           expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
         }).pipe(Effect.provide(server.layer));
@@ -2759,56 +2818,10 @@ it.live(
   },
 );
 
-it.live("a headless tab on a server with its desktop app asks there before filling", () => {
-  const asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }> =
-    [];
-  const server = loginServer(
-    "thread",
-    Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
-      available: true,
-      // The desktop never draws the tab.
-      awaitAttached: () => Effect.succeed(false),
-      detached: Stream.empty,
-      attached: Stream.empty,
-      isAttached: () => Effect.succeed(false),
-      endpoint: () => Effect.die("The desktop does not draw this tab."),
-      pointer: () => Effect.void,
-      turn: () => Effect.void,
-      loginFilled: () => Effect.void,
-      approveLogin: (key, _timeoutMs, prompt) =>
-        Effect.sync(() => {
-          asked.push({ key, prompt });
-          return true;
-        }),
-    }),
-  );
-  return Effect.scoped(
-    Effect.gen(function* () {
-      const { context } = yield* realLoginBrowser;
-      yield* Effect.gen(function* () {
-        const { tabId, invoke } = yield* openLoginTab;
-        const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
-        expect(filled.status).toBe("filled");
-        expect(asked).toEqual([
-          {
-            key: { threadId: scope.thread.threadId, tabId },
-            prompt: expect.objectContaining({
-              providerLabel: "Work",
-              loginTitle: "Good",
-              origin: "https://good.test",
-              scope: "thread",
-            }),
-          },
-        ]);
-        expect((yield* passwordField(context)).value).toBe("password-value");
-      }).pipe(Effect.provide(server.layer));
-    }),
-  );
-});
-
-/** A desktop app attached to the server that never draws the tab and approves every prompt. */
+/** A desktop app attached to the server that never draws the tab and answers each prompt in turn. */
 const approvingDesktop = (
   asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }>,
+  answers: ReadonlyArray<DesktopChannel.DesktopApproval> = ["once"],
 ) =>
   Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
     available: true,
@@ -2821,16 +2834,168 @@ const approvingDesktop = (
     turn: () => Effect.void,
     loginFilled: () => Effect.void,
     approveLogin: (key, _timeoutMs, prompt) =>
-      Effect.sync(() => {
-        asked.push({ key, prompt });
-        return true;
-      }),
+      Effect.sync(() => answers[asked.push({ key, prompt }) - 1] ?? answers.at(-1)!),
   });
+
+it.live(
+  "a headless tab on a server with its desktop app asks there, remembering Allow for this thread",
+  () => {
+    const asked: Array<{
+      readonly key: DesktopChannel.DesktopApprovalKey;
+      readonly prompt: object;
+    }> = [];
+    const server = loginServer(approvingDesktop(asked, ["once", "thread"]));
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { tabId, invoke } = yield* openLoginTab;
+          const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
+          expect(filled.status).toBe("filled");
+          expect(asked).toEqual([
+            {
+              key: { threadId: scope.thread.threadId, tabId },
+              prompt: {
+                kind: "login",
+                providerLabel: "Work",
+                loginTitle: "Good",
+                origin: "https://good.test",
+              },
+            },
+          ]);
+          expect((yield* passwordField(context)).value).toBe("password-value");
+          // Allow once is not remembered; Allow for this thread is, for logins only.
+          for (let fill = 0; fill < 2; fill++) {
+            yield* invoke("navigate", { url: "https://good.test/login" });
+            yield* invoke("fillLogin");
+          }
+          expect(asked).toHaveLength(2);
+          yield* invoke("navigate", { url: "https://good.test/signup" });
+          yield* invoke("fillIdentity");
+          expect(asked.map(({ prompt }) => (prompt as { kind: string }).kind)).toEqual([
+            "login",
+            "login",
+            "identity",
+          ]);
+          expect(server.reads).toEqual(["g1", "g1", "g1", "me"]);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live(
+  "a login from the user's device fills through the same page guards, after a choose round trip",
+  () => {
+    const server = loginServer(DesktopChannel.layer);
+    const item = { id: "device:work/g1", title: "Good", account: "Work" };
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const asked = yield* connectedDevice([
+            {
+              type: "choose",
+              candidates: [item, { id: "device:personal/p1", title: "Good", account: "Personal" }],
+            },
+            {
+              type: "values",
+              item: { ...item, urls: ["https://good.test"] },
+              values: {
+                username: Redacted.make("device-user"),
+                password: Redacted.make("device-secret"),
+              },
+            },
+          ]);
+          const { tabId, invoke } = yield* openLoginTab;
+          const choose = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin", {
+            requester: { threadTitle: "Deploy", provider: "codex" },
+          });
+          expect(choose).toMatchObject({
+            status: "choose",
+            candidates: [item, { account: "Personal" }],
+          });
+          const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin", {
+            login: "device:work/g1",
+          });
+          expect(filled).toEqual({
+            status: "filled",
+            tabId,
+            login: item,
+            filled: ["username", "password"],
+          });
+          expect(asked).toEqual([
+            {
+              requestId: asked[0]!.requestId,
+              kind: "login",
+              threadId: scope.thread.threadId,
+              threadTitle: "Deploy",
+              agent: "codex",
+              origin: "https://good.test",
+              fields: ["username", "password"],
+              expiresAt: asked[0]!.expiresAt,
+            },
+            expect.objectContaining({ item: "device:work/g1", origin: "https://good.test" }),
+          ]);
+          expect(yield* passwordField(context)).toEqual({
+            value: "device-secret",
+            security: "disc",
+          });
+          const refused = yield* invoke("evaluate", { expression: "1" }).pipe(Effect.flip);
+          expect(refused.message).toContain("filled a login in this page");
+          const status = yield* invoke<PreviewAutomationStatus>("status");
+          expect(status.title).toBe("[filled by password manager]");
+          // This server's own password manager was never read, and no log holds the value.
+          expect(server.reads).toEqual([]);
+          expect(server.logs.some((line) => line.includes("device-secret"))).toBe(false);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live(
+  "a login from the user's device is refused for another site, on Deny, and when it cannot answer",
+  () => {
+    const server = loginServer(DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          yield* connectedDevice([
+            {
+              type: "values",
+              item: { id: "device:work/b1", title: "Bank", urls: ["https://bank.test"] },
+              values: { username: Redacted.make("bank-user"), password: Redacted.make("bank-pw") },
+            },
+            { type: "denied" },
+            { type: "unavailable", message: "Browser logins are off." },
+          ]);
+          const { invoke } = yield* openLoginTab;
+          const messages: Array<string> = [];
+          for (let attempt = 0; attempt < 3; attempt++) {
+            messages.push((yield* invoke("fillLogin").pipe(Effect.flip)).message);
+          }
+          expect(messages).toEqual(
+            [
+              'The login "Bank" is saved for another site, so it is not filled here.',
+              "The user did not approve this login on their device.",
+              "The user's device could not answer: Browser logins are off.",
+            ].map((message) => `Preview automation fillLogin failed: ${message}`),
+          );
+          expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+          // Nothing was filled, so script still runs in the page.
+          expect(yield* invoke("evaluate", { expression: "1 + 1" })).toBe(2);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
 
 it.live("an identity fill is asked about, and leaves the page open to script and recording", () => {
   const asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }> =
     [];
-  const server = loginServer("thread", approvingDesktop(asked));
+  const server = loginServer(approvingDesktop(asked));
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
@@ -2849,13 +3014,12 @@ it.live("an identity fill is asked about, and leaves the page open to script and
         expect(asked).toEqual([
           {
             key: { threadId: scope.thread.threadId, tabId },
-            prompt: expect.objectContaining({
+            prompt: {
               kind: "identity",
               providerLabel: "Work",
               loginTitle: "Me",
               origin: "https://good.test",
-              scope: "thread",
-            }),
+            },
           },
         ]);
         const first = yield* Effect.promise(() =>
@@ -2876,7 +3040,7 @@ it.live("an identity fill is asked about, and leaves the page open to script and
 it.live("an identity is read for the agent without a tab, once the desktop app asks", () => {
   const asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }> =
     [];
-  const server = loginServer("never", approvingDesktop(asked));
+  const server = loginServer(approvingDesktop(asked));
   return Effect.gen(function* () {
     yield* ServerBrowser.ServerBrowser;
     const broker = yield* Broker.PreviewAutomationBroker;
@@ -2896,7 +3060,7 @@ it.live("an identity is read for the agent without a tab, once the desktop app a
         email: "ada@example.com",
       },
     });
-    // Reading is asked about on its own, every time by default, and names no tab or site.
+    // Reading is asked about on its own, and names no tab or site.
     expect(asked).toEqual([
       {
         key: { threadId: scope.thread.threadId },
@@ -2906,7 +3070,6 @@ it.live("an identity is read for the agent without a tab, once the desktop app a
           loginTitle: "Me",
           threadTitle: "Sign up for hosting",
           agent: "codex",
-          scope: "request",
         },
       },
     ]);
@@ -2914,13 +3077,27 @@ it.live("an identity is read for the agent without a tab, once the desktop app a
 });
 
 it.live.each([
-  ["refuses, pointing to the fill instead,", "request", false],
-  ["reads under Don't ask", "never", true],
+  ["refuses with no device connected", {}, undefined],
+  ["refuses when set to refuse, even with a device connected", { escalation: "refuse" }, []],
+  ["reads from a service account without asking", { unattended: true }, undefined],
+  ["reads from the user's device", {}, [{ firstName: "Grace" }]],
 ] as const)(
   "a server without its desktop app %s when an identity is to be shown",
-  ([, identityReadApproval, reads]) => {
-    const server = loginServer("never", DesktopChannel.layer, undefined, identityReadApproval);
+  ([, options, device]) => {
+    const server = loginServer(DesktopChannel.layer, options);
     return Effect.gen(function* () {
+      const asked =
+        device === undefined
+          ? undefined
+          : yield* connectedDevice(
+              device.map((values) => ({
+                type: "values" as const,
+                item: { id: "device:work/me", title: "Me", account: "Work", urls: [] },
+                values: Object.fromEntries(
+                  Object.entries(values).map(([key, value]) => [key, Redacted.make(value)]),
+                ),
+              })),
+            );
       yield* ServerBrowser.ServerBrowser;
       const broker = yield* Broker.PreviewAutomationBroker;
       yield* Effect.yieldNow;
@@ -2929,15 +3106,25 @@ it.live.each([
         operation: "readIdentity",
         input: {},
       });
-      if (reads) {
-        expect(yield* read).toMatchObject({ status: "read" });
+      if ("unattended" in options) {
+        expect(yield* read).toMatchObject({ status: "read", identity: { id: "work/me" } });
+        expect(server.reads).toEqual(["me"]);
+      } else if (device !== undefined && device.length > 0) {
+        expect(yield* read).toEqual({
+          status: "read",
+          identity: { id: "device:work/me", title: "Me", account: "Work" },
+          values: { firstName: "Grace", fullName: "Grace" },
+        });
+        expect(asked?.[0]).toMatchObject({ kind: "identity", purpose: "read" });
+        expect(server.reads).toEqual([]);
       } else {
         const refused = yield* read.pipe(Effect.flip);
         expect(refused.message).toContain(
-          "Nobody can approve showing an identity on this machine. Fill the built-in browser with preview_fill_identity",
+          "No service account on this machine can open an identity",
         );
+        expect(asked ?? []).toEqual([]);
+        expect(server.reads).toEqual([]);
       }
-      expect(server.reads).toEqual(reads ? ["me"] : []);
     }).pipe(Effect.provide(server.layer), Effect.scoped);
   },
 );
@@ -2966,13 +3153,11 @@ const newPasswordFields = (context: BrowserContext) =>
 it.live(
   "a retry fills a login saved before its password could be read, rather than saving another",
   () => {
-    const server = loginServer(
-      "never",
-      DesktopChannel.layer,
-      (_field, read) => (read === 2 ? "" : "generated-24"),
-      undefined,
-      false,
-    );
+    const server = loginServer(DesktopChannel.layer, {
+      unattended: true,
+      secret: (_field, read) => (read === 2 ? "" : "generated-24"),
+      showsNewPassword: false,
+    });
     return Effect.scoped(
       Effect.gen(function* () {
         const { context } = yield* realLoginBrowser;
@@ -3018,7 +3203,7 @@ it.live(
       readonly key: DesktopChannel.DesktopApprovalKey;
       readonly prompt: object;
     }> = [];
-    const server = loginServer("thread", approvingDesktop(asked));
+    const server = loginServer(approvingDesktop(asked, ["thread"]));
     return Effect.scoped(
       Effect.gen(function* () {
         const { context } = yield* realLoginBrowser;
@@ -3061,7 +3246,6 @@ it.live(
                 origin: "https://www.good.test",
                 threadTitle: "Sign up for hosting",
                 agent: "codex",
-                scope: "thread",
               },
             },
           ]);

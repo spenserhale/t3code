@@ -171,17 +171,19 @@ const fromOnePassword = (fields: ReadonlyArray<object>) =>
       Effect.provide(onePasswordItem(fields)),
     );
 
-/** A server with one identity whose fills need no approval. */
+/** A server whose service account holds one identity, so its fills need no approval. */
 const identityServer = Effect.fn("identityServer")(function* (
   values: SecretProviderIdentityValues | Effect.Effect<SecretProviderIdentityValues>,
 ) {
   const reads: Array<string> = [];
   const logins: IdentityContext["logins"] = {
-    identityCandidates: () =>
+    escalation: Effect.succeed({ revision: "0", escalation: "refuse" }),
+    identityCandidates: (reach) =>
       Effect.succeed({
         revision: "0",
-        identities: [{ id: "work/me", title: "Me", account: "Work" }],
+        identities: reach === "unattended" ? [{ id: "work/me", title: "Me", account: "Work" }] : [],
       }),
+    lookupIdentity: () => Effect.succeed({ revision: "0", identity: undefined }),
     readIdentity: (_revision, identity) =>
       Effect.suspend(() => {
         reads.push(identity.id);
@@ -191,10 +193,11 @@ const identityServer = Effect.fn("identityServer")(function* (
     recordApproval: () => Effect.void,
     check: () => Effect.void,
   };
-  const context = yield* makeIdentityContext(logins, {
-    available: false,
-    approveLogin: () => Effect.succeed(false),
-  });
+  const context = yield* makeIdentityContext(
+    logins,
+    { available: false, approveLogin: () => Effect.succeed(false) },
+    undefined,
+  );
   return { context, reads };
 });
 

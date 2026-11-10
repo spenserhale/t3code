@@ -12,10 +12,9 @@ import type {
 } from "@t3tools/secret-provider-core/server/driver";
 import {
   browserLoginProviderIds,
-  DEFAULT_BROWSER_IDENTITY_READ_APPROVAL,
-  type BrowserIdentityReadApproval,
-  type BrowserLoginApproval,
+  DEFAULT_BROWSER_SECRET_ESCALATION,
   type BrowserNewLoginSettings,
+  type BrowserSecretEscalation,
   type SecretProviderId,
   type ServerSettings,
 } from "@t3tools/contracts";
@@ -61,6 +60,19 @@ export interface BrowserIdentityCandidate extends SecretProviderIdentity {
 /** What a prompt allows: filling a login, filling an identity, or showing one to the agent. */
 export type BrowserApprovalKind = "login" | "identity" | "identityRead" | "newLogin";
 
+/**
+ * Which chosen providers a step uses. Unattended ones, such as a service account, are used without
+ * asking; attended ones need a person to approve, on this machine or on the user's device.
+ */
+export type BrowserLoginReach = "unattended" | "attended" | "all";
+
+/** Who "Allow for this thread" was given to. */
+export interface BrowserApprovalScope {
+  readonly threadId: string;
+  /** The environment a relayed request came from; absent for this server's own threads. */
+  readonly requester?: string | undefined;
+}
+
 /** A login to save for a sign-up, in the vault the user chose for new logins. */
 export interface BrowserNewLogin {
   readonly threadId: string;
@@ -81,13 +93,31 @@ export interface BrowserNewPassword {
 export class BrowserLogins extends Context.Service<
   BrowserLogins,
   {
-    /** Saved logins whose websites cover `pageUrl`, from every chosen provider that could list. */
-    readonly candidates: (pageUrl: string) => Effect.Effect<
-      {
-        /** Names the settings these logins came from; later steps fail once they change at all. */
-        readonly revision: string;
-        readonly logins: ReadonlyArray<BrowserLoginCandidate>;
-      },
+    /**
+     * Where requests no unattended provider answers go, and the revision that names the settings
+     * now. Later steps given the revision fail once the settings change at all.
+     */
+    readonly escalation: Effect.Effect<
+      { readonly revision: string; readonly escalation: BrowserSecretEscalation },
+      BrowserLoginError
+    >;
+    /**
+     * Saved logins whose websites cover `pageUrl`, from the chosen providers of that reach that
+     * could list. With nothing chosen, unattended reach finds none and the others fail.
+     */
+    readonly candidates: (
+      pageUrl: string,
+      reach: BrowserLoginReach,
+    ) => Effect.Effect<
+      { readonly revision: string; readonly logins: ReadonlyArray<BrowserLoginCandidate> },
+      BrowserLoginError
+    >;
+    /** The login a reference such as `op://Vault/Item` names, from the first provider that has it. */
+    readonly lookupLogin: (
+      reference: string,
+      reach: BrowserLoginReach,
+    ) => Effect.Effect<
+      { readonly revision: string; readonly login: BrowserLoginCandidate | undefined },
       BrowserLoginError
     >;
     readonly read: (
@@ -95,15 +125,19 @@ export class BrowserLogins extends Context.Service<
       login: BrowserLoginCandidate,
       fields: ReadonlyArray<SecretProviderLoginField>,
     ) => Effect.Effect<SecretProviderLoginValues, BrowserLoginError>;
-    /**
-     * Saved identities from every chosen provider that could list, for filling one or for
-     * showing one to the agent. Showing fails here when the user turned it off.
-     */
-    readonly identityCandidates: (kind: Exclude<BrowserApprovalKind, "login">) => Effect.Effect<
+    /** Saved identities from the chosen providers of that reach that could list. */
+    readonly identityCandidates: (reach: BrowserLoginReach) => Effect.Effect<
       {
         readonly revision: string;
         readonly identities: ReadonlyArray<BrowserIdentityCandidate>;
       },
+      BrowserLoginError
+    >;
+    readonly lookupIdentity: (
+      reference: string,
+      reach: BrowserLoginReach,
+    ) => Effect.Effect<
+      { readonly revision: string; readonly identity: BrowserIdentityCandidate | undefined },
       BrowserLoginError
     >;
     readonly readIdentity: (
@@ -111,18 +145,18 @@ export class BrowserLogins extends Context.Service<
       identity: BrowserIdentityCandidate,
     ) => Effect.Effect<SecretProviderIdentityValues, BrowserLoginError>;
     /**
-     * The prompt the user must answer before this kind of step on this thread, or false when
-     * none is due. Each kind is approved on its own.
+     * Whether a person must approve this kind of step, from an attended provider, for this
+     * thread: false once they chose "Allow for this thread" under the current settings.
      */
     readonly needsApproval: (
       revision: string,
-      threadId: string,
+      scope: BrowserApprovalScope,
       kind: BrowserApprovalKind,
-    ) => Effect.Effect<Exclude<BrowserLoginApproval, "never"> | false, BrowserLoginError>;
-    /** Records the answer to a prompt shown under `revision`, never under a newer setting. */
+    ) => Effect.Effect<boolean, BrowserLoginError>;
+    /** Remembers "Allow for this thread" given under `revision`, never under a newer setting. */
     readonly recordApproval: (
       revision: string,
-      threadId: string,
+      scope: BrowserApprovalScope,
       kind: BrowserApprovalKind,
     ) => Effect.Effect<void, BrowserLoginError>;
     /** Fails if the settings changed since `revision`, for a last check before filling. */
@@ -149,6 +183,8 @@ export class BrowserLogins extends Context.Service<
         readonly login?: BrowserLoginCandidate;
         /** Whether that login's password has reached a page, which may then hold it. */
         readonly filled?: boolean;
+        /** Saving there needs no one to approve it. */
+        readonly unattended: boolean;
       },
       BrowserLoginError
     >;
@@ -218,32 +254,31 @@ interface Source {
   /** A digest of the provider and its config: a changed config, token included, lists again. */
   readonly key: string;
   readonly config: unknown;
+  /** Reads without anyone present, such as with a service account token. */
+  readonly unattended: boolean;
   readonly logins: SecretProviderLogins;
   readonly identities?: SecretProviderIdentities;
 }
 
 interface Resolved {
-  readonly approval: BrowserLoginApproval;
-  readonly identityReadApproval: BrowserIdentityReadApproval;
+  readonly escalation: BrowserSecretEscalation;
   readonly newLogins: BrowserNewLoginSettings | undefined;
   readonly revision: string;
   readonly sources: ReadonlyArray<Source>;
+  /** Why no provider at all can be used, for steps that need one. */
+  readonly unconfigured: string | undefined;
 }
+
+const inReach = (source: Source, reach: BrowserLoginReach) =>
+  reach === "all" || source.unattended === (reach === "unattended");
 
 // Configs hold service account tokens, so the keys kept for the server's life are digests.
 const resolve = Effect.fn("BrowserLogins.resolve")(function* (
   drivers: ReadonlyArray<SecretProviderDriver>,
   digest: Digest.Digest["Service"],
   settings: ServerSettings,
-): Effect.fn.Return<Resolved, BrowserLoginError> {
+): Effect.fn.Return<Resolved> {
   const ids = [...new Set(browserLoginProviderIds(settings.browserLogins))];
-  if (ids.length === 0) {
-    return yield* new BrowserLoginError({
-      reason: "not_configured",
-      message:
-        "Browser logins are off. The user can turn them on in Settings > Browser by choosing a password manager.",
-    });
-  }
   const sources: Array<Source> = [];
   for (const id of ids) {
     const configured = settings.secretProviders[id];
@@ -256,33 +291,30 @@ const resolve = Effect.fn("BrowserLogins.resolve")(function* (
       label: driver.definition.label,
       key: yield* digest.digestHex(Digest.sha256, utf8.encode(identity)),
       config: configured.config,
+      unattended: driver.unattended?.(configured.config) ?? false,
       logins: driver.logins,
       ...(driver.identities === undefined ? {} : { identities: driver.identities }),
     });
   }
-  if (sources.length === 0) {
-    const named = ids.join(", ");
-    return yield* new BrowserLoginError({
-      reason: "not_configured",
-      message:
-        ids.length === 1
+  const named = ids.join(", ");
+  const unconfigured =
+    sources.length > 0
+      ? undefined
+      : ids.length === 0
+        ? "Browser logins are off. The user can turn them on in Settings > Browser by choosing a password manager."
+        : ids.length === 1
           ? `The password manager chosen for browser logins (${named}) is missing or cannot fill logins. The user can fix it in Settings > Browser.`
-          : `None of the password managers chosen for browser logins (${named}) can fill logins. The user can fix it in Settings > Browser.`,
-    });
-  }
-  const { approval } = settings.browserLogins;
-  const identityReadApproval =
-    settings.browserLogins.identityReadApproval ?? DEFAULT_BROWSER_IDENTITY_READ_APPROVAL;
+          : `None of the password managers chosen for browser logins (${named}) can fill logins. The user can fix it in Settings > Browser.`;
+  const escalation = settings.browserLogins.escalation ?? DEFAULT_BROWSER_SECRET_ESCALATION;
   const newLogins = settings.browserLogins.newLogins;
   return {
-    approval,
-    identityReadApproval,
+    escalation,
     newLogins,
     sources,
+    unconfigured,
     // Unusable ids count too, so one becoming usable starts a new generation.
     revision: encodeJson([
-      approval,
-      identityReadApproval,
+      escalation,
       newLogins ?? null,
       ...ids.map((id) => sources.find((source) => source.id === id)?.key ?? id),
     ]),
@@ -325,13 +357,6 @@ const itemLists = <A>(what: ItemLists<A>["what"]): ItemLists<A> => ({
   version: 0,
 });
 
-const identityReadOff = () =>
-  new BrowserLoginError({
-    reason: "not_configured",
-    message:
-      "Showing identity details to the agent is off. Fill the built-in browser with preview_fill_identity instead, or ask the user to allow it under Identity details for other browsers in Settings > Browser > Logins.",
-  });
-
 export const make = Effect.fn("BrowserLogins.make")(function* (
   drivers: ReadonlyArray<SecretProviderDriver>,
 ) {
@@ -341,24 +366,27 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   const scope = yield* Effect.scope;
   const loginLists = itemLists<SecretProviderLogin>("logins");
   const identityLists = itemLists<SecretProviderIdentity>("identities");
-  // Approvals last for the server's life. Any change to the providers, their config, or the
-  // approval settings starts a new generation and forgets them all; a step begun in an older
+  // "Allow for this thread" lasts for the server's life. Any change to the providers, their
+  // config, or these settings starts a new generation and forgets it; a step begun in an older
   // generation fails, even if the settings have since changed back.
   const approvals = new Set<string>();
   let generation = 0;
   let seenRevision: string | undefined;
-  const see = (revision: string) => {
-    if (seenRevision !== undefined && seenRevision !== revision) {
+  const see = (resolved: Resolved) => {
+    if (seenRevision !== undefined && seenRevision !== resolved.revision) {
       generation++;
       approvals.clear();
     }
-    seenRevision = revision;
+    seenRevision = resolved.revision;
+    for (const { cache } of [loginLists, identityLists]) {
+      for (const key of cache.keys()) {
+        if (!resolved.sources.some((source) => source.key === key)) cache.delete(key);
+      }
+    }
   };
-  // Settings that turn logins off count as one revision too.
   const observe = (settings: ServerSettings) =>
     resolve(drivers, digest, settings).pipe(
-      Effect.tap((resolved) => Effect.sync(() => see(resolved.revision))),
-      Effect.tapError(() => Effect.sync(() => see(""))),
+      Effect.tap((resolved) => Effect.sync(() => see(resolved))),
     );
   // Subscribed before the first read, so no change between the two is missed.
   const changes = yield* settingsService.subscribeChanges;
@@ -375,24 +403,8 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     Effect.flatMap(observe),
   );
 
-  const approvalKey = (
-    kind: BrowserApprovalKind,
-    approval: BrowserLoginApproval,
-    threadId: string,
-  ) =>
-    approval === "application"
-      ? `${kind}\u0000application`
-      : `${kind}\u0000thread\u0000${threadId}`;
-
-  const approvalMode = (
-    resolved: Resolved,
-    kind: BrowserApprovalKind,
-  ): Effect.Effect<BrowserLoginApproval, BrowserLoginError> =>
-    kind !== "identityRead"
-      ? Effect.succeed(resolved.approval)
-      : resolved.identityReadApproval === "off"
-        ? Effect.fail(identityReadOff())
-        : Effect.succeed(resolved.identityReadApproval);
+  const approvalKey = (kind: BrowserApprovalKind, scope: BrowserApprovalScope) =>
+    encodeJson([kind, scope.requester ?? null, scope.threadId]);
 
   const currentAt = (revision: string) =>
     current.pipe(
@@ -460,15 +472,12 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     }>,
   ): Effect.fn.Return<ReadonlyArray<ReadonlyArray<A>>, BrowserLoginError> {
     const now = yield* Clock.currentTimeMillis;
-    for (const key of lists.cache.keys()) {
-      if (!sources.some(({ source }) => source.key === key)) lists.cache.delete(key);
-    }
     const listed = yield* Effect.forEach(
       sources,
       ({ source, list }) => listOne(lists, source, list, now),
       { concurrency: "unbounded" },
     );
-    if (listed.every((items) => items === undefined)) {
+    if (listed.length > 0 && listed.every((items) => items === undefined)) {
       const [only, ...others] = sources;
       return yield* new BrowserLoginError({
         reason: "unreadable",
@@ -491,28 +500,82 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     return source === undefined ? undefined : { source, itemId: id.slice(slash + 1) };
   };
 
+  /**
+   * The chosen sources of a reach. Only unattended reach may come up empty when nothing usable is
+   * chosen: it is tried first everywhere, and finding nothing there moves on to the user.
+   */
+  const reachable = Effect.fn("BrowserLogins.reachable")(function* (reach: BrowserLoginReach) {
+    const resolved = yield* current;
+    if (resolved.unconfigured !== undefined && reach !== "unattended") {
+      return yield* new BrowserLoginError({
+        reason: "not_configured",
+        message: resolved.unconfigured,
+      });
+    }
+    return {
+      revision: String(generation),
+      sources: resolved.sources.filter((source) => inReach(source, reach)),
+    };
+  });
+
+  const candidate = <A extends { readonly id: string }>(source: Source, item: A) => ({
+    ...item,
+    id: `${source.id}/${item.id}`,
+    account: source.account,
+  });
+
   const candidates: BrowserLogins["Service"]["candidates"] = Effect.fn("BrowserLogins.candidates")(
-    function* (pageUrl) {
-      const resolved = yield* current;
-      const revision = String(generation);
+    function* (pageUrl, reach) {
+      const { revision, sources } = yield* reachable(reach);
       const listed = yield* listAll(
         loginLists,
-        resolved.sources.map((source) => ({ source, list: source.logins.list(source.config) })),
+        sources.map((source) => ({ source, list: source.logins.list(source.config) })),
       );
       return {
         revision,
-        logins: resolved.sources.flatMap((source, index) =>
+        logins: sources.flatMap((source, index) =>
           (listed[index] ?? [])
             .filter((login) => loginCoversPage(login.urls, pageUrl))
-            .map((login) => ({
-              ...login,
-              id: `${source.id}/${login.id}`,
-              account: source.account,
-            })),
+            .map((login) => candidate(source, login)),
         ),
       };
     },
   );
+
+  /** The first source of a reach whose driver finds what the reference names. */
+  const lookup = Effect.fn("BrowserLogins.lookup")(function* <A extends { readonly id: string }>(
+    reach: BrowserLoginReach,
+    find: (
+      source: Source,
+    ) => Effect.Effect<A | undefined, never, SecretProviderDriverServices> | undefined,
+  ) {
+    const { revision, sources } = yield* reachable(reach);
+    for (const source of sources) {
+      const finding = find(source);
+      if (finding === undefined) continue;
+      const found = yield* finding.pipe(Effect.provideContext(driverServices));
+      if (found !== undefined) return { revision, found: candidate(source, found) };
+    }
+    return { revision, found: undefined };
+  });
+
+  const lookupLogin: BrowserLogins["Service"]["lookupLogin"] = Effect.fn(
+    "BrowserLogins.lookupLogin",
+  )(function* (reference, reach) {
+    const { revision, found } = yield* lookup(reach, (source) =>
+      source.logins.lookup?.(source.config, reference),
+    );
+    return { revision, login: found };
+  });
+
+  const lookupIdentity: BrowserLogins["Service"]["lookupIdentity"] = Effect.fn(
+    "BrowserLogins.lookupIdentity",
+  )(function* (reference, reach) {
+    const { revision, found } = yield* lookup(reach, (source) =>
+      source.identities?.lookup?.(source.config, reference),
+    );
+    return { revision, identity: found };
+  });
 
   const read: BrowserLogins["Service"]["read"] = Effect.fn("BrowserLogins.read")(
     function* (revision, login, fields) {
@@ -541,16 +604,14 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
 
   const identityCandidates: BrowserLogins["Service"]["identityCandidates"] = Effect.fn(
     "BrowserLogins.identityCandidates",
-  )(function* (kind) {
-    const resolved = yield* current;
-    yield* approvalMode(resolved, kind);
-    const revision = String(generation);
-    const sources = resolved.sources.flatMap((source) =>
+  )(function* (reach) {
+    const { revision, sources: reached } = yield* reachable(reach);
+    const sources = reached.flatMap((source) =>
       source.identities === undefined
         ? []
         : [{ source, list: source.identities.list(source.config) }],
     );
-    if (sources.length === 0) {
+    if (sources.length === 0 && reached.length > 0 && reach !== "unattended") {
       return yield* new BrowserLoginError({
         reason: "not_configured",
         message:
@@ -561,11 +622,7 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     return {
       revision,
       identities: sources.flatMap(({ source }, index) =>
-        (listed[index] ?? []).map((identity) => ({
-          ...identity,
-          id: `${source.id}/${identity.id}`,
-          account: source.account,
-        })),
+        (listed[index] ?? []).map((identity) => candidate(source, identity)),
       ),
     };
   });
@@ -692,8 +749,10 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
           created.url === url &&
           created.username === username,
       )?.login.id;
-    if (id === undefined) return { revision, account: source.account, vault };
-    const { created } = yield* createdLogin(resolved, threadId, id);
+    if (id === undefined) {
+      return { revision, account: source.account, vault, unattended: source.unattended };
+    }
+    const { created, source: saved } = yield* createdLogin(resolved, threadId, id);
     const { login } = created;
     return {
       revision,
@@ -701,6 +760,7 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
       ...(login.vault ? { vault: login.vault } : {}),
       login,
       filled: created.filled,
+      unattended: saved.unattended,
     };
   });
 
@@ -779,9 +839,15 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   });
 
   return BrowserLogins.of({
+    escalation: Effect.gen(function* () {
+      const resolved = yield* current;
+      return { revision: String(generation), escalation: resolved.escalation };
+    }).pipe(Effect.withSpan("BrowserLogins.escalation")),
     candidates,
+    lookupLogin,
     read,
     identityCandidates,
+    lookupIdentity,
     readIdentity,
     newLoginDestination,
     createLogin,
@@ -797,17 +863,13 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
       yield* currentAt(revision);
     }),
     invalidate,
-    needsApproval: Effect.fn("BrowserLogins.needsApproval")(function* (revision, threadId, kind) {
-      const approval = yield* approvalMode(yield* currentAt(revision), kind);
-      if (approval === "never") return false;
-      return approval === "request" || !approvals.has(approvalKey(kind, approval, threadId))
-        ? approval
-        : false;
+    needsApproval: Effect.fn("BrowserLogins.needsApproval")(function* (revision, scope, kind) {
+      yield* currentAt(revision);
+      return !approvals.has(approvalKey(kind, scope));
     }),
-    recordApproval: Effect.fn("BrowserLogins.recordApproval")(function* (revision, threadId, kind) {
-      const approval = yield* approvalMode(yield* currentAt(revision), kind);
-      if (approval === "request" || approval === "never") return;
-      approvals.add(approvalKey(kind, approval, threadId));
+    recordApproval: Effect.fn("BrowserLogins.recordApproval")(function* (revision, scope, kind) {
+      yield* currentAt(revision);
+      approvals.add(approvalKey(kind, scope));
     }),
   });
 });

@@ -62,6 +62,14 @@ export interface SecretProviderLogins<Config = unknown> {
     fields: ReadonlyArray<SecretProviderLoginField>,
   ) => Effect.Effect<SecretProviderLoginValues | undefined, never, SecretProviderDriverServices>;
   /**
+   * Optional: the login a reference the user named, such as `op://Vault/Item`, points to, read
+   * without its secrets. `undefined` when it names no login this config can open.
+   */
+  readonly lookup?: (
+    config: Config,
+    reference: string,
+  ) => Effect.Effect<SecretProviderLogin | undefined, never, SecretProviderDriverServices>;
+  /**
    * Optional: saves a new login with a password the provider generates, so the password is never
    * on a command line. `undefined` when it was not saved. The password comes back only when the
    * save showed it; otherwise the caller reads it with `read`, keeping the saved login if that fails.
@@ -135,6 +143,11 @@ export interface SecretProviderIdentities<Config = unknown> {
     config: Config,
     identity: SecretProviderIdentity,
   ) => Effect.Effect<SecretProviderIdentityValues | undefined, never, SecretProviderDriverServices>;
+  /** Optional: the identity a reference the user named points to, without its values. */
+  readonly lookup?: (
+    config: Config,
+    reference: string,
+  ) => Effect.Effect<SecretProviderIdentity | undefined, never, SecretProviderDriverServices>;
 }
 
 export interface SecretProviderDriver {
@@ -150,6 +163,11 @@ export interface SecretProviderDriver {
   ) => Effect.Effect<ReadonlyArray<string | undefined>, never, SecretProviderDriverServices>;
   readonly logins?: SecretProviderLogins;
   readonly identities?: SecretProviderIdentities;
+  /**
+   * Optional: whether this config reads without anyone present, such as with a service account
+   * token. Configuring one is the user's approval, so it is used without asking.
+   */
+  readonly unattended?: (config: unknown) => boolean;
 }
 
 export const defineSecretProviderDriver = <Config>(driver: {
@@ -161,12 +179,16 @@ export const defineSecretProviderDriver = <Config>(driver: {
   ) => Effect.Effect<ReadonlyArray<string | undefined>, never, SecretProviderDriverServices>;
   readonly logins?: SecretProviderLogins<Config>;
   readonly identities?: SecretProviderIdentities<Config>;
+  readonly unattended?: (config: Config) => boolean;
 }): SecretProviderDriver => {
   const isConfig = Schema.is(driver.definition.configSchema);
   const logins = driver.logins;
+  const lookupLogin = logins?.lookup;
   const create = logins?.create;
   const regeneratePassword = logins?.regeneratePassword;
   const identities = driver.identities;
+  const lookupIdentity = identities?.lookup;
+  const unattended = driver.unattended;
   return {
     kind: driver.kind,
     definition: driver.definition,
@@ -174,6 +196,9 @@ export const defineSecretProviderDriver = <Config>(driver: {
       isConfig(config)
         ? driver.read(config, references)
         : Effect.succeed(references.map(() => undefined)),
+    ...(unattended === undefined
+      ? {}
+      : { unattended: (config) => isConfig(config) && unattended(config) }),
     ...(logins === undefined
       ? {}
       : {
@@ -182,6 +207,14 @@ export const defineSecretProviderDriver = <Config>(driver: {
               isConfig(config) ? logins.list(config) : Effect.sync(() => undefined),
             read: (config, login, fields) =>
               isConfig(config) ? logins.read(config, login, fields) : Effect.sync(() => undefined),
+            ...(lookupLogin === undefined
+              ? {}
+              : {
+                  lookup: (config, reference) =>
+                    isConfig(config)
+                      ? lookupLogin(config, reference)
+                      : Effect.sync(() => undefined),
+                }),
             ...(create === undefined
               ? {}
               : {
@@ -206,6 +239,14 @@ export const defineSecretProviderDriver = <Config>(driver: {
               isConfig(config) ? identities.list(config) : Effect.sync(() => undefined),
             read: (config, identity) =>
               isConfig(config) ? identities.read(config, identity) : Effect.sync(() => undefined),
+            ...(lookupIdentity === undefined
+              ? {}
+              : {
+                  lookup: (config, reference) =>
+                    isConfig(config)
+                      ? lookupIdentity(config, reference)
+                      : Effect.sync(() => undefined),
+                }),
           },
         }),
   };

@@ -47,6 +47,9 @@ export type DesktopLoginPrompt = Omit<
   "type" | "threadId" | "tabId" | "requestId" | "timeoutMs"
 >;
 
+/** Allow once, allow for this thread, or false for Deny. */
+export type DesktopApproval = "once" | "thread" | false;
+
 const LOGIN_APPROVAL_TIMEOUT = Duration.minutes(2);
 
 export class DesktopBrowserChannel extends Context.Service<
@@ -67,13 +70,13 @@ export class DesktopBrowserChannel extends Context.Service<
     readonly turn: (threadId: string, active: boolean) => Effect.Effect<void>;
     /**
      * Asks the user in a native dialog. A missing app, a closed dialog, or no answer within
-     * `timeoutMs` (at most two minutes) is a no.
+     * `timeoutMs` (at most two minutes) is a no; interrupting closes the dialog as one.
      */
     readonly approveLogin: (
       key: DesktopApprovalKey,
       timeoutMs: number,
       prompt: DesktopLoginPrompt,
-    ) => Effect.Effect<boolean>;
+    ) => Effect.Effect<DesktopApproval>;
     /**
      * Tells the desktop a login was filled into a document, or that one showed another address.
      * Written before anything sent after it, the fill's own page commands included. Never fails.
@@ -116,14 +119,14 @@ const make = Effect.gen(function* () {
         return Effect.void;
       }),
       approveLogin: Effect.fn("DesktopBrowserChannel.approveLogin")(function () {
-        return Effect.succeed(false);
+        return Effect.succeed<DesktopApproval>(false);
       }),
       loginFilled: Effect.fn("DesktopBrowserChannel.loginFilled")(function () {
         return Effect.void;
       }),
     });
   }
-  const loginApprovals = new Map<string, Deferred.Deferred<boolean>>();
+  const loginApprovals = new Map<string, Deferred.Deferred<DesktopApproval>>();
 
   const command = (message: DesktopBrowserCommandType) =>
     writeLock.withPermits(1)(
@@ -276,7 +279,7 @@ const make = Effect.gen(function* () {
     approveLogin: Effect.fn("DesktopBrowserChannel.approveLogin")(
       function* (key, timeoutMs, prompt) {
         const requestId = NodeCrypto.randomUUID();
-        const answer = yield* Deferred.make<boolean>();
+        const answer = yield* Deferred.make<DesktopApproval>();
         loginApprovals.set(requestId, answer);
         const timeout = Duration.min(Duration.millis(timeoutMs), LOGIN_APPROVAL_TIMEOUT);
         return yield* command({
@@ -288,7 +291,9 @@ const make = Effect.gen(function* () {
         }).pipe(
           Effect.andThen(Deferred.await(answer)),
           Effect.timeoutOption(timeout),
-          Effect.map((approved) => Option.getOrElse(approved, () => false)),
+          Effect.map((approved) => Option.getOrElse(approved, (): DesktopApproval => false)),
+          // Another device answered, or the call ended: the dialog must not stay open.
+          Effect.onInterrupt(() => command({ type: "loginApprovalCancel", requestId })),
           Effect.ensuring(Effect.sync(() => loginApprovals.delete(requestId))),
         );
       },
