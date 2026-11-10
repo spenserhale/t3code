@@ -13,18 +13,12 @@ import { SecretProviderId } from "./secretReference.ts";
 export const PreviewLoginField = Schema.Literals(["username", "password", "totp"]);
 export type PreviewLoginField = typeof PreviewLoginField.Type;
 
-/**
- * How often the user is asked before a login is filled, after 1Password's own approval setting.
- * `never` asks nobody, for machines no one can answer on.
- */
+/** The approval modes before `BrowserSecretEscalation`; still decoded, no longer read. */
 export const BrowserLoginApproval = Schema.Literals(["request", "thread", "application", "never"]);
 export type BrowserLoginApproval = typeof BrowserLoginApproval.Type;
 export const DEFAULT_BROWSER_LOGIN_APPROVAL: BrowserLoginApproval = "thread";
 
-/**
- * How often the user is asked before an identity's values are shown to the agent, for browsers
- * the server does not control. `off` never shows them.
- */
+/** Showing identities to the agent, before `BrowserSecretEscalation`; no longer read. */
 export const BrowserIdentityReadApproval = Schema.Literals([
   "off",
   "request",
@@ -34,6 +28,14 @@ export const BrowserIdentityReadApproval = Schema.Literals([
 ]);
 export type BrowserIdentityReadApproval = typeof BrowserIdentityReadApproval.Type;
 export const DEFAULT_BROWSER_IDENTITY_READ_APPROVAL: BrowserIdentityReadApproval = "request";
+
+/**
+ * Where a request goes that no service account on this machine can answer: the user's connected
+ * device, which asks for Touch ID, or nowhere, for machines left unattended.
+ */
+export const BrowserSecretEscalation = Schema.Literals(["device", "refuse"]);
+export type BrowserSecretEscalation = typeof BrowserSecretEscalation.Type;
+export const DEFAULT_BROWSER_SECRET_ESCALATION: BrowserSecretEscalation = "device";
 
 export const BROWSER_LOGIN_PROVIDERS_MAX = 8;
 export const BROWSER_NEW_LOGIN_VAULT_MAX_LENGTH = 256;
@@ -50,14 +52,15 @@ export const BrowserLoginSettings = Schema.Struct({
   secretProviderId: Schema.optional(SecretProviderId),
   /** The configured secret providers logins come from. None turns the feature off. */
   secretProviderIds: Schema.optional(Schema.Array(SecretProviderId)),
-  /** Also covers filling an identity into the built-in browser. */
+  // `approval` and `identityReadApproval` are no longer read; kept so older builds still decode.
   approval: BrowserLoginApproval.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_LOGIN_APPROVAL)),
   ),
-  /** Absent means `DEFAULT_BROWSER_IDENTITY_READ_APPROVAL`. */
   identityReadApproval: Schema.optional(BrowserIdentityReadApproval),
   /** Absent means agents cannot create logins. */
   newLogins: Schema.optional(BrowserNewLoginSettings),
+  /** Absent means `DEFAULT_BROWSER_SECRET_ESCALATION`. */
+  escalation: Schema.optional(BrowserSecretEscalation),
 });
 export type BrowserLoginSettings = typeof BrowserLoginSettings.Type;
 
@@ -82,6 +85,16 @@ export const browserLoginProviderIds = (
   (settings.secretProviderId === undefined ? [] : [settings.secretProviderId]);
 
 const LoginLocator = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
+const ITEM_REFERENCE = /^op:\/\/[^/]+\/[^/]+(?:\/.*)?$/;
+/** `op://Vault/Item`; anything after the item, such as a field, is ignored. */
+const ItemReference = Schema.optional(
+  TrimmedNonEmptyString.check(
+    Schema.isMaxLength(1_024),
+    Schema.makeFilter((value: string) =>
+      ITEM_REFERENCE.test(value) ? true : "Use a 1Password item reference like op://Vault/Item.",
+    ),
+  ),
+).annotate({ description: "1Password item `op://Vault/Item`, when the user named one." });
 const ApprovalTimeoutMs = Schema.optional(
   Schema.Int.check(Schema.isGreaterThan(0)).check(Schema.isLessThanOrEqualTo(180_000)),
 ).annotate({ description: "Default 120000, which includes waiting for the user to approve." });
@@ -92,6 +105,7 @@ export const PreviewAutomationFillLoginInput = Schema.Struct({
     description:
       "Login id from an earlier `choose` result. Omit to use the only login saved for this site.",
   }),
+  reference: ItemReference,
   fields: Schema.optional(Schema.Array(PreviewLoginField).check(Schema.isMaxLength(3))).annotate({
     description:
       "Default username and password. On a sign-in split over pages, fill what this page shows. `totp` fills a one-time code.",
@@ -190,6 +204,7 @@ const PREVIEW_IDENTITY_FIELDS_MAX = 40;
 export const PreviewAutomationFillIdentityInput = Schema.Struct({
   tabId: Schema.optional(PreviewTabId),
   identity: IdentityChoice,
+  reference: ItemReference,
   // The tool's description explains `fields`, so it carries no description of its own.
   fields: Schema.optional(
     Schema.Array(Schema.Struct({ locator: LoginLocator, value: PreviewIdentityValue })).check(
@@ -227,6 +242,7 @@ export type PreviewAutomationFillIdentityResult = typeof PreviewAutomationFillId
 
 export const PreviewAutomationReadIdentityInput = Schema.Struct({
   identity: IdentityChoice,
+  reference: ItemReference,
   timeoutMs: ApprovalTimeoutMs,
 });
 export type PreviewAutomationReadIdentityInput = typeof PreviewAutomationReadIdentityInput.Type;

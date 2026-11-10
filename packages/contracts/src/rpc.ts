@@ -463,6 +463,13 @@ import {
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import { AgentFeedbackAnswerInput, AgentFeedbackRequestError } from "./agentFeedback.ts";
 import {
+  SecretRelayAnswer,
+  SecretRelayAnswerInput,
+  SecretRelayResolveInput,
+  SecretRelayStreamItem,
+  SecretRelaySubscribeInput,
+} from "./secretRelay.ts";
+import {
   ProjectCloneActionInput,
   ProjectCloneActionResult,
   ProjectCloneListEvent,
@@ -662,6 +669,8 @@ export const WS_METHODS = {
   scheduledTasksRotateWebhookToken: "scheduledTasks.rotateWebhookToken",
   secretsAnswerRequest: "secrets.answerRequest",
   agentFeedbackAnswerRequest: "agentFeedback.answerRequest",
+  secretRelayAnswer: "secretRelay.answer",
+  secretRelayResolve: "secretRelay.resolve",
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
@@ -748,6 +757,7 @@ export const WS_METHODS = {
   subscribeServerLifecycle: "subscribeServerLifecycle",
   subscribeAuthAccess: "subscribeAuthAccess",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
+  subscribeSecretRelay: "subscribeSecretRelay",
 } as const;
 
 const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybinding, {
@@ -2459,6 +2469,26 @@ const WsAgentFeedbackAnswerRequestRpc = Rpc.make(WS_METHODS.agentFeedbackAnswerR
   error: Schema.Union([AgentFeedbackRequestError, EnvironmentAuthorizationError]),
 });
 
+/** A late or unknown answer is ignored: the first answer to a request wins. */
+const WsSecretRelayAnswerRpc = Rpc.make(WS_METHODS.secretRelayAnswer, {
+  payload: SecretRelayAnswerInput,
+  error: EnvironmentAuthorizationError,
+});
+
+/** Asks this device's user and reads the item here; a refusal is an `unavailable` answer. */
+const WsSecretRelayResolveRpc = Rpc.make(WS_METHODS.secretRelayResolve, {
+  payload: SecretRelayResolveInput,
+  success: SecretRelayAnswer,
+  error: EnvironmentAuthorizationError,
+});
+
+const WsSubscribeSecretRelayRpc = Rpc.make(WS_METHODS.subscribeSecretRelay, {
+  payload: SecretRelaySubscribeInput,
+  success: SecretRelayStreamItem,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
 const WsScheduledTasksListWebhookDeliveriesRpc = Rpc.make(
   WS_METHODS.scheduledTasksListWebhookDeliveries,
   {
@@ -2597,6 +2627,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksRotateWebhookTokenRpc,
   WsSecretsAnswerRequestRpc,
   WsAgentFeedbackAnswerRequestRpc,
+  WsSecretRelayAnswerRpc,
+  WsSecretRelayResolveRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,
   WsServerReportClientActivityRpc,
@@ -2735,6 +2767,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,
   WsSubscribeResourceTelemetryRpc,
+  WsSubscribeSecretRelayRpc,
   WsOrchestrationV2DispatchCommandRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2GetNativeChildWorkRpc,
