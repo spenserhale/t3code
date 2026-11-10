@@ -310,19 +310,43 @@ export const holdsFill = (page: Page, id: string) => marksOf(page).filled.has(id
 
 const REDACTED = "[filled by password manager]";
 
+// As Playwright collapses accessible names and snapshot text.
+const collapsed = (text: string) =>
+  text
+    .replace(/[\u200b\u00ad]/g, "")
+    .trim()
+    .replace(/\s+/g, " ");
+
 /**
  * A shorter secret would match ordinary words and numbers, and a line break would not survive a
  * single-line field, so the page would hold a value scrubbing cannot find. Neither is filled.
  */
-export const scrubbable = (secret: string) => secret.length >= 4 && !/[\r\n]/.test(secret);
+export const scrubbable = (secret: string) =>
+  secret.length >= 4 && collapsed(secret).length >= 4 && !/[\r\n]/.test(secret);
 
 /**
- * Replaces every occurrence of every given secret in the keys and values of something
- * page-derived. Overlapping or touching occurrences become one marker, so no part shows.
+ * The ways text can hold a secret: as is or with whitespace collapsed, each JSON-escaped (logs,
+ * snapshot names), with Playwright's `\xNN` escapes (snapshot text), URL-encoded (a form sent in
+ * the address), and with `'` doubled inside a single-quoted snapshot key.
  */
-export const scrubSecrets = <A>(value: A, secrets: Iterable<string>): A => {
-  const forms = [...new Set(secrets)].filter((secret) => secret.length > 0);
-  if (forms.length === 0) return value;
+const secretForms = (secret: string) =>
+  [secret, collapsed(secret)].flatMap((base) => {
+    const quoted = base.replace(/[\\"\p{Cc}]/gu, (char) =>
+      '\\"\b\f\n\r\t'.includes(char)
+        ? JSON.stringify(char).slice(1, -1)
+        : `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}`,
+    );
+    const encoded = [
+      new URLSearchParams([["", base]]).toString().slice(1),
+      encodeURIComponent(base.toWellFormed()),
+    ];
+    return [base, JSON.stringify(base).slice(1, -1), quoted, ...encoded].flatMap((form) => [
+      form,
+      form.replaceAll("'", "''"),
+    ]);
+  });
+
+const scrubForms = <A>(value: A, forms: ReadonlyArray<string>): A => {
   const scrubText = (text: string) => {
     const spans: Array<readonly [number, number]> = [];
     for (const form of forms) {
@@ -358,13 +382,25 @@ export const scrubSecrets = <A>(value: A, secrets: Iterable<string>): A => {
   return scrub(value) as A;
 };
 
+const formsOf = (secrets: Iterable<string>) =>
+  new Set([...secrets].flatMap(secretForms).filter((form) => form.length > 0));
+
+/**
+ * Replaces every occurrence of every given secret, in any of its forms, in the keys and values
+ * of something page-derived. Overlapping or touching occurrences become one marker.
+ */
+export const scrubSecrets = <A>(value: A, secrets: Iterable<string>): A => {
+  const forms = formsOf(secrets);
+  return forms.size === 0 ? value : scrubForms(value, [...forms]);
+};
+
 /** Every password and code filled while the server runs: any page may show one again later. */
 export const makeFilledSecrets = () => {
-  const secrets = new Set<string>();
+  let forms: ReadonlyArray<string> = [];
   return {
     remember: (values: Iterable<string>) => {
-      for (const value of values) if (value.length > 0) secrets.add(value);
+      forms = [...new Set([...forms, ...formsOf(values)])];
     },
-    scrub: <A>(value: A): A => (secrets.size === 0 ? value : scrubSecrets(value, secrets)),
+    scrub: <A>(value: A): A => (forms.length === 0 ? value : scrubForms(value, forms)),
   };
 };

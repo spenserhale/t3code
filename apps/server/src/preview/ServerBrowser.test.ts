@@ -2356,6 +2356,12 @@ const LOGIN_SITE: Partial<Record<string, string>> = {
     setTimeout(() => { this.value = ''; document.body.append('x'.repeat(19995) + value); });
   ">`,
   "/long": `<title>${"x".repeat(508)}password-value</title>`,
+  // Logs the password as JSON and names a button with it, then clears the field.
+  "/quote": `<input id="user" autocomplete="username"><input id="password" type="password" oninput="
+    console.log(JSON.stringify({ password: this.value }));
+    document.getElementById('echo').setAttribute('aria-label', this.value);
+    setTimeout(() => { this.value = ''; document.body.append('cleared'); });
+  "><button id="echo">echo</button>`,
 };
 
 /** Real headless Chromium for the mocked contexts to hand out, serving a login page. */
@@ -2577,6 +2583,29 @@ it.live("scrubs a filled password from page text before cutting it to length", (
           }
         }
         expect(JSON.stringify(shown)).not.toContain("pass");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("scrubs a filled password in the escaped forms a log or snapshot writes it in", () => {
+  const server = loginServer("never", DesktopChannel.layer, (field) =>
+    field === "password" ? String.raw`pa"ss\w0rd  x` : `${field}-value`,
+  );
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* invoke("navigate", { url: "https://good.test/quote" });
+        yield* invoke("fillLogin");
+        yield* invoke("waitFor", { text: "cleared" });
+        const snapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        const logged = snapshot.consoleEntries.map((entry) => entry.text).join("\n");
+        expect(logged).toContain("[filled by password manager]");
+        expect(logged).not.toContain("w0rd");
+        expect(snapshot.accessibilityTree).toContain("[filled by password manager]");
+        expect(snapshot.accessibilityTree).not.toContain("w0rd");
       }).pipe(Effect.provide(server.layer));
     }),
   );
