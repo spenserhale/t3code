@@ -9,7 +9,9 @@ import {
 } from "@t3tools/contracts";
 import { defineSecretProviderDriver } from "@t3tools/secret-provider-core/server/driver";
 import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
@@ -80,8 +82,10 @@ const bothProviders = { secretProviderIds: [work, personal], approval: "thread" 
 const makeService = (
   listed: Partial<Record<string, ReadonlyArray<typeof grafana | typeof github>>>,
   browserLogins: BrowserLoginSettings = { secretProviderIds: [work], approval: "thread" },
+  /** Holds every listing until it opens. */
+  gate?: Deferred.Deferred<void>,
 ) => {
-  const calls = { list: 0, read: [] as Array<string> };
+  const calls = { list: 0, read: [] as Array<string>, listing: Deferred.makeUnsafe<void>() };
   const driver = defineSecretProviderDriver({
     kind,
     definition: defineSecretProvider({
@@ -99,9 +103,12 @@ const makeService = (
     read: (_config, references) => Effect.succeed(references.map(() => undefined)),
     logins: {
       list: ({ account }) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
+          const logins = listed[account];
           calls.list++;
-          return listed[account];
+          Deferred.doneUnsafe(calls.listing, Effect.void);
+          if (gate !== undefined) yield* Deferred.await(gate);
+          return logins;
         }),
       read: ({ account }, login, fields) =>
         Effect.sync(() => {
@@ -142,6 +149,53 @@ describe("BrowserLogins", () => {
       assert.deepStrictEqual(values, { password: "password-personal" });
       // The driver gets its own login back, vault id included.
       assert.deepStrictEqual(calls.read, ["personal:h1@v9"]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("shares one listing among the requests that arrive while it runs", () => {
+    const gate = Deferred.makeUnsafe<void>();
+    const { layer, calls } = makeService({ work: [github] }, undefined, gate);
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      // Each request runs until it waits, so all five arrive before any listing ends.
+      const requests = yield* Effect.forEach(Array.from({ length: 5 }), () =>
+        logins.candidates("https://github.com/").pipe(Effect.forkChild({ startImmediately: true })),
+      );
+      yield* Deferred.await(calls.listing);
+      yield* Deferred.succeed(gate, undefined);
+      const found = yield* Fiber.joinAll(requests);
+      assert.deepStrictEqual(
+        found.map((each) => each.logins.length),
+        [1, 1, 1, 1, 1],
+      );
+      assert.strictEqual(calls.list, 1);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("never refills the cache from a listing begun before it was invalidated", () => {
+    const gate = Deferred.makeUnsafe<void>();
+    const listed: Partial<Record<string, ReadonlyArray<typeof grafana | typeof github>>> = {
+      work: [github],
+    };
+    const { layer, calls } = makeService(listed, undefined, gate);
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const early = yield* logins
+        .candidates("https://grafana.example.com/")
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(calls.listing);
+      // A login is saved while that listing runs.
+      listed.work = [github, grafana];
+      yield* logins.invalidate;
+      yield* Deferred.succeed(gate, undefined);
+      assert.deepStrictEqual((yield* Fiber.join(early)).logins, []);
+      const after = yield* logins.candidates("https://grafana.example.com/");
+      assert.deepStrictEqual(
+        after.logins.map((login) => login.id),
+        ["work/g1"],
+      );
+      yield* logins.candidates("https://grafana.example.com/");
+      assert.strictEqual(calls.list, 2);
     }).pipe(Effect.provide(layer));
   });
 
