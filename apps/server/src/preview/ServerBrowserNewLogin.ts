@@ -23,6 +23,8 @@ export interface NewLoginContext {
     BrowserLogins.BrowserLogins["Service"],
     | "newLoginDestination"
     | "createLogin"
+    | "readNewLogin"
+    | "newLoginFilled"
     | "regeneratePassword"
     | "needsApproval"
     | "recordApproval"
@@ -63,10 +65,9 @@ const summary = (login: BrowserLogins.BrowserLoginCandidate) => ({
 });
 
 /**
- * Saves a new login for the sign-up form in a tab, with a password the password manager
- * generates, then fills it into the password fields as dots. With `login`, a login made here
- * earlier gets a new password instead. The agent never sees the password, so every guard of a
- * login fill applies.
+ * Saves a login with a generated password for the sign-up form in a tab and fills it as dots.
+ * An earlier login, named or left unfilled for this site and username, gets its own password
+ * until one reached a page, then a new one. Every guard of a login fill applies.
  */
 export const fillNewLogin = async (
   context: NewLoginContext,
@@ -86,7 +87,17 @@ export const fillNewLogin = async (
     );
   }
   const page = new URL(pageUrl);
-  const destination = await step(logins.newLoginDestination(tab.threadId, input.login));
+  // Saved for the site, not one host, so the login also fills on its sign-in page.
+  const site = page.hostname.replace(/^www\./i, "");
+  const url = `${page.protocol}//${page.host.replace(/^www\./i, "")}`;
+  const destination = await step(
+    logins.newLoginDestination({
+      threadId: tab.threadId,
+      loginId: input.login,
+      url,
+      username: input.username,
+    }),
+  );
   const earlier = destination.login;
   if (earlier !== undefined && !BrowserLogins.loginCoversPage(earlier.urls, pageUrl)) {
     throw loginError(
@@ -113,9 +124,6 @@ export const fillNewLogin = async (
       "preview_evaluate ran in this page, so a password cannot be filled here. Reload the page with preview_navigate, fill in the form again, then call preview_fill_new_login.",
     );
   }
-  // Saved for the site, not one host, so the login also fills on its sign-in page.
-  const site = page.hostname.replace(/^www\./i, "");
-  const url = `${page.protocol}//${page.host.replace(/^www\./i, "")}`;
   const title = earlier?.title ?? input.title ?? site;
   const ask = await step(logins.needsApproval(destination.revision, tab.threadId, "newLogin"));
   if (ask !== false) {
@@ -162,7 +170,9 @@ export const fillNewLogin = async (
           username: input.username,
           recipe,
         })
-      : logins.regeneratePassword(destination.revision, tab.threadId, earlier.id, recipe),
+      : destination.filled
+        ? logins.regeneratePassword(destination.revision, tab.threadId, earlier.id, recipe)
+        : logins.readNewLogin(destination.revision, tab.threadId, earlier.id),
   );
   try {
     if (!scrubbable(password)) {
@@ -175,9 +185,11 @@ export const fillNewLogin = async (
       throw loginError("The page changed before the password was filled.");
     }
     await step(logins.check(destination.revision));
-    // Marked before the first write, so even a fill that fails partway blocks script here.
+    // Marked before the first write, so even a fill that fails partway blocks script here, and a
+    // later call renews the password rather than reusing one the site may have.
     await context.markFilled(document);
     context.rememberSecrets([password]);
+    await context.runPromise(logins.newLoginFilled(tab.threadId, login.id));
     const filled: Array<PreviewNewPasswordField> = [];
     for (const { field, target } of targets) {
       if (remaining() <= 0) throw loginError("The call ended before the password was filled.");
@@ -198,14 +210,14 @@ export const fillNewLogin = async (
       tabId: tab.tabId,
       login: summary(login),
       filled,
-      created: earlier === undefined,
+      created: destination.filled !== true,
     };
   } catch (cause) {
     // The login is saved by now; naming it lets a retry reuse it instead of saving another.
     const error = ServerBrowserPage.toOperationError(cause);
     throw new ServerBrowserPage.ServerBrowserOperationError(
       error.tag,
-      `${error.message} The login "${login.title}" was saved; call again with login "${login.id}" to fill it with a new password.`,
+      `${error.message} The login "${login.title}" was saved; call again with login "${login.id}" to fill it.`,
       error.detail,
     );
   }

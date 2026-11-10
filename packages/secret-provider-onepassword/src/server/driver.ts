@@ -496,30 +496,15 @@ const recipeArgument = ({ length, digits, symbols }: SecretProviderPasswordRecip
   );
 
 /**
- * The generated password from a saved item's output, or else read back with `--reveal`. Whether
- * `op` prints it or a concealment hint is unverified, so only a value the recipe could have made
- * is taken from the output.
+ * The generated password, when a saved item's output shows one. Whether `op` prints it or a
+ * concealment hint is unverified, so only a value the recipe could have made is taken.
  */
-const generatedPassword = Effect.fn("OnePasswordDriver.generatedPassword")(function* (
-  config: OnePasswordSecretProviderConfig,
-  login: SecretProviderLogin,
-  printed: string,
-  recipe: SecretProviderPasswordRecipe,
-) {
+const printedPassword = (printed: string, recipe: SecretProviderPasswordRecipe) => {
   const shown = parseLoginValues(printed, ["password"])?.password;
-  if (shown !== undefined && shown.length === recipe.length && !/\s/.test(shown)) return shown;
-  const args = itemGetArgs(login, true);
-  if (args === undefined) return undefined;
-  const result = yield* runOnePassword(config, "item", args);
-  const password =
-    result.code === 0 ? parseLoginValues(result.stdout, ["password"])?.password : undefined;
-  if (password === undefined) {
-    yield* Effect.logWarning("Could not read the new 1Password password", {
-      exitCode: result.code,
-    });
-  }
-  return password;
-});
+  return shown !== undefined && shown.length === recipe.length && !/\s/.test(shown)
+    ? shown
+    : undefined;
+};
 
 // Every value goes in `--flag=value` or a `field=value` assignment, so none can read as an option.
 const saveLogin = Effect.fn("OnePasswordDriver.saveLogin")(function* (
@@ -614,21 +599,15 @@ export const driver = defineSecretProviderDriver({
         Effect.map((listed) => (listed === undefined ? undefined : toLogins(listed))),
       ),
     read: (config, login, fields) => boundedItem("login", readLogin(config, login, fields)),
-    // The save and the read-back are bounded apart, so a slow unlock cannot strand a saved login.
     create: Effect.fn("OnePasswordDriver.create")(function* (config, login) {
       const saved = yield* boundedItem("login", saveLogin(config, login));
       if (saved === undefined) return undefined;
-      const password = yield* boundedItem(
-        "login",
-        generatedPassword(config, saved.login, saved.printed, login.recipe),
-      );
-      return password === undefined ? undefined : { login: saved.login, password };
+      return { login: saved.login, password: printedPassword(saved.printed, login.recipe) };
     }),
     regeneratePassword: Effect.fn("OnePasswordDriver.regeneratePassword")(
       function* (config, login, recipe) {
         const printed = yield* boundedItem("login", editPassword(config, login, recipe));
-        if (printed === undefined) return undefined;
-        return yield* boundedItem("login", generatedPassword(config, login, printed, recipe));
+        return printed === undefined ? undefined : { password: printedPassword(printed, recipe) };
       },
     ),
   },

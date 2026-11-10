@@ -2410,6 +2410,8 @@ const loginServer = (
   /** What the password manager holds for a field, on its nth read. */
   secret: (field: string, read: number) => string = (field) => `${field}-value`,
   identityReadApproval?: BrowserIdentityReadApproval,
+  /** Whether saving a new login, or giving it a new password, shows the password. */
+  showsNewPassword = true,
 ) => {
   const reads: Array<string> = [];
   const driver = defineSecretProviderDriver({
@@ -2430,20 +2432,22 @@ const loginServer = (
       read: (_config, login, fields) =>
         Effect.sync(() => {
           reads.push(login.id);
-          return Object.fromEntries(fields.map((field) => [field, secret(field, reads.length)]));
+          const values = fields.map((field) => [field, secret(field, reads.length)] as const);
+          // An empty value reads as one the password manager did not return.
+          return Object.fromEntries(values.filter(([, value]) => value.length > 0));
         }),
       create: (_config, { title, url, username, vault, recipe }) =>
         Effect.sync(() => {
           reads.push(`create ${title} ${url} ${username} ${recipe.length}`);
           return {
             login: { id: "n1", title, vault, vaultId: "v2", urls: [url] },
-            password: `generated-${recipe.length}`,
+            password: showsNewPassword ? `generated-${recipe.length}` : undefined,
           };
         }),
       regeneratePassword: (_config, login, recipe) =>
         Effect.sync(() => {
           reads.push(`regenerate ${login.id}@${login.vaultId} ${recipe.length}`);
-          return `renewed-${recipe.length}`;
+          return { password: showsNewPassword ? `renewed-${recipe.length}` : undefined };
         }),
     },
     identities: {
@@ -2955,6 +2959,54 @@ const newPasswordFields = (context: BrowserContext) =>
         }),
       ),
   );
+
+it.live(
+  "a retry fills a login saved before its password could be read, rather than saving another",
+  () => {
+    const server = loginServer(
+      "never",
+      DesktopChannel.layer,
+      (_field, read) => (read === 2 ? "" : "generated-24"),
+      undefined,
+      false,
+    );
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.promise(() =>
+          context.route("https://www.good.test/signup", (route) =>
+            route.fulfill({ contentType: "text/html", body: NEW_ACCOUNT_PAGE }),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const { tabId, invoke } = yield* openLoginTab;
+          yield* invoke("navigate", { url: "https://www.good.test/signup" });
+          const input = { username: "ada@example.com" };
+          const unread = yield* invoke("fillNewLogin", input).pipe(Effect.flip);
+          expect(unread.message).toContain('Call again with login "work/n1" to fill it.');
+          const filled = yield* invoke<PreviewAutomationFillNewLoginResult>("fillNewLogin", input);
+          expect(filled).toEqual({
+            status: "filled",
+            tabId,
+            login: { id: "work/n1", title: "good.test", vault: "Sign-ups", account: "Work" },
+            filled: ["password", "confirm"],
+            created: true,
+          });
+          // Saved once, then read back twice.
+          expect(server.reads).toEqual([
+            "create good.test https://good.test ada@example.com 24",
+            "n1",
+            "n1",
+          ]);
+          expect((yield* newPasswordFields(context)).map((field) => field.value)).toEqual([
+            "generated-24",
+            "generated-24",
+          ]);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
 
 it.live(
   "a new login is saved before its generated password is filled, behind the login guards",

@@ -142,6 +142,16 @@ const makeService = (
     readonly notes: string;
   }> = [];
   const renewed: Array<string> = [];
+  /** How the fake password manager answers for the logins it saved. */
+  const newLogins = {
+    /** Whether a save or a new password shows the password, as `op` may. */
+    printsPassword: true,
+    /** Reads of a saved login's password that fail before one succeeds. */
+    failedReads: 0,
+    /** Holds every read of a saved login's password until it opens. */
+    readGate: undefined as Deferred.Deferred<void> | undefined,
+    reading: Deferred.makeUnsafe<void>(),
+  };
   const driver = defineSecretProviderDriver({
     kind,
     definition: defineSecretProvider({
@@ -171,9 +181,19 @@ const makeService = (
           return own && [...own, ...saved];
         }),
       read: ({ account }, login, fields) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
           calls.read.push(`${account}:${login.id}@${login.vaultId ?? ""}`);
-          return Object.fromEntries(fields.map((field) => [field, `${field}-${account}`]));
+          if (!created.some((entry) => entry.login.id === login.id)) {
+            return Object.fromEntries(fields.map((field) => [field, `${field}-${account}`]));
+          }
+          Deferred.doneUnsafe(newLogins.reading, Effect.void);
+          if (newLogins.readGate !== undefined) yield* Deferred.await(newLogins.readGate);
+          if (newLogins.failedReads > 0) {
+            newLogins.failedReads--;
+            return undefined;
+          }
+          const renewals = renewed.filter((entry) => entry.includes(`:${login.id}@`)).length;
+          return { password: renewals === 0 ? `generated-${login.id}` : `renewed-${login.id}` };
         }),
       create: ({ account }, { title, vault, url, notes }) =>
         Effect.sync(() => {
@@ -185,12 +205,15 @@ const makeService = (
             urls: [url],
           };
           created.push({ account, login, notes });
-          return { login, password: `generated-${login.id}` };
+          return {
+            login,
+            password: newLogins.printsPassword ? `generated-${login.id}` : undefined,
+          };
         }),
       regeneratePassword: ({ account }, login, recipe) =>
         Effect.sync(() => {
           renewed.push(`${account}:${login.id}@${login.vaultId ?? ""}:${recipe.length}`);
-          return `renewed-${login.id}`;
+          return { password: newLogins.printsPassword ? `renewed-${login.id}` : undefined };
         }),
     },
     identities: {
@@ -218,7 +241,7 @@ const makeService = (
     ),
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
-  return { layer, calls, created, renewed };
+  return { layer, calls, created, renewed, newLogins };
 };
 
 describe("BrowserLogins", () => {
@@ -622,13 +645,20 @@ describe("BrowserLogins new logins", () => {
     username: "ada@example.com",
     recipe: { length: 24, digits: true, symbols: true },
   };
+  /** A call for `shop` that names no earlier login. */
+  const fresh = {
+    threadId: shop.threadId,
+    loginId: undefined,
+    url: shop.url,
+    username: shop.username,
+  };
 
   it.effect("saves a login where the user chose, lists it at once, and asks about it apart", () => {
     const { layer, calls, created } = makeService({ work: [grafana] }, savingTo(signUps));
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
       assert.deepStrictEqual((yield* logins.candidates("https://shop.test/signup")).logins, []);
-      const { revision, ...destination } = yield* logins.newLoginDestination("thread-a", undefined);
+      const { revision, ...destination } = yield* logins.newLoginDestination(fresh);
       assert.deepStrictEqual(destination, { account: "Work", vault: "Sign-ups" });
 
       // Approving a login fill on this thread does not approve creating one.
@@ -665,14 +695,16 @@ describe("BrowserLogins new logins", () => {
     const { layer, renewed } = makeService({ work: [grafana] }, savingTo(signUps, "never"));
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
-      const { revision } = yield* logins.newLoginDestination("thread-a", undefined);
+      const { revision } = yield* logins.newLoginDestination(fresh);
       const { login } = yield* logins.createLogin(revision, shop);
+      yield* logins.newLoginFilled("thread-a", login.id);
       const shorter = { length: 12, digits: true, symbols: false };
-      assert.deepStrictEqual(yield* logins.newLoginDestination("thread-a", login.id), {
+      assert.deepStrictEqual(yield* logins.newLoginDestination({ ...fresh, loginId: login.id }), {
         revision,
         account: "Work",
         vault: "Sign-ups",
         login,
+        filled: true,
       });
       assert.deepStrictEqual(
         yield* logins.regeneratePassword(revision, "thread-a", login.id, shorter),
@@ -690,9 +722,83 @@ describe("BrowserLogins new logins", () => {
           .regeneratePassword(revision, threadId, loginId, shorter)
           .pipe(Effect.flip);
         assert.include(refused.message, "Omit `login` to create a new one.");
-        yield* logins.newLoginDestination(threadId, loginId).pipe(Effect.flip);
+        yield* logins.newLoginDestination({ ...fresh, threadId, loginId }).pipe(Effect.flip);
       }
       assert.deepStrictEqual(renewed, ["work:n1@v-new:12"]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("keeps a login whose password could not be read back, and gives it to a retry", () => {
+    const { layer, created, renewed, newLogins } = makeService(
+      { work: [grafana] },
+      savingTo(signUps, "never"),
+    );
+    newLogins.printsPassword = false;
+    newLogins.failedReads = 1;
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const { revision } = yield* logins.newLoginDestination(fresh);
+      const failed = yield* logins.createLogin(revision, shop).pipe(Effect.flip);
+      assert.include(failed.message, 'Call again with login "work/n1"');
+      // The same thread, site and username continue the saved login while it was never filled.
+      const retry = yield* logins.newLoginDestination(fresh);
+      assert.deepStrictEqual([retry.login?.id, retry.filled], ["work/n1", false]);
+      assert.deepStrictEqual(yield* logins.readNewLogin(revision, "thread-a", "work/n1"), {
+        login: retry.login,
+        password: "generated-n1",
+      });
+      const named = yield* logins.newLoginDestination({ ...fresh, loginId: "work/n1" });
+      assert.deepStrictEqual([named.login?.id, named.filled], ["work/n1", false]);
+      for (const other of [
+        { ...fresh, username: "bob@example.com" },
+        { ...fresh, url: "https://other.test" },
+        { ...fresh, threadId: "thread-b" },
+      ]) {
+        assert.isUndefined((yield* logins.newLoginDestination(other)).login);
+      }
+      // Once filled, the site may hold the password: only naming the login renews it.
+      yield* logins.newLoginFilled("thread-a", "work/n1");
+      assert.isUndefined((yield* logins.newLoginDestination(fresh)).login);
+      const renewal = yield* logins.newLoginDestination({ ...fresh, loginId: "work/n1" });
+      assert.isTrue(renewal.filled);
+      // A new password that could not be read back has reached no page, so it is read next.
+      newLogins.failedReads = 1;
+      const unread = yield* logins
+        .regeneratePassword(revision, "thread-a", "work/n1", shop.recipe)
+        .pipe(Effect.flip);
+      assert.include(unread.message, 'Call again with login "work/n1"');
+      assert.isFalse((yield* logins.newLoginDestination(fresh)).filled);
+      assert.strictEqual(
+        (yield* logins.readNewLogin(revision, "thread-a", "work/n1")).password,
+        "renewed-n1",
+      );
+      assert.strictEqual(created.length, 1);
+      assert.strictEqual(renewed.length, 1);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("a caller that gives up after the save still leaves the login to its thread", () => {
+    const { layer, created, newLogins } = makeService(
+      { work: [grafana] },
+      savingTo(signUps, "never"),
+    );
+    newLogins.printsPassword = false;
+    newLogins.readGate = Deferred.makeUnsafe<void>();
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const { revision } = yield* logins.newLoginDestination(fresh);
+      const call = yield* logins
+        .createLogin(revision, shop)
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(newLogins.reading);
+      yield* Fiber.interrupt(call);
+      assert.strictEqual((yield* logins.newLoginDestination(fresh)).login?.id, "work/n1");
+      yield* Deferred.succeed(newLogins.readGate!, undefined);
+      assert.strictEqual(
+        (yield* logins.readNewLogin(revision, "thread-a", "work/n1")).password,
+        "generated-n1",
+      );
+      assert.strictEqual(created.length, 1);
     }).pipe(Effect.provide(layer));
   });
 
@@ -704,7 +810,7 @@ describe("BrowserLogins new logins", () => {
       const choose = (newLogins: BrowserNewLoginSettings) =>
         settings.updateSettings({ browserLogins: savingTo(newLogins) });
 
-      const off = yield* logins.newLoginDestination("thread-a", undefined).pipe(Effect.flip);
+      const off = yield* logins.newLoginDestination(fresh).pipe(Effect.flip);
       assert.include(
         off.message,
         "choose where new logins are saved in Settings > Browser > Logins",
@@ -713,15 +819,15 @@ describe("BrowserLogins new logins", () => {
       yield* logins.createLogin(revision, shop).pipe(Effect.flip);
 
       yield* choose({ secretProviderId: personal, vault: "Sign-ups" });
-      const unchosen = yield* logins.newLoginDestination("thread-a", undefined).pipe(Effect.flip);
+      const unchosen = yield* logins.newLoginDestination(fresh).pipe(Effect.flip);
       assert.include(unchosen.message, "is not one chosen for browser logins");
 
       yield* choose(signUps);
-      const first = yield* logins.newLoginDestination("thread-a", undefined);
+      const first = yield* logins.newLoginDestination(fresh);
       // Moving new logins to another vault starts a new generation, like any change here.
       yield* choose({ ...signUps, vault: "Other" });
       yield* logins.createLogin(first.revision, shop).pipe(Effect.flip);
-      const second = yield* logins.newLoginDestination("thread-a", undefined);
+      const second = yield* logins.newLoginDestination(fresh);
       assert.strictEqual(second.vault, "Other");
       yield* logins.createLogin(second.revision, shop);
       assert.strictEqual(created.length, 1);

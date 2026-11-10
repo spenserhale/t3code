@@ -253,16 +253,6 @@ describe("1Password logins", () => {
     vaultId: "v7",
     urls: ["https://shop.test"],
   };
-  const readBack = [
-    "--cache=false",
-    "item",
-    "--account=my.1password.com",
-    "get",
-    "new1",
-    "--vault=v7",
-    "--reveal",
-    "--format=json",
-  ];
 
   it.effect("creates a login whose password 1Password generates, never on the command line", () => {
     const op = fakeOp(() => ({ stdout: savedItem(generated) }));
@@ -292,49 +282,58 @@ describe("1Password logins", () => {
     }).pipe(Effect.provide(op.layer));
   });
 
+  // Reading the password back can fail once the login is saved, so the caller does it and the
+  // saved login is never lost with it.
   it.effect.each([
     ["no value", undefined],
     ["a concealment hint", "[use 'op item get new1 --reveal' to reveal]"],
     ["a value the recipe could not make", "hunter2"],
-  ] as const)("reads the new password back when the output shows %s", ([, shown]) => {
-    const op = fakeOp((args) =>
-      args.includes("create") ? { stdout: savedItem(shown) } : { stdout: savedItem(generated) },
-    );
-    return Effect.gen(function* () {
-      assert.deepStrictEqual(yield* driver.logins!.create!({ account }, newLogin), {
-        login: saved,
-        password: generated,
-      });
-      assert.deepStrictEqual(op.invocations[1], readBack);
-      assert.strictEqual(op.invocations.length, 2);
-    }).pipe(Effect.provide(op.layer));
-  });
-
-  it.effect("regenerates the password of a login in its vault, then reads it back", () => {
-    const shorter = { length: 12, digits: true, symbols: false };
-    const op = fakeOp((args) =>
-      args.includes("edit") ? { stdout: savedItem() } : { stdout: savedItem("abc123DEF456") },
-    );
-    return Effect.gen(function* () {
-      assert.strictEqual(
-        yield* driver.logins!.regeneratePassword!({ account }, saved, shorter),
-        "abc123DEF456",
+  ] as const)(
+    "returns the saved login without a password when the output shows %s",
+    ([, shown]) => {
+      const op = fakeOp((args) =>
+        args.includes("create") ? { stdout: savedItem(shown) } : { code: 1, stderr: "[ERROR]" },
       );
-      assert.deepStrictEqual(op.invocations, [
-        [
-          "--cache=false",
-          "item",
-          "--account=my.1password.com",
-          "edit",
-          "new1",
-          "--vault=v7",
-          "--generate-password=letters,digits,12",
-          "--format=json",
-        ],
-        readBack,
-      ]);
-    }).pipe(Effect.provide(op.layer));
-  });
+      return Effect.gen(function* () {
+        assert.deepStrictEqual(yield* driver.logins!.create!({ account }, newLogin), {
+          login: saved,
+          password: undefined,
+        });
+        assert.strictEqual(op.invocations.length, 1);
+      }).pipe(Effect.provide(op.layer));
+    },
+  );
+
+  it.effect.each([
+    ["shows the new password", "abc123DEF456", { password: "abc123DEF456" }],
+    ["shows none", undefined, { password: undefined }],
+  ] as const)(
+    "regenerates the password of a login in its vault; the output %s",
+    ([, shown, edited]) => {
+      const shorter = { length: 12, digits: true, symbols: false };
+      const op = fakeOp((args) =>
+        args.includes("edit") ? { stdout: savedItem(shown) } : { code: 1, stderr: "[ERROR]" },
+      );
+      return Effect.gen(function* () {
+        assert.deepStrictEqual(
+          yield* driver.logins!.regeneratePassword!({ account }, saved, shorter),
+          edited,
+        );
+        assert.deepStrictEqual(op.invocations, [
+          [
+            "--cache=false",
+            "item",
+            "--account=my.1password.com",
+            "edit",
+            "new1",
+            "--vault=v7",
+            "--generate-password=letters,digits,12",
+            "--format=json",
+          ],
+        ]);
+      }).pipe(Effect.provide(op.layer));
+    },
+  );
 
   it.effect("lists logins that have a website, without reading secrets", () => {
     const op = fakeOp(() => ({ stdout: listed }));
