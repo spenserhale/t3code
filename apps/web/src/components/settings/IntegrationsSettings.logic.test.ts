@@ -120,4 +120,14 @@ describe("browserLoginsWrite", () => {
       approval: "thread",
     });
   });
+
+  it("keeps where new logins are saved through other changes, until it is turned off", () => {
+    const saving = { ...current, newLogins: { secretProviderId: work, vault: "Sign-ups" } };
+    expect(browserLoginsWrite(current, { newLogins: saving.newLogins })).toEqual(saving);
+    expect(browserLoginsWrite(saving, { approval: "request" })).toEqual({
+      ...saving,
+      approval: "request",
+    });
+    expect(browserLoginsWrite(saving, { newLogins: null })).toEqual(current);
+  });
 });
