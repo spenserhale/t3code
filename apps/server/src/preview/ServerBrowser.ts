@@ -96,6 +96,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import * as SecretRelay from "../secrets/SecretRelay.ts";
 import * as BrowserLogins from "./BrowserLogins.ts";
+import * as BrowserSecretAccess from "./BrowserSecretAccess.ts";
 import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as PreviewManager from "./Manager.ts";
@@ -736,13 +737,6 @@ const make = Effect.gen(function* () {
   };
   // Scrubbed before the cut, so a filled secret crossing it cannot leave its start showing.
   const pageText = (text: string, limit: number) => filledSecrets.scrub(text).slice(0, limit);
-  const identities = Option.isNone(browserLogins)
-    ? undefined
-    : yield* ServerBrowserIdentity.makeIdentityContext(
-        browserLogins.value,
-        desktopChannel,
-        secretRelay,
-      );
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
@@ -2775,6 +2769,8 @@ const make = Effect.gen(function* () {
   const runOperation = async (
     request: PreviewAutomationRequest,
     deadlineMs: number,
+    /** Aborted once nobody waits for the response. */
+    signal?: AbortSignal,
   ): Promise<unknown> => {
     const input = request.input;
     switch (request.operation) {
@@ -2922,7 +2918,7 @@ const make = Effect.gen(function* () {
       }
       case "readIdentity":
         return ServerBrowserIdentity.readIdentity(
-          identityContext(),
+          secretContext(signal, "This server cannot use saved identities."),
           request.threadId,
           input as PreviewAutomationReadIdentityRequest,
           deadlineMs,
@@ -3003,7 +2999,7 @@ const make = Effect.gen(function* () {
             message: "A browser dialog is pending. Read preview_status.",
             reason: "dialogPending",
           });
-        return executeTabOperation(tab, request, deadlineMs);
+        return executeTabOperation(tab, request, deadlineMs, signal);
       });
     }
     return tab.control.agent(
@@ -3019,7 +3015,7 @@ const make = Effect.gen(function* () {
         tab.agentOperating = !READ_OPERATIONS.has(request.operation);
         updateFileChooserInterception(tab);
         try {
-          return await executeTabOperation(tab, request, deadlineMs);
+          return await executeTabOperation(tab, request, deadlineMs, signal);
         } finally {
           tab.agentOperating = false;
           updateFileChooserInterception(tab);
@@ -3037,23 +3033,6 @@ const make = Effect.gen(function* () {
   const IMAGE_LEFT_OUT =
     "The page loaded another document while this snapshot was taken. The password manager filled a login in this tab, so the image was left out: a page showing that login may have been on screen in between. Take the snapshot again.";
 
-  const loginStep = <A>(effect: Effect.Effect<A, BrowserLogins.BrowserLoginError>) =>
-    runPromise(
-      effect.pipe(
-        Effect.mapError((error) => ServerBrowserLogin.loginError(error.message)),
-        Effect.catchDefect(() =>
-          Effect.fail(ServerBrowserLogin.loginError("The password manager failed.")),
-        ),
-      ),
-    );
-
-  const identityContext = () => {
-    if (identities === undefined) {
-      throw ServerBrowserLogin.loginError("This server cannot use saved identities.");
-    }
-    return identities;
-  };
-
   /**
    * Marks the tab's document as holding a filled secret, before the first write: even a fill
    * that fails partway blocks script there, and a desktop drawing the tab stops capturing it.
@@ -3066,40 +3045,31 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const newLoginContext = (tab: ServerTab): ServerBrowserNewLogin.NewLoginContext => {
-    if (Option.isNone(browserLogins)) {
-      throw ServerBrowserLogin.loginError("This server cannot fill browser logins.");
-    }
-    return {
-      logins: browserLogins.value,
-      desktopChannel,
-      step: loginStep,
-      runPromise,
-      wasScripted: (document) =>
-        documentMarks.wasScripted(tabKey(tab.threadId, tab.tabId), document),
-      markFilled: (document) => markFilled(tab, document),
-      rememberSecrets: filledSecrets.remember,
-    };
-  };
-
-  const loginFillContext = (): ServerBrowserLoginFill.LoginFillContext => {
-    if (Option.isNone(browserLogins)) {
-      throw ServerBrowserLogin.loginError("This server cannot fill browser logins.");
-    }
+  /** The password managers for one call; a caller that gives up interrupts what it began. */
+  const secretContext = (signal: AbortSignal | undefined, unavailable: string) => {
+    if (Option.isNone(browserLogins)) throw ServerBrowserLogin.loginError(unavailable);
     return {
       logins: browserLogins.value,
       desktopChannel,
       relay: secretRelay,
-      step: loginStep,
-      runPromise,
+      ...BrowserSecretAccess.callRunners(runPromise, signal),
       rememberSecrets: filledSecrets.remember,
     };
   };
+
+  /** The same for a fill of a password or code, with what it marks the tab's document by. */
+  const loginContext = (tab: ServerTab, signal: AbortSignal | undefined) => ({
+    ...secretContext(signal, "This server cannot fill browser logins."),
+    wasScripted: (document: string) =>
+      documentMarks.wasScripted(tabKey(tab.threadId, tab.tabId), document),
+    markFilled: (document: string) => markFilled(tab, document),
+  });
 
   const executeTabOperation = async (
     tab: ServerTab,
     request: PreviewAutomationRequest,
     deadlineMs: number,
+    signal?: AbortSignal,
   ) => {
     const input = request.input;
     switch (request.operation) {
@@ -3324,7 +3294,7 @@ const make = Effect.gen(function* () {
       case "fillLogin":
         return recordAction(tab, "fillLogin", () =>
           ServerBrowserLoginFill.fillLogin(
-            loginFillContext(),
+            secretContext(signal, "This server cannot fill browser logins."),
             tab,
             input as PreviewAutomationFillLoginRequest,
             deadlineMs,
@@ -3333,7 +3303,7 @@ const make = Effect.gen(function* () {
       case "fillIdentity":
         return recordAction(tab, "fillIdentity", () =>
           ServerBrowserIdentity.fillIdentity(
-            identityContext(),
+            secretContext(signal, "This server cannot use saved identities."),
             tab,
             input as PreviewAutomationFillIdentityRequest,
             deadlineMs,
@@ -3342,7 +3312,7 @@ const make = Effect.gen(function* () {
       case "fillNewLogin":
         return recordAction(tab, "fillNewLogin", () =>
           ServerBrowserNewLogin.fillNewLogin(
-            newLoginContext(tab),
+            loginContext(tab, signal),
             tab,
             input as PreviewAutomationFillNewLoginRequest,
             deadlineMs,
@@ -3409,8 +3379,8 @@ const make = Effect.gen(function* () {
 
   const handleRequest = (connectionId: string, request: PreviewAutomationRequest) =>
     Effect.tryPromise({
-      try: () =>
-        runOperation(request, performance.now() + request.timeoutMs).finally(() =>
+      try: (signal) =>
+        runOperation(request, performance.now() + request.timeoutMs, signal).finally(() =>
           markUsed(request),
         ),
       catch: ServerBrowserPage.toOperationError,

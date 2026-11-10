@@ -38,8 +38,14 @@ const utf8 = new TextEncoder();
 export class BrowserLoginError extends Schema.TaggedError<BrowserLoginError>()(
   "BrowserLoginError",
   {
-    reason: Schema.Literals(["not_configured", "unreadable"]),
+    /**
+     * `not_configured` and `unreadable` are a source that is missing or cannot answer now, which
+     * passes a request on to the next. `refused` ends it, as do settings that `changed` meanwhile.
+     */
+    reason: Schema.Literals(["not_configured", "unreadable", "refused", "changed"]),
     message: Schema.String,
+    /** A page check's own error, rethrown as it was. */
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 
@@ -64,9 +70,18 @@ export type BrowserApprovalKind = "login" | "identity" | "identityRead" | "newLo
 
 /**
  * Which chosen providers a step uses. Unattended ones, such as a service account, are used without
- * asking; attended ones need a person to approve, on this machine or on the user's device.
+ * asking; attended ones need a person to approve, on this machine or on the user's device. A
+ * provider id uses that one alone, for an item an earlier step offered from it.
  */
-export type BrowserLoginReach = "unattended" | "attended" | "all";
+export type BrowserLoginReach = "unattended" | "attended" | "all" | { readonly provider: string };
+
+/** A chosen provider, as settings describe it; nothing about it is read to know this. */
+export interface BrowserLoginProvider {
+  readonly id: string;
+  /** Its name in Settings > Secrets. */
+  readonly account: string;
+  readonly unattended: boolean;
+}
 
 /** Who "Allow for this thread" was given to. */
 export interface BrowserApprovalScope {
@@ -96,11 +111,15 @@ export class BrowserLogins extends Context.Service<
   BrowserLogins,
   {
     /**
-     * Where requests no unattended provider answers go, and the revision that names the settings
-     * now. Later steps given the revision fail once the settings change at all.
+     * Where requests no unattended provider answers go, the providers chosen, and the revision
+     * that names the settings now. Later steps given the revision fail once the settings change.
      */
     readonly escalation: Effect.Effect<
-      { readonly revision: string; readonly escalation: BrowserSecretEscalation },
+      {
+        readonly revision: string;
+        readonly escalation: BrowserSecretEscalation;
+        readonly providers: ReadonlyArray<BrowserLoginProvider>;
+      },
       BrowserLoginError
     >;
     /**
@@ -272,7 +291,9 @@ interface Resolved {
 }
 
 const inReach = (source: Source, reach: BrowserLoginReach) =>
-  reach === "all" || source.unattended === (reach === "unattended");
+  typeof reach === "object"
+    ? source.id === reach.provider
+    : reach === "all" || source.unattended === (reach === "unattended");
 
 // Configs hold service account tokens, so the keys kept for the server's life are digests.
 const resolve = Effect.fn("BrowserLogins.resolve")(function* (
@@ -414,7 +435,7 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
         () => String(generation) === revision,
         () =>
           new BrowserLoginError({
-            reason: "not_configured",
+            reason: "changed",
             message: "The browser login settings changed. Try again.",
           }),
       ),
@@ -843,7 +864,15 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   return BrowserLogins.of({
     escalation: Effect.gen(function* () {
       const resolved = yield* current;
-      return { revision: String(generation), escalation: resolved.escalation };
+      return {
+        revision: String(generation),
+        escalation: resolved.escalation,
+        providers: resolved.sources.map(({ id, account, unattended }) => ({
+          id,
+          account,
+          unattended,
+        })),
+      };
     }).pipe(Effect.withSpan("BrowserLogins.escalation")),
     candidates,
     lookupLogin,

@@ -144,6 +144,7 @@ const makeService = (
     list: 0,
     read: [] as Array<string>,
     identityList: 0,
+    lookup: 0,
     listing: Deferred.makeUnsafe<void>(),
   };
   // Logins `create` saved, listed with their account's others from then on.
@@ -182,9 +183,12 @@ const makeService = (
     logins: {
       // `op://<account>/<id>` names a login of that account.
       lookup: ({ account }, reference) =>
-        Effect.sync(() =>
-          (listed[account] ?? []).find((login) => reference === `op://${account}/${login.id}`),
-        ),
+        Effect.sync(() => {
+          calls.lookup++;
+          return (listed[account] ?? []).find(
+            (login) => reference === `op://${account}/${login.id}`,
+          );
+        }),
       list: ({ account }) =>
         Effect.gen(function* () {
           // What the account holds when the listing starts, as with a real provider.
@@ -235,11 +239,12 @@ const makeService = (
     },
     identities: {
       lookup: ({ account }, reference) =>
-        Effect.sync(() =>
-          (identities[account] ?? []).find(
+        Effect.sync(() => {
+          calls.lookup++;
+          return (identities[account] ?? []).find(
             (identity) => reference === `op://${account}/${identity.id}`,
-          ),
-        ),
+          );
+        }),
       list: ({ account }) =>
         Effect.sync(() => {
           calls.identityList++;
@@ -699,21 +704,16 @@ describe("BrowserLogins new logins", () => {
       const { login } = yield* logins.createLogin(revision, shop);
       yield* Deferred.succeed(gate, undefined);
       assert.deepStrictEqual((yield* Fiber.join(early)).logins, []);
-      assert.deepStrictEqual(
-        (yield* logins.candidates("https://shop.test/login", "all")).logins,
-        [login],
-      );
+      assert.deepStrictEqual((yield* logins.candidates("https://shop.test/login", "all")).logins, [
+        login,
+      ]);
     }).pipe(Effect.provide(layer));
   });
 
   it.effect("gives a new password only to a login this thread created", () => {
-    const { layer, renewed } = makeService(
-      { work: [grafana] },
-      savingTo(signUps),
-      {},
-      undefined,
-      ["work"],
-    );
+    const { layer, renewed } = makeService({ work: [grafana] }, savingTo(signUps), {}, undefined, [
+      "work",
+    ]);
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
       const { revision, unattended } = yield* logins.newLoginDestination(fresh);
@@ -802,10 +802,7 @@ describe("BrowserLogins new logins", () => {
   });
 
   it.effect("a caller that gives up after the save still leaves the login to its thread", () => {
-    const { layer, created, newLogins } = makeService(
-      { work: [grafana] },
-      savingTo(signUps),
-    );
+    const { layer, created, newLogins } = makeService({ work: [grafana] }, savingTo(signUps));
     newLogins.printsPassword = false;
     newLogins.readGate = Deferred.makeUnsafe<void>();
     return Effect.gen(function* () {
@@ -891,6 +888,8 @@ describe("SecretRelayDevice", () => {
     },
   ) => {
     const prompts: Array<DesktopBrowserChannel.DesktopLoginPrompt> = [];
+    /** How many listings and lookups had run when each prompt was shown. */
+    const lookedUpBefore: Array<number> = [];
     const logs: Array<string> = [];
     const channel = Layer.succeed(DesktopBrowserChannel.DesktopBrowserChannel, {
       available: options.available,
@@ -904,6 +903,9 @@ describe("SecretRelayDevice", () => {
       approveLogin: (_key, _timeoutMs, prompt) =>
         Effect.sync(() => {
           prompts.push(prompt);
+          lookedUpBefore.push(
+            service.calls.list + service.calls.identityList + service.calls.lookup,
+          );
           return options.answers?.shift() ?? false;
         }),
     });
@@ -915,7 +917,7 @@ describe("SecretRelayDevice", () => {
         }),
       ),
     );
-    return { layer, prompts, logs };
+    return { layer, prompts, lookedUpBefore, logs };
   };
 
   it.effect("answers unavailable when no desktop app is attached to ask", () => {
@@ -938,7 +940,7 @@ describe("SecretRelayDevice", () => {
   });
 
   it.effect(
-    "asks before reading, and remembers Allow for this thread per machine and thread",
+    "asks before listing or reading, and remembers Allow for this thread per machine and thread",
     () => {
       const service = makeService({ work: [github] });
       const device = deviceServer(service, {
@@ -958,17 +960,18 @@ describe("SecretRelayDevice", () => {
           },
           values: { username: "username-work", password: "password-work" },
         });
+        // Asked before the password manager is touched at all, so the login is not named.
         assert.deepStrictEqual(device.prompts, [
           {
             kind: "login",
             providerLabel: "Work",
-            loginTitle: "GitHub",
             origin: "https://github.com",
             machine: "LinkMini",
             threadTitle: "Deploy",
             agent: "codex",
           },
         ]);
+        assert.deepStrictEqual(device.lookedUpBefore, [0]);
         // Allowed for this thread on LinkMini: read again without asking.
         yield* relay.resolve({ request: request(), requester: linkMini });
         assert.lengthOf(device.prompts, 1);
@@ -987,7 +990,7 @@ describe("SecretRelayDevice", () => {
 
   it.effect("offers device ids to choose from, and reads only the one chosen once allowed", () => {
     const service = makeService({ work: [github], personal: [github] }, bothProviders);
-    const device = deviceServer(service, { available: true, answers: [false, "once"] });
+    const device = deviceServer(service, { available: true, answers: ["once", false, "once"] });
     return Effect.gen(function* () {
       const relay = yield* SecretRelayDevice.SecretRelayDevice;
       assert.deepStrictEqual(yield* relay.resolve({ request: request(), requester: linkMini }), {
@@ -1005,12 +1008,19 @@ describe("SecretRelayDevice", () => {
       const answer = yield* relay.resolve({ request: chosen, requester: linkMini });
       assert.strictEqual(answer.type === "values" && answer.item.account, "Personal");
       assert.deepStrictEqual(service.calls.read, ["personal:h1@v9"]);
+      // Each request asked before anything was listed; the chosen one names only its provider.
+      assert.deepStrictEqual(
+        device.prompts.map((prompt) => prompt.providerLabel),
+        ["Work, Personal", "Personal", "Personal"],
+      );
+      // Both password managers were listed once, after the first question.
+      assert.deepStrictEqual(device.lookedUpBefore, [0, 2, 2]);
     }).pipe(Effect.provide(device.layer));
   });
 
   it.effect("resolves a reference, never filling a login saved for another site", () => {
     const service = makeService({ work: [grafana, github] });
-    const device = deviceServer(service, { available: true, answers: ["once"] });
+    const device = deviceServer(service, { available: true, answers: ["once", "once", "once"] });
     return Effect.gen(function* () {
       const relay = yield* SecretRelayDevice.SecretRelayDevice;
       const resolve = (reference: string) =>
@@ -1021,8 +1031,13 @@ describe("SecretRelayDevice", () => {
         message: 'The login "Grafana" is saved for another site.',
       });
       assert.deepStrictEqual(yield* resolve("op://work/missing"), { type: "none" });
-      assert.deepStrictEqual(device.prompts, []);
       assert.strictEqual((yield* resolve("op://work/h1")).type, "values");
+      // The reference is named in the question, asked before each lookup.
+      assert.deepStrictEqual(
+        device.prompts.map((prompt) => prompt.reference),
+        ["op://work/g1", "op://work/missing", "op://work/h1"],
+      );
+      assert.deepStrictEqual(device.lookedUpBefore, [0, 1, 2]);
       assert.deepStrictEqual(service.calls.read, ["work:h1@v9"]);
     }).pipe(Effect.provide(device.layer));
   });

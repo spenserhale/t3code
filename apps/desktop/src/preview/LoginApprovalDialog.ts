@@ -53,15 +53,20 @@ const wording = (prompt: LoginApprovalPrompt, who: string) => {
   const from = prompt.providerLabel;
   // A relayed request sends the item to another machine, which fills it or shows it there.
   const to = prompt.machine;
+  // Asked before anything is read, the item is named by title only when that was known already.
+  const item =
+    prompt.loginTitle !== undefined
+      ? `"${prompt.loginTitle}"${vault}`
+      : prompt.reference !== undefined
+        ? prompt.reference
+        : undefined;
   switch (prompt.kind ?? "login") {
     case "login":
       return {
         message:
           to === undefined ? `Fill a login from ${from}?` : `Send a login from ${from} to ${to}?`,
         detail: [
-          `${who} wants to sign in to ${site} with "${prompt.loginTitle}"${
-            prompt.vault ? ` from ${prompt.vault}` : ""
-          }.`,
+          `${who} wants to sign in to ${site}${item === undefined ? "" : ` with ${item}`}.`,
           "The agent will not see the password or code.",
         ],
       };
@@ -72,7 +77,7 @@ const wording = (prompt: LoginApprovalPrompt, who: string) => {
             ? `Fill an identity from ${from}?`
             : `Send an identity from ${from} to ${to}?`,
         detail: [
-          `${who} wants to fill identity "${prompt.loginTitle}"${vault} from ${from} into ${site}.`,
+          `${who} wants to fill ${item === undefined ? "an identity" : `identity ${item}`} from ${from} into ${site}.`,
           "The agent can read the filled fields.",
         ],
       };
@@ -80,7 +85,7 @@ const wording = (prompt: LoginApprovalPrompt, who: string) => {
       return {
         message: `Show an identity from ${from} to the agent${to === undefined ? "" : ` on ${to}`}?`,
         detail: [
-          `${who} wants to see identity "${prompt.loginTitle}"${vault} from ${from}.`,
+          `${who} wants to see ${item === undefined ? "an identity" : `identity ${item}`} from ${from}.`,
           "The agent will see your name, birth date, email, phone and address, and so will its model provider.",
         ],
       };
@@ -90,7 +95,7 @@ const wording = (prompt: LoginApprovalPrompt, who: string) => {
           prompt.vault ? ` / ${prompt.vault}` : ""
         } and fill its generated password?`,
         detail: [
-          `${who} is signing up and wants "${prompt.loginTitle}" saved with a generated password before the form is sent.`,
+          `${who} is signing up and wants ${prompt.loginTitle === undefined ? "a login" : `"${prompt.loginTitle}"`} saved with a generated password before the form is sent.`,
           "The agent will not see the password.",
         ],
       };

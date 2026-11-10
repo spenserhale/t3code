@@ -177,7 +177,11 @@ const identityServer = Effect.fn("identityServer")(function* (
 ) {
   const reads: Array<string> = [];
   const logins: IdentityContext["logins"] = {
-    escalation: Effect.succeed({ revision: "0", escalation: "refuse" }),
+    escalation: Effect.succeed({
+      revision: "0",
+      escalation: "refuse",
+      providers: [{ id: "work", account: "Work", unattended: true }],
+    }),
     identityCandidates: (reach) =>
       Effect.succeed({
         revision: "0",
