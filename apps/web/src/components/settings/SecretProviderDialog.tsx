@@ -165,7 +165,11 @@ export function SecretProviderDialog({
                       size="icon-sm"
                       variant="ghost-destructive"
                       onClick={() =>
-                        update({ serviceAccountToken: "", savedServiceAccountToken: "" })
+                        update({
+                          serviceAccountToken: "",
+                          savedServiceAccountToken: "",
+                          clearServiceAccountToken: true,
+                        })
                       }
                       aria-label="Clear service account token"
                     >
