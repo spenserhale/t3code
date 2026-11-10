@@ -48,6 +48,7 @@ const vaults: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     [FIRECRAWL]: "fc-work-123",
     "op://Agents/Padded/key": "  padded-789\n",
     "op://Agents/Cert/pem": PEM,
+    "op://Agents/Four/key": "wxyz",
     "op://Agents/Pin/code": "123",
     "op://Agents/PaddedPin/code": " 12\n",
   },
@@ -584,28 +585,39 @@ describe("SecretCommands", () => {
     }).pipe(Effect.provide(fixture.layer));
   });
 
-  it.effect("cuts long output at about 64 KB without leaving part of a secret", () => {
-    const limit = 64 * 1024;
-    const outputs = [
-      // A secret that starts just before the cut is masked whole.
-      `${"a".repeat(limit - 3)}fc-work-123 and more`,
-      // Two bytes a character: the capture stops inside the secret, which must not show at all.
-      `${"é".repeat(limit / 2 + 2)}fc-work-123 and more`,
-    ];
-    const fixture = setup({ run: () => ({ stdout: outputs.shift() ?? "" }) });
-    return Effect.gen(function* () {
-      const straddling = yield* run({ command: ["print"], stdin: FIRECRAWL });
-      assert.strictEqual(
-        straddling.stdout,
-        `${"a".repeat(limit - 3)}${SecretCommands.SECRET_MASK}`,
-      );
-      assert.isTrue(straddling.truncated);
-      const multibyte = yield* run({ command: ["print"], stdin: FIRECRAWL });
-      assert.isTrue(multibyte.truncated);
-      assert.notInclude(multibyte.stdout, "fc-");
-      assert.match(multibyte.stdout, /^é+$/);
-    }).pipe(Effect.provide(fixture.layer));
-  });
+  it.effect(
+    "returns at most 64 KiB of each masked stream, never part of a mask or a secret",
+    () => {
+      const limit = 64 * 1024;
+      const mask = SecretCommands.SECRET_MASK;
+      const outputs = [
+        // A secret just before the cap: its mask does not fit, so neither shows.
+        `${"a".repeat(limit - 3)}fc-work-123 and more`,
+        // Two bytes a character: the capture stops inside the secret, which must not show at all.
+        `${"é".repeat(limit / 2 + 2)}fc-work-123 and more`,
+        // Masks longer than what they hide: the cap counts what comes back.
+        `${"wxyz ".repeat(13_107)}w`,
+        // Masks shorter than what they hide: over 64 KiB in, all of it back, nothing cut.
+        "fc-work-123\n".repeat(5_462),
+      ];
+      const fixture = setup({ run: () => ({ stdout: outputs.shift() ?? "" }) });
+      return Effect.gen(function* () {
+        const straddling = yield* run({ command: ["print"], stdin: FIRECRAWL });
+        assert.strictEqual(straddling.stdout, "a".repeat(limit - 3));
+        assert.isTrue(straddling.truncated);
+        const multibyte = yield* run({ command: ["print"], stdin: FIRECRAWL });
+        assert.isTrue(multibyte.truncated);
+        assert.notInclude(multibyte.stdout, "fc-");
+        assert.match(multibyte.stdout, /^é+$/);
+        const expanding = yield* run({ command: ["print"], stdin: "op://Agents/Four/key" });
+        assert.strictEqual(expanding.stdout, `${mask} `.repeat(7_281));
+        assert.isTrue(expanding.truncated);
+        const shrinking = yield* run({ command: ["print"], stdin: FIRECRAWL });
+        assert.strictEqual(shrinking.stdout, `${mask}\n`.repeat(5_462));
+        assert.isFalse(shrinking.truncated);
+      }).pipe(Effect.provide(fixture.layer));
+    },
+  );
 
   it.effect("stops a command that runs past its timeout through its handle", () => {
     const fixture = setup({ run: () => ({ hang: true }) });
@@ -702,28 +714,31 @@ describe("maskSecrets", () => {
     }
   });
 
-  it("masks whole any secret that starts before the cut, and never leaves part of one", () => {
+  it("returns at most the bytes asked, never part of a mask, a character or a secret", () => {
+    const mask = SecretCommands.SECRET_MASK;
     const secrets = ["abcdef", " pad "];
-    assert.deepStrictEqual(SecretCommands.maskSecrets("xx abcdef yy pad", secrets, 100), {
-      text: `xx ${SecretCommands.SECRET_MASK} yy ${SecretCommands.SECRET_MASK}`,
-      cut: false,
-    });
-    // Starts before the cut at 5: masked whole. Past it: dropped with the rest.
-    assert.deepStrictEqual(SecretCommands.maskSecrets("1234abcdef5678abcdef", secrets, 5), {
-      text: `1234${SecretCommands.SECRET_MASK}`,
-      cut: true,
-    });
-    assert.deepStrictEqual(SecretCommands.maskSecrets("12345678abcdef", secrets, 5), {
-      text: "12345",
-      cut: true,
-    });
-    // The longer secret wins where two start together, and the mask is never masked again.
+    for (const [text, maxBytes, end, shown] of [
+      ["xx abcdef yy pad", 100, undefined, { text: `xx ${mask} yy ${mask}`, cut: false }],
+      // A mask fits whole or not at all.
+      ["1234abcdef5678", 12, undefined, { text: `1234${mask}`, cut: true }],
+      ["1234abcdef5678", 11, undefined, { text: "1234", cut: true }],
+      ["12345678abcdef", 5, undefined, { text: "12345", cut: true }],
+      // Text is cut between characters.
+      ["aéé", 4, undefined, { text: "aé", cut: true }],
+      // Only what starts before `end` shows, and a secret that does is masked whole.
+      ["1234abcdef5678", 100, 6, { text: `1234${mask}`, cut: true }],
+      ["12345678abcdef", 100, 6, { text: "123456", cut: true }],
+    ] as const) {
+      assert.deepStrictEqual(
+        SecretCommands.maskSecrets(text, secrets, maxBytes, end),
+        shown,
+        `${text} ${maxBytes} ${end}`,
+      );
+    }
+    // A mask is never masked again, even by a secret that reads "secret".
     assert.deepStrictEqual(
       SecretCommands.maskSecrets("abcdefgh", ["abc", "abcdefgh", "secret"], 100),
-      {
-        text: SecretCommands.SECRET_MASK,
-        cut: false,
-      },
+      { text: mask, cut: false },
     );
   });
 });

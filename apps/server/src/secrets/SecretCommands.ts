@@ -119,20 +119,44 @@ const secretRuns = (text: string, secrets: ReadonlyArray<string>) => {
   return runs;
 };
 
+/** As much of `text` as fits in `room` bytes of UTF-8, never part of a character. */
+const fitting = (text: string, room: number) =>
+  room <= 0 ? "" : text.slice(0, utf8.encodeInto(text, new Uint8Array(room)).read);
+
 /**
- * `text` with each run of secrets replaced by one mask, then cut at `limit`. A run that starts
- * before the cut is masked whole, so a cut never leaves part of one.
+ * `text` with each run of secrets replaced by one mask, at most `maxBytes` of it in UTF-8, and
+ * only what starts before `end`. Runs are found in all of `text` first, so one that starts before
+ * `end` is masked whole. A mask that does not fit is left out whole.
  */
-export const maskSecrets = (text: string, secrets: ReadonlyArray<string>, limit: number) => {
-  let masked = "";
+export const maskSecrets = (
+  text: string,
+  secrets: ReadonlyArray<string>,
+  maxBytes: number,
+  end = text.length,
+) => {
+  let shown = "";
+  let room = maxBytes;
+  const add = (piece: string, mask: boolean) => {
+    const bytes = utf8.encode(piece).length;
+    if (bytes <= room) {
+      shown += piece;
+      room -= bytes;
+      return true;
+    }
+    if (!mask) shown += fitting(piece, room);
+    return false;
+  };
   let at = 0;
-  for (const [start, end] of secretRuns(text, secrets)) {
-    if (start >= limit) break;
-    masked += `${text.slice(at, start)}${SECRET_MASK}`;
-    at = end;
+  for (const [start, stop] of secretRuns(text, secrets)) {
+    if (start >= end) break;
+    if (!add(text.slice(at, start), false) || !add(SECRET_MASK, true)) {
+      return { text: shown, cut: true };
+    }
+    at = stop;
   }
-  const end = Math.max(at, Math.min(limit, text.length));
-  return { text: `${masked}${text.slice(at, end)}`, cut: end < text.length };
+  const rest = text.slice(at, Math.max(at, end));
+  if (!add(rest, false)) return { text: shown, cut: true };
+  return { text: shown, cut: at + rest.length < text.length };
 };
 
 const displayCommand = (argv: ReadonlyArray<string>) => {
@@ -242,7 +266,7 @@ const make = Effect.gen(function* () {
     return found.values;
   });
 
-  /** Captures at most about `OUTPUT_LIMIT` of a stream, with every secret masked. */
+  /** At most `OUTPUT_LIMIT` bytes of a stream, with every secret masked. */
   const collectMasked = (
     stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>,
     secrets: ReadonlyArray<string>,
@@ -251,10 +275,11 @@ const make = Effect.gen(function* () {
     const margin = Math.max(0, ...maskForms(secrets).map((form) => utf8.encode(form).length));
     return collectUint8StreamText({ stream, maxBytes: OUTPUT_LIMIT + margin }).pipe(
       Effect.map((collected) => {
-        const limit = collected.truncated
-          ? Math.min(OUTPUT_LIMIT, Math.max(0, collected.text.length - margin))
-          : OUTPUT_LIMIT;
-        const { text, cut } = maskSecrets(collected.text, secrets, limit);
+        // A capture cut short may end inside a secret, so its last `margin` is never shown.
+        const end = collected.truncated
+          ? Math.max(0, collected.text.length - margin)
+          : collected.text.length;
+        const { text, cut } = maskSecrets(collected.text, secrets, OUTPUT_LIMIT, end);
         return { text, truncated: collected.truncated || cut };
       }),
       Effect.mapError(
