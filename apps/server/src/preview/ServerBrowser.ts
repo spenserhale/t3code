@@ -3013,6 +3013,8 @@ const make = Effect.gen(function* () {
               return Effect.sync(reportLiveTabs);
             }
             return handleRequest(event.connectionId, event.request).pipe(
+              // Stops work nobody waits for: a fill, its dialog, or a request on the user's device.
+              Effect.raceFirst(broker.ended(event.request.requestId)),
               Effect.forkScoped,
               Effect.asVoid,
             );

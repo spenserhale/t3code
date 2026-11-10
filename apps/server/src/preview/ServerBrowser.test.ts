@@ -26,9 +26,11 @@ import {
   type PreviewNavStatus,
   type SecretRelayAnswer,
   type SecretRelayRequest,
+  type SecretRelayStreamItem,
 } from "@t3tools/contracts";
 import { defineSecretProviderDriver } from "@t3tools/secret-provider-core/server/driver";
 import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
@@ -3390,6 +3392,83 @@ it.live("an identity read is refused when the settings change while the user's d
       .pipe(Effect.flip);
     expect(refused.message).toContain("settings changed");
     expect(refused.message).not.toContain("Ada");
+  }).pipe(Effect.provide(server.layer), Effect.scoped);
+});
+
+it.live(
+  "cancelling a call ends its request on the user's device, and a late Allow fills nothing",
+  () => {
+    const server = loginServer(DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const relay = yield* SecretRelay.SecretRelay;
+          const items = yield* Queue.unbounded<SecretRelayStreamItem>();
+          yield* relay.subscribe(["login"], "device").pipe(
+            Stream.runForEach((item) => Queue.offer(items, item)),
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          const { broker, tabId } = yield* ready;
+          yield* broker.invoke({
+            scope,
+            tabId,
+            operation: "navigate",
+            input: { url: "https://good.test/login" },
+          });
+          // Longer than the test may run, so only the cancellation can end the request.
+          const call = yield* broker
+            .invoke({ scope, tabId, operation: "fillLogin", input: {}, timeoutMs: 600_000 })
+            .pipe(Effect.forkScoped({ startImmediately: true }));
+          const request = yield* Queue.take(items);
+          if (request.type !== "request") throw new Error("Expected the relayed request first.");
+          yield* Fiber.interrupt(call);
+          expect(yield* Queue.take(items)).toEqual({
+            type: "ended",
+            requestId: request.request.requestId,
+          });
+          yield* relay.answer(
+            request.request.requestId,
+            deviceLogin("device:personal/p1", "late-pw"),
+            "device",
+          );
+          expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live("cancelling a call closes this machine's dialog before anything is read", () => {
+  const opened = Deferred.makeUnsafe<void>();
+  const closed = Deferred.makeUnsafe<void>();
+  const desktop = Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
+    available: true,
+    awaitAttached: () => Effect.succeed(false),
+    detached: Stream.empty,
+    attached: Stream.empty,
+    isAttached: () => Effect.succeed(false),
+    endpoint: () => Effect.die("The desktop does not draw this tab."),
+    pointer: () => Effect.void,
+    turn: () => Effect.void,
+    approveLogin: () =>
+      Deferred.succeed(opened, undefined).pipe(
+        Effect.andThen(Effect.never),
+        Effect.onInterrupt(() => Deferred.succeed(closed, undefined)),
+      ),
+  });
+  const server = loginServer(desktop);
+  return Effect.gen(function* () {
+    yield* ServerBrowser.ServerBrowser;
+    const broker = yield* Broker.PreviewAutomationBroker;
+    yield* Effect.yieldNow;
+    const call = yield* broker
+      .invoke({ scope, operation: "readIdentity", input: {}, timeoutMs: 600_000 })
+      .pipe(Effect.forkScoped({ startImmediately: true }));
+    yield* Deferred.await(opened);
+    yield* Fiber.interrupt(call);
+    yield* Deferred.await(closed);
+    expect(server.reads).toEqual([]);
   }).pipe(Effect.provide(server.layer), Effect.scoped);
 });
 
