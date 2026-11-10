@@ -316,16 +316,34 @@ const REDACTED = "[filled by password manager]";
  */
 export const scrubbable = (secret: string) => secret.length >= 4 && !/[\r\n]/.test(secret);
 
-/** Replaces every given secret, longest first, in the keys and values of something page-derived. */
+/**
+ * Replaces every occurrence of every given secret in the keys and values of something
+ * page-derived. Overlapping or touching occurrences become one marker, so no part shows.
+ */
 export const scrubSecrets = <A>(value: A, secrets: Iterable<string>): A => {
-  const ordered = [...new Set(secrets)]
-    .filter((secret) => secret.length > 0)
-    .sort((a, b) => b.length - a.length);
-  if (ordered.length === 0) return value;
+  const forms = [...new Set(secrets)].filter((secret) => secret.length > 0);
+  if (forms.length === 0) return value;
   const scrubText = (text: string) => {
-    let next = text;
-    for (const secret of ordered) next = next.split(secret).join(REDACTED);
-    return next;
+    const spans: Array<readonly [number, number]> = [];
+    for (const form of forms) {
+      for (let at = text.indexOf(form); at !== -1; at = text.indexOf(form, at + 1)) {
+        spans.push([at, at + form.length]);
+      }
+    }
+    if (spans.length === 0) return text;
+    spans.sort((a, b) => a[0] - b[0]);
+    let next = "";
+    let kept = 0;
+    let [start, end] = spans[0]!;
+    for (const [from, to] of spans) {
+      if (from > end) {
+        next += text.slice(kept, start) + REDACTED;
+        kept = end;
+        start = from;
+      }
+      end = Math.max(end, to);
+    }
+    return next + text.slice(kept, start) + REDACTED + text.slice(end);
   };
   const scrub = (current: unknown): unknown => {
     if (typeof current === "string") return scrubText(current);
