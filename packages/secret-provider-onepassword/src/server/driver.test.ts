@@ -336,6 +336,61 @@ describe("1Password logins", () => {
       }).pipe(Effect.provide(op.layer));
     });
 
+    it.effect("lists identities vault by vault, then reads one from its vault", () => {
+      const op = fakeOp((args) =>
+        args[1] === "vault"
+          ? { stdout: vaults("v1", "v2") }
+          : args[2] === "list"
+            ? {
+                stdout: JSON.stringify(
+                  vaultOf(args) === "v1"
+                    ? [{ id: "me1", title: "Me", vault: { id: "v1", name: "Agents" } }]
+                    : [],
+                ),
+              }
+            : { stdout: JSON.stringify({ fields: [{ id: "firstname", value: "Ada" }] }) },
+      );
+      return Effect.gen(function* () {
+        const identities = yield* driver.identities!.list(config);
+        assert.deepStrictEqual(identities, [
+          { id: "me1", title: "Me", vault: "Agents", vaultId: "v1" },
+        ]);
+        assert.deepStrictEqual(yield* driver.identities!.read(config, identities![0]!), {
+          firstName: "Ada",
+        });
+        assert.sameDeepMembers(
+          op.invocations.slice(1, 3).map((args) => [...args]),
+          [
+            [
+              "--cache=false",
+              "item",
+              "list",
+              "--vault=v1",
+              "--categories=Identity",
+              "--format=json",
+            ],
+            [
+              "--cache=false",
+              "item",
+              "list",
+              "--vault=v2",
+              "--categories=Identity",
+              "--format=json",
+            ],
+          ],
+        );
+        assert.deepStrictEqual(op.invocations[3], [
+          "--cache=false",
+          "item",
+          "get",
+          "me1",
+          "--vault=v1",
+          "--reveal",
+          "--format=json",
+        ]);
+      }).pipe(Effect.provide(op.layer));
+    });
+
     it.effect("reads as not listing when every vault fails", () => {
       const op = fakeOp((args) =>
         args[1] === "vault" ? { stdout: vaults("v1", "v2") } : { code: 1, stderr: "[ERROR]" },
@@ -374,6 +429,8 @@ describe("1Password logins", () => {
     return Effect.gen(function* () {
       assert.strictEqual(yield* driver.logins!.list({ account }), undefined);
       assert.strictEqual(yield* driver.logins!.read({ account }, grafana, ["password"]), undefined);
+      assert.strictEqual(yield* driver.identities!.list({ account }), undefined);
+      assert.strictEqual(yield* driver.identities!.read({ account }, grafana), undefined);
     }).pipe(Effect.provide(op.layer));
   });
 
@@ -385,8 +442,137 @@ describe("1Password logins", () => {
         { ...grafana, vaultId: "--help" },
       ]) {
         assert.strictEqual(yield* driver.logins!.read({ account }, flag, ["password"]), undefined);
+        assert.strictEqual(yield* driver.identities!.read({ account }, flag), undefined);
       }
       assert.strictEqual(op.invocations.length, 0);
     }).pipe(Effect.provide(op.layer));
   });
+});
+
+describe("1Password identities", () => {
+  const me = { id: "me1", title: "Me" };
+  const readFields = (fields: ReadonlyArray<object>) => {
+    const op = fakeOp(() => ({ stdout: JSON.stringify({ id: "me1", fields }) }));
+    return driver.identities!.read({ account }, me).pipe(Effect.provide(op.layer));
+  };
+
+  it.effect("lists every identity, website or not", () => {
+    const op = fakeOp(() => ({
+      stdout: JSON.stringify([{ id: "me1", title: "Me", vault: { id: "v1", name: "Private" } }]),
+    }));
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(yield* driver.identities!.list({ account }), [
+        { id: "me1", title: "Me", vault: "Private" },
+      ]);
+      assert.deepStrictEqual(op.invocations, [
+        [
+          "--cache=false",
+          "item",
+          "--account=my.1password.com",
+          "list",
+          "--categories=Identity",
+          "--format=json",
+        ],
+      ]);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect("reads values by field id, then by label, with the first phone that is set", () =>
+    Effect.gen(function* () {
+      const values = yield* readFields([
+        { id: "firstname", type: "STRING", label: "first name", value: " Ada " },
+        { id: "initial", type: "STRING", label: "initial", value: "M" },
+        { id: "lastname", type: "STRING", label: "last name", value: "Lovelace" },
+        { id: "sex", type: "MENU", label: "sex", value: "female" },
+        { id: "birthdate", type: "DATE", label: "birth date", value: "642902400" },
+        { id: "company", type: "STRING", label: "company", value: "" },
+        { id: "q7x2", type: "STRING", label: "Company", value: "Analytical Engines" },
+        { id: "defphone", type: "PHONE", label: "default phone", value: "" },
+        { id: "cellphone", type: "PHONE", label: "cell", value: "+1 555 0100" },
+        { id: "homephone", type: "PHONE", label: "home", value: "+1 555 0101" },
+        { id: "email", type: "EMAIL", label: "email", value: "ada@example.com" },
+        { id: "username", type: "STRING", label: "username", value: "ada" },
+        { id: "9kd1", type: "STRING", label: "Job Title", value: "Programmer" },
+        {
+          id: "address",
+          type: "ADDRESS",
+          label: "address",
+          value: "1 Main St, Springfield, IL, 62701, us",
+        },
+      ]);
+      assert.deepStrictEqual(values, {
+        firstName: "Ada",
+        middleInitial: "M",
+        lastName: "Lovelace",
+        email: "ada@example.com",
+        phone: "+1 555 0100",
+        company: "Analytical Engines",
+        jobTitle: "Programmer",
+        username: "ada",
+        birthDate: "1990-05-17",
+        street: "1 Main St",
+        city: "Springfield",
+        state: "IL",
+        postalCode: "62701",
+        country: "us",
+      });
+    }),
+  );
+
+  it.effect.each([
+    ["epoch seconds", "642902400", "1990-05-17"],
+    ["an ISO date", "1990-05-17", "1990-05-17"],
+    ["seconds before 1970", "-86400", "1969-12-31"],
+  ] as const)("reads a birth date given as %s", ([, value, birthDate]) =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(yield* readFields([{ id: "birthdate", type: "DATE", value }]), {
+        birthDate,
+      });
+    }),
+  );
+
+  // The CLI's ADDRESS output is unverified, so each shape it might take is read.
+  it.effect.each([
+    [
+      "an object",
+      { street: "1 Main St", city: "Springfield", state: "IL", zip: "62701", country: "us" },
+      { street: "1 Main St", city: "Springfield", state: "IL", postalCode: "62701", country: "us" },
+    ],
+    [
+      "an object with empty parts",
+      { street: "10 Downing St", city: "London", state: "", zip: "SW1A 2AA", country: "gb" },
+      { street: "10 Downing St", city: "London", postalCode: "SW1A 2AA", country: "gb" },
+    ],
+    [
+      "parts in a string, with commas in the street",
+      "1 Main St, Apt 4, Springfield, IL, 62701, us",
+      {
+        street: "1 Main St, Apt 4",
+        city: "Springfield",
+        state: "IL",
+        postalCode: "62701",
+        country: "us",
+      },
+    ],
+    [
+      "parts in a string, some empty",
+      "10 Downing St, London, , SW1A 2AA, gb",
+      { street: "10 Downing St", city: "London", postalCode: "SW1A 2AA", country: "gb" },
+    ],
+    ["only a country", ", , , , ca", { country: "ca" }],
+    [
+      "other text ending in a country",
+      "1 Main St\nSpringfield IL 62701\nus",
+      { street: "1 Main St, Springfield IL 62701", country: "us" },
+    ],
+    ["other text", "PO Box 12, Springfield", { street: "PO Box 12, Springfield" }],
+    ["something else", 42, {}],
+  ] as const)("reads an address given as %s", ([, value, address]) =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(
+        yield* readFields([{ id: "address", type: "ADDRESS", label: "address", value }]),
+        address,
+      );
+    }),
+  );
 });

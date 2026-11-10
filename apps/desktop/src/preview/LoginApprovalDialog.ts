@@ -19,8 +19,9 @@ export class LoginApprovalDialog extends Context.Service<
   LoginApprovalDialog,
   {
     /**
-     * Asks the user before an agent's tab is filled with a saved login; anything but Allow is a no.
-     * `guest` is absent for a tab the desktop does not show, such as an agent's headless tab.
+     * Asks the user before an agent's tab is filled with a saved login or identity, or before an
+     * identity is shown to the agent; anything but Allow is a no. `guest` is absent for a tab the
+     * desktop does not show, such as an agent's headless tab, and for a read, which has no tab.
      */
     readonly ask: (
       guest: WebContents | undefined,
@@ -29,10 +30,57 @@ export class LoginApprovalDialog extends Context.Service<
   }
 >()("@t3tools/desktop/preview/LoginApprovalDialog") {}
 
-const SCOPE_NOTE: Record<LoginApprovalPrompt["scope"], string> = {
-  request: "You will be asked again for every login.",
-  thread: "Allowing lets this thread fill saved logins until the app restarts.",
-  application: "Allowing lets every thread fill saved logins until the app restarts.",
+type ApprovalKind = NonNullable<LoginApprovalPrompt["kind"]>;
+
+const SCOPE_NOTE: Record<ApprovalKind, Record<LoginApprovalPrompt["scope"], string>> = {
+  login: {
+    request: "You will be asked again for every login.",
+    thread: "Allowing lets this thread fill saved logins until the app restarts.",
+    application: "Allowing lets every thread fill saved logins until the app restarts.",
+  },
+  identity: {
+    request: "You will be asked again for every identity.",
+    thread: "Allowing lets this thread fill saved identities until the app restarts.",
+    application: "Allowing lets every thread fill saved identities until the app restarts.",
+  },
+  identityRead: {
+    request: "You will be asked again every time.",
+    thread: "Allowing lets this thread see saved identities until the app restarts.",
+    application: "Allowing lets every thread see saved identities until the app restarts.",
+  },
+};
+
+const wording = (prompt: LoginApprovalPrompt, who: string) => {
+  const site = prompt.origin ?? "a website";
+  const vault = prompt.vault ? ` (${prompt.vault})` : "";
+  switch (prompt.kind ?? "login") {
+    case "login":
+      return {
+        message: `Fill a login from ${prompt.providerLabel}?`,
+        detail: [
+          `${who} wants to sign in to ${site} with "${prompt.loginTitle}"${
+            prompt.vault ? ` from ${prompt.vault}` : ""
+          }.`,
+          "The agent will not see the password or code.",
+        ],
+      };
+    case "identity":
+      return {
+        message: `Fill an identity from ${prompt.providerLabel}?`,
+        detail: [
+          `${who} wants to fill identity "${prompt.loginTitle}"${vault} from ${prompt.providerLabel} into ${site}.`,
+          "The agent can read the filled fields.",
+        ],
+      };
+    case "identityRead":
+      return {
+        message: `Show an identity from ${prompt.providerLabel} to the agent?`,
+        detail: [
+          `${who} wants to see identity "${prompt.loginTitle}"${vault} from ${prompt.providerLabel}.`,
+          "The agent will see your name, birth date, email, phone and address, and so will its model provider.",
+        ],
+      };
+  }
 };
 
 const hostWindow = (guest: WebContents | undefined) => {
@@ -51,13 +99,7 @@ const make = Effect.gen(function* () {
       const who = [prompt.agent, prompt.threadTitle ? `"${prompt.threadTitle}"` : undefined]
         .filter(Boolean)
         .join(" in ");
-      const detail = [
-        `${who || "An agent"} wants to sign in to ${prompt.origin} with "${prompt.loginTitle}"${
-          prompt.vault ? ` from ${prompt.vault}` : ""
-        }.`,
-        "The agent will not see the password or code.",
-        SCOPE_NOTE[prompt.scope],
-      ].join("\n\n");
+      const { message, detail } = wording(prompt, who || "An agent");
       const expiresAt = (yield* Clock.currentTimeMillis) + prompt.timeoutMs;
       // Prompts queue behind each other; one whose call has ended is never shown, and an open one
       // closes as a Deny when the server stops waiting.
@@ -76,8 +118,8 @@ const make = Effect.gen(function* () {
               defaultId: 1,
               cancelId: 1,
               noLink: true,
-              message: `Fill a login from ${prompt.providerLabel}?`,
-              detail,
+              message,
+              detail: [...detail, SCOPE_NOTE[prompt.kind ?? "login"][prompt.scope]].join("\n\n"),
             },
             owner,
           );

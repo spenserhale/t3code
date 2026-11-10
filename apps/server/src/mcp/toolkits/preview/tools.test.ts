@@ -31,6 +31,8 @@ it("exports provider-compatible object schemas", () => {
     if (tool.name === "preview_navigate") {
       expect(schemaHasMultipleAllOfDescriptions(schema)).toBe(false);
     }
+    // Reading an identity for a browser outside the preview involves no tab.
+    if (tool.name === "preview_read_identity") continue;
     expect(
       schema.properties?.tabId,
       `${tool.name} must allow an explicit collaborative browser tab target`,
