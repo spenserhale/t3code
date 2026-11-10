@@ -22,6 +22,7 @@ import {
   readIdentity,
   type IdentityContext,
 } from "./ServerBrowserIdentity.ts";
+import { documentId } from "./ServerBrowserLogin.ts";
 
 describe("matchOption", () => {
   const options = (...pairs: ReadonlyArray<readonly [value: string, label: string]>) =>
@@ -72,6 +73,22 @@ const PAGES: Partial<Record<string, string>> = {
   "/signup": SIGNUP_PAGE,
   "/address": `<input id="street" autocomplete="street-address">
     <input id="city" autocomplete="address-level2"><textarea id="whole"></textarea>`,
+  // Focusing the field hands focus to another site's frame, which focuses its own field.
+  "/focus": `<input id="email" autocomplete="email"><iframe id="thief" src="https://ads.test/catch"></iframe>
+    <script>
+      document.getElementById("email").addEventListener("focus", () =>
+        document.getElementById("thief").contentWindow.focus());
+    </script>`,
+  "/catch": `<input id="caught">
+    <script>addEventListener("focus", () => document.getElementById("caught").focus());</script>`,
+  // Focusing the field stalls the page.
+  "/late": `<input id="email" autocomplete="email">
+    <script>
+      document.getElementById("email").addEventListener("focus", () => {
+        const end = Date.now() + 700;
+        while (Date.now() < end);
+      });
+    </script>`,
 };
 
 const ADA: SecretProviderIdentityValues = {
@@ -191,7 +208,14 @@ describe("filling a saved identity", () => {
     page,
     cdp: await context.newCDPSession(page),
   });
+  /** The tab and the document it shows now, as the write of one field takes them. */
+  const fieldTab = async () => {
+    const opened = await tab();
+    return { ...opened, document: await documentId(opened.cdp) };
+  };
   const frameAllowed = (url: string) => loginCoversPage(["https://shop.test/signup"], url);
+  /** The page's clock, which a write checks its deadline against. */
+  const pageClock = async () => (await page.evaluate("Date.now()")) as number;
   const valueOf = (selector: string, frame?: string) =>
     (frame === undefined
       ? page.locator(selector)
@@ -335,7 +359,7 @@ describe("filling a saved identity", () => {
           checkIdentityLocators(
             [{ value: "email", locator: page.frameLocator("#ad").locator("#adEmail") }],
             frameAllowed,
-            5_000,
+            NO_DEADLINE,
           ),
         ).rejects.toThrow("The email locator points outside this page's site.");
         // Through the whole fill, a selector into that frame is refused the same way.
@@ -357,9 +381,80 @@ describe("filling a saved identity", () => {
     }),
   );
 
+  it("writes only into the chosen field, wherever the page moves focus", async () => {
+    await page.goto("https://shop.test/focus");
+    const caught = page.frameLocator("#thief").locator("#caught");
+    await caught.waitFor();
+    const handle = await page.locator("#email").elementHandle();
+    const reason = await fillIdentityField({
+      ...(await fieldTab()),
+      handle: handle!,
+      value: "email",
+      values: { email: "ada@example.com" },
+      frameAllowed,
+      deadline: NO_DEADLINE,
+    });
+    expect(reason).toBeUndefined();
+    expect(await caught.inputValue()).toBe("");
+    expect(await page.locator("#email").inputValue()).toBe("ada@example.com");
+  });
+
+  it("never writes after the deadline, even once the write has begun", async () => {
+    await page.goto("https://shop.test/late");
+    const handle = await page.locator("#email").elementHandle();
+    const reason = await fillIdentityField({
+      ...(await fieldTab()),
+      handle: handle!,
+      value: "email",
+      values: { email: "ada@example.com" },
+      frameAllowed,
+      deadline: (await pageClock()) + 300,
+    });
+    expect(reason).toBe("The field did not answer in time. Use preview_act.");
+    expect(await page.locator("#email").inputValue()).toBe("");
+  });
+
+  it("gives up on a field once the page stops answering, and never fills it later", async () => {
+    const handle = await page.locator("#first").elementHandle();
+    const fields = await fieldTab();
+    const deadline = (await pageClock()) + 300;
+    // Busy for longer than the field may take, so even looking at the field waits behind it.
+    const free = page.evaluate("const end = Date.now() + 1500; while (Date.now() < end); 'free'");
+    const reason = fillIdentityField({
+      ...fields,
+      handle: handle!,
+      value: "firstName",
+      values: { firstName: "Ada" },
+      frameAllowed,
+      deadline,
+    });
+    expect(await Promise.race([reason, free])).toBe(
+      "The field did not answer in time. Use preview_act.",
+    );
+    expect(await page.locator("#first").inputValue()).toBe("");
+  });
+
+  it("leaves a field alone once the page has loaded another document", async () => {
+    const opened = await fieldTab();
+    await page.reload();
+    const handle = await page.locator("#first").elementHandle();
+    const reason = await fillIdentityField({
+      ...opened,
+      handle: handle!,
+      value: "firstName",
+      values: { firstName: "Ada" },
+      frameAllowed,
+      deadline: NO_DEADLINE,
+    });
+    expect(reason).toBe(
+      "The page loaded another document before the field was filled. Take a fresh snapshot.",
+    );
+    expect(await page.locator("#first").inputValue()).toBe("");
+  });
+
   it("refuses a frame that moved to another site after it was checked", async () => {
     const target = page.frameLocator("#sub").locator("#subTel");
-    await checkIdentityLocators([{ value: "phone", locator: target }], frameAllowed, 5_000);
+    await checkIdentityLocators([{ value: "phone", locator: target }], frameAllowed, NO_DEADLINE);
     const moved = page.waitForEvent("framenavigated", (frame) =>
       frame.url().startsWith("https://ads.test/"),
     );
@@ -370,11 +465,12 @@ describe("filling a saved identity", () => {
     const handle = await page.frameLocator("#sub").locator("input").elementHandle();
     await expect(
       fillIdentityField({
+        ...(await fieldTab()),
         handle: handle!,
         value: "email",
         values: { email: "ada@example.com" },
         frameAllowed,
-        timeoutMs: 5_000,
+        deadline: NO_DEADLINE,
       }),
     ).rejects.toThrow("left its site");
     expect(await handle!.inputValue()).toBe("");
