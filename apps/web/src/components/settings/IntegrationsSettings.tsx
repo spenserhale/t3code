@@ -9,7 +9,9 @@ import {
   BrowserImportFailureReason,
   BROWSER_PROFILE_MAX_COUNT,
   type BrowserLinkTarget,
+  type BrowserIdentityReadApproval,
   type BrowserLoginApproval,
+  type BrowserLoginSettings as BrowserLoginSettingsValue,
   BROWSER_LOGIN_PROVIDERS_MAX,
   browserLoginProviderIds,
   type BrowserProfile,
@@ -19,6 +21,7 @@ import {
   BROWSER_PROFILE_NAME_MAX_LENGTH,
   BROWSER_RECORDING_FRAME_RATES,
   DEFAULT_BROWSER_AUTO_SHOW_FLOATING_PREVIEW,
+  DEFAULT_BROWSER_IDENTITY_READ_APPROVAL,
   DEFAULT_BROWSER_LOGIN_APPROVAL,
   DEFAULT_BROWSER_PROFILE_ID,
   DEFAULT_BROWSER_LINK_TARGET,
@@ -1708,6 +1711,32 @@ const LOGIN_APPROVAL_LABELS: Readonly<Record<BrowserLoginApproval, string>> = {
   never: msg("Don't ask"),
 };
 
+const IDENTITY_READ_LABELS: Readonly<Record<BrowserIdentityReadApproval, string>> = {
+  off: msg("Off", { $context: "agents cannot read identities" }),
+  request: msg("Ask every time"),
+  thread: msg("Once per thread"),
+  application: msg("Once until restart"),
+  never: msg("Don't ask"),
+};
+
+/** The whole `browserLogins` value to write: the server replaces it, so a write keeps the rest. */
+export function browserLoginsWrite(
+  current: BrowserLoginSettingsValue,
+  change: {
+    readonly secretProviderIds?: ReadonlyArray<SecretProviderId>;
+    readonly approval?: BrowserLoginApproval;
+    readonly identityReadApproval?: BrowserIdentityReadApproval;
+  },
+) {
+  const secretProviderIds = change.secretProviderIds ?? browserLoginProviderIds(current);
+  const identityReadApproval = change.identityReadApproval ?? current.identityReadApproval;
+  return {
+    ...(secretProviderIds.length === 0 ? {} : { secretProviderIds: [...secretProviderIds] }),
+    approval: change.approval ?? current.approval,
+    ...(identityReadApproval === undefined ? {} : { identityReadApproval }),
+  };
+}
+
 function BrowserLoginSettings() {
   const searchableSetting = useSearchableSetting();
   const gt = useGT();
@@ -1715,6 +1744,8 @@ function BrowserLoginSettings() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const { approval } = settings.browserLogins;
+  const identityReadApproval =
+    settings.browserLogins.identityReadApproval ?? DEFAULT_BROWSER_IDENTITY_READ_APPROVAL;
   const chosen = browserLoginProviderIds(settings.browserLogins);
   const providers = Object.entries(settings.secretProviders).flatMap(([id, provider]) => {
     const definition = builtInSecretProviderDefinitions.find(provider.kind);
@@ -1730,13 +1761,8 @@ function BrowserLoginSettings() {
       .map((id) => ({ id, label: gt("{id} (unavailable)", { id }) })),
   ];
   const off = chosen.length === 0;
-  const save = (secretProviderIds: ReadonlyArray<SecretProviderId>, nextApproval = approval) =>
-    updateSettings({
-      browserLogins:
-        secretProviderIds.length === 0
-          ? { approval: nextApproval }
-          : { secretProviderIds: [...secretProviderIds], approval: nextApproval },
-    });
+  const save = (change: Parameters<typeof browserLoginsWrite>[1]) =>
+    updateSettings({ browserLogins: browserLoginsWrite(settings.browserLogins, change) });
 
   return (
     <>
@@ -1748,14 +1774,21 @@ function BrowserLoginSettings() {
           providers.length === 0 && off
             ? gt("Add a 1Password provider in Settings > Secrets to let agents sign in to sites.")
             : gt(
-                "Agents can sign the built-in browser in to sites with logins saved here. They never see the values.",
+                "Agents can sign the built-in browser in to sites and fill sign-up forms with what is saved here. They never see passwords.",
+              )
+        }
+        status={
+          off
+            ? undefined
+            : gt(
+                "Agents can use every login and identity the chosen password managers can open, so a vault just for agents is recommended.",
               )
         }
         resetAction={
           !off ? (
             <SettingResetButton
               ariaLabel={gt("Reset password managers for logins to default")}
-              onClick={() => save([])}
+              onClick={() => save({ secretProviderIds: [] })}
             />
           ) : null
         }
@@ -1783,7 +1816,11 @@ function BrowserLoginSettings() {
                     closeOnClick={false}
                     disabled={!checked && chosen.length >= BROWSER_LOGIN_PROVIDERS_MAX}
                     onCheckedChange={(next) =>
-                      save(next ? [...chosen, option.id] : chosen.filter((id) => id !== option.id))
+                      save({
+                        secretProviderIds: next
+                          ? [...chosen, option.id]
+                          : chosen.filter((id) => id !== option.id),
+                      })
                     }
                   >
                     {option.label}
@@ -1812,14 +1849,14 @@ function BrowserLoginSettings() {
           approval !== DEFAULT_BROWSER_LOGIN_APPROVAL ? (
             <SettingResetButton
               ariaLabel={gt("Reset ask before filling to default")}
-              onClick={() => save(chosen, DEFAULT_BROWSER_LOGIN_APPROVAL)}
+              onClick={() => save({ approval: DEFAULT_BROWSER_LOGIN_APPROVAL })}
             />
           ) : null
         }
         control={
           <Select
             value={approval}
-            onValueChange={(value) => save(chosen, value as BrowserLoginApproval)}
+            onValueChange={(value) => save({ approval: value as BrowserLoginApproval })}
             disabled={off}
           >
             <SelectTrigger
@@ -1837,6 +1874,53 @@ function BrowserLoginSettings() {
                   </SelectItem>
                 ),
               )}
+            </SelectPopup>
+          </Select>
+        }
+      />
+      <SettingsRow
+        serverScoped
+        settingKeys={["browserLogins"]}
+        {...searchableSetting("browser-identity-read")}
+        description={gt(
+          "The built-in browser fills identities under the approval above. This is for browsers T3 Code does not control, and the values reach the agent and its model provider.",
+        )}
+        status={
+          identityReadApproval === "never"
+            ? gt("Agents can read any identity these password managers can see, without asking.")
+            : undefined
+        }
+        resetAction={
+          identityReadApproval !== DEFAULT_BROWSER_IDENTITY_READ_APPROVAL ? (
+            <SettingResetButton
+              ariaLabel={gt("Reset identity details for other browsers to default")}
+              onClick={() => save({ identityReadApproval: DEFAULT_BROWSER_IDENTITY_READ_APPROVAL })}
+            />
+          ) : null
+        }
+        control={
+          <Select
+            value={identityReadApproval}
+            onValueChange={(value) =>
+              save({ identityReadApproval: value as BrowserIdentityReadApproval })
+            }
+            disabled={off}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-full min-w-0 sm:w-56"
+              aria-label={gt("Identity details for other browsers")}
+            >
+              <SelectValue>{m(IDENTITY_READ_LABELS[identityReadApproval])}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              {(
+                Object.keys(IDENTITY_READ_LABELS) as ReadonlyArray<BrowserIdentityReadApproval>
+              ).map((value) => (
+                <SelectItem key={value} value={value}>
+                  {m(IDENTITY_READ_LABELS[value])}
+                </SelectItem>
+              ))}
             </SelectPopup>
           </Select>
         }

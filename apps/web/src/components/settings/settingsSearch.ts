@@ -1158,6 +1158,17 @@ export const SETTINGS_SEARCH_ITEMS = [
     secretProvidersOnly: true,
   },
   {
+    id: "browser-identity-read",
+    title: msg("Identity details for other browsers"),
+    to: "/settings/browser",
+    searchTerms: [
+      msg(
+        "identity sign up form name email phone address personal details read agent chrome codex computer use approval",
+      ),
+    ],
+    secretsFeatureOnly: true,
+  },
+  {
     id: "device-sources",
     title: msg("Device sources"),
     to: "/settings/devices",
