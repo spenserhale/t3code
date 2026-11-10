@@ -552,6 +552,7 @@ describe("1Password identities", () => {
 
   it.effect.each([
     ["epoch seconds", "642902400", "1990-05-17"],
+    ["epoch seconds in a JSON number", 642902400, "1990-05-17"],
     ["an ISO date", "1990-05-17", "1990-05-17"],
     ["seconds before 1970", "-86400", "1969-12-31"],
   ] as const)("reads a birth date given as %s", ([, value, birthDate]) =>
