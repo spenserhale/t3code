@@ -642,6 +642,8 @@ type SnapshotInput = {
   readonly consoleEntries: ReadonlyArray<PreviewAutomationConsoleEntry>;
   readonly networkEntries: ReadonlyArray<PreviewAutomationNetworkEntry>;
   readonly actionTimeline: PreviewAutomationSnapshot["actionTimeline"];
+  /** Removes secrets from page text; it runs before the text is cut to length. */
+  readonly scrub?: (text: string) => string;
 };
 
 /** The scale a page renders at and its viewport in device-independent pixels. */
@@ -746,11 +748,12 @@ const capture = async (
   }
   const [page, { full, data }] = await pageAndScreenshot;
   if (state.generation !== generation) throw pageChanged();
-  const mask = (text: string) => (dotted ? text.replace(dotted, MASKED_VALUE) : text);
+  const scrub = input.scrub ?? ((text: string) => text);
+  const mask = (text: string) => scrub(dotted ? text.replace(dotted, MASKED_VALUE) : text);
   // Redacted before the cut, so a payload crossing it can't leave its start showing, and before
   // masking, which could hide the `data:` scheme behind a password value's dots.
   const redacted = withoutTreeDataPayloads(tree);
-  const accessibilityTree = (dotted ? maskTree(redacted, dotted) : redacted)
+  const accessibilityTree = scrub(dotted ? maskTree(redacted, dotted) : redacted)
     .slice(0, MAX_VISIBLE_TEXT_LENGTH)
     .replace(/\[ref=((?:f\d+)?e\d+)\]/g, (_match, nativeRef: string) => {
       const ref = `t3-${generation}-${nativeRef}`;
