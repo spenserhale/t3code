@@ -4,12 +4,11 @@ import type {
   PreviewAutomationFillNewLoginResult,
   PreviewNewPasswordField,
 } from "@t3tools/contracts";
-import type * as Effect from "effect/Effect";
+import * as Effect from "effect/Effect";
 import type { CDPSession, Page } from "playwright-core";
 
 import * as BrowserLogins from "./BrowserLogins.ts";
 import * as BrowserSecretAccess from "./BrowserSecretAccess.ts";
-import type * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import {
   documentId,
   fillCovered,
@@ -19,9 +18,10 @@ import {
 } from "./ServerBrowserLogin.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
-export interface NewLoginContext {
+export interface NewLoginContext extends BrowserSecretAccess.SecretAccessContext {
   readonly logins: Pick<
     BrowserLogins.BrowserLogins["Service"],
+    | "escalation"
     | "newLoginDestination"
     | "createLogin"
     | "readNewLogin"
@@ -31,13 +31,6 @@ export interface NewLoginContext {
     | "recordApproval"
     | "check"
   >;
-  readonly desktopChannel: Pick<
-    DesktopBrowserChannel.DesktopBrowserChannel["Service"],
-    "available" | "approveLogin"
-  >;
-  /** Runs a step of the login service; its failure becomes an operation error. */
-  readonly step: <A>(effect: Effect.Effect<A, BrowserLogins.BrowserLoginError>) => Promise<A>;
-  readonly runPromise: <A>(effect: Effect.Effect<A>) => Promise<A>;
   /** Whether the agent ran script in this document of the tab, where it could hook a fill. */
   readonly wasScripted: (document: string) => boolean;
   /**
@@ -79,7 +72,7 @@ export const fillNewLogin = async (
   const { logins, step } = context;
   // The page sees wall-clock time, so the steps that reach into it share this deadline.
   const deadline = Date.now() + (deadlineMs - performance.now());
-  const remaining = () => deadline - Date.now();
+  const remaining = () => (context.signal?.aborted ? 0 : deadline - Date.now());
   const pageUrl = tab.page.url();
   const frameCovered = (frameUrl: string) => BrowserLogins.loginCoversPage([pageUrl], frameUrl);
   if (!frameCovered(pageUrl)) {
@@ -126,30 +119,40 @@ export const fillNewLogin = async (
     );
   }
   const title = earlier?.title ?? input.title ?? site;
-  // A service account saving where the user chose needs no one; anything else needs this
-  // machine's desktop app. New logins are not relayed to the user's device.
-  if (!destination.unattended) {
-    if (!context.desktopChannel.available) {
-      throw loginError(
-        `Saving a new login to ${destination.account} needs the user's approval in the T3 Code desktop app on this machine. Ask the user to sign up in the tab, or to save new logins with a service account on this machine in Settings > Browser > Logins.`,
-      );
-    }
-    await BrowserSecretAccess.approveHere(context, {
-      revision: destination.revision,
-      kind: "newLogin",
-      key: { threadId: tab.threadId, tabId: tab.tabId },
-      prompt: {
-        providerLabel: destination.account,
-        loginTitle: title,
-        ...(destination.vault ? { vault: destination.vault } : {}),
-        origin: page.origin,
+  // Saving takes the order every secret request follows: a service account saving where the user
+  // chose needs no one, anything else this machine's desktop app. Nothing is relayed.
+  const destinationItem = { id: earlier?.id ?? destination.account, title };
+  await step(
+    BrowserSecretAccess.resolve(
+      context,
+      {
+        kind: "newLogin",
+        threadId: tab.threadId,
         ...(input.requester?.threadTitle ? { threadTitle: input.requester.threadTitle } : {}),
         ...(input.requester?.provider ? { agent: input.requester.provider } : {}),
+        tabId: tab.tabId,
+        origin: page.origin,
+        deadline,
       },
-      deadlineMs,
-      denied: "The user did not approve this new login.",
-    });
-  }
+      {
+        what: `a new login in ${destination.account}`,
+        find: (reach) =>
+          Effect.succeed(
+            (reach === "unattended") === destination.unattended ? [destinationItem] : [],
+          ),
+        read: (_revision, item) => Effect.succeed(item),
+        prompt: {
+          providerLabel: destination.account,
+          loginTitle: title,
+          ...(destination.vault ? { vault: destination.vault } : {}),
+        },
+        refusal: (escalation) =>
+          `Saving a new login to ${destination.account} needs the user's approval in the T3 Code desktop app on this machine.${
+            escalation === "refuse" ? " This machine is set not to ask anyone." : ""
+          } Ask the user to sign up in the tab, or to save new logins with a service account on this machine in Settings > Browser > Logins.`,
+      },
+    ),
+  );
   // A caller that gave up must not leave a login behind.
   if (remaining() <= 0) throw loginError("The call ended before the login was saved.");
   const recipe = {

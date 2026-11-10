@@ -6,9 +6,7 @@ import {
   type PreviewAutomationReadIdentityResult,
   PreviewIdentityValue,
   type PreviewIdentityValues,
-  type PreviewLoginCandidate,
   type PreviewLoginRequester,
-  SECRET_RELAY_DEVICE_PREFIX,
 } from "@t3tools/contracts";
 import type { SecretProviderIdentityValues } from "@t3tools/secret-provider-core/server/driver";
 import * as Effect from "effect/Effect";
@@ -509,20 +507,16 @@ export const makeIdentityContext = Effect.fn("ServerBrowserIdentity.makeContext"
   logins: IdentityContext["logins"],
   desktopChannel: IdentityContext["desktopChannel"],
   relay: SecretRelay.SecretRelay["Service"] | undefined,
+  signal?: AbortSignal,
 ) {
-  const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
   const context: IdentityContext = {
     logins,
     desktopChannel,
     relay,
-    step: (effect) =>
-      runPromise(
-        effect.pipe(
-          Effect.mapError((error) => loginError(error.message)),
-          Effect.catchDefect(() => Effect.fail(loginError("The password manager failed."))),
-        ),
-      ),
-    runPromise: (effect) => runPromise(effect),
+    ...BrowserSecretAccess.callRunners(
+      Effect.runPromiseWith(yield* Effect.context<never>()),
+      signal,
+    ),
   };
   return context;
 });
@@ -533,13 +527,6 @@ interface IdentityTab {
   readonly page: Page;
   readonly cdp: CDPSession;
 }
-
-const summary = (identity: BrowserLogins.BrowserIdentityCandidate) => ({
-  id: identity.id,
-  title: identity.title,
-  ...(identity.vault ? { vault: identity.vault } : {}),
-  account: identity.account,
-});
 
 const requesterPrompt = (requester: PreviewLoginRequester | undefined) => ({
   ...(requester?.threadTitle ? { threadTitle: requester.threadTitle } : {}),
@@ -553,148 +540,66 @@ const countryFirst = <A extends { readonly value: PreviewIdentityValue }>(
   targets: ReadonlyArray<A>,
 ) => [...targets].sort((a, b) => Number(b.value === "country") - Number(a.value === "country"));
 
-/** Where an identity came from, and its values, read only once whoever must approve did. */
-type IdentityAccess =
-  | {
-      readonly status: "found";
-      readonly revision: string;
-      readonly identity: PreviewLoginCandidate;
-      readonly read: () => Promise<SecretProviderIdentityValues>;
-    }
-  | { readonly status: "choose"; readonly candidates: ReadonlyArray<PreviewLoginCandidate> }
-  | { readonly status: "none" };
-
 /**
- * Finds the identity in the order every secret request follows: this machine's unattended
- * providers, its attended ones once the desktop app asks, else the user's device. `ready` runs
- * before anyone is asked, so a page that cannot take the fill bothers no one.
+ * Finds the identity a fill or a read means, in the order every secret request follows (see
+ * `BrowserSecretAccess`), and reads it once whoever must approve did.
  */
-const accessIdentity = async (
+const accessIdentity = (
   context: IdentityContext,
   input: {
+    readonly kind: "identity" | "identityRead";
     readonly threadId: string;
     readonly tabId?: string;
+    readonly origin?: string | undefined;
     readonly identity: string | undefined;
     readonly reference: string | undefined;
     readonly requester: PreviewLoginRequester | undefined;
-    readonly origin: string | undefined;
-    readonly kind: "identity" | "identityRead";
     readonly deadlineMs: number;
-    readonly ready: () => Promise<void>;
+    readonly ready?: () => Promise<void>;
   },
-): Promise<IdentityAccess> => {
-  const { logins, step } = context;
-  const action = input.kind === "identity" ? "filling" : "showing";
-  const denied = `The user did not approve ${action} this identity.`;
-  const here = async (
-    identity: BrowserLogins.BrowserIdentityCandidate,
-    revision: string,
-    attended: boolean,
-  ): Promise<IdentityAccess> => ({
-    status: "found",
-    revision,
-    identity: summary(identity),
-    read: async () => {
-      await input.ready();
-      if (attended) {
-        await BrowserSecretAccess.approveHere(context, {
-          revision,
-          kind: input.kind,
-          key: { threadId: input.threadId, ...(input.tabId ? { tabId: input.tabId } : {}) },
-          prompt: {
-            providerLabel: identity.account,
-            loginTitle: identity.title,
-            ...(identity.vault ? { vault: identity.vault } : {}),
-            ...(input.origin ? { origin: input.origin } : {}),
-            ...requesterPrompt(input.requester),
-          },
-          deadlineMs: input.deadlineMs,
-          denied,
-        });
-      }
-      return step(logins.readIdentity(revision, identity));
-    },
-  });
-  const choose = (
-    identities: ReadonlyArray<BrowserLogins.BrowserIdentityCandidate>,
-    revision: string,
-    attended: boolean,
-  ): Promise<IdentityAccess> | IdentityAccess => {
-    const identity =
-      input.identity === undefined
-        ? identities.length === 1
-          ? identities[0]
-          : undefined
-        : identities.find((candidate) => candidate.id === input.identity);
-    if (identity !== undefined) return here(identity, revision, attended);
-    return identities.length === 0
-      ? { status: "none" }
-      : { status: "choose", candidates: identities.map(summary) };
-  };
-  const relayed = async (ask: {
-    readonly item?: string;
-    readonly reference?: string;
-  }): Promise<IdentityAccess> => {
-    const { revision, escalation } = await step(logins.escalation);
-    await input.ready();
-    const answer = await BrowserSecretAccess.relay(context, {
-      escalation,
-      ask: {
-        kind: "identity",
-        purpose: input.kind === "identity" ? "fill" : "read",
-        threadId: input.threadId,
-        ...requesterPrompt(input.requester),
-        ...(input.origin ? { origin: input.origin } : {}),
-        ...ask,
-      },
-      deadlineMs: input.deadlineMs,
-      what: ask.reference ?? (ask.item === undefined ? "an identity" : "that identity"),
-      denied: `The user did not approve ${action} this identity on their device.`,
-    });
-    if (answer.type !== "values") {
-      return answer.type === "none"
-        ? { status: "none" }
-        : { status: "choose", candidates: answer.candidates };
-    }
-    const { urls: _urls, ...identity } = answer.item;
-    // Only the values this server knows, whatever a newer device sends.
-    const values: SecretProviderIdentityValues = Object.fromEntries(
-      Object.entries(BrowserSecretAccess.relayedValues(answer.values)).filter(
-        ([key]) => key !== "fullName" && isIdentityValue(key),
-      ),
-    );
-    return { status: "found", revision, identity, read: async () => values };
-  };
-
-  if (input.identity?.startsWith(SECRET_RELAY_DEVICE_PREFIX)) {
-    return relayed({ item: input.identity });
-  }
-  if (input.identity === undefined && input.reference !== undefined) {
-    const { reference } = input;
-    const unattended = await BrowserSecretAccess.tryUnattended(
+) => {
+  const { logins } = context;
+  const requester = requesterPrompt(input.requester);
+  return context.step(
+    BrowserSecretAccess.resolve(
       context,
-      logins.lookupIdentity(reference, "unattended"),
-    );
-    if (unattended?.identity !== undefined) {
-      return here(unattended.identity, unattended.revision, false);
-    }
-    if (!context.desktopChannel.available) return relayed({ reference });
-    const attended = await step(logins.lookupIdentity(reference, "attended"));
-    return attended.identity === undefined
-      ? { status: "none" }
-      : here(attended.identity, attended.revision, true);
-  }
-  // Unattended providers are tried first; when they have identities, nobody is asked.
-  const unattended = await BrowserSecretAccess.tryUnattended(
-    context,
-    logins.identityCandidates("unattended"),
+      {
+        kind: input.kind,
+        threadId: input.threadId,
+        ...requester,
+        ...(input.tabId ? { tabId: input.tabId } : {}),
+        ...(input.origin ? { origin: input.origin } : {}),
+        item: input.identity,
+        reference: input.reference,
+        deadline: Date.now() + (input.deadlineMs - performance.now()),
+        ready: input.ready && BrowserSecretAccess.pageStep(input.ready),
+      },
+      {
+        what: "an identity",
+        find: (reach) =>
+          input.reference === undefined
+            ? logins.identityCandidates(reach).pipe(Effect.map((found) => found.identities))
+            : logins
+                .lookupIdentity(input.reference, reach)
+                .pipe(Effect.map(({ identity }) => (identity === undefined ? [] : [identity]))),
+        read: (revision, identity) => logins.readIdentity(revision, identity),
+        relay: {
+          ask: {
+            kind: "identity",
+            purpose: input.kind === "identity" ? "fill" : "read",
+            threadId: input.threadId,
+            ...requester,
+            ...(input.origin ? { origin: input.origin } : {}),
+          },
+          // Only the values this server knows, whatever a newer device sends.
+          values: (values): SecretProviderIdentityValues =>
+            Object.fromEntries(
+              Object.entries(values).filter(([key]) => key !== "fullName" && isIdentityValue(key)),
+            ),
+        },
+      },
+    ),
   );
-  if (unattended !== undefined && unattended.identities.length > 0) {
-    return choose(unattended.identities, unattended.revision, false);
-  }
-  if (!context.desktopChannel.available) return relayed({});
-  const attended = await step(logins.identityCandidates("attended"));
-  return choose(attended.identities, attended.revision, true);
 };
 
 /**
@@ -713,20 +618,20 @@ export const fillIdentity = async (
   const frameAllowed = (frameUrl: string) => BrowserLogins.loginCoversPage([pageUrl], frameUrl);
   // The page sees wall-clock time, so every step that reaches into it shares this deadline.
   const deadline = Date.now() + (deadlineMs - performance.now());
-  const remaining = () => deadline - Date.now();
+  const remaining = () => (context.signal?.aborted ? 0 : deadline - Date.now());
   const named = (input.fields ?? []).flatMap(({ locator, value }) => {
     const target = ServerBrowserPage.targetLocator(tab.page, { locator });
     return target === null ? [] : [{ value, locator: target }];
   });
   let document: string | undefined;
   const access = await accessIdentity(context, {
+    kind: "identity",
     threadId: tab.threadId,
     tabId: tab.tabId,
+    origin: frameAllowed(pageUrl) ? new URL(pageUrl).origin : undefined,
     identity: input.identity,
     reference: input.reference,
     requester: input.requester,
-    origin: frameAllowed(pageUrl) ? new URL(pageUrl).origin : undefined,
-    kind: "identity",
     deadlineMs,
     ready: async () => {
       if (!frameAllowed(pageUrl)) {
@@ -752,7 +657,7 @@ export const fillIdentity = async (
   if (access.status === "choose") {
     return { status: "choose", tabId: tab.tabId, candidates: [...access.candidates] };
   }
-  const values = identityValues(await access.read());
+  const values = identityValues(access.values);
   // The page may have moved on, or the settings changed, while the user was deciding.
   if (document === undefined || (await documentId(tab.cdp)) !== document) {
     throw loginError(
@@ -801,7 +706,13 @@ export const fillIdentity = async (
   } finally {
     await Promise.all(targets.map((target) => target.handle?.dispose().catch(() => undefined)));
   }
-  return { status: "filled", tabId: tab.tabId, identity: access.identity, filled, skipped };
+  return {
+    status: "filled",
+    tabId: tab.tabId,
+    identity: BrowserSecretAccess.summary(access.item),
+    filled,
+    skipped,
+  };
 };
 
 /**
@@ -816,17 +727,18 @@ export const readIdentity = async (
   deadlineMs: number,
 ): Promise<PreviewAutomationReadIdentityResult> => {
   const access = await accessIdentity(context, {
+    kind: "identityRead",
     threadId,
     identity: input.identity,
     reference: input.reference,
     requester: input.requester,
-    origin: undefined,
-    kind: "identityRead",
     deadlineMs,
-    ready: async () => {},
   });
   if (access.status === "none") return { status: "no_identity" };
   if (access.status === "choose") return { status: "choose", candidates: [...access.candidates] };
-  const values = identityValues(await access.read());
-  return { status: "read", identity: access.identity, values };
+  return {
+    status: "read",
+    identity: BrowserSecretAccess.summary(access.item),
+    values: identityValues(access.values),
+  };
 };

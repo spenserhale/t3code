@@ -53,9 +53,12 @@ export const DesktopBrowserCommand = Schema.Union([
     ...ApprovalKey,
     requestId: TrimmedNonEmptyString,
     kind: Schema.optional(Schema.Literals(["login", "identity", "identityRead", "newLogin"])),
+    /** The password managers that would be opened. */
     providerLabel: Schema.String,
-    /** The saved item's title, a login's or an identity's. */
-    loginTitle: Schema.String,
+    /** The item's title, when known before anything is read, such as a new login's. */
+    loginTitle: Schema.optional(Schema.String),
+    /** The item the agent named, such as `op://Vault/Item`. */
+    reference: Schema.optional(Schema.String),
     vault: Schema.optional(Schema.String),
     origin: Schema.optional(Schema.String),
     threadTitle: Schema.optional(Schema.String),

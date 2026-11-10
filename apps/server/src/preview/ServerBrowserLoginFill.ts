@@ -1,10 +1,10 @@
 // @effect-diagnostics globalDate:off - Playwright steps run outside the Effect runtime, on the page's wall clock.
-import {
-  type PreviewAutomationFillLoginRequest,
-  type PreviewAutomationFillLoginResult,
-  type PreviewLoginField,
-  SECRET_RELAY_DEVICE_PREFIX,
+import type {
+  PreviewAutomationFillLoginRequest,
+  PreviewAutomationFillLoginResult,
+  PreviewLoginField,
 } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 import type { CDPSession, Page } from "playwright-core";
 
 import * as BrowserLogins from "./BrowserLogins.ts";
@@ -44,28 +44,16 @@ interface LoginTab {
   readonly recordingStart: object | null;
 }
 
-interface FillableLogin {
-  readonly id: string;
-  readonly title: string;
-  readonly vault?: string | undefined;
-  readonly account?: string | undefined;
+interface FillableLogin extends BrowserSecretAccess.SecretItem {
   readonly urls: ReadonlyArray<string>;
 }
 
-const summary = (login: Omit<FillableLogin, "urls">) => ({
-  id: login.id,
-  title: login.title,
-  ...(login.vault ? { vault: login.vault } : {}),
-  ...(login.account ? { account: login.account } : {}),
-});
-
 const notForThisSite = (title: string) =>
-  loginError(`The login "${title}" is saved for another site, so it is not filled here.`);
+  `The login "${title}" is saved for another site, so it is not filled here.`;
 
 /**
- * Fills a saved login: from this machine's unattended providers without asking, else from its
- * attended ones once the desktop app asks, else from the user's device through the relay. Every
- * value goes through the same page guards, wherever it came from.
+ * Fills a saved login in the order every secret request follows (see `BrowserSecretAccess`).
+ * Every value goes through the same page guards, wherever it came from.
  */
 export const fillLogin = async (
   context: LoginFillContext,
@@ -87,13 +75,12 @@ export const fillLogin = async (
     ...(input.requester?.threadTitle ? { threadTitle: input.requester.threadTitle } : {}),
     ...(input.requester?.provider ? { agent: input.requester.provider } : {}),
   };
-  const noLogin = { status: "no_login", tabId: tab.tabId, origin } as const;
   // A caller that gave up must not leave an approval or a fill behind.
-  const expired = () => performance.now() >= deadlineMs;
+  const expired = () => performance.now() >= deadlineMs || context.signal?.aborted === true;
   // The page sees wall-clock time, so the steps that reach into it share this deadline.
   const deadline = Date.now() + (deadlineMs - performance.now());
 
-  /** The fields, in frames on the login's site only, found before anyone is asked. */
+  /** The fields, in frames on the login's site only. */
   const findTargets = async (urls: ReadonlyArray<string>) => {
     const frameCovered = (frameUrl: string) => BrowserLogins.loginCoversPage(urls, frameUrl);
     const { targets, missing } = await findLoginTargets({
@@ -173,111 +160,66 @@ export const fillLogin = async (
         deadline,
       });
     }
-    return { status: "filled", tabId: tab.tabId, login: summary(login), filled: fields };
+    return {
+      status: "filled",
+      tabId: tab.tabId,
+      login: BrowserSecretAccess.summary(login),
+      filled: fields,
+    };
   };
 
-  /** A login of this machine's providers; an attended one is asked about first. */
-  const fillHere = async (
-    login: BrowserLogins.BrowserLoginCandidate,
-    revision: string,
-    attended: boolean,
-  ) => {
-    if (!BrowserLogins.loginCoversPage(login.urls, pageUrl)) throw notForThisSite(login.title);
-    const found = await findTargets(login.urls);
-    const document = await fillableDocument();
-    if (attended) {
-      await BrowserSecretAccess.approveHere(context, {
-        revision,
-        kind: "login",
-        key: { threadId: tab.threadId, tabId: tab.tabId },
-        prompt: {
-          providerLabel: login.account,
-          loginTitle: login.title,
-          ...(login.vault ? { vault: login.vault } : {}),
-          origin,
-          ...requester,
-        },
-        deadlineMs,
-        denied: "The user did not approve this login.",
-      });
-    }
-    const values = await step(logins.read(revision, login, fields));
-    return fill(login, found, document, values, revision);
-  };
-
-  const chooseOrFill = (
-    candidates: ReadonlyArray<BrowserLogins.BrowserLoginCandidate>,
-    revision: string,
-    attended: boolean,
-  ) => {
-    const login =
-      input.login === undefined
-        ? candidates.length === 1
-          ? candidates[0]
-          : undefined
-        : candidates.find((candidate) => candidate.id === input.login);
-    if (login !== undefined) return fillHere(login, revision, attended);
-    return candidates.length === 0
-      ? noLogin
-      : ({
-          status: "choose",
-          tabId: tab.tabId,
-          origin,
-          candidates: candidates.map(summary),
-        } as const);
-  };
-
-  /** The user's device chooses, asks the user and reads; the page is checked before and after. */
-  const fillRelayed = async (ask: { readonly item?: string; readonly reference?: string }) => {
-    const { revision, escalation } = await step(logins.escalation);
-    // The login's websites are known only from the answer; fields the agent named are checked
-    // against them then, so a form in a frame of a sibling subdomain can still be filled.
-    if (Object.keys(locators).length === 0) await findTargets([pageUrl]);
-    const document = await fillableDocument();
-    const answer = await BrowserSecretAccess.relay(context, {
-      escalation,
-      ask: { kind: "login", threadId: tab.threadId, ...requester, origin, fields, ...ask },
-      deadlineMs,
-      what: ask.reference ?? (ask.item === undefined ? `a login for ${origin}` : "that login"),
-      denied: "The user did not approve this login on their device.",
-    });
-    if (answer.type === "none") return noLogin;
-    if (answer.type === "choose") {
-      return { status: "choose", tabId: tab.tabId, origin, candidates: answer.candidates } as const;
-    }
-    const { item } = answer;
-    if (!BrowserLogins.loginCoversPage(item.urls, tab.page.url())) throw notForThisSite(item.title);
-    const found = await findTargets(item.urls);
-    return fill(item, found, document, BrowserSecretAccess.relayedValues(answer.values), revision);
-  };
-
-  if (input.login?.startsWith(SECRET_RELAY_DEVICE_PREFIX)) {
-    return fillRelayed({ item: input.login });
-  }
-  if (input.login === undefined && input.reference !== undefined) {
-    const { reference } = input;
-    const unattended = await BrowserSecretAccess.tryUnattended(
+  let document: string | undefined;
+  const access = await step(
+    BrowserSecretAccess.resolve(
       context,
-      logins.lookupLogin(reference, "unattended"),
-    );
-    if (unattended?.login !== undefined) {
-      return fillHere(unattended.login, unattended.revision, false);
-    }
-    if (!context.desktopChannel.available) return fillRelayed({ reference });
-    const attended = await step(logins.lookupLogin(reference, "attended"));
-    return attended.login === undefined
-      ? noLogin
-      : fillHere(attended.login, attended.revision, true);
-  }
-  // Unattended providers are tried first; when they have logins for the page, nobody is asked.
-  const unattended = await BrowserSecretAccess.tryUnattended(
-    context,
-    logins.candidates(pageUrl, "unattended"),
+      {
+        kind: "login",
+        threadId: tab.threadId,
+        ...requester,
+        tabId: tab.tabId,
+        origin,
+        item: input.login,
+        reference: input.reference,
+        deadline,
+        // Before anyone is asked or anything read; the login's own sites are checked once known.
+        ready: BrowserSecretAccess.pageStep(async () => {
+          if (Object.keys(locators).length === 0) await findTargets([pageUrl]);
+          document = await fillableDocument();
+        }),
+      },
+      {
+        what: `a login for ${origin}`,
+        find: (reach) =>
+          input.reference === undefined
+            ? logins.candidates(pageUrl, reach).pipe(Effect.map((found) => found.logins))
+            : logins
+                .lookupLogin(input.reference, reach)
+                .pipe(Effect.map(({ login }) => (login === undefined ? [] : [login]))),
+        read: (revision, login) => logins.read(revision, login, fields),
+        unusable: (login) =>
+          BrowserLogins.loginCoversPage(login.urls, pageUrl)
+            ? undefined
+            : notForThisSite(login.title),
+        relay: {
+          ask: { kind: "login", threadId: tab.threadId, ...requester, origin, fields },
+          values: (values) =>
+            Object.fromEntries(
+              fields.flatMap((field) =>
+                values[field] === undefined ? [] : [[field, values[field]]],
+              ),
+            ),
+        },
+      },
+    ),
   );
-  if (unattended !== undefined && unattended.logins.length > 0) {
-    return chooseOrFill(unattended.logins, unattended.revision, false);
+  if (access.status === "none") return { status: "no_login", tabId: tab.tabId, origin };
+  if (access.status === "choose") {
+    return { status: "choose", tabId: tab.tabId, origin, candidates: [...access.candidates] };
   }
-  if (!context.desktopChannel.available) return fillRelayed({});
-  const attended = await step(logins.candidates(pageUrl, "attended"));
-  return chooseOrFill(attended.logins, attended.revision, true);
+  const { item } = access;
+  if (!BrowserLogins.loginCoversPage(item.urls, tab.page.url())) {
+    throw loginError(notForThisSite(item.title));
+  }
+  const found = await findTargets(item.urls);
+  return fill(item, found, document ?? (await fillableDocument()), access.values, access.revision);
 };

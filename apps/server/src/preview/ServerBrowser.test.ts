@@ -2406,7 +2406,25 @@ const realLoginBrowser = Effect.acquireRelease(
   ({ browser }) => Effect.promise(() => browser.close()),
 );
 
-/** A server whose one password manager holds a login for https://good.test and one identity. */
+const personalProvider = SecretProviderId.make("personal");
+/** What each password manager holds: its login for https://good.test and its identity. */
+const HELD = {
+  Work: {
+    login: { id: "g1", title: "Good", vaultId: "v1", urls: ["https://good.test"] },
+    identity: { id: "me", title: "Me", vaultId: "v1" },
+    values: { firstName: "Ada", lastName: "Lovelace", email: "ada@example.com" },
+  },
+  Personal: {
+    login: { id: "p1", title: "Good", vaultId: "v3", urls: ["https://good.test"] },
+    identity: { id: "you", title: "You", vaultId: "v3" },
+    values: { firstName: "Grace", lastName: "Hopper", email: "grace@example.com" },
+  },
+} as const;
+
+/**
+ * A server whose password manager "Work" holds a login for https://good.test and one identity,
+ * found by site or by `op://Work/Good` and `op://Work/Me`. "Personal" holds its own of each.
+ */
 const loginServer = (
   desktopChannel: Layer.Layer<
     DesktopChannel.DesktopBrowserChannel,
@@ -2414,43 +2432,65 @@ const loginServer = (
     ServerConfig.ServerConfig
   >,
   options: {
-    /** The password manager signs in with a service account, so nobody is asked. */
+    /** Work signs in with a service account, so nobody is asked about its items. */
     readonly unattended?: boolean;
     readonly escalation?: BrowserSecretEscalation;
     /** What the password manager holds for a field, on its nth read. */
     readonly secret?: (field: string, read: number) => string;
     /** Whether saving a new login, or giving it a new password, shows the password. */
     readonly showsNewPassword?: boolean;
+    /** Also chooses Personal, which a person unlocks. */
+    readonly personal?: boolean;
+    /** Work holds no login, as for a site it was never used on. */
+    readonly noWorkLogin?: boolean;
+    /** Password managers whose reads fail, as a locked or rate-limited one's do. */
+    readonly unreadable?: ReadonlyArray<keyof typeof HELD>;
+    /** Where calls to the password managers are recorded, shared with `approvingDesktop`. */
+    readonly trail?: Array<string>;
   } = {},
 ) => {
   const { secret = (field: string) => `${field}-value`, showsNewPassword = true } = options;
   const reads: Array<string> = [];
   const logs: Array<string> = [];
+  /** Every call to a password manager, in order; `approvingDesktop` adds its questions. */
+  const trail = options.trail ?? [];
+  const failing = (account: keyof typeof HELD) => options.unreadable?.includes(account) === true;
   const driver = defineSecretProviderDriver({
     kind: loginKind,
     definition: defineSecretProvider({
       kind: loginKind,
       label: "Fake Vault",
-      configSchema: Schema.Struct({}),
+      configSchema: Schema.Struct({ account: Schema.Literals(["Work", "Personal"]) }),
       isReference: () => true,
       referencePlaceholder: "",
       invalidReferenceMessage: "",
       supportsLogins: true,
     }),
     read: (_config, references) => Effect.succeed(references.map(() => undefined)),
-    unattended: () => options.unattended === true,
+    unattended: ({ account }) => account === "Work" && options.unattended === true,
     logins: {
-      list: () =>
-        Effect.succeed([{ id: "g1", title: "Good", vaultId: "v1", urls: ["https://good.test"] }]),
-      read: (_config, login, fields) =>
+      list: ({ account }) =>
         Effect.sync(() => {
+          trail.push(`list ${account} logins`);
+          return account === "Work" && options.noWorkLogin ? [] : [HELD[account].login];
+        }),
+      lookup: ({ account }, reference) =>
+        Effect.sync(() => {
+          trail.push(`look up ${reference} in ${account}`);
+          return reference === `op://${account}/Good` ? HELD[account].login : undefined;
+        }),
+      read: ({ account }, login, fields) =>
+        Effect.sync(() => {
+          trail.push(`read ${account} ${login.id}`);
           reads.push(login.id);
+          if (failing(account)) return undefined;
           const values = fields.map((field) => [field, secret(field, reads.length)] as const);
           // An empty value reads as one the password manager did not return.
           return Object.fromEntries(values.filter(([, value]) => value.length > 0));
         }),
       create: (_config, { title, url, username, vault, recipe }) =>
         Effect.sync(() => {
+          trail.push("create");
           reads.push(`create ${title} ${url} ${username} ${recipe.length}`);
           return {
             login: { id: "n1", title, vault, vaultId: "v2", urls: [url] },
@@ -2464,20 +2504,43 @@ const loginServer = (
         }),
     },
     identities: {
-      list: () => Effect.succeed([{ id: "me", title: "Me", vaultId: "v1" }]),
-      read: (_config, identity) =>
+      list: ({ account }) =>
         Effect.sync(() => {
+          trail.push(`list ${account} identities`);
+          return [HELD[account].identity];
+        }),
+      lookup: ({ account }, reference) =>
+        Effect.sync(() => {
+          trail.push(`look up ${reference} in ${account}`);
+          return reference === `op://${account}/${HELD[account].identity.title}`
+            ? HELD[account].identity
+            : undefined;
+        }),
+      read: ({ account }, identity) =>
+        Effect.sync(() => {
+          trail.push(`read ${account} ${identity.id}`);
           reads.push(identity.id);
-          return { firstName: "Ada", lastName: "Lovelace", email: "ada@example.com" };
+          return failing(account) ? undefined : HELD[account].values;
         }),
     },
   });
   const logins = Layer.effect(BrowserLogins.BrowserLogins, BrowserLogins.make([driver])).pipe(
-    Layer.provide(
+    Layer.provideMerge(
       Settings.layerTest({
-        secretProviders: { [loginProvider]: { kind: loginKind, label: "Work", config: {} } },
+        secretProviders: {
+          [loginProvider]: { kind: loginKind, label: "Work", config: { account: "Work" } },
+          ...(options.personal
+            ? {
+                [personalProvider]: {
+                  kind: loginKind,
+                  label: "Personal",
+                  config: { account: "Personal" },
+                },
+              }
+            : {}),
+        },
         browserLogins: {
-          secretProviderIds: [loginProvider],
+          secretProviderIds: [loginProvider, ...(options.personal ? [personalProvider] : [])],
           approval: "thread",
           newLogins: { secretProviderId: loginProvider, vault: "Sign-ups" },
           ...(options.escalation === undefined ? {} : { escalation: options.escalation }),
@@ -2488,6 +2551,7 @@ const loginServer = (
   return {
     reads,
     logs,
+    trail,
     layer: ServerBrowser.layer.pipe(
       Layer.provideMerge(Layer.mergeAll(desktopChannel, logins, SecretRelay.layer)),
       Layer.provideMerge(dependencies),
@@ -2822,6 +2886,7 @@ it.live.each([
 const approvingDesktop = (
   asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }>,
   answers: ReadonlyArray<DesktopChannel.DesktopApproval> = ["once"],
+  trail?: Array<string>,
 ) =>
   Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
     available: true,
@@ -2834,7 +2899,10 @@ const approvingDesktop = (
     turn: () => Effect.void,
     loginFilled: () => Effect.void,
     approveLogin: (key, _timeoutMs, prompt) =>
-      Effect.sync(() => answers[asked.push({ key, prompt }) - 1] ?? answers.at(-1)!),
+      Effect.sync(() => {
+        trail?.push(`ask ${prompt.kind ?? "login"}`);
+        return answers[asked.push({ key, prompt }) - 1] ?? answers.at(-1)!;
+      }),
   });
 
 it.live(
@@ -2844,7 +2912,8 @@ it.live(
       readonly key: DesktopChannel.DesktopApprovalKey;
       readonly prompt: object;
     }> = [];
-    const server = loginServer(approvingDesktop(asked, ["once", "thread"]));
+    const trail: Array<string> = [];
+    const server = loginServer(approvingDesktop(asked, ["once", "thread"], trail), { trail });
     return Effect.scoped(
       Effect.gen(function* () {
         const { context } = yield* realLoginBrowser;
@@ -2852,17 +2921,14 @@ it.live(
           const { tabId, invoke } = yield* openLoginTab;
           const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
           expect(filled.status).toBe("filled");
+          // Asked before the password manager is touched at all, so the login is not named.
           expect(asked).toEqual([
             {
               key: { threadId: scope.thread.threadId, tabId },
-              prompt: {
-                kind: "login",
-                providerLabel: "Work",
-                loginTitle: "Good",
-                origin: "https://good.test",
-              },
+              prompt: { kind: "login", providerLabel: "Work", origin: "https://good.test" },
             },
           ]);
+          expect(trail).toEqual(["ask login", "list Work logins", "read Work g1"]);
           expect((yield* passwordField(context)).value).toBe("password-value");
           // Allow once is not remembered; Allow for this thread is, for logins only.
           for (let fill = 0; fill < 2; fill++) {
@@ -3014,12 +3080,7 @@ it.live("an identity fill is asked about, and leaves the page open to script and
         expect(asked).toEqual([
           {
             key: { threadId: scope.thread.threadId, tabId },
-            prompt: {
-              kind: "identity",
-              providerLabel: "Work",
-              loginTitle: "Me",
-              origin: "https://good.test",
-            },
+            prompt: { kind: "identity", providerLabel: "Work", origin: "https://good.test" },
           },
         ]);
         const first = yield* Effect.promise(() =>
@@ -3040,7 +3101,8 @@ it.live("an identity fill is asked about, and leaves the page open to script and
 it.live("an identity is read for the agent without a tab, once the desktop app asks", () => {
   const asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }> =
     [];
-  const server = loginServer(approvingDesktop(asked));
+  const trail: Array<string> = [];
+  const server = loginServer(approvingDesktop(asked, ["once"], trail), { trail });
   return Effect.gen(function* () {
     yield* ServerBrowser.ServerBrowser;
     const broker = yield* Broker.PreviewAutomationBroker;
@@ -3060,19 +3122,19 @@ it.live("an identity is read for the agent without a tab, once the desktop app a
         email: "ada@example.com",
       },
     });
-    // Reading is asked about on its own, and names no tab or site.
+    // Reading is asked about on its own, before anything is listed, and names no tab or site.
     expect(asked).toEqual([
       {
         key: { threadId: scope.thread.threadId },
         prompt: {
           kind: "identityRead",
           providerLabel: "Work",
-          loginTitle: "Me",
           threadTitle: "Sign up for hosting",
           agent: "codex",
         },
       },
     ]);
+    expect(trail).toEqual(["ask identityRead", "list Work identities", "read Work me"]);
   }).pipe(Effect.provide(server.layer), Effect.scoped);
 });
 
@@ -3128,6 +3190,208 @@ it.live.each([
     }).pipe(Effect.provide(server.layer), Effect.scoped);
   },
 );
+
+const deviceLogin = (id: string, password: string): SecretRelayAnswer => ({
+  type: "values",
+  item: { id, title: "Good", account: "Personal", urls: ["https://good.test"] },
+  values: { username: Redacted.make("device-user"), password: Redacted.make(password) },
+});
+
+it.live("a machine set to refuse asks nobody past its service accounts, desktop app or not", () => {
+  const asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }> =
+    [];
+  const server = loginServer(approvingDesktop(asked, ["thread"]), {
+    escalation: "refuse",
+    personal: true,
+  });
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const device = yield* connectedDevice([deviceLogin("device:personal/p1", "device-pw")]);
+        const { invoke } = yield* openLoginTab;
+        for (const [operation, input] of [
+          ["fillLogin", {}],
+          ["fillLogin", { reference: "op://Personal/Good" }],
+          ["fillLogin", { login: "personal/p1" }],
+          ["fillLogin", { login: "device:personal/p1" }],
+          ["fillIdentity", { identity: "personal/you" }],
+          ["readIdentity", {}],
+          ["fillNewLogin", { username: "ada" }],
+        ] as const) {
+          yield* invoke("navigate", {
+            url: `https://good.test/${operation === "fillIdentity" ? "signup" : "login"}`,
+          });
+          const refused = yield* invoke(operation, input).pipe(Effect.flip);
+          expect(refused.message).toContain("set not to ask");
+        }
+        // Nobody was asked, and no password manager a person unlocks was even listed.
+        expect(asked).toEqual([]);
+        expect(device).toEqual([]);
+        expect(server.trail).toEqual([]);
+        expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("what a service account cannot read goes on to the user's device", () => {
+  const server = loginServer(DesktopChannel.layer, { unattended: true, unreadable: ["Work"] });
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const asked = yield* connectedDevice([
+          deviceLogin("device:personal/p1", "first-pw"),
+          deviceLogin("device:personal/p1", "second-pw"),
+        ]);
+        const { invoke } = yield* openLoginTab;
+        const bySite = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
+        expect(bySite).toMatchObject({ status: "filled", login: { id: "device:personal/p1" } });
+        expect(yield* passwordField(context)).toEqual({ value: "first-pw", security: "disc" });
+        yield* invoke("navigate", { url: "https://good.test/login" });
+        const byReference = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin", {
+          reference: "op://Work/Good",
+        });
+        expect(byReference).toMatchObject({ status: "filled" });
+        expect(yield* passwordField(context)).toEqual({ value: "second-pw", security: "disc" });
+        expect(asked.map((request) => request.reference)).toEqual([undefined, "op://Work/Good"]);
+        expect(server.trail).toEqual([
+          "list Work logins",
+          "read Work g1",
+          "look up op://Work/Good in Work",
+          "read Work g1",
+        ]);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("this machine's password managers having nothing go on to the user's device", () => {
+  const asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }> =
+    [];
+  const trail: Array<string> = [];
+  const server = loginServer(approvingDesktop(asked, ["once"], trail), {
+    noWorkLogin: true,
+    trail,
+  });
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const device = yield* connectedDevice([deviceLogin("device:personal/p1", "device-pw")]);
+        const { invoke } = yield* openLoginTab;
+        const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
+        expect(filled).toMatchObject({ status: "filled", login: { id: "device:personal/p1" } });
+        expect(trail).toEqual(["ask login", "list Work logins"]);
+        expect(device).toHaveLength(1);
+        expect(yield* passwordField(context)).toEqual({ value: "device-pw", security: "disc" });
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a login an earlier choose named goes only to its own password manager", () => {
+  const server = loginServer(DesktopChannel.layer, { unattended: true, noWorkLogin: true });
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const device = yield* connectedDevice([deviceLogin("device:personal/p1", "device-pw")]);
+        const { invoke } = yield* openLoginTab;
+        for (const login of ["work/selected-item", "stranger/g1"]) {
+          const refused = yield* invoke("fillLogin", { login }).pipe(Effect.flip);
+          expect(refused.message).toContain("could not be read; choose again");
+        }
+        // No other password manager, and not the user's device, was asked instead.
+        expect(device).toEqual([]);
+        expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("an identity an earlier choose named is read from its own password manager", () => {
+  const asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }> =
+    [];
+  const trail: Array<string> = [];
+  const server = loginServer(approvingDesktop(asked, ["once"], trail), {
+    unattended: true,
+    personal: true,
+    trail,
+  });
+  return Effect.gen(function* () {
+    yield* ServerBrowser.ServerBrowser;
+    const broker = yield* Broker.PreviewAutomationBroker;
+    yield* Effect.yieldNow;
+    const read = yield* broker.invoke<PreviewAutomationReadIdentityResult>({
+      scope,
+      operation: "readIdentity",
+      input: { identity: "personal/you" },
+    });
+    expect(read).toEqual({
+      status: "read",
+      identity: { id: "personal/you", title: "You", account: "Personal" },
+      values: {
+        firstName: "Grace",
+        lastName: "Hopper",
+        fullName: "Grace Hopper",
+        email: "grace@example.com",
+      },
+    });
+    // Work's service account holds another identity, which neither answered nor blocked this one.
+    expect(trail).toEqual(["ask identityRead", "list Personal identities", "read Personal you"]);
+    expect(asked.map(({ prompt }) => prompt)).toEqual([
+      { kind: "identityRead", providerLabel: "Personal" },
+    ]);
+  }).pipe(Effect.provide(server.layer), Effect.scoped);
+});
+
+it.live("an identity read is refused when the settings change while the user's device asks", () => {
+  const server = loginServer(DesktopChannel.layer);
+  return Effect.gen(function* () {
+    const relay = yield* SecretRelay.SecretRelay;
+    const settings = yield* Settings.ServerSettingsService;
+    yield* relay.subscribe(["identity"], "device").pipe(
+      Stream.runForEach((item) =>
+        item.type === "request"
+          ? // The user switches this machine to refuse while the device's dialog is open, then
+            // allows on the device anyway.
+            settings
+              .updateSettings({
+                browserLogins: {
+                  secretProviderIds: [loginProvider],
+                  approval: "thread",
+                  escalation: "refuse",
+                },
+              })
+              .pipe(
+                Effect.andThen(
+                  relay.answer(
+                    item.request.requestId,
+                    {
+                      type: "values",
+                      item: { id: "device:work/me", title: "Me", urls: [] },
+                      values: { firstName: Redacted.make("Ada") },
+                    },
+                    "device",
+                  ),
+                ),
+              )
+          : Effect.void,
+      ),
+      Effect.forkScoped({ startImmediately: true }),
+    );
+    yield* ServerBrowser.ServerBrowser;
+    const broker = yield* Broker.PreviewAutomationBroker;
+    yield* Effect.yieldNow;
+    const refused = yield* broker
+      .invoke<PreviewAutomationReadIdentityResult>({ scope, operation: "readIdentity", input: {} })
+      .pipe(Effect.flip);
+    expect(refused.message).toContain("settings changed");
+    expect(refused.message).not.toContain("Ada");
+  }).pipe(Effect.provide(server.layer), Effect.scoped);
+});
 
 const NEW_ACCOUNT_PAGE = `<title>Create account</title><input id="new" type="password" oninput="document.title = this.value"><input id="again" type="password">`;
 
