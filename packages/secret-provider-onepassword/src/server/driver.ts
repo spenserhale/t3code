@@ -314,37 +314,29 @@ const toBirthDate = (text: string) =>
       )
     : text;
 
-const COUNTRY_CODE = /^[a-z]{2}$/i;
-
 /**
- * Unverified: how `op` prints an Identity's ADDRESS field. Read as an object, or as one string
- * of street, city, state, zip and country code, split from the right so commas in the street
- * survive. Anything else is kept whole as the street, less a country code at its end.
+ * How `op` prints an Identity's ADDRESS field is unverified. Parts come only from an object; a
+ * string stays whole, on one line, because splitting one assigned the wrong parts. Parsing a
+ * string can return once its format is checked against a real item.
  */
-const parseAddress = (value: unknown): Partial<Record<AddressField, string | undefined>> => {
-  if (typeof value === "object" && value !== null) {
-    const address = Option.getOrUndefined(decodeAddressObject(value));
-    return address === undefined
-      ? {}
-      : {
-          street: address.street,
-          city: address.city,
-          state: address.state,
-          postalCode: address.zip,
-          country: address.country,
-        };
+const parseAddress = (
+  value: unknown,
+): Partial<Record<AddressField | "address", string | undefined>> => {
+  if (typeof value === "string") {
+    const parts = value.split(/[\n,]/).map((part) => part.trim());
+    return { address: parts.filter((part) => part.length > 0).join(", ") };
   }
-  if (typeof value !== "string") return {};
-  const text = value.replace(/\s*\n\s*/g, ", ").trim();
-  const parts = text.split(",").map((part) => part.trim());
-  const last = parts.at(-1) ?? "";
-  const country = COUNTRY_CODE.test(last) ? last : undefined;
-  if (country !== undefined && parts.length >= 5) {
-    const [city, state, postalCode] = parts.slice(-4, -1);
-    return { street: parts.slice(0, -4).join(", "), city, state, postalCode, country };
-  }
-  const street = country === undefined ? text : text.slice(0, Math.max(0, text.lastIndexOf(",")));
-  return { street: street.replace(/[\s,]+$/, ""), country };
+  if (typeof value !== "object" || value === null) return {};
+  const address = Option.getOrUndefined(decodeAddressObject(value));
+  return address === undefined
+    ? {}
+    : {
+        street: address.street,
+        city: address.city,
+        state: address.state,
+        postalCode: address.zip,
+        country: address.country,
+      };
 };
 
 /** Picks an Identity's values out of `op item get --format json`, by field id, then label. */
@@ -378,7 +370,7 @@ const parseIdentityValues = (stdout: string): SecretProviderIdentityValues | und
       (value) => isText(value) || (typeof value === "object" && value !== null),
     ),
   );
-  for (const field of ["street", "city", "state", "postalCode", "country"] as const) {
+  for (const field of ["address", "street", "city", "state", "postalCode", "country"] as const) {
     set(field, address[field]);
   }
   return values;

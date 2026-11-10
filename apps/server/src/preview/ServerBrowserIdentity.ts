@@ -275,6 +275,20 @@ export const checkIdentityLocators = async (
   }
 };
 
+const ADDRESS_PARTS: ReadonlySet<PreviewIdentityValue> = new Set([
+  "street",
+  "city",
+  "state",
+  "postalCode",
+  "country",
+]);
+
+/** Why a value the identity lacks was not filled. */
+const missing = (value: PreviewIdentityValue, values: PreviewIdentityValues) =>
+  ADDRESS_PARTS.has(value) && values.address !== undefined
+    ? `The identity's address is stored as one line, so its ${value} is not filled on its own. Get the address with preview_read_identity, then fill the field with preview_act.`
+    : `The identity has no ${value}.`;
+
 /**
  * Puts one value in one field, through a handle bound to the element, after checking its frame
  * is still on the page's site. Returns why it was skipped, or undefined once filled.
@@ -282,16 +296,17 @@ export const checkIdentityLocators = async (
 export const fillIdentityField = async (input: {
   readonly handle: ElementHandle;
   readonly value: PreviewIdentityValue;
-  readonly stored: string | undefined;
+  readonly values: PreviewIdentityValues;
   readonly frameAllowed: (frameUrl: string) => boolean;
   readonly timeoutMs: number;
 }): Promise<string | undefined> => {
-  const { handle, value, stored } = input;
+  const { handle, value } = input;
   const frame = await handle.ownerFrame();
   if (frame === null || !input.frameAllowed(frame.url())) {
     throw loginError("The page left its site before the identity was filled.");
   }
-  if (stored === undefined) return `The identity has no ${value}.`;
+  const stored = input.values[value];
+  if (stored === undefined) return missing(value, input.values);
   const timeout = Math.max(1, input.timeoutMs);
   try {
     const field = await fieldInfo(handle);
@@ -485,7 +500,7 @@ export const fillIdentity = async (
         const reason = await fillIdentityField({
           handle,
           value: target.value,
-          stored: values[target.value],
+          values,
           frameAllowed,
           // One field that never becomes editable must not use up the whole call.
           timeoutMs: Math.min(ELEMENT_TIMEOUT_MS, remaining()),

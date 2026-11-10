@@ -513,11 +513,7 @@ describe("1Password identities", () => {
         jobTitle: "Programmer",
         username: "ada",
         birthDate: "1990-05-17",
-        street: "1 Main St",
-        city: "Springfield",
-        state: "IL",
-        postalCode: "62701",
-        country: "us",
+        address: "1 Main St, Springfield, IL, 62701, us",
       });
     }),
   );
@@ -566,7 +562,8 @@ describe("1Password identities", () => {
     }),
   );
 
-  // The CLI's ADDRESS output is unverified, so each shape it might take is read.
+  // The CLI's ADDRESS output is unverified: parts come only from an object, and a string is kept
+  // whole, since splitting one assigns the wrong parts.
   it.effect.each([
     [
       "an object",
@@ -579,28 +576,21 @@ describe("1Password identities", () => {
       { street: "10 Downing St", city: "London", postalCode: "SW1A 2AA", country: "gb" },
     ],
     [
-      "parts in a string, with commas in the street",
-      "1 Main St, Apt 4, Springfield, IL, 62701, us",
-      {
-        street: "1 Main St, Apt 4",
-        city: "Springfield",
-        state: "IL",
-        postalCode: "62701",
-        country: "us",
-      },
+      "a string with more parts than expected",
+      "1 Main St, Apt 4, Springfield, IL 62701, us",
+      { address: "1 Main St, Apt 4, Springfield, IL 62701, us" },
     ],
     [
-      "parts in a string, some empty",
-      "10 Downing St, London, , SW1A 2AA, gb",
-      { street: "10 Downing St", city: "London", postalCode: "SW1A 2AA", country: "gb" },
+      "a string ending in a state code",
+      "1 Main St, Sacramento, CA",
+      { address: "1 Main St, Sacramento, CA" },
     ],
-    ["only a country", ", , , , ca", { country: "ca" }],
     [
-      "other text ending in a country",
-      "1 Main St\nSpringfield IL 62701\nus",
-      { street: "1 Main St, Springfield IL 62701", country: "us" },
+      "lines of text with empty parts",
+      "10 Downing St\nLondon, , SW1A 2AA\ngb",
+      { address: "10 Downing St, London, SW1A 2AA, gb" },
     ],
-    ["other text", "PO Box 12, Springfield", { street: "PO Box 12, Springfield" }],
+    ["only separators", " , \n, ", {}],
     ["something else", 42, {}],
   ] as const)("reads an address given as %s", ([, value, address]) =>
     Effect.gen(function* () {
