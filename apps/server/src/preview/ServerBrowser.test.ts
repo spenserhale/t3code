@@ -2345,6 +2345,10 @@ it.live("failed session and browser launches release capacity, as does closing a
 const loginKind = SecretProviderKind.make("fake_vault");
 const loginProvider = SecretProviderId.make("work");
 const LOGIN_PAGE = `<title>Sign in</title><input id="user" autocomplete="username"><input id="password" type="password" oninput="document.title = this.value">`;
+/** Pages other than the login page, by path. */
+const LOGIN_SITE: Partial<Record<string, string>> = {
+  "/first": "<title>password-1</title>",
+};
 
 /** Real headless Chromium for the mocked contexts to hand out, serving a login page. */
 const realLoginBrowser = Effect.acquireRelease(
@@ -2352,7 +2356,10 @@ const realLoginBrowser = Effect.acquireRelease(
     const browser = await chromium.launch({ headless: true });
     const context = await browser.newContext();
     await context.route("https://good.test/**", (route) =>
-      route.fulfill({ contentType: "text/html", body: LOGIN_PAGE }),
+      route.fulfill({
+        contentType: "text/html",
+        body: LOGIN_SITE[new URL(route.request().url()).pathname] ?? LOGIN_PAGE,
+      }),
     );
     realContext = context;
     return { browser, context };
@@ -2368,6 +2375,8 @@ const loginServer = (
     never,
     ServerConfig.ServerConfig
   >,
+  /** What the password manager holds for a field, on its nth read. */
+  secret: (field: string, read: number) => string = (field) => `${field}-value`,
 ) => {
   const reads: Array<string> = [];
   const driver = defineSecretProviderDriver({
@@ -2388,7 +2397,7 @@ const loginServer = (
       read: (_config, login, fields) =>
         Effect.sync(() => {
           reads.push(login.id);
-          return Object.fromEntries(fields.map((field) => [field, `${field}-value`]));
+          return Object.fromEntries(fields.map((field) => [field, secret(field, reads.length)]));
         }),
     },
   });
@@ -2479,6 +2488,47 @@ it.live(
     );
   },
 );
+
+it.live("refuses a password or code too short or too broken to keep out of results", () => {
+  const server = loginServer("never", DesktopChannel.layer, (field, read) =>
+    field === "password" ? (["abc", "pass\nword"][read - 1] ?? "") : `${field}-value`,
+  );
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        for (const _attempt of [1, 2]) {
+          const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(refused.message).toContain("Ask the user to sign in in the tab");
+        }
+        expect(server.reads).toEqual(["g1", "g1"]);
+        expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+        // Nothing was filled, so script still runs here.
+        yield* invoke("evaluate", { expression: "1" });
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("scrubs every password filled since the server started, however many", () => {
+  const server = loginServer("never", DesktopChannel.layer, (field, read) => `${field}-${read}`);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        for (const _fill of Array.from({ length: 101 })) {
+          yield* invoke("fillLogin", { fields: ["password"] });
+        }
+        // A page shows the first of them again.
+        yield* invoke("navigate", { url: "https://good.test/first" });
+        const status = yield* invoke<PreviewAutomationStatus>("status");
+        expect(status.title).toBe("[filled by password manager]");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
 
 it.live(
   "a headless tab on a server without its desktop app refuses a login that needs approval",

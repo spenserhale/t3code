@@ -134,7 +134,6 @@ const UNATTACHED_FILL_VIEWPORT = { width: 1280, height: 800 } as const;
 const NAVIGATION_TIMEOUT_MS = 15_000;
 const VIEWER_NAVIGATION_OPTIONS = { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS } as const;
 const ACTION_TIMELINE_LIMIT = 50;
-const FILLED_SECRET_LIMIT = 100;
 
 export class ServerBrowserTabNotFoundError extends Schema.TaggedError<ServerBrowserTabNotFoundError>()(
   "ServerBrowserTabNotFoundError",
@@ -473,6 +472,7 @@ const make = Effect.gen(function* () {
   const previewBrowser = yield* PreviewBrowser.PreviewBrowser;
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
   const browserLogins = yield* Effect.serviceOption(BrowserLogins.BrowserLogins);
+  const filledSecrets = ServerBrowserLogin.makeFilledSecrets();
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
@@ -2162,14 +2162,6 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const filledSecretLog: string[] = [];
-  const rememberSecrets = (values: ReadonlyArray<string>) => {
-    for (const value of values) {
-      if (value.length === 0 || filledSecretLog.includes(value)) continue;
-      filledSecretLog.push(value);
-      if (filledSecretLog.length > FILLED_SECRET_LIMIT) filledSecretLog.shift();
-    }
-  };
   const filledPageError = () =>
     ServerBrowserLogin.loginError(
       "The password manager filled a login in this page, so script and recording are off until a new page loads. Submit the form, or reload with preview_navigate.",
@@ -2283,6 +2275,14 @@ const make = Effect.gen(function* () {
         `The login "${login.title}" has no ${absent.join(" or ")}.`,
       );
     }
+    const unsafe = fields.filter(
+      (field) => field !== "username" && !ServerBrowserLogin.scrubbable(values[field] ?? ""),
+    );
+    if (unsafe.length > 0) {
+      throw ServerBrowserLogin.loginError(
+        `The ${unsafe.join(" and ")} saved in "${login.title}" is shorter than 4 characters or has a line break, so it could not be kept out of what you read. Ask the user to sign in in the tab.`,
+      );
+    }
     // The page may have moved on, or the settings changed, while the user was deciding.
     if (
       !frameCovered(tab.page.url()) ||
@@ -2293,7 +2293,9 @@ const make = Effect.gen(function* () {
     await loginStep(logins.check(revision));
     // Marked before the first write, so even a fill that fails partway blocks script here.
     ServerBrowserLogin.markFilled(tab.page, document);
-    rememberSecrets(fields.flatMap((field) => (field === "username" ? [] : [values[field] ?? ""])));
+    filledSecrets.remember(
+      fields.flatMap((field) => (field === "username" ? [] : [values[field] ?? ""])),
+    );
     for (const field of fields) {
       const target = targets.get(field);
       if (target === undefined) continue;
@@ -2445,8 +2447,7 @@ const make = Effect.gen(function* () {
           };
         },
   ) => {
-    if (filledSecretLog.length === 0) return outcome;
-    const scrub = <A>(value: A) => ServerBrowserLogin.scrubSecrets(value, filledSecretLog);
+    const scrub = filledSecrets.scrub;
     if (!outcome.ok) {
       const { detail, ...error } = outcome.error;
       return {

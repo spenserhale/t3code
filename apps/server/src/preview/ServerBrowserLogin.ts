@@ -309,13 +309,17 @@ export const markFilled = (page: Page, id: string) => marksOf(page).filled.add(i
 export const holdsFill = (page: Page, id: string) => marksOf(page).filled.has(id);
 
 const REDACTED = "[filled by password manager]";
-/** Shorter values would redact ordinary words and numbers from every result. */
-const MIN_SECRET_LENGTH = 4;
 
-/** Replaces every filled secret, longest first, in the keys and values of something page-derived. */
+/**
+ * A shorter secret would match ordinary words and numbers, and a line break would not survive a
+ * single-line field, so the page would hold a value scrubbing cannot find. Neither is filled.
+ */
+export const scrubbable = (secret: string) => secret.length >= 4 && !/[\r\n]/.test(secret);
+
+/** Replaces every given secret, longest first, in the keys and values of something page-derived. */
 export const scrubSecrets = <A>(value: A, secrets: Iterable<string>): A => {
   const ordered = [...new Set(secrets)]
-    .filter((secret) => secret.length >= MIN_SECRET_LENGTH)
+    .filter((secret) => secret.length > 0)
     .sort((a, b) => b.length - a.length);
   if (ordered.length === 0) return value;
   const scrubText = (text: string) => {
@@ -334,4 +338,15 @@ export const scrubSecrets = <A>(value: A, secrets: Iterable<string>): A => {
     return current;
   };
   return scrub(value) as A;
+};
+
+/** Every password and code filled while the server runs: any page may show one again later. */
+export const makeFilledSecrets = () => {
+  const secrets = new Set<string>();
+  return {
+    remember: (values: Iterable<string>) => {
+      for (const value of values) if (value.length > 0) secrets.add(value);
+    },
+    scrub: <A>(value: A): A => (secrets.size === 0 ? value : scrubSecrets(value, secrets)),
+  };
 };
