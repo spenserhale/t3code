@@ -1,4 +1,5 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -134,7 +135,9 @@ const setup = (
     readonly approve?: DesktopBrowserChannel.DesktopBrowserChannel["Service"]["approveLogin"];
     readonly escalation?: "device" | "refuse";
     readonly workspaceRoot?: string;
-    /** A real process instead of the fake. */
+    /** The real file system under the fake process; otherwise every path is its own real path. */
+    readonly realFileSystem?: boolean;
+    /** A real process and file system instead of the fakes. */
     readonly real?: boolean;
     readonly run?: (spawned: Spawned) => FakeRun;
   } = {},
@@ -224,7 +227,15 @@ const setup = (
         channel,
         SecretRelay.layer,
         thread,
-        options.real ? NodeServices.layer : Layer.merge(processes.layer, NodePath.layer),
+        options.real
+          ? NodeServices.layer
+          : Layer.mergeAll(
+              processes.layer,
+              NodePath.layer,
+              options.realFileSystem
+                ? NodeFileSystem.layer
+                : FileSystem.layerNoop({ realPath: (path) => Effect.succeed(path) }),
+            ),
       ),
     ),
     Layer.provideMerge(
@@ -653,6 +664,39 @@ describe("SecretCommands", () => {
       assert.lengthOf(fixture.processes.spawned, 0);
     }).pipe(Effect.provide(fixture.layer));
   });
+
+  it.effect("refuses a cwd a symlink leads out of the workspace, and runs at the real path", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const base = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-secret-command-cwd-" });
+      const root = `${base}/repo`;
+      yield* fileSystem.makeDirectory(`${root}/tools`, { recursive: true });
+      yield* fileSystem.makeDirectory(`${base}/outside/deeper`, { recursive: true });
+      yield* fileSystem.symlink(`${base}/outside`, `${root}/escape`);
+      yield* fileSystem.symlink(`${root}/tools`, `${root}/linked`);
+      const realRoot = yield* fileSystem.realPath(root);
+      const fixture = setup({ workspaceRoot: root, realFileSystem: true, desktop: true });
+      yield* Effect.gen(function* () {
+        for (const cwd of ["escape", "escape/deeper"]) {
+          const error = yield* run({ command: ["ls"], stdin: OPENAI, cwd }).pipe(Effect.flip);
+          assert.deepStrictEqual(
+            { reason: error.reason, message: error.message },
+            {
+              reason: "invalid",
+              message: "`cwd` must be a relative path inside the thread's workspace.",
+            },
+            cwd,
+          );
+        }
+        assert.deepStrictEqual(fixture.reads, []);
+        assert.deepStrictEqual(fixture.prompts, []);
+        assert.lengthOf(fixture.processes.spawned, 0);
+        // A symlink that stays inside is followed, and the command starts where it leads.
+        yield* run({ command: ["ls"], stdin: FIRECRAWL, cwd: "linked" });
+        assert.strictEqual(fixture.processes.spawned[0]?.options.cwd, `${realRoot}/tools`);
+      }).pipe(Effect.provide(fixture.layer));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 
   it.live("runs a real command with its secrets and masks what it prints", () =>
     Effect.gen(function* () {
