@@ -201,7 +201,7 @@ const PreviewEvaluateTool = browserTool(
 const PreviewFillLoginTool = browserTool(
   Tool.make("preview_fill_login", {
     description:
-      "On a login page, fill the user's saved login instead of asking for a password. You never see the password or code; the user may be asked to approve. `choose`: call again with a `login` id. `no_login`: ask the user. Then submit the form yourself.",
+      "On a login page, fill the user's saved login instead of asking for a password. You never see the password or code. A login outside this machine's service accounts may wait for the user's Touch ID. `choose`: call again with a `login` id. `no_login`: ask the user. Then submit the form yourself.",
     parameters: PreviewAutomationFillLoginInput,
     success: Schema.Union(
       PreviewAutomationFillLoginResult.members.map((member) =>
@@ -230,7 +230,7 @@ const PreviewFillNewLoginTool = browserTool(
 const PreviewFillIdentityTool = browserTool(
   Tool.make("preview_fill_identity", {
     description:
-      "Fill the user's saved identity (name, email, phone, address) into this tab's fields. Pass `fields` with `aria-ref` locators from `preview_snapshot`; without them only autocomplete-tagged fields are filled. Returns `choose` when several identities exist. For the password, use `preview_fill_new_login`.",
+      "Fill the user's saved identity (name, email, phone, address) into this tab's fields. Pass `fields` with `aria-ref` locators from `preview_snapshot`; without them only autocomplete-tagged fields are filled. Returns `choose` when several identities exist. It may wait for the user's Touch ID. For the password, use `preview_fill_new_login`.",
     parameters: PreviewAutomationFillIdentityInput,
     success: Schema.Union(
       PreviewAutomationFillIdentityResult.members.map((member) =>
@@ -245,7 +245,7 @@ const PreviewFillIdentityTool = browserTool(
 const PreviewReadIdentityTool = safeBrowserTool(
   Tool.make("preview_read_identity", {
     description:
-      "Return the user's saved identity (name, email, phone, address) as text once the user approves. A fallback for forms outside the preview browser; prefer `preview_fill_identity`.",
+      "Return the user's saved identity (name, email, phone, address) as text. Outside this machine's service accounts, the user approves with Touch ID first. A fallback for forms outside the preview browser; prefer `preview_fill_identity`.",
     parameters: PreviewAutomationReadIdentityInput,
     success: PreviewAutomationReadIdentityResult,
     failure: PreviewToolFailure,
