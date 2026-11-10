@@ -60,62 +60,68 @@ const make = Effect.gen(function* () {
       }
       const remaining = Effect.map(Clock.currentTimeMillis, (now) => request.expiresAt - now);
       if ((yield* remaining) <= 0) return unavailable("The request ended before it was shown.");
-      const scope = { threadId: request.threadId, requester: requester.environmentId };
+      const origin = request.origin;
+      if (request.kind === "login" && origin === undefined) {
+        return unavailable("The request did not name the site.");
+      }
+      const { revision, providers } = yield* logins.escalation;
+      if (providers.length === 0) {
+        return unavailable("No password manager is chosen for browser logins on that device.");
+      }
       const item = request.item === undefined ? undefined : ownId(request.item);
+      // An item this device offered earlier is read from its own password manager only.
+      const provider =
+        item === undefined ? undefined : providers.find(({ id }) => item.startsWith(`${id}/`));
+      if (item !== undefined && provider === undefined) {
+        return unavailable("That item could not be read; choose again.");
+      }
+      const reach: BrowserLogins.BrowserLoginReach =
+        provider === undefined ? "all" : { provider: provider.id };
       const reference = item === undefined ? request.reference : undefined;
+      const kind: BrowserLogins.BrowserApprovalKind =
+        request.kind === "login"
+          ? "login"
+          : request.purpose === "read"
+            ? "identityRead"
+            : "identity";
 
-      /** The dialog, unless this thread on that machine was allowed this kind already. */
-      const approve = Effect.fn("SecretRelayDevice.approve")(function* (
-        revision: string,
-        kind: BrowserLogins.BrowserApprovalKind,
-        prompt: Omit<DesktopBrowserChannel.DesktopLoginPrompt, "kind" | "machine">,
-      ) {
-        if (!(yield* logins.needsApproval(revision, scope, kind))) return true;
+      // Asked before any password manager is touched: listing and looking up are reads too.
+      const scope = { threadId: request.threadId, requester: requester.environmentId };
+      if (yield* logins.needsApproval(revision, scope, kind)) {
         const answer = yield* desktopChannel.approveLogin(
           { threadId: request.threadId },
           Math.max(0, yield* remaining),
           {
             kind,
-            ...prompt,
+            providerLabel: provider?.account ?? providers.map(({ account }) => account).join(", "),
+            ...(reference ? { reference } : {}),
+            ...(origin ? { origin } : {}),
             machine: requester.label,
             ...(request.threadTitle ? { threadTitle: request.threadTitle } : {}),
             ...(request.agent ? { agent: request.agent } : {}),
           },
         );
+        if (answer === false || (yield* remaining) <= 0) return { type: "denied" } as const;
         if (answer === "thread") yield* logins.recordApproval(revision, scope, kind);
-        return answer !== false && (yield* remaining) > 0;
-      });
+      }
 
       if (request.kind === "login") {
-        const origin = request.origin;
-        if (origin === undefined) return unavailable("The request did not name the site.");
-        const { revision, found } =
+        const page = origin ?? "";
+        const found =
           reference === undefined
-            ? yield* logins.candidates(origin, "all").pipe(
-                Effect.map(({ revision, logins: covering }) => ({
-                  revision,
-                  found: covering.filter((login) => item === undefined || login.id === item),
-                })),
-              )
-            : yield* logins.lookupLogin(reference, "all").pipe(
-                Effect.map(({ revision, login }) => ({
-                  revision,
-                  found: login === undefined ? [] : [login],
-                })),
+            ? (yield* logins.candidates(page, reach)).logins
+            : [(yield* logins.lookupLogin(reference, reach)).login].flatMap((login) =>
+                login === undefined ? [] : [login],
               );
-        const [login, ...others] = found;
+        const matching = found.filter((login) => item === undefined || login.id === item);
+        const [login, ...others] = matching;
         if (login === undefined) return { type: "none" } as const;
-        if (others.length > 0) return { type: "choose", candidates: found.map(summary) } as const;
-        if (!BrowserLogins.loginCoversPage(login.urls, origin)) {
+        if (others.length > 0) {
+          return { type: "choose", candidates: matching.map(summary) } as const;
+        }
+        if (!BrowserLogins.loginCoversPage(login.urls, page)) {
           return unavailable(`The login "${login.title}" is saved for another site.`);
         }
-        const allowed = yield* approve(revision, "login", {
-          providerLabel: login.account,
-          loginTitle: login.title,
-          ...(login.vault ? { vault: login.vault } : {}),
-          origin,
-        });
-        if (!allowed) return { type: "denied" } as const;
         const values = yield* logins.read(revision, login, [
           ...new Set(request.fields ?? DEFAULT_FIELDS),
         ]);
@@ -126,34 +132,18 @@ const make = Effect.gen(function* () {
         } as const;
       }
 
-      const { revision, found } =
+      const found =
         reference === undefined
-          ? yield* logins.identityCandidates("all").pipe(
-              Effect.map(({ revision, identities }) => ({
-                revision,
-                found: identities.filter((identity) => item === undefined || identity.id === item),
-              })),
-            )
-          : yield* logins.lookupIdentity(reference, "all").pipe(
-              Effect.map(({ revision, identity }) => ({
-                revision,
-                found: identity === undefined ? [] : [identity],
-              })),
+          ? (yield* logins.identityCandidates(reach)).identities
+          : [(yield* logins.lookupIdentity(reference, reach)).identity].flatMap((identity) =>
+              identity === undefined ? [] : [identity],
             );
-      const [identity, ...others] = found;
+      const matching = found.filter((identity) => item === undefined || identity.id === item);
+      const [identity, ...others] = matching;
       if (identity === undefined) return { type: "none" } as const;
-      if (others.length > 0) return { type: "choose", candidates: found.map(summary) } as const;
-      const allowed = yield* approve(
-        revision,
-        request.purpose === "read" ? "identityRead" : "identity",
-        {
-          providerLabel: identity.account,
-          loginTitle: identity.title,
-          ...(identity.vault ? { vault: identity.vault } : {}),
-          ...(request.origin ? { origin: request.origin } : {}),
-        },
-      );
-      if (!allowed) return { type: "denied" } as const;
+      if (others.length > 0) {
+        return { type: "choose", candidates: matching.map(summary) } as const;
+      }
       const values = yield* logins.readIdentity(revision, identity);
       return {
         type: "values",

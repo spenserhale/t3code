@@ -1,135 +1,368 @@
 /**
- * The order every secret request follows: this machine's unattended providers (a service account
- * is the user's approval), then a person, in this machine's desktop app or on the user's device
- * through the relay, else a refusal the agent can pass on.
+ * The one order every secret request follows: an item a `choose` named goes only to its provider;
+ * else this machine's service accounts, then (unless set to refuse) its attended providers once its
+ * desktop app asked, then the user's device, else a refusal. A missing source passes it on; only a
+ * Deny or an unreadable named item stops it, and values return only under the starting settings.
  */
-import type { BrowserSecretEscalation, SecretRelayAnswer } from "@t3tools/contracts";
+import {
+  type BrowserSecretEscalation,
+  type PreviewLoginCandidate,
+  SECRET_RELAY_DEVICE_PREFIX,
+  type SecretRelayAnswer,
+  type SecretRelayItem,
+} from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 
 import type * as SecretRelay from "../secrets/SecretRelay.ts";
-import type * as BrowserLogins from "./BrowserLogins.ts";
+import * as BrowserLogins from "./BrowserLogins.ts";
 import type * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import { loginError } from "./ServerBrowserLogin.ts";
+import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
-export interface SecretAccessContext {
-  readonly logins: Pick<BrowserLogins.BrowserLogins["Service"], "needsApproval" | "recordApproval">;
+export interface SecretAccessServices {
+  readonly logins: Pick<
+    BrowserLogins.BrowserLogins["Service"],
+    "escalation" | "needsApproval" | "recordApproval" | "check"
+  >;
   readonly desktopChannel: Pick<
     DesktopBrowserChannel.DesktopBrowserChannel["Service"],
     "available" | "approveLogin"
   >;
   readonly relay: SecretRelay.SecretRelay["Service"] | undefined;
-  /** Runs a step of the login service; its failure becomes an operation error. */
+}
+
+/** The services, and runners for one call's steps from Playwright code. */
+export interface SecretAccessContext extends SecretAccessServices {
+  /** Runs a step; its failure becomes an operation error. */
   readonly step: <A>(effect: Effect.Effect<A, BrowserLogins.BrowserLoginError>) => Promise<A>;
   readonly runPromise: <A>(effect: Effect.Effect<A>) => Promise<A>;
+  /** Aborted once nobody waits for the call; steps begun under it are interrupted with it. */
+  readonly signal?: AbortSignal | undefined;
 }
 
 /**
- * A step on unattended providers. One that cannot list now, such as a rate-limited service
- * account, leaves the request to a person instead of failing it; the listing logged why.
+ * Runners bound to one call, so a caller that gives up interrupts what it began: the dialog closes
+ * and a relayed request ends on the user's device.
  */
-export const tryUnattended = <A>(
-  context: Pick<SecretAccessContext, "step">,
-  effect: Effect.Effect<A, BrowserLogins.BrowserLoginError>,
-): Promise<A | undefined> =>
-  context
-    .step(
+export const callRunners = (
+  run: <A, E>(effect: Effect.Effect<A, E>, options?: Effect.RunOptions) => Promise<A>,
+  signal: AbortSignal | undefined,
+): Pick<SecretAccessContext, "step" | "runPromise" | "signal"> => ({
+  signal,
+  runPromise: (effect) => run(effect, { signal }),
+  step: (effect) =>
+    run(
       effect.pipe(
-        Effect.asSome,
-        Effect.catchTags({
-          BrowserLoginError: (error) =>
-            error.reason === "unreadable" ? Effect.succeedNone : Effect.fail(error),
-        }),
+        Effect.mapError((error) =>
+          error.cause instanceof ServerBrowserPage.ServerBrowserOperationError
+            ? error.cause
+            : loginError(error.message),
+        ),
+        Effect.catchDefect(() => Effect.fail(loginError("The password manager failed."))),
       ),
-    )
-    .then(Option.getOrUndefined);
-
-/**
- * Asks in this machine's desktop dialog unless the user allowed this kind for the thread. Throws
- * on Deny, and on an answer that came after the call ended.
- */
-export const approveHere = async (
-  context: Omit<SecretAccessContext, "relay">,
-  input: {
-    readonly revision: string;
-    readonly kind: BrowserLogins.BrowserApprovalKind;
-    readonly key: DesktopBrowserChannel.DesktopApprovalKey;
-    readonly prompt: Omit<DesktopBrowserChannel.DesktopLoginPrompt, "kind">;
-    readonly deadlineMs: number;
-    readonly denied: string;
-  },
-) => {
-  const scope = { threadId: input.key.threadId };
-  if (!(await context.step(context.logins.needsApproval(input.revision, scope, input.kind)))) {
-    return;
-  }
-  const answer = await context.runPromise(
-    context.desktopChannel.approveLogin(
-      input.key,
-      Math.max(0, input.deadlineMs - performance.now()),
-      { kind: input.kind, ...input.prompt },
+      { signal },
     ),
-  );
-  if (answer === false) throw loginError(input.denied);
-  if (performance.now() >= input.deadlineMs) {
-    throw loginError("The approval came after the call ended.");
-  }
-  if (answer === "thread") {
-    await context.step(context.logins.recordApproval(input.revision, scope, input.kind));
-  }
-};
+});
+
+/** A page check run inside the order; its failure ends the request as it was thrown. */
+export const pageStep = (check: () => Promise<void>) =>
+  Effect.tryPromise({
+    try: check,
+    catch: (cause) => {
+      const error = ServerBrowserPage.toOperationError(cause);
+      return new BrowserLogins.BrowserLoginError({
+        reason: "refused",
+        message: error.message,
+        cause: error,
+      });
+    },
+  });
+
+/** What every item has, wherever it was found. */
+export interface SecretItem {
+  readonly id: string;
+  readonly title: string;
+  readonly vault?: string | undefined;
+  readonly account?: string | undefined;
+}
+
+export interface SecretRequest {
+  readonly kind: BrowserLogins.BrowserApprovalKind;
+  readonly threadId: string;
+  readonly threadTitle?: string | undefined;
+  readonly agent?: string | undefined;
+  /** The tab a fill goes into, so the desktop app asks in the window showing it. */
+  readonly tabId?: string | undefined;
+  /** The page a fill goes into. */
+  readonly origin?: string | undefined;
+  /** An id from an earlier `choose`: `<providerId>/<itemId>`, or a `device:` id. */
+  readonly item?: string | undefined;
+  /** An item the user named, such as `op://Vault/Item`. */
+  readonly reference?: string | undefined;
+  /** When the call ends, in `Clock` time. */
+  readonly deadline: number;
+  /**
+   * Runs once, before the first item is read and before anyone is asked, so a page that cannot
+   * take the values bothers no one. Its failure ends the request.
+   */
+  readonly ready?: Effect.Effect<void, BrowserLogins.BrowserLoginError> | undefined;
+}
+
+/** One kind of item: where the request finds it, how it is read, and how a device is asked. */
+export interface SecretCatalog<Item extends SecretItem, Values> {
+  /** What a refusal names, such as "a login for https://example.com"; a reference names itself. */
+  readonly what: string;
+  /** The items the request may mean in the providers of `reach`, found without reading any. */
+  readonly find: (
+    reach: BrowserLogins.BrowserLoginReach,
+  ) => Effect.Effect<ReadonlyArray<Item>, BrowserLogins.BrowserLoginError>;
+  readonly read: (
+    revision: string,
+    item: Item,
+  ) => Effect.Effect<Values, BrowserLogins.BrowserLoginError>;
+  /** Why an item found here cannot serve the request, such as a login saved for another site. */
+  readonly unusable?: (item: Item) => string | undefined;
+  /** How the user's device is asked; absent for what is never relayed. */
+  readonly relay?: {
+    /** The request, less the item or reference the order adds. */
+    readonly ask: SecretRelay.SecretRelayAsk;
+    readonly values: (values: Readonly<Record<string, string>>) => Values;
+  };
+  /** What the dialog names when the catalog knows it before anything is read. */
+  readonly prompt?: Partial<
+    Pick<DesktopBrowserChannel.DesktopLoginPrompt, "providerLabel" | "loginTitle" | "vault">
+  >;
+  /** The refusal when nobody could be asked, where the general one does not fit. */
+  readonly refusal?: (escalation: BrowserSecretEscalation) => string;
+}
+
+export type SecretAccess<Item, Values> =
+  | {
+      readonly status: "found";
+      readonly revision: string;
+      readonly item: Item | SecretRelayItem;
+      readonly values: Values;
+    }
+  | { readonly status: "choose"; readonly candidates: ReadonlyArray<PreviewLoginCandidate> }
+  | { readonly status: "none" };
 
 /** Why nobody could answer, in words an agent can pass on to the user. */
-const refusal = (what: string, escalation: BrowserSecretEscalation) =>
-  loginError(
-    `No service account on this machine can open ${what}, and ${
-      escalation === "refuse"
-        ? "this machine is set not to ask the user's device"
-        : "no T3 Code desktop app that can ask the user is connected"
-    }. It needs Touch ID on a connected Mac, or a service account on this machine with access to that item.`,
-  );
+const refusalMessage = (what: string, escalation: BrowserSecretEscalation) =>
+  `No service account on this machine can open ${what}, and ${
+    escalation === "refuse"
+      ? "this machine is set not to ask the user's device"
+      : "no T3 Code desktop app that can ask the user is connected"
+  }. It needs Touch ID on a connected Mac, or a service account on this machine with access to that item.`;
 
-/**
- * Sends the request to the user's device and waits for its answer within the call. Refuses when
- * this machine is set to refuse, no device is connected, or the user or device says no.
- */
-export const relay = async (
-  context: SecretAccessContext,
-  input: {
-    readonly escalation: BrowserSecretEscalation;
-    readonly ask: SecretRelay.SecretRelayAsk;
-    readonly deadlineMs: number;
-    /** What was asked for, such as "a login for https://example.com". */
-    readonly what: string;
-    readonly denied: string;
-  },
-): Promise<Exclude<SecretRelayAnswer, { readonly type: "denied" | "unavailable" }>> => {
-  const { relay: secretRelay } = context;
-  if (input.escalation === "refuse" || secretRelay === undefined) {
-    throw refusal(input.what, input.escalation);
-  }
-  const outcome = await context.runPromise(
-    secretRelay.request(input.ask, Math.max(0, input.deadlineMs - performance.now())).pipe(
-      Effect.map((answer) => ({ answer })),
-      Effect.catchTags({ SecretRelayError: (error) => Effect.succeed({ error }) }),
-    ),
-  );
-  if ("error" in outcome) {
-    throw outcome.error.reason === "no_device"
-      ? refusal(input.what, input.escalation)
-      : loginError("The user did not answer on their device before the call ended.");
-  }
-  const { answer } = outcome;
-  if (answer.type === "denied") throw loginError(input.denied);
-  if (answer.type === "unavailable") {
-    throw loginError(`The user's device could not answer: ${answer.message}`);
-  }
-  return answer;
+const ASKED_FOR: Record<BrowserLogins.BrowserApprovalKind, string> = {
+  login: "this login",
+  identity: "filling this identity",
+  identityRead: "showing this identity",
+  newLogin: "this new login",
 };
 
+const refused = (message: string) =>
+  new BrowserLogins.BrowserLoginError({ reason: "refused", message });
+
+const denied = (kind: BrowserLogins.BrowserApprovalKind, where = "") =>
+  refused(`The user did not approve ${ASKED_FOR[kind]}${where}.`);
+
+const unreadable = (id: string, why?: string) =>
+  refused(
+    `That item (${id}) could not be read; choose again.${why === undefined ? "" : ` ${why}`}`,
+  );
+
+/** A source that is missing or cannot answer, as opposed to a refusal or changed settings. */
+const sourceFailed = (error: BrowserLogins.BrowserLoginError) =>
+  error.reason === "unreadable" || error.reason === "not_configured";
+
+export const summary = (item: SecretItem): PreviewLoginCandidate => ({
+  id: item.id,
+  title: item.title,
+  ...(item.vault ? { vault: item.vault } : {}),
+  ...(item.account ? { account: item.account } : {}),
+});
+
 /** A relayed answer's values, unwrapped only where they are filled or handed over. */
-export const relayedValues = (
+const relayedValues = (
   values: Readonly<Record<string, Redacted.Redacted<string>>>,
 ): Readonly<Record<string, string>> =>
   Object.fromEntries(Object.entries(values).map(([key, value]) => [key, Redacted.value(value)]));
+
+type DeviceAnswer = SecretRelayAnswer | { readonly type: "no_device" };
+
+export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
+  Item extends SecretItem,
+  Values,
+>(
+  services: SecretAccessServices,
+  request: SecretRequest,
+  catalog: SecretCatalog<Item, Values>,
+): Effect.fn.Return<SecretAccess<Item, Values>, BrowserLogins.BrowserLoginError> {
+  const { logins, desktopChannel, relay } = services;
+  // Every later step runs under these settings; one that changed in between fails.
+  const { revision, escalation, providers } = yield* logins.escalation;
+  const what = request.reference ?? catalog.what;
+  const refusal = () => refused(catalog.refusal?.(escalation) ?? refusalMessage(what, escalation));
+
+  let readied = false;
+  const ready = Effect.suspend(() => {
+    if (readied || request.ready === undefined) return Effect.void;
+    readied = true;
+    return request.ready;
+  });
+
+  const found = (item: Item | SecretRelayItem, values: Values) =>
+    logins
+      .check(revision)
+      .pipe(Effect.as<SecretAccess<Item, Values>>({ status: "found", revision, item, values }));
+
+  const read = Effect.fn("BrowserSecretAccess.read")(function* (item: Item) {
+    const unusable = catalog.unusable?.(item);
+    if (unusable !== undefined) return yield* refused(unusable);
+    yield* ready;
+    return yield* found(item, yield* catalog.read(revision, item));
+  });
+
+  /** A choice among several items, the one there is read, or undefined when there is none. */
+  const take = Effect.fn("BrowserSecretAccess.take")(function* (
+    reach: BrowserLogins.BrowserLoginReach,
+  ): Effect.fn.Return<SecretAccess<Item, Values> | undefined, BrowserLogins.BrowserLoginError> {
+    const items = yield* catalog.find(reach);
+    if (items.length > 1) return { status: "choose", candidates: items.map(summary) };
+    const [item] = items;
+    return item === undefined ? undefined : yield* read(item);
+  });
+
+  /** This machine's dialog, unless the user allowed this kind for the thread; Deny stops all. */
+  const approve = Effect.fn("BrowserSecretAccess.approve")(function* (providerLabel: string) {
+    yield* ready;
+    const scope = { threadId: request.threadId };
+    if (!(yield* logins.needsApproval(revision, scope, request.kind))) return;
+    const answer = yield* desktopChannel.approveLogin(
+      { threadId: request.threadId, ...(request.tabId ? { tabId: request.tabId } : {}) },
+      Math.max(0, request.deadline - (yield* Clock.currentTimeMillis)),
+      {
+        kind: request.kind,
+        providerLabel,
+        ...catalog.prompt,
+        ...(request.reference ? { reference: request.reference } : {}),
+        ...(request.origin ? { origin: request.origin } : {}),
+        ...(request.threadTitle ? { threadTitle: request.threadTitle } : {}),
+        ...(request.agent ? { agent: request.agent } : {}),
+      },
+    );
+    if (answer === false) return yield* denied(request.kind);
+    if ((yield* Clock.currentTimeMillis) >= request.deadline) {
+      return yield* refused("The approval came after the call ended.");
+    }
+    if (answer === "thread") yield* logins.recordApproval(revision, scope, request.kind);
+  });
+
+  const askDevice = Effect.fn("BrowserSecretAccess.askDevice")(function* (target: {
+    readonly item?: string;
+    readonly reference?: string;
+  }): Effect.fn.Return<DeviceAnswer, BrowserLogins.BrowserLoginError> {
+    if (catalog.relay === undefined || relay === undefined) return { type: "no_device" };
+    yield* ready;
+    return yield* relay
+      .request(
+        { ...catalog.relay.ask, ...target },
+        Math.max(0, request.deadline - (yield* Clock.currentTimeMillis)),
+      )
+      .pipe(
+        Effect.catchTags({
+          SecretRelayError: (error) =>
+            error.reason === "no_device"
+              ? Effect.succeed<DeviceAnswer>({ type: "no_device" })
+              : Effect.fail(
+                  refused("The user did not answer on their device before the call ended."),
+                ),
+        }),
+      );
+  });
+
+  const fromDevice = (answer: Extract<SecretRelayAnswer, { readonly type: "values" }>) =>
+    found(answer.item, catalog.relay!.values(relayedValues(answer.values)));
+
+  // 1. An item named explicitly, from its own provider or device only.
+  const named = request.item;
+  if (named?.startsWith(SECRET_RELAY_DEVICE_PREFIX)) {
+    if (escalation === "refuse") return yield* refusal();
+    const answer = yield* askDevice({ item: named });
+    if (answer.type === "values") return yield* fromDevice(answer);
+    if (answer.type === "denied") return yield* denied(request.kind, " on their device");
+    return yield* unreadable(named, answer.type === "unavailable" ? answer.message : undefined);
+  }
+  if (named !== undefined) {
+    const provider = providers.find((candidate) => named.startsWith(`${candidate.id}/`));
+    if (provider === undefined) return yield* unreadable(named);
+    if (!provider.unattended) {
+      if (escalation === "refuse") return yield* refusal();
+      if (!desktopChannel.available) {
+        return yield* unreadable(
+          named,
+          `${provider.account} needs the user's approval in the T3 Code desktop app on this machine.`,
+        );
+      }
+      yield* approve(provider.account);
+    }
+    const items = yield* catalog
+      .find({ provider: provider.id })
+      .pipe(Effect.catchIf(sourceFailed, () => Effect.succeed<ReadonlyArray<Item>>([])));
+    const item = items.find((candidate) => candidate.id === named);
+    if (item === undefined) return yield* unreadable(named);
+    return yield* read(item).pipe(Effect.catchIf(sourceFailed, () => unreadable(named)));
+  }
+
+  // 2. This machine's service accounts; one that cannot answer now passes the request on.
+  if (providers.some((provider) => provider.unattended)) {
+    const outcome = yield* take("unattended").pipe(
+      Effect.catchIf(sourceFailed, () => Effect.undefined),
+    );
+    if (outcome !== undefined) return outcome;
+  }
+  // 3.
+  if (escalation === "refuse") return yield* refusal();
+  // A person-backed source that answered "none", and the last one that could not answer.
+  let none = false;
+  let failure: string | undefined;
+  // 4. Asked first, then listed, looked up and read.
+  const attended = providers.filter((provider) => !provider.unattended);
+  if (attended.length > 0 && desktopChannel.available) {
+    yield* approve(catalog.prompt?.providerLabel ?? attended.map((p) => p.account).join(", "));
+    const outcome = yield* take("attended").pipe(
+      Effect.catchIf(sourceFailed, (error) =>
+        Effect.sync(() => {
+          failure = error.message;
+          return undefined;
+        }),
+      ),
+    );
+    if (outcome !== undefined) return outcome;
+    none = failure === undefined;
+  }
+  // 5.
+  const answer = yield* askDevice(
+    request.reference === undefined ? {} : { reference: request.reference },
+  );
+  switch (answer.type) {
+    case "values":
+      return yield* fromDevice(answer);
+    case "choose":
+      return { status: "choose", candidates: answer.candidates };
+    case "denied":
+      return yield* denied(request.kind, " on their device");
+    case "none":
+      none = true;
+      break;
+    case "unavailable":
+      failure = `The user's device could not answer: ${answer.message}`;
+      break;
+  }
+  // 6.
+  if (none) return { status: "none" };
+  return yield* failure === undefined ? refusal() : refused(failure);
+});
