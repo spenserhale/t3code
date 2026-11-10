@@ -2284,7 +2284,7 @@ const make = Effect.gen(function* () {
     );
     if (unsafe.length > 0) {
       throw ServerBrowserLogin.loginError(
-        `The ${unsafe.join(" and ")} saved in "${login.title}" is shorter than 4 characters or has a line break, so it could not be kept out of what you read. Ask the user to sign in in the tab.`,
+        `The login "${login.title}" cannot be filled: its ${unsafe.join(" and ")} could not be kept out of what you read, being shorter than 4 characters or holding a line break. Ask the user to sign in in the tab.`,
       );
     }
     // The page may have moved on, or the settings changed, while the user was deciding.
