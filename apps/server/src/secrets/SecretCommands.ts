@@ -16,6 +16,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -202,6 +203,7 @@ const make = Effect.gen(function* () {
   const relay = Option.getOrUndefined(yield* Effect.serviceOption(SecretRelay.SecretRelay));
   const access = { logins, desktopChannel, relay };
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const projects = yield* ProjectService.ProjectService;
@@ -359,11 +361,23 @@ const make = Effect.gen(function* () {
       const root = yield* workspaceOf(caller.threadId);
       if (root === undefined)
         return yield* invalid("This thread has no workspace on this machine.");
+      const outside = () => invalid("`cwd` must be a relative path inside the thread's workspace.");
       const workspaceRoot = path.resolve(root);
-      const cwd = path.resolve(workspaceRoot, input.cwd ?? ".");
-      if (path.isAbsolute(input.cwd ?? "") || !isWithinRoot(path, cwd, workspaceRoot)) {
-        return yield* invalid("`cwd` must be a relative path inside the thread's workspace.");
+      const requested = path.resolve(workspaceRoot, input.cwd ?? ".");
+      if (path.isAbsolute(input.cwd ?? "") || !isWithinRoot(path, requested, workspaceRoot)) {
+        return yield* outside();
       }
+      // A symlink inside may lead out, so containment holds for the real paths, and the command
+      // starts at the real one.
+      const realRoot = yield* fileSystem
+        .realPath(workspaceRoot)
+        .pipe(
+          Effect.mapError(() => invalid("This thread's workspace does not exist on this machine.")),
+        );
+      const cwd = yield* fileSystem
+        .realPath(requested)
+        .pipe(Effect.mapError(() => invalid("`cwd` does not exist in the thread's workspace.")));
+      if (!isWithinRoot(path, cwd, realRoot)) return yield* outside();
 
       const command = displayCommand(input.command);
       const deadline = (yield* Clock.currentTimeMillis) + APPROVAL_TIMEOUT_MS;
