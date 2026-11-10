@@ -21,6 +21,9 @@ export function normalizeCaptureFailure(
     case "PreviewRecordingArmConflictError":
       reason = "recording-conflict";
       break;
+    case "PreviewCaptureWithheldError":
+      reason = "login-filled";
+      break;
     case "PreviewOperationError":
       if (error.operation === "captureScreenshot.capturePage") {
         stage = "capture-page";

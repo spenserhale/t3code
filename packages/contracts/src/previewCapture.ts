@@ -10,6 +10,7 @@ export class PreviewCaptureFailure extends Schema.TaggedError<PreviewCaptureFail
       "capture-timeout",
       "recording-conflict",
       "capture-failed",
+      "login-filled",
     ]),
     stage: Schema.Literals(["screenshot", "capture-page", "recording-start"]),
   },
@@ -26,6 +27,8 @@ export class PreviewCaptureFailure extends Schema.TaggedError<PreviewCaptureFail
         return "A recording capture is already starting, stopping or active. Wait for it to settle, or stop the active recording before retrying.";
       case "capture-failed":
         return `Preview capture failed during ${this.stage}. Check the preview host and target tab before retrying.`;
+      case "login-filled":
+        return "The password manager filled a login in this page, so it is not captured until another page loads.";
     }
   }
 }
