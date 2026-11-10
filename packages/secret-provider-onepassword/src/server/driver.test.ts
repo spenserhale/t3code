@@ -213,6 +213,8 @@ describe("1Password logins", () => {
       { id: "username", type: "STRING", purpose: "USERNAME", value: "ops@example.com" },
       { id: "password", type: "CONCEALED", purpose: "PASSWORD", value: "hunter2" },
       { id: "notes", type: "STRING", purpose: "NOTES", value: "" },
+      // Fields a login has no use for may hold values other than strings.
+      { id: "office", type: "ADDRESS", value: { street: "1 Main St", city: "Springfield" } },
       { id: "otp", type: "OTP", value: "otpauth://totp/x?secret=ABC", totp: "123456" },
     ],
   });
