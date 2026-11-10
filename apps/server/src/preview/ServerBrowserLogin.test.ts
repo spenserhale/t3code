@@ -37,6 +37,7 @@ const PAGES: Partial<Record<string, string>> = {
       }, 600);
     </script>`,
   "/switch": `<input id="otp" type="text" oninput="console.log('written')">`,
+  "/form": `<input id="otp" type="text"><a id="away" href="/away">away</a>`,
 };
 
 describe("filling a saved login", () => {
@@ -262,6 +263,24 @@ describe("filling a saved login", () => {
       expect(unmoved).toBe(true);
     },
   );
+
+  it("leaves a filled field out of the form state Back restores", async () => {
+    await page.goto("https://good.test/form");
+    await fillCovered({
+      page,
+      cdp,
+      field: "totp",
+      target: page.locator("#otp"),
+      value: "123456",
+      frameCovered,
+      document: await documentId(cdp),
+      deadline: NO_DEADLINE,
+    });
+    await page.click("#away");
+    await page.waitForURL("**/away");
+    await page.goBack();
+    expect(await page.locator("#otp").inputValue()).toBe("");
+  });
 
   it("names a document until the page loads a new one", async () => {
     const first = await documentId(cdp);

@@ -7,6 +7,10 @@
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"
     },
+    "./browserLoginExposure": {
+      "types": "./src/browserLoginExposure.ts",
+      "import": "./src/browserLoginExposure.ts"
+    },
     "./authScopeOptions": {
       "types": "./src/authScopeOptions.ts",
       "import": "./src/authScopeOptions.ts"

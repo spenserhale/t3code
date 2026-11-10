@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Playwright callbacks run outside the Effect runtime.
 import type { PreviewLoginField } from "@t3tools/contracts";
+import { type FilledDocuments, withoutFragment } from "@t3tools/shared/browserLoginExposure";
 import * as NodeCrypto from "node:crypto";
 import type { CDPSession, Frame, Locator, Page } from "playwright-core";
 
@@ -122,6 +123,8 @@ const WRITE_FIELD = `function (value, deadline, origin) {
   if (this.disabled || this.readOnly) return "not_editable";
   const native = Object.getOwnPropertyDescriptor(proto, "value");
   if (Date.now() >= deadline) return "expired";
+  // Left out of the form state Back or Forward would refill into a later document.
+  this.setAttribute("autocomplete", "off");
   this.style.setProperty("-webkit-text-security", "disc", "important");
   this.focus();
   // The page's focus handlers have run, and may have taken the time, the field or the page.
@@ -334,32 +337,53 @@ export const documentId = async (cdp: CDPSession): Promise<string> => {
   return frameTree.frame.loaderId;
 };
 
-interface DocumentMarks {
-  /** Documents the agent ran script in, where it could have hooked a later fill. */
-  readonly scripted: Set<string>;
-  /** Documents a login was filled into, where script could read it back. */
-  readonly filled: Set<string>;
-}
-
-const marks = new WeakMap<Page, DocumentMarks>();
-const marksOf = (page: Page) => {
-  const existing = marks.get(page);
-  if (existing) return existing;
-  const created: DocumentMarks = { scripted: new Set(), filled: new Set() };
-  marks.set(page, created);
-  return created;
-};
-
 /**
- * The agent's script and a filled login never share a document: script ran first means reload
- * before filling, and a fill means a new document before script runs again.
+ * What each tab's documents held, by tab, so a desktop tab that reconnects keeps it. The agent's
+ * script and a filled login never share a document: script ran first means reload before filling,
+ * and a fill means a new document before script runs again.
  */
-export const markScripted = (page: Page, documentIds: ReadonlyArray<string>) => {
-  for (const id of documentIds) marksOf(page).scripted.add(id);
+export const makeDocumentMarks = () => {
+  const tabs = new Map<
+    string,
+    {
+      /** Documents the agent ran script in, where it could have hooked a later fill. */
+      readonly scripted: Set<string>;
+      /** Documents a login was filled into, and every address they showed. */
+      readonly filled: { readonly documents: Set<string>; readonly urls: Set<string> };
+    }
+  >();
+  const marksOf = (tab: string) => {
+    const existing = tabs.get(tab);
+    if (existing) return existing;
+    const created = {
+      scripted: new Set<string>(),
+      filled: { documents: new Set<string>(), urls: new Set<string>() },
+    };
+    tabs.set(tab, created);
+    return created;
+  };
+  return {
+    markScripted: (tab: string, documentIds: ReadonlyArray<string>) => {
+      for (const id of documentIds) marksOf(tab).scripted.add(id);
+    },
+    wasScripted: (tab: string, id: string) => tabs.get(tab)?.scripted.has(id) === true,
+    markFilled: (tab: string, id: string, url: string) => {
+      const { filled } = marksOf(tab);
+      filled.documents.add(id);
+      filled.urls.add(withoutFragment(url));
+    },
+    /** A later address of a filled document, such as one `pushState` gave it. */
+    noteAddress: (tab: string, id: string, url: string) => {
+      const filled = tabs.get(tab)?.filled;
+      if (filled?.documents.has(id)) filled.urls.add(withoutFragment(url));
+    },
+    filled: (tab: string): FilledDocuments | undefined => {
+      const filled = tabs.get(tab)?.filled;
+      return filled !== undefined && filled.documents.size > 0 ? filled : undefined;
+    },
+    forget: (tab: string) => void tabs.delete(tab),
+  };
 };
-export const wasScripted = (page: Page, id: string) => marksOf(page).scripted.has(id);
-export const markFilled = (page: Page, id: string) => marksOf(page).filled.add(id);
-export const holdsFill = (page: Page, id: string) => marksOf(page).filled.has(id);
 
 const REDACTED = "[filled by password manager]";
 

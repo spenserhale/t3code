@@ -37,7 +37,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { chromium, type BrowserContext, type Page } from "playwright-core";
+import { chromium, type BrowserContext, type CDPSession, type Page } from "playwright-core";
 import { beforeEach, expect, vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
@@ -74,7 +74,9 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
       return context as unknown as BrowserContext;
     }
     async scratchPage() {
-      return makeEncoderPage() as unknown as Page;
+      const encoder = makeEncoderPage();
+      encoderPages.push(encoder);
+      return encoder as unknown as Page;
     }
     async connectDesktopPage(endpoint: string) {
       const context = makeContext(undefined, desktopPageUrl);
@@ -310,6 +312,7 @@ function makeEncoderPage() {
 
 const contexts: ReturnType<typeof makeContext>[] = [];
 const encoderStreams: Array<{ frameRate: number | undefined; bitsPerSecond: number }> = [];
+const encoderPages: Array<ReturnType<typeof makeEncoderPage>> = [];
 const contextRequests: Array<{ profileId: string; isolated: boolean }> = [];
 let contextGate: PromiseWithResolvers<void> | null = null;
 let pageCopy = "";
@@ -461,6 +464,7 @@ const openDesktopViewer = Effect.gen(function* () {
 beforeEach(() => {
   contexts.length = 0;
   encoderStreams.length = 0;
+  encoderPages.length = 0;
   contextRequests.length = 0;
   contextGate = null;
   contextFailure = null;
@@ -2356,6 +2360,13 @@ const LOGIN_SITE: Partial<Record<string, string>> = {
     setTimeout(() => { this.value = ''; document.body.append('x'.repeat(19995) + value); });
   ">`,
   "/long": `<title>${"x".repeat(508)}password-value</title>`,
+  // A framework draws the code field again, without the attribute the fill set on it.
+  "/otp": `<input id="otp" autocomplete="one-time-code" oninput="
+    const fresh = document.createElement('input');
+    fresh.value = this.value;
+    this.replaceWith(fresh);
+  "><a href="/next">next</a>`,
+  "/next": "<p>next</p>",
   // Logs the password as JSON and names a button with it, then clears the field.
   "/quote": `<input id="user" autocomplete="username"><input id="password" type="password" oninput="
     console.log(JSON.stringify({ password: this.value }));
@@ -2606,6 +2617,81 @@ it.live("scrubs a filled password in the escaped forms a log or snapshot writes 
         expect(logged).not.toContain("w0rd");
         expect(snapshot.accessibilityTree).toContain("[filled by password manager]");
         expect(snapshot.accessibilityTree).not.toContain("w0rd");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+/** Fills a code into a field the page draws again, then leaves for another page. */
+const fillCodeAndLeave = (invoke: Effect.Success<typeof openLoginTab>["invoke"]) =>
+  Effect.gen(function* () {
+    yield* invoke("navigate", { url: "https://good.test/otp" });
+    yield* invoke("fillLogin", { fields: ["totp"] });
+    yield* invoke("navigate", { url: "https://good.test/next" });
+  });
+
+it.live(
+  "a page Back restores at an address that held a fill takes no images, script or recording",
+  () => {
+    const server = loginServer("never", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          yield* fillCodeAndLeave(invoke);
+          // Back, as pressed in a viewer or the desktop: Chromium refills the field drawn afresh.
+          const page = context.pages()[0]!;
+          yield* Effect.promise(() => page.goBack());
+          expect(yield* Effect.promise(() => page.locator("#otp").inputValue())).toBe("totp-value");
+          const restored = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(restored.screenshot).toBeUndefined();
+          expect(restored.imagesOff).toContain("preview_navigate");
+          for (const operation of ["evaluate", "recordingStart"] as const) {
+            const refused = yield* invoke(operation, { expression: "1" }).pipe(Effect.flip);
+            expect(refused.message).toContain("filled a login in this page");
+          }
+          // A fresh visit to the same address restores nothing.
+          yield* invoke("navigate", { url: "https://good.test/otp" });
+          const fresh = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(fresh.screenshot?.mimeType).toBe("image/png");
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live("a running recording takes no frame of a page Back restores where a fill was", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      // The recording's own session, to see every frame it is sent.
+      const sessions: Array<CDPSession> = [];
+      const newCDPSession = context.newCDPSession.bind(context);
+      context.newCDPSession = async (page) => {
+        const session = await newCDPSession(page);
+        sessions.push(session);
+        return session;
+      };
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* fillCodeAndLeave(invoke);
+        const opened = sessions.length;
+        yield* invoke("recordingStart");
+        const recording = sessions[opened]!;
+        const page = context.pages()[0]!;
+        yield* Effect.promise(() => page.goBack());
+        // Anything the restored page draws reaches the recording's session as a frame.
+        const drawn = new Promise<{ readonly data: string }>((resolve) =>
+          recording.once("Page.screencastFrame", resolve),
+        );
+        yield* Effect.promise(() => page.evaluate("document.body.style.background = 'red'"));
+        const { data } = yield* Effect.promise(() => drawn);
+        const encoded = encoderPages
+          .at(-1)!
+          .evaluate.mock.calls.some(([, frame]) => Array.isArray(frame) && frame[0] === data);
+        expect(encoded).toBe(false);
       }).pipe(Effect.provide(server.layer));
     }),
   );
