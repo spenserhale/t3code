@@ -36,6 +36,7 @@ const PAGES: Partial<Record<string, string>> = {
         document.body.append(field);
       }, 600);
     </script>`,
+  "/switch": `<input id="otp" type="text" oninput="console.log('written')">`,
 };
 
 describe("filling a saved login", () => {
@@ -55,7 +56,12 @@ describe("filling a saved login", () => {
     // Two fake sites, so origins are real without a network.
     await context.route(/^https:\/\/(good|evil)\.test\//, (route) => {
       const url = new URL(route.request().url());
-      const body = PAGES[url.pathname] ?? `<input id="password" type="password">`;
+      // A page that knows the fill's tag and puts it on its own field.
+      const copied = url.pathname === "/copy" ? (url.searchParams.get("tag") ?? "") : undefined;
+      const body =
+        copied === undefined
+          ? (PAGES[url.pathname] ?? `<input id="password" type="password">`)
+          : `<input id="password" type="password" ${copied}>`;
       return route.fulfill({ contentType: "text/html", body });
     });
     page = await context.newPage();
@@ -116,6 +122,7 @@ describe("filling a saved login", () => {
       target: page.locator("#otp"),
       value: "123456",
       frameCovered,
+      document: await documentId(cdp),
       deadline: NO_DEADLINE,
     });
     const state = await page.locator("#otp").evaluate((otp) => {
@@ -147,6 +154,7 @@ describe("filling a saved login", () => {
       target: page.locator("#password"),
       value: "hunter22",
       frameCovered,
+      document: await documentId(cdp),
       deadline: NO_DEADLINE,
     });
     expect(await caught.inputValue()).toBe("");
@@ -163,6 +171,7 @@ describe("filling a saved login", () => {
         target: page.locator("#password"),
         value: "hunter22",
         frameCovered,
+        document: await documentId(cdp),
         // The page's clock, which the write checks.
         deadline: ((await page.evaluate("Date.now()")) as number) + 1_000,
       }),
@@ -188,11 +197,71 @@ describe("filling a saved login", () => {
         target,
         value: "hunter2",
         frameCovered,
+        document: await documentId(cdp),
         deadline: NO_DEADLINE,
       }),
     ).rejects.toThrow("left the login's site");
     expect(await target.inputValue()).toBe("");
   });
+
+  it.each(["https://evil.test", "https://good.test"])(
+    "never writes into a document %s loads in place of the field's",
+    async (destination) => {
+      // Moves the page on before each call the fill makes in turn, until one finishes unmoved.
+      let unmoved = false;
+      for (let moveAt = 0; moveAt < 40 && !unmoved; moveAt++) {
+        await page.goto("https://good.test/switch");
+        const document = await documentId(cdp);
+        let written = false;
+        const onConsole = (message: { text: () => string }) => {
+          if (message.text() === "written") written = true;
+        };
+        page.on("console", onConsole);
+        let calls = 0;
+        const moving = {
+          send: async (method: string, params?: object) => {
+            if (calls++ === moveAt) {
+              const tag = await page.evaluate(() => {
+                const scope = globalThis as unknown as {
+                  document: {
+                    querySelector: (
+                      selector: string,
+                    ) => { attributes: Iterable<{ name: string }> } | null;
+                  };
+                };
+                const field = scope.document.querySelector("#otp");
+                return [...(field?.attributes ?? [])]
+                  .map((attribute) => attribute.name)
+                  .find((name) => name.startsWith("data-t3-fill-"));
+              });
+              await page.goto(`${destination}/copy?tag=${tag ?? ""}`);
+            }
+            return cdp.send(method as "Page.getFrameTree", params);
+          },
+        } as unknown as CDPSession;
+        const filled = await fillCovered({
+          page,
+          cdp: moving,
+          field: "totp",
+          target: page.locator("#otp"),
+          value: "123456",
+          frameCovered,
+          document,
+          deadline: NO_DEADLINE,
+        }).then(
+          () => true,
+          () => false,
+        );
+        page.off("console", onConsole);
+        unmoved = calls <= moveAt;
+        // Success means the field the fill was for took the value, and nothing else did.
+        expect(filled).toBe(written);
+        if (unmoved) expect(written).toBe(true);
+        else expect(await page.locator("#password").inputValue()).toBe("");
+      }
+      expect(unmoved).toBe(true);
+    },
+  );
 
   it("names a document until the page loads a new one", async () => {
     const first = await documentId(cdp);
