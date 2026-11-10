@@ -64,6 +64,16 @@ describe("scrubSecrets", () => {
       },
     );
   });
+
+  const redacted = "[filled by password manager]";
+  it.each([
+    ["overlap", ["abcdef", "defgh"], "x abcdefgh y", `x ${redacted} y`],
+    ["containment", ["abcdefgh", "cdef"], "abcdefgh cdef", `${redacted} ${redacted}`],
+    ["adjacency", ["abcd", "efgh"], "abcdefgh!", `${redacted}!`],
+    ["self-overlap", ["aaaa"], "baaaaaab", `b${redacted}b`],
+  ])("leaves no part of a secret showing on %s", (_case, secrets, text, expected) => {
+    assert.strictEqual(scrubSecrets(text, secrets), expected);
+  });
 });
 
 const kind = SecretProviderKind.make("fake_vault");
