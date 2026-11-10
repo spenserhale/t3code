@@ -2222,11 +2222,14 @@ const make = Effect.gen(function* () {
       }),
     );
     const frameCovered = (frameUrl: string) => BrowserLogins.loginCoversPage(login.urls, frameUrl);
+    // The page sees wall-clock time, so the steps that reach into it share this deadline.
+    const deadline = Date.now() + (deadlineMs - performance.now());
     const { targets, missing } = await ServerBrowserLogin.findLoginTargets({
       page: tab.page,
       fields,
       locators,
       frameCovered,
+      deadline,
     });
     if (missing.length > 0) {
       throw ServerBrowserLogin.loginError(
@@ -2298,10 +2301,13 @@ const make = Effect.gen(function* () {
         throw ServerBrowserLogin.loginError("The call ended before the login was filled.");
       }
       await ServerBrowserLogin.fillCovered({
+        page: tab.page,
+        cdp: tab.cdp,
+        field,
         target,
         value: values[field] ?? "",
         frameCovered,
-        timeoutMs: deadlineMs - performance.now(),
+        deadline,
       });
     }
     return { status: "filled", tabId: tab.tabId, login: summary(login), filled: fields };
