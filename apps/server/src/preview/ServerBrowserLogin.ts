@@ -88,8 +88,12 @@ export const findLoginTargets = async (input: {
 
 const FILL_WORLD = "t3-preview-login-fill";
 
-/** Finds and untags the element a fill tagged, in this document and its open shadow roots. */
-const findTagged = (tag: string) => `(() => {
+/**
+ * Finds and untags the element a fill tagged, in this document and its open shadow roots. A
+ * document that is not on the field's origin is not searched.
+ */
+const findTagged = (tag: string, origin: string) => `(() => {
+  if (location.origin !== ${JSON.stringify(origin)}) return 0;
   const found = [];
   const visit = (root) => {
     for (const element of root.querySelectorAll("*")) {
@@ -102,9 +106,11 @@ const findTagged = (tag: string) => `(() => {
   return found.length === 1 ? found[0] : found.length;
 })()`;
 
-// Runs in an isolated world, whose prototypes and clock page script cannot replace, and returns
-// no value. Frameworks such as React notice a native value write followed by an input event.
-const WRITE_FIELD = `function (value, deadline) {
+// Runs in an isolated world, whose prototypes, clock and view of the document's origin page script
+// cannot replace, and returns no value. Frameworks such as React notice a native value write
+// followed by an input event.
+const WRITE_FIELD = `function (value, deadline, origin) {
+  if (location.origin !== origin) return "left";
   const types = ["text", "password", "email", "tel", "number", "search", "url"];
   const proto =
     this instanceof HTMLTextAreaElement
@@ -118,8 +124,9 @@ const WRITE_FIELD = `function (value, deadline) {
   if (Date.now() >= deadline) return "expired";
   this.style.setProperty("-webkit-text-security", "disc", "important");
   this.focus();
-  // The page's focus handlers have run, and may have taken the time or the field.
+  // The page's focus handlers have run, and may have taken the time, the field or the page.
   if (Date.now() >= deadline) return "expired";
+  if (location.origin !== origin) return "left";
   if (!this.isConnected || this.ownerDocument !== document) return "gone";
   native.set.call(this, value);
   this.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
@@ -128,7 +135,7 @@ const WRITE_FIELD = `function (value, deadline) {
 }`;
 
 interface FrameNode {
-  readonly frame: { readonly id: string; readonly url: string };
+  readonly frame: { readonly id: string; readonly loaderId: string; readonly url: string };
   readonly childFrames?: ReadonlyArray<FrameNode>;
 }
 const flattenFrames = (tree: FrameNode): ReadonlyArray<FrameNode["frame"]> => [
@@ -168,8 +175,9 @@ const before = <A>(promise: Promise<A>, deadline: number, expired: () => Error) 
 
 /**
  * Writes into the element the locator resolved to and nowhere else; keystrokes would follow focus
- * into any frame. A nonce tag finds it again from an isolated world, only in frames on the login's
- * site. Objects die with their document, and the write checks the deadline in the page itself.
+ * into any frame. A nonce tag, which the page can copy, only leads from Playwright to the
+ * browser's own identity for the node, taken in the document the fill is for. The write resolves
+ * that node afresh, confirms the document's origin from inside, and checks the deadline there.
  */
 export const fillCovered = async (input: {
   readonly page: Page;
@@ -178,11 +186,17 @@ export const fillCovered = async (input: {
   readonly target: Locator;
   readonly value: string;
   readonly frameCovered: (frameUrl: string) => boolean;
+  /** The main document the fill is for, as `documentId` named it. */
+  readonly document: string;
   /** In `Date.now()` time. */
   readonly deadline: number;
 }) => {
   const expired = () => loginError("The call ended before the login was filled.");
   const left = () => loginError("The page left the login's site before it was filled.");
+  const moved = () =>
+    loginError(
+      "The page loaded another document before the login was filled. Take a fresh snapshot and try again.",
+    );
   const remaining = () => {
     const ms = input.deadline - Date.now();
     if (ms <= 0) throw expired();
@@ -195,9 +209,14 @@ export const fillCovered = async (input: {
   try {
     const frame = await handle.ownerFrame();
     if (frame === null || !input.frameCovered(frame.url())) throw left();
+    const origin = new URL(frame.url()).origin;
     owner = await sessionFor(input.page, frame, input.cdp);
     const { session } = owner;
+    const release = (objectId: string) =>
+      void session.send("Runtime.releaseObject", { objectId }).catch(() => undefined);
+    const frames = async () => flattenFrames((await session.send("Page.getFrameTree")).frameTree);
     remaining();
+    const untagged = await frames();
     await handle
       .evaluate(
         (element, name) =>
@@ -209,42 +228,76 @@ export const fillCovered = async (input: {
       .catch(() => {
         throw left();
       });
-    const { frameTree } = await session.send("Page.getFrameTree");
-    const found: Array<string> = [];
-    for (const covered of flattenFrames(frameTree).filter((each) => input.frameCovered(each.url))) {
+    const found: Array<{ readonly frameId: string; readonly objectId: string }> = [];
+    for (const covered of untagged.filter((each) => input.frameCovered(each.url))) {
       remaining();
       const tagged = await session
         .send("Page.createIsolatedWorld", { frameId: covered.id, worldName: FILL_WORLD })
         .then(({ executionContextId }) =>
           session.send("Runtime.evaluate", {
             contextId: executionContextId,
-            expression: findTagged(tag),
+            expression: findTagged(tag, origin),
           }),
         )
         .catch(() => undefined);
       const objectId = tagged?.result.objectId;
       if (objectId === undefined) continue;
       if (tagged?.exceptionDetails === undefined && tagged?.result.subtype === "node") {
-        found.push(objectId);
+        found.push({ frameId: covered.id, objectId });
       } else {
-        void session.send("Runtime.releaseObject", { objectId }).catch(() => undefined);
+        release(objectId);
       }
     }
+    let node: { readonly frameId: string; readonly backendNodeId: number };
     try {
       // Missing from every frame on the login's site, or copied onto another element.
-      const [objectId] = found;
-      if (objectId === undefined || found.length > 1) throw left();
+      const [only] = found;
+      if (only === undefined || found.length > 1) throw left();
+      remaining();
+      const described = await session.send("DOM.describeNode", { objectId: only.objectId });
+      node = { frameId: only.frameId, backendNodeId: described.node.backendNodeId };
+    } finally {
+      for (const { objectId } of found) release(objectId);
+    }
+    // Found in the document its frame held before the tag went on, and the fill's page still shows.
+    const loaderOf = (list: ReadonlyArray<FrameNode["frame"]>) =>
+      list.find((each) => each.id === node.frameId)?.loaderId;
+    if (
+      loaderOf(await frames()) !== loaderOf(untagged) ||
+      (await documentId(input.cdp)) !== input.document
+    ) {
+      throw moved();
+    }
+    remaining();
+    // A document loaded from here on detaches the node's own, so the node no longer resolves.
+    const objectId = await session
+      .send("Page.createIsolatedWorld", { frameId: node.frameId, worldName: FILL_WORLD })
+      .then(({ executionContextId }) =>
+        session.send("DOM.resolveNode", {
+          backendNodeId: node.backendNodeId,
+          executionContextId,
+        }),
+      )
+      .then(
+        ({ object }) => object.objectId,
+        () => undefined,
+      );
+    if (objectId === undefined) throw moved();
+    try {
       remaining();
       const { result, exceptionDetails } = await before(
         session.send("Runtime.callFunctionOn", {
           objectId,
           functionDeclaration: WRITE_FIELD,
-          arguments: [{ value: input.value }, { value: input.deadline }],
+          arguments: [{ value: input.value }, { value: input.deadline }, { value: origin }],
           returnByValue: true,
         }),
         input.deadline,
         expired,
-      );
+      ).catch((cause: unknown) => {
+        // The node's world went with its document.
+        throw cause instanceof ServerBrowserOperationError ? cause : moved();
+      });
       if (exceptionDetails !== undefined) {
         throw loginError(`The ${input.field} field could not be filled.`);
       }
@@ -253,6 +306,8 @@ export const fillCovered = async (input: {
           return;
         case "expired":
           throw expired();
+        case "left":
+          throw left();
         case "gone":
           throw loginError("A login field disappeared before it was filled.");
         case "not_editable":
@@ -265,9 +320,7 @@ export const fillCovered = async (input: {
           throw loginError(`The ${input.field} locator does not point at a text field.`);
       }
     } finally {
-      for (const objectId of found) {
-        void session.send("Runtime.releaseObject", { objectId }).catch(() => undefined);
-      }
+      release(objectId);
     }
   } finally {
     await handle.dispose().catch(() => undefined);
