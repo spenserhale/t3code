@@ -205,7 +205,10 @@ const makeService = (
         Effect.gen(function* () {
           calls.read.push(`${account}:${login.id}@${login.vaultId ?? ""}`);
           if (!created.some((entry) => entry.login.id === login.id)) {
-            return Object.fromEntries(fields.map((field) => [field, `${field}-${account}`]));
+            // No login here has a one-time code.
+            return Object.fromEntries(
+              fields.flatMap((field) => (field === "totp" ? [] : [[field, `${field}-${account}`]])),
+            );
           }
           Deferred.doneUnsafe(newLogins.reading, Effect.void);
           if (newLogins.readGate !== undefined) yield* Deferred.await(newLogins.readGate);
@@ -1061,6 +1064,28 @@ describe("SecretRelayDevice", () => {
       assert.deepStrictEqual(device.lookedUpBefore, [0, 2, 2]);
     }).pipe(Effect.provide(device.layer));
   });
+
+  it.effect(
+    "a login found without a field asked for is no login; one named goes back as read",
+    () => {
+      const service = makeService({ work: [github] });
+      const device = deviceServer(service, { available: true, answers: ["once", "once"] });
+      return Effect.gen(function* () {
+        const relay = yield* SecretRelayDevice.SecretRelayDevice;
+        const code = request({ fields: ["password", "totp"] });
+        // Another device may hold the one-time code, so this answer must not end its request.
+        assert.deepStrictEqual(yield* relay.resolve({ request: code, requester: linkMini }), {
+          type: "none",
+        });
+        // The login the agent chose is not swapped for another: the fill says what it lacks.
+        const named = { ...code, item: "device:work/h1" };
+        const chosen = reveal(yield* relay.resolve({ request: named, requester: linkMini }));
+        assert.deepStrictEqual(chosen.type === "values" && chosen.values, {
+          password: "password-work",
+        });
+      }).pipe(Effect.provide(device.layer));
+    },
+  );
 
   it.effect("resolves a reference, never filling a login saved for another site", () => {
     const service = makeService({ work: [grafana, github] });

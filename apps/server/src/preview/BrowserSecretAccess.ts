@@ -124,6 +124,11 @@ export interface SecretCatalog<Item extends SecretItem, Values> {
   ) => Effect.Effect<Values, BrowserLogins.BrowserLoginError>;
   /** Why an item found here cannot serve the request, such as a login saved for another site. */
   readonly unusable?: (item: Item) => string | undefined;
+  /**
+   * What values read for an item lack, such as the one-time code asked for. An item the request
+   * did not name is then passed over for the next source; a named one is returned as it was read.
+   */
+  readonly lacks?: (item: SecretItem, values: Values) => string | undefined;
   /** How the user's device is asked; absent for what is never relayed. */
   readonly relay?: {
     /** The request, less the item or reference the order adds. */
@@ -138,13 +143,15 @@ export interface SecretCatalog<Item extends SecretItem, Values> {
   readonly refusal?: (escalation: BrowserSecretEscalation) => string;
 }
 
+interface SecretFound<Item, Values> {
+  readonly status: "found";
+  readonly revision: string;
+  readonly item: Item | SecretRelayItem;
+  readonly values: Values;
+}
+
 export type SecretAccess<Item, Values> =
-  | {
-      readonly status: "found";
-      readonly revision: string;
-      readonly item: Item | SecretRelayItem;
-      readonly values: Values;
-    }
+  | SecretFound<Item, Values>
   | { readonly status: "choose"; readonly candidates: ReadonlyArray<PreviewLoginCandidate> }
   | { readonly status: "none" };
 
@@ -205,7 +212,10 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
   // Every later step runs under these settings; one that changed in between fails.
   const { revision, escalation, providers } = yield* logins.escalation;
   const what = request.reference ?? catalog.what;
-  const refusal = () => refused(catalog.refusal?.(escalation) ?? refusalMessage(what, escalation));
+  // What an item passed over lacked, which says more than any refusal once nobody else answers.
+  let lacking: string | undefined;
+  const refusal = () =>
+    refused(lacking ?? catalog.refusal?.(escalation) ?? refusalMessage(what, escalation));
 
   let readied = false;
   const ready = Effect.suspend(() => {
@@ -217,7 +227,7 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
   const found = (item: Item | SecretRelayItem, values: Values) =>
     logins
       .check(revision)
-      .pipe(Effect.as<SecretAccess<Item, Values>>({ status: "found", revision, item, values }));
+      .pipe(Effect.as<SecretFound<Item, Values>>({ status: "found", revision, item, values }));
 
   const read = Effect.fn("BrowserSecretAccess.read")(function* (item: Item) {
     const unusable = catalog.unusable?.(item);
@@ -233,7 +243,10 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
     const items = yield* catalog.find(reach);
     if (items.length > 1) return { status: "choose", candidates: items.map(summary) };
     const [item] = items;
-    return item === undefined ? undefined : yield* read(item);
+    if (item === undefined) return undefined;
+    const access = yield* read(item);
+    lacking = catalog.lacks?.(item, access.values);
+    return lacking === undefined ? access : undefined;
   });
 
   /** This machine's dialog, unless the user allowed this kind for the thread; Deny stops all. */
@@ -265,12 +278,18 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
     readonly item?: string;
     readonly reference?: string;
   }): Effect.fn.Return<DeviceAnswer, BrowserLogins.BrowserLoginError> {
-    if (catalog.relay === undefined || relay === undefined) return { type: "no_device" };
+    const relayed = catalog.relay;
+    if (relayed === undefined || relay === undefined) return { type: "no_device" };
     yield* ready;
     return yield* relay
       .request(
-        { ...catalog.relay.ask, ...target },
+        { ...relayed.ask, ...target },
         Math.max(0, request.deadline - (yield* Clock.currentTimeMillis)),
+        // A device that answers without checking must not end the request for one that has it.
+        target.item === undefined
+          ? ({ item, values }) =>
+              catalog.lacks?.(item, relayed.values(relayedValues(values))) === undefined
+          : undefined,
       )
       .pipe(
         Effect.catchTags({
@@ -284,7 +303,7 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
       );
   });
 
-  const fromDevice = (answer: Extract<SecretRelayAnswer, { readonly type: "values" }>) =>
+  const fromDevice = (answer: SecretRelay.SecretRelayValues) =>
     found(answer.item, catalog.relay!.values(relayedValues(answer.values)));
 
   // 1. An item named explicitly, from its own provider or device only.
@@ -363,6 +382,7 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
       break;
   }
   // 6.
+  if (lacking !== undefined) return yield* refusal();
   if (none) return { status: "none" };
   return yield* failure === undefined ? refusal() : refused(failure);
 });
