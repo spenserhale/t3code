@@ -10,7 +10,7 @@ import { ChildProcessSpawner } from "effect/process";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect } from "vite-plus/test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, vi } from "vite-plus/test";
 
 import { loginCoversPage } from "./BrowserLogins.ts";
 import {
@@ -89,6 +89,26 @@ const PAGES: Partial<Record<string, string>> = {
     </script>`,
   "/catch": `<input id="caught">
     <script>addEventListener("focus", () => document.getElementById("caught").focus());</script>`,
+  // Answers the look at #first's value with a promise that never settles; the page stays free.
+  "/stall": `<input id="first" autocomplete="given-name"><input id="email" autocomplete="email">
+    <script>
+      const stalled = new WeakSet();
+      let next = false;
+      const value = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      Object.defineProperty(document.getElementById("first"), "value", {
+        get() {
+          next = true;
+          return value.get.call(this);
+        },
+      });
+      Object.defineProperty(Object.prototype, "then", {
+        get() {
+          if (next) stalled.add(this);
+          next = false;
+          return stalled.has(this) ? () => console.log("stalled") : undefined;
+        },
+      });
+    </script>`,
   // Focusing the field stalls the page.
   "/late": `<input id="email" autocomplete="email">
     <script>
@@ -207,6 +227,7 @@ describe("filling a saved identity", () => {
     await page.frameLocator("#ad").locator("#adEmail").waitFor();
   });
   afterEach(async () => {
+    vi.useRealTimers();
     await context.close();
   });
 
@@ -441,6 +462,53 @@ describe("filling a saved identity", () => {
     );
     expect(await page.locator("#first").inputValue()).toBe("");
   });
+
+  it.live("gives a field that never answers 5 seconds, then looks at the rest", () =>
+    Effect.gen(function* () {
+      const { context: identity } = yield* identityServer(ADA);
+      const result = yield* Effect.promise(async () => {
+        await page.goto("https://shop.test/stall");
+        let stalls = 0;
+        let onStall = () => {};
+        page.on("console", (message) => {
+          if (message.text() !== "stalled") return;
+          stalls += 1;
+          onStall();
+        });
+        const stalled = (count: number) =>
+          new Promise<void>((resolve) => {
+            onStall = () => {
+              if (stalls >= count) resolve();
+            };
+            onStall();
+          });
+        const opened = await tab();
+        // Only the fields' time is on this clock: Playwright itself runs on immediates.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        try {
+          const filling = fillIdentity(identity, opened, {}, NO_DEADLINE);
+          // The fields are looked at before anyone is asked, and again for the fill itself.
+          await Promise.race([stalled(1), filling]);
+          await vi.advanceTimersByTimeAsync(5_000);
+          await Promise.race([stalled(2), filling]);
+          await vi.advanceTimersByTimeAsync(5_000);
+          return await filling;
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+      expect(result).toEqual({
+        status: "filled",
+        tabId: "tab-1",
+        identity: { id: "work/me", title: "Me", account: "Work" },
+        filled: ["email"],
+        skipped: [
+          { value: "firstName", reason: "The field did not answer in time. Use preview_act." },
+        ],
+      });
+      expect(yield* Effect.promise(() => valueOf("#email"))).toBe("ada@example.com");
+    }),
+  );
 
   it("leaves a field alone once the page has loaded another document", async () => {
     const opened = await fieldTab();
