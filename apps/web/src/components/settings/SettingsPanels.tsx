@@ -594,6 +594,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ? ["Agent browser access"]
       : []),
     ...(browserLoginProviderIds(settings.browserLogins).length > 0 ||
+    settings.browserLogins.newLogins !== undefined ||
     settings.browserLogins.approval !== DEFAULT_UNIFIED_SETTINGS.browserLogins.approval ||
     (settings.browserLogins.identityReadApproval ?? DEFAULT_BROWSER_IDENTITY_READ_APPROVAL) !==
       DEFAULT_BROWSER_IDENTITY_READ_APPROVAL

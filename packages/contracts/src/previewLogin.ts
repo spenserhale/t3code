@@ -36,6 +36,14 @@ export type BrowserIdentityReadApproval = typeof BrowserIdentityReadApproval.Typ
 export const DEFAULT_BROWSER_IDENTITY_READ_APPROVAL: BrowserIdentityReadApproval = "request";
 
 export const BROWSER_LOGIN_PROVIDERS_MAX = 8;
+export const BROWSER_NEW_LOGIN_VAULT_MAX_LENGTH = 256;
+
+/** Where logins created for sign-ups are saved: a vault, by name or id, of a chosen provider. */
+export const BrowserNewLoginSettings = Schema.Struct({
+  secretProviderId: SecretProviderId,
+  vault: TrimmedNonEmptyString,
+});
+export type BrowserNewLoginSettings = typeof BrowserNewLoginSettings.Type;
 
 export const BrowserLoginSettings = Schema.Struct({
   /** Saved before `secretProviderIds` existed; read only when that is absent. */
@@ -48,14 +56,22 @@ export const BrowserLoginSettings = Schema.Struct({
   ),
   /** Absent means `DEFAULT_BROWSER_IDENTITY_READ_APPROVAL`. */
   identityReadApproval: Schema.optional(BrowserIdentityReadApproval),
+  /** Absent means agents cannot create logins. */
+  newLogins: Schema.optional(BrowserNewLoginSettings),
 });
 export type BrowserLoginSettings = typeof BrowserLoginSettings.Type;
 
-// Like the other settings' limits, the cap applies to writes only, so it can change later.
+// Like the other settings' limits, the caps apply to writes only, so they can change later.
 export const BrowserLoginSettingsWrite = Schema.Struct({
   ...BrowserLoginSettings.fields,
   secretProviderIds: Schema.optional(
     Schema.Array(SecretProviderId).check(Schema.isMaxLength(BROWSER_LOGIN_PROVIDERS_MAX)),
+  ),
+  newLogins: Schema.optional(
+    Schema.Struct({
+      ...BrowserNewLoginSettings.fields,
+      vault: TrimmedNonEmptyString.check(Schema.isMaxLength(BROWSER_NEW_LOGIN_VAULT_MAX_LENGTH)),
+    }),
   ),
 });
 
@@ -240,3 +256,52 @@ export const PreviewAutomationReadIdentityResult = Schema.Union([
   Schema.Struct({ status: Schema.Literal("no_identity") }),
 ]);
 export type PreviewAutomationReadIdentityResult = typeof PreviewAutomationReadIdentityResult.Type;
+
+/**
+ * Signing up with a new login: the password manager generates the password and saves the login
+ * before the form is sent, then the server fills the password fields, so the agent never sees it.
+ */
+export const PreviewNewPasswordField = Schema.Literals(["password", "confirm"]);
+export type PreviewNewPasswordField = typeof PreviewNewPasswordField.Type;
+
+export const PreviewAutomationFillNewLoginInput = Schema.Struct({
+  tabId: Schema.optional(PreviewTabId),
+  username: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))).annotate({
+    description: "Default: the site's host name.",
+  }),
+  locators: Schema.optional(
+    Schema.Struct({ password: LoginLocator, confirm: Schema.optional(LoginLocator) }),
+  ).annotate({
+    description:
+      "`aria-ref=<ref>` per field from `preview_snapshot`, when the fields are not found on their own.",
+  }),
+  recipe: Schema.optional(
+    Schema.Struct({
+      length: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 8, maximum: 64 }))),
+      digits: Schema.optional(Schema.Boolean),
+      symbols: Schema.optional(Schema.Boolean),
+    }),
+  ).annotate({ description: "Default 24 characters with digits and symbols." }),
+  login: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))).annotate({
+    description: "Login id from an earlier result, to give it a new password instead.",
+  }),
+  timeoutMs: ApprovalTimeoutMs,
+});
+export type PreviewAutomationFillNewLoginInput = typeof PreviewAutomationFillNewLoginInput.Type;
+
+export const PreviewAutomationFillNewLoginRequest = Schema.Struct({
+  ...PreviewAutomationFillNewLoginInput.fields,
+  requester: Schema.optional(PreviewLoginRequester),
+});
+export type PreviewAutomationFillNewLoginRequest = typeof PreviewAutomationFillNewLoginRequest.Type;
+
+export const PreviewAutomationFillNewLoginResult = Schema.Struct({
+  status: Schema.Literal("filled"),
+  tabId: PreviewTabId,
+  login: PreviewLoginCandidate,
+  filled: Schema.Array(PreviewNewPasswordField),
+  /** False when an earlier login was given a new password. */
+  created: Schema.Boolean,
+});
+export type PreviewAutomationFillNewLoginResult = typeof PreviewAutomationFillNewLoginResult.Type;

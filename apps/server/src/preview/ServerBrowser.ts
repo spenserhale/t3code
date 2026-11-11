@@ -38,6 +38,7 @@ import {
   type PreviewAutomationFillIdentityRequest,
   type PreviewAutomationFillLoginRequest,
   type PreviewAutomationFillLoginResult,
+  type PreviewAutomationFillNewLoginRequest,
   type PreviewAutomationReadIdentityRequest,
   type PreviewLoginField,
   PreviewClearProfileError,
@@ -90,6 +91,7 @@ import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as PreviewManager from "./Manager.ts";
 import * as ServerBrowserIdentity from "./ServerBrowserIdentity.ts";
 import * as ServerBrowserLogin from "./ServerBrowserLogin.ts";
+import * as ServerBrowserNewLogin from "./ServerBrowserNewLogin.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
@@ -2281,6 +2283,34 @@ const make = Effect.gen(function* () {
     return identities;
   };
 
+  /**
+   * Marks the tab's document as holding a filled secret, before the first write: even a fill
+   * that fails partway blocks script there, and a desktop drawing the tab stops capturing it.
+   */
+  const markFilled = async (tab: ServerTab, document: string) => {
+    documentMarks.markFilled(tabKey(tab.threadId, tab.tabId), document, tab.page.url());
+    if (tab.desktop) {
+      const desktopKey = { threadId: tab.threadId, tabId: tab.tabId };
+      await runPromise(desktopChannel.loginFilled(desktopKey, document, tab.page.url()));
+    }
+  };
+
+  const newLoginContext = (tab: ServerTab): ServerBrowserNewLogin.NewLoginContext => {
+    if (Option.isNone(browserLogins)) {
+      throw ServerBrowserLogin.loginError("This server cannot fill browser logins.");
+    }
+    return {
+      logins: browserLogins.value,
+      desktopChannel,
+      step: loginStep,
+      runPromise,
+      wasScripted: (document) =>
+        documentMarks.wasScripted(tabKey(tab.threadId, tab.tabId), document),
+      markFilled: (document) => markFilled(tab, document),
+      rememberSecrets: filledSecrets.remember,
+    };
+  };
+
   const fillLogin = async (
     tab: ServerTab,
     input: PreviewAutomationFillLoginRequest,
@@ -2395,13 +2425,7 @@ const make = Effect.gen(function* () {
       throw ServerBrowserLogin.loginError("The page left the login's site before it was filled.");
     }
     await loginStep(logins.check(revision));
-    // Marked before the first write, so even a fill that fails partway blocks script here.
-    documentMarks.markFilled(tabKey(tab.threadId, tab.tabId), document, tab.page.url());
-    // Before the write, so the desktop refuses to capture the tab from then on.
-    if (tab.desktop) {
-      const desktopKey = { threadId: tab.threadId, tabId: tab.tabId };
-      await runPromise(desktopChannel.loginFilled(desktopKey, document, tab.page.url()));
-    }
+    await markFilled(tab, document);
     filledSecrets.remember(
       fields.flatMap((field) => (field === "username" ? [] : [values[field] ?? ""])),
     );
@@ -2546,6 +2570,15 @@ const make = Effect.gen(function* () {
             deadlineMs,
           ),
         );
+      case "fillNewLogin":
+        return recordAction(tab, "fillNewLogin", () =>
+          ServerBrowserNewLogin.fillNewLogin(
+            newLoginContext(tab),
+            tab,
+            input as PreviewAutomationFillNewLoginRequest,
+            deadlineMs,
+          ),
+        );
       case "waitFor":
         return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
       case "recordingStart": {
@@ -2586,7 +2619,12 @@ const make = Effect.gen(function* () {
     }
     // The fills' own results hold only titles and field names, and an identity read holds what
     // the user allowed the agent to see.
-    if (operation === "fillLogin" || operation === "fillIdentity" || operation === "readIdentity") {
+    if (
+      operation === "fillLogin" ||
+      operation === "fillIdentity" ||
+      operation === "readIdentity" ||
+      operation === "fillNewLogin"
+    ) {
       return outcome;
     }
     // Screenshot bytes are not text, and a page holding a fill gets none taken.

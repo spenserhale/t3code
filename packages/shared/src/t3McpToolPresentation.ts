@@ -274,6 +274,11 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "browser",
     "browser",
   ),
+  preview_fill_new_login: tool(
+    ["Create", "Creating", "Created", "a new login in the preview browser"],
+    "browser",
+    "browser",
+  ),
   preview_fill_identity: tool(
     ["Fill", "Filling", "Filled", "a saved identity in the preview browser"],
     "browser",

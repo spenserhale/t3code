@@ -28,6 +28,24 @@ export interface SecretProviderLogin {
 
 export type SecretProviderLoginValues = Partial<Record<SecretProviderLoginField, string>>;
 
+/** What the provider's generator makes: letters always, digits and symbols when asked. */
+export interface SecretProviderPasswordRecipe {
+  readonly length: number;
+  readonly digits: boolean;
+  readonly symbols: boolean;
+}
+
+/** A login to save for a sign-up. The provider generates its password. */
+export interface SecretProviderNewLogin {
+  /** A vault name or id. */
+  readonly vault: string;
+  readonly title: string;
+  readonly url: string;
+  readonly username: string;
+  readonly recipe: SecretProviderPasswordRecipe;
+  readonly notes: string;
+}
+
 /** Optional: a provider that can sign the built-in browser in to websites. */
 export interface SecretProviderLogins<Config = unknown> {
   /** `undefined` when the provider could not be read. */
@@ -43,6 +61,32 @@ export interface SecretProviderLogins<Config = unknown> {
     login: SecretProviderLogin,
     fields: ReadonlyArray<SecretProviderLoginField>,
   ) => Effect.Effect<SecretProviderLoginValues | undefined, never, SecretProviderDriverServices>;
+  /**
+   * Optional: saves a new login with a password the provider generates, so the password is never
+   * on a command line. `undefined` when it was not saved. The password comes back only when the
+   * save showed it; otherwise the caller reads it with `read`, keeping the saved login if that fails.
+   */
+  readonly create?: (
+    config: Config,
+    login: SecretProviderNewLogin,
+  ) => Effect.Effect<
+    { readonly login: SecretProviderLogin; readonly password: string | undefined } | undefined,
+    never,
+    SecretProviderDriverServices
+  >;
+  /**
+   * Optional: replaces a login's password with a newly generated one. `undefined` when it was not
+   * replaced; the password comes back only when the change showed it, as with `create`.
+   */
+  readonly regeneratePassword?: (
+    config: Config,
+    login: SecretProviderLogin,
+    recipe: SecretProviderPasswordRecipe,
+  ) => Effect.Effect<
+    { readonly password: string | undefined } | undefined,
+    never,
+    SecretProviderDriverServices
+  >;
 }
 
 export type SecretProviderIdentityField =
@@ -120,6 +164,8 @@ export const defineSecretProviderDriver = <Config>(driver: {
 }): SecretProviderDriver => {
   const isConfig = Schema.is(driver.definition.configSchema);
   const logins = driver.logins;
+  const create = logins?.create;
+  const regeneratePassword = logins?.regeneratePassword;
   const identities = driver.identities;
   return {
     kind: driver.kind,
@@ -136,6 +182,20 @@ export const defineSecretProviderDriver = <Config>(driver: {
               isConfig(config) ? logins.list(config) : Effect.sync(() => undefined),
             read: (config, login, fields) =>
               isConfig(config) ? logins.read(config, login, fields) : Effect.sync(() => undefined),
+            ...(create === undefined
+              ? {}
+              : {
+                  create: (config, login) =>
+                    isConfig(config) ? create(config, login) : Effect.sync(() => undefined),
+                }),
+            ...(regeneratePassword === undefined
+              ? {}
+              : {
+                  regeneratePassword: (config, login, recipe) =>
+                    isConfig(config)
+                      ? regeneratePassword(config, login, recipe)
+                      : Effect.sync(() => undefined),
+                }),
           },
         }),
     ...(identities === undefined

@@ -13,6 +13,8 @@ import {
   type BrowserLoginSettings as BrowserLoginSettingsValue,
   BROWSER_LOGIN_PROVIDERS_MAX,
   browserLoginProviderIds,
+  BROWSER_NEW_LOGIN_VAULT_MAX_LENGTH,
+  type BrowserNewLoginSettings,
   type BrowserProfile,
   BrowserSearchEngine,
   BROWSER_CUSTOM_SEARCH_URL_MAX_LENGTH,
@@ -1609,16 +1611,22 @@ export function browserLoginsWrite(
     readonly secretProviderIds?: ReadonlyArray<SecretProviderId>;
     readonly approval?: BrowserLoginApproval;
     readonly identityReadApproval?: BrowserIdentityReadApproval;
+    /** `null` turns new logins off. */
+    readonly newLogins?: BrowserNewLoginSettings | null;
   },
 ) {
   const secretProviderIds = change.secretProviderIds ?? browserLoginProviderIds(current);
   const identityReadApproval = change.identityReadApproval ?? current.identityReadApproval;
+  const newLogins = change.newLogins === undefined ? current.newLogins : change.newLogins;
   return {
     ...(secretProviderIds.length === 0 ? {} : { secretProviderIds: [...secretProviderIds] }),
     approval: change.approval ?? current.approval,
     ...(identityReadApproval === undefined ? {} : { identityReadApproval }),
+    ...(newLogins ? { newLogins } : {}),
   };
 }
+
+const DEFAULT_NEW_LOGIN_VAULT = "T3 Code Sign-ups";
 
 function BrowserLoginSettings() {
   const settings = useScopedSettings();
@@ -1641,6 +1649,7 @@ function BrowserLoginSettings() {
       .map((id) => ({ id, label: `${id} (unavailable)` })),
   ];
   const off = chosen.length === 0;
+  const newLogins = settings.browserLogins.newLogins;
   const save = (change: Parameters<typeof browserLoginsWrite>[1]) =>
     updateSettings({ browserLogins: browserLoginsWrite(settings.browserLogins, change) });
 
@@ -1796,6 +1805,87 @@ function BrowserLoginSettings() {
               ))}
             </SelectPopup>
           </Select>
+        }
+      />
+      <SettingsRow
+        serverScoped
+        settingKeys={["browserLogins"]}
+        {...searchableSetting("browser-new-logins")}
+        description="Agents signing up for new accounts save the generated password here before sending the form. A service account needs write access to this vault, and its permissions cannot be changed after it is created."
+        status={
+          newLogins !== undefined && !chosen.includes(newLogins.secretProviderId)
+            ? "This password manager is not chosen for logins above, so agents cannot create logins."
+            : undefined
+        }
+        resetAction={
+          newLogins !== undefined ? (
+            <SettingResetButton
+              label="where new logins are saved"
+              onClick={() => save({ newLogins: null })}
+            />
+          ) : null
+        }
+        control={
+          <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+            <Select
+              value={newLogins?.secretProviderId ?? ""}
+              onValueChange={(value) => {
+                if (value === null) return;
+                save({
+                  newLogins:
+                    value === ""
+                      ? null
+                      : {
+                          secretProviderId: value as SecretProviderId,
+                          vault: newLogins?.vault ?? DEFAULT_NEW_LOGIN_VAULT,
+                        },
+                });
+              }}
+              disabled={off}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-full min-w-0 sm:w-44"
+                aria-label="Password manager for new logins"
+              >
+                <SelectValue>
+                  {newLogins === undefined
+                    ? "Off"
+                    : (options.find((option) => option.id === newLogins.secretProviderId)?.label ??
+                      newLogins.secretProviderId)}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem value="">Off</SelectItem>
+                {options
+                  .filter((option) => chosen.includes(option.id))
+                  .map((option) => (
+                    <SelectItem key={option.id} value={option.id}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+              </SelectPopup>
+            </Select>
+            <DraftInput
+              nativeInput
+              size="sm"
+              className="w-full sm:w-44"
+              aria-label="Vault for new logins"
+              placeholder="Vault"
+              autoCapitalize="none"
+              spellCheck={false}
+              maxLength={BROWSER_NEW_LOGIN_VAULT_MAX_LENGTH}
+              disabled={off || newLogins === undefined}
+              value={newLogins?.vault ?? ""}
+              onCommit={(next) => {
+                const vault = next.trim();
+                // A vault is required; clearing the field keeps the one saved.
+                if (newLogins !== undefined && vault.length > 0) {
+                  save({ newLogins: { ...newLogins, vault } });
+                }
+              }}
+            />
+          </div>
         }
       />
     </>

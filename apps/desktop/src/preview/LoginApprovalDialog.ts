@@ -48,6 +48,13 @@ const SCOPE_NOTE: Record<ApprovalKind, Record<LoginApprovalPrompt["scope"], stri
     thread: "Allowing lets this thread see saved identities until the app restarts.",
     application: "Allowing lets every thread see saved identities until the app restarts.",
   },
+  newLogin: {
+    request: "You will be asked again for every new login.",
+    thread:
+      "Allowing lets this thread create logins and fill their passwords until the app restarts.",
+    application:
+      "Allowing lets every thread create logins and fill their passwords until the app restarts.",
+  },
 };
 
 const wording = (prompt: LoginApprovalPrompt, who: string) => {
@@ -78,6 +85,16 @@ const wording = (prompt: LoginApprovalPrompt, who: string) => {
         detail: [
           `${who} wants to see identity "${prompt.loginTitle}"${vault} from ${prompt.providerLabel}.`,
           "The agent will see your name, birth date, email, phone and address, and so will its model provider.",
+        ],
+      };
+    case "newLogin":
+      return {
+        message: `Create a new login for ${site} in ${prompt.providerLabel}${
+          prompt.vault ? ` / ${prompt.vault}` : ""
+        } and fill its generated password?`,
+        detail: [
+          `${who} is signing up and wants "${prompt.loginTitle}" saved with a generated password before the form is sent.`,
+          "The agent will not see the password.",
         ],
       };
   }

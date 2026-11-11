@@ -7,6 +7,8 @@ import {
   type SecretProviderLogin,
   type SecretProviderLoginField,
   type SecretProviderLoginValues,
+  type SecretProviderNewLogin,
+  type SecretProviderPasswordRecipe,
 } from "@t3tools/secret-provider-core/server/driver";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -477,6 +479,91 @@ const readLogin = Effect.fn("OnePasswordDriver.readLogin")(function* (
   return values;
 });
 
+// What `op item create` and `op item edit` print: the saved item.
+const SavedItem = Schema.Struct({
+  id: Schema.String,
+  title: Schema.optional(Schema.String),
+  vault: Schema.optional(
+    Schema.Struct({ id: Schema.optional(Schema.String), name: Schema.optional(Schema.String) }),
+  ),
+  urls: Schema.optional(Schema.Array(Schema.Struct({ href: Schema.String }))),
+});
+const decodeSavedItem = Schema.decodeUnknownOption(Schema.fromJsonString(SavedItem));
+
+const recipeArgument = ({ length, digits, symbols }: SecretProviderPasswordRecipe) =>
+  ["letters", ...(digits ? ["digits"] : []), ...(symbols ? ["symbols"] : []), String(length)].join(
+    ",",
+  );
+
+/**
+ * The generated password, when a saved item's output shows one. Whether `op` prints it or a
+ * concealment hint is unverified, so only a value the recipe could have made is taken.
+ */
+const printedPassword = (printed: string, recipe: SecretProviderPasswordRecipe) => {
+  const shown = parseLoginValues(printed, ["password"])?.password;
+  return shown !== undefined && shown.length === recipe.length && !/\s/.test(shown)
+    ? shown
+    : undefined;
+};
+
+// Every value goes in `--flag=value` or a `field=value` assignment, so none can read as an option.
+const saveLogin = Effect.fn("OnePasswordDriver.saveLogin")(function* (
+  config: OnePasswordSecretProviderConfig,
+  login: SecretProviderNewLogin,
+) {
+  const result = yield* runOnePassword(config, "item", [
+    "create",
+    "--category=login",
+    `--vault=${login.vault}`,
+    `--title=${login.title}`,
+    `--url=${login.url}`,
+    `--generate-password=${recipeArgument(login.recipe)}`,
+    "--tags=T3 Code",
+    "--format=json",
+    `username=${login.username}`,
+    `notesPlain=${login.notes}`,
+  ]);
+  const item =
+    result.code === 0 ? Option.getOrUndefined(decodeSavedItem(result.stdout)) : undefined;
+  if (item === undefined) {
+    yield* Effect.logWarning("Could not create 1Password login", { exitCode: result.code });
+    return undefined;
+  }
+  const vault = item.vault?.name;
+  const vaultId = item.vault?.id;
+  const urls = (item.urls ?? []).map((url) => url.href).filter((href) => href.length > 0);
+  const saved: SecretProviderLogin = {
+    id: item.id,
+    title: item.title ?? login.title,
+    ...(vault ? { vault } : {}),
+    ...(vaultId === undefined ? {} : { vaultId }),
+    urls: urls.length > 0 ? urls : [login.url],
+  };
+  return { login: saved, printed: result.stdout };
+});
+
+const editPassword = Effect.fn("OnePasswordDriver.editPassword")(function* (
+  config: OnePasswordSecretProviderConfig,
+  login: SecretProviderLogin,
+  recipe: SecretProviderPasswordRecipe,
+) {
+  if (login.id.startsWith("-") || login.vaultId?.startsWith("-")) return undefined;
+  const result = yield* runOnePassword(config, "item", [
+    "edit",
+    login.id,
+    ...(login.vaultId === undefined ? [] : [`--vault=${login.vaultId}`]),
+    `--generate-password=${recipeArgument(recipe)}`,
+    "--format=json",
+  ]);
+  if (result.code !== 0) {
+    yield* Effect.logWarning("Could not generate a new 1Password password", {
+      exitCode: result.code,
+    });
+    return undefined;
+  }
+  return result.stdout;
+});
+
 const readIdentity = Effect.fn("OnePasswordDriver.readIdentity")(function* (
   config: OnePasswordSecretProviderConfig,
   identity: SecretProviderIdentity,
@@ -512,6 +599,17 @@ export const driver = defineSecretProviderDriver({
         Effect.map((listed) => (listed === undefined ? undefined : toLogins(listed))),
       ),
     read: (config, login, fields) => boundedItem("login", readLogin(config, login, fields)),
+    create: Effect.fn("OnePasswordDriver.create")(function* (config, login) {
+      const saved = yield* boundedItem("login", saveLogin(config, login));
+      if (saved === undefined) return undefined;
+      return { login: saved.login, password: printedPassword(saved.printed, login.recipe) };
+    }),
+    regeneratePassword: Effect.fn("OnePasswordDriver.regeneratePassword")(
+      function* (config, login, recipe) {
+        const printed = yield* boundedItem("login", editPassword(config, login, recipe));
+        return printed === undefined ? undefined : { password: printedPassword(printed, recipe) };
+      },
+    ),
   },
   identities: {
     list: (config) =>

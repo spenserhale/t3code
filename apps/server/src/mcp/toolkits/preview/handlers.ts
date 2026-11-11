@@ -16,6 +16,8 @@ import {
   type PreviewAutomationFillIdentityResult,
   type PreviewAutomationFillLoginInput,
   type PreviewAutomationFillLoginResult,
+  type PreviewAutomationFillNewLoginInput,
+  type PreviewAutomationFillNewLoginResult,
   type PreviewAutomationReadIdentityInput,
   type PreviewAutomationReadIdentityResult,
   type PreviewAutomationOperation,
@@ -143,6 +145,20 @@ const fillLogin = Effect.fn("PreviewToolkit.fillLogin")(function* (
   const { tabId, ...loginInput } = input;
   const { result, toolIcon } = yield* invoke<PreviewAutomationFillLoginResult>(
     "fillLogin",
+    { ...loginInput, requester: yield* requesterOf(scope) },
+    input.timeoutMs ?? LOGIN_TIMEOUT_MS,
+    tabId,
+  );
+  return { ...result, ...(toolIcon ? { toolIcon } : {}) };
+});
+
+const fillNewLogin = Effect.fn("PreviewToolkit.fillNewLogin")(function* (
+  input: PreviewAutomationFillNewLoginInput,
+) {
+  const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+  const { tabId, ...loginInput } = input;
+  const { result, toolIcon } = yield* invoke<PreviewAutomationFillNewLoginResult>(
+    "fillNewLogin",
     { ...loginInput, requester: yield* requesterOf(scope) },
     input.timeoutMs ?? LOGIN_TIMEOUT_MS,
     tabId,
@@ -313,6 +329,7 @@ const handlers = {
     ),
   ),
   preview_fill_login: McpToolAccess.actsAsCaller(fillLogin),
+  preview_fill_new_login: McpToolAccess.actsAsCaller(fillNewLogin),
   preview_fill_identity: McpToolAccess.actsAsCaller(fillIdentity),
   preview_read_identity: McpToolAccess.actsAsCaller(readIdentity),
   preview_wait_for: McpToolAccess.readsAsCaller((input) =>
