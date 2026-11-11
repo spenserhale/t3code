@@ -1,4 +1,5 @@
 import {
+  AuthAccessWriteScope,
   AuthEnvironmentMaintainScope,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
@@ -44,6 +45,13 @@ describe("RPC authorization scopes", () => {
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }
+  });
+
+  it("lets operators answer relayed secret requests, and only the owner read secrets for another machine", () => {
+    for (const method of [WS_METHODS.subscribeSecretRelay, WS_METHODS.secretRelayAnswer]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+    expect(requiredScopeForRpcMethod(WS_METHODS.secretRelayResolve)).toBe(AuthAccessWriteScope);
   });
 
   it("keeps triage, which seeds an agent that reads logs and the database, behind operate scope", () => {

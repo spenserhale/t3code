@@ -349,4 +349,42 @@ describe("filling a saved login", () => {
     await page.reload();
     expect(await documentId(cdp)).not.toBe(first);
   });
+
+  it("never writes once the call is cancelled, however far the fill had come", async () => {
+    // Cancels before each call the fill makes in turn, until one fill reaches its write first.
+    let uncancelled = false;
+    for (let cancelAt = 0; cancelAt < 40 && !uncancelled; cancelAt++) {
+      await page.goto("https://good.test/switch");
+      const cancelled = new AbortController();
+      let calls = 0;
+      let sent = false;
+      const cancelling = {
+        send: async (method: string, params?: object) => {
+          if (method === "Runtime.callFunctionOn") sent = true;
+          else if (!sent && calls++ === cancelAt) cancelled.abort();
+          return cdp.send(method as "Page.getFrameTree", params);
+        },
+      } as unknown as CDPSession;
+      const outcome = await fillCovered({
+        page,
+        cdp: cancelling,
+        field: "totp",
+        target: page.locator("#otp"),
+        value: "123456",
+        frameCovered,
+        document: await documentId(cdp),
+        deadline: NO_DEADLINE,
+        signal: cancelled.signal,
+      }).then(
+        () => "filled",
+        (cause: Error) => cause.message,
+      );
+      uncancelled = !cancelled.signal.aborted;
+      // A cancelled fill never sends its write to the page.
+      expect(sent).toBe(uncancelled);
+      expect(outcome).toBe(uncancelled ? "filled" : "The call ended before the login was filled.");
+      expect(await page.locator("#otp").inputValue()).toBe(uncancelled ? "123456" : "");
+    }
+    expect(uncancelled).toBe(true);
+  });
 });

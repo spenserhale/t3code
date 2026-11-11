@@ -109,6 +109,19 @@ const PAGES: Partial<Record<string, string>> = {
         },
       });
     </script>`,
+  // Says whose value is read, as the fill reads it to learn what a field holds.
+  "/looked": `<input id="first" autocomplete="given-name"><input id="email" autocomplete="email">
+    <script>
+      const value = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      for (const field of document.querySelectorAll("input")) {
+        Object.defineProperty(field, "value", {
+          get() {
+            console.log("looked at " + this.id);
+            return value.get.call(this);
+          },
+        });
+      }
+    </script>`,
   // Focusing the field stalls the page.
   "/late": `<input id="email" autocomplete="email">
     <script>
@@ -171,17 +184,25 @@ const fromOnePassword = (fields: ReadonlyArray<object>) =>
       Effect.provide(onePasswordItem(fields)),
     );
 
-/** A server with one identity whose fills need no approval. */
+/** A server whose service account holds one identity, so its fills need no approval. */
 const identityServer = Effect.fn("identityServer")(function* (
   values: SecretProviderIdentityValues | Effect.Effect<SecretProviderIdentityValues>,
+  /** Aborted when the call is cancelled. */
+  signal?: AbortSignal,
 ) {
   const reads: Array<string> = [];
   const logins: IdentityContext["logins"] = {
-    identityCandidates: () =>
+    escalation: Effect.succeed({
+      revision: "0",
+      escalation: "refuse",
+      providers: [{ id: "work", account: "Work", unattended: true }],
+    }),
+    identityCandidates: (reach) =>
       Effect.succeed({
         revision: "0",
-        identities: [{ id: "work/me", title: "Me", account: "Work" }],
+        identities: reach === "unattended" ? [{ id: "work/me", title: "Me", account: "Work" }] : [],
       }),
+    lookupIdentity: () => Effect.succeed({ revision: "0", identity: undefined }),
     readIdentity: (_revision, identity) =>
       Effect.suspend(() => {
         reads.push(identity.id);
@@ -191,10 +212,12 @@ const identityServer = Effect.fn("identityServer")(function* (
     recordApproval: () => Effect.void,
     check: () => Effect.void,
   };
-  const context = yield* makeIdentityContext(logins, {
-    available: false,
-    approveLogin: () => Effect.succeed(false),
-  });
+  const context = yield* makeIdentityContext(
+    logins,
+    { available: false, approveLogin: () => Effect.succeed(false) },
+    undefined,
+    signal,
+  );
   return { context, reads };
 });
 
@@ -526,6 +549,79 @@ describe("filling a saved identity", () => {
       "The page loaded another document before the field was filled. Take a fresh snapshot.",
     );
     expect(await page.locator("#first").inputValue()).toBe("");
+  });
+
+  it.live.each([
+    [
+      "found again to be written",
+      // Found once to check its frame before the identity is read, then again for the write.
+      (cancel: () => void) => {
+        const field = page.locator("#email");
+        const find = field.elementHandle.bind(field);
+        let found = 0;
+        field.elementHandle = (options) => {
+          const finding = find(options);
+          if (++found === 2) cancel();
+          return finding;
+        };
+        page.locator = () => field;
+      },
+    ],
+    [
+      "looked at",
+      (cancel: () => void) => {
+        page.on("console", (message) => {
+          if (message.text() === "looked at email") cancel();
+        });
+      },
+    ],
+  ] as const)(
+    "writes nothing into a field once the call is cancelled while the field is %s",
+    ([, cancelWhen]) => {
+      const cancelled = new AbortController();
+      return Effect.gen(function* () {
+        const { context: identity } = yield* identityServer(ADA, cancelled.signal);
+        const outcome = yield* Effect.promise(async () => {
+          await page.goto("https://shop.test/looked");
+          const opened = await tab();
+          cancelWhen(() => cancelled.abort());
+          return fillIdentity(
+            identity,
+            opened,
+            { fields: [{ locator: "#email", value: "email" }] },
+            NO_DEADLINE,
+          ).then(
+            () => "filled",
+            (cause: Error) => cause.message,
+          );
+        });
+        expect(outcome).toBe("The call ended before the identity was filled.");
+        expect(cancelled.signal.aborted).toBe(true);
+        expect(yield* Effect.promise(() => valueOf("#email"))).toBe("");
+      });
+    },
+  );
+
+  it.live("stops looking for fields once the call is cancelled", () => {
+    const cancelled = new AbortController();
+    const looked: Array<string> = [];
+    return Effect.gen(function* () {
+      const { context: identity } = yield* identityServer(ADA, cancelled.signal);
+      const outcome = yield* Effect.promise(async () => {
+        await page.goto("https://shop.test/looked");
+        page.on("console", (message) => {
+          looked.push(message.text());
+          // Every field is looked at before the identity is read; the next look is the fill's own.
+          if (looked.length === 3) cancelled.abort();
+        });
+        return fillIdentity(identity, await tab(), {}, NO_DEADLINE).then(
+          () => "filled",
+          (cause: Error) => cause.message,
+        );
+      });
+      expect(outcome).toBe("The call ended before the identity was filled.");
+      expect(looked).toEqual(["looked at first", "looked at email", "looked at first"]);
+    });
   });
 
   it("refuses a frame that moved to another site after it was checked", async () => {

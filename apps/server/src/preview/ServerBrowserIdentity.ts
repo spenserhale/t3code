@@ -1,19 +1,21 @@
 // @effect-diagnostics globalDate:off - Playwright steps run outside the Effect runtime, on the page's wall clock.
-import type {
-  PreviewAutomationFillIdentityRequest,
-  PreviewAutomationFillIdentityResult,
-  PreviewAutomationReadIdentityRequest,
-  PreviewAutomationReadIdentityResult,
+import {
+  type PreviewAutomationFillIdentityRequest,
+  type PreviewAutomationFillIdentityResult,
+  type PreviewAutomationReadIdentityRequest,
+  type PreviewAutomationReadIdentityResult,
   PreviewIdentityValue,
-  PreviewIdentityValues,
-  PreviewLoginRequester,
+  type PreviewIdentityValues,
+  type PreviewLoginRequester,
 } from "@t3tools/contracts";
 import type { SecretProviderIdentityValues } from "@t3tools/secret-provider-core/server/driver";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import type { CDPSession, ElementHandle, Locator, Page } from "playwright-core";
 
+import type * as SecretRelay from "../secrets/SecretRelay.ts";
 import * as BrowserLogins from "./BrowserLogins.ts";
-import type * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
+import * as BrowserSecretAccess from "./BrowserSecretAccess.ts";
 import { before, callOnElement, documentId, LATE, loginError } from "./ServerBrowserLogin.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
@@ -315,16 +317,19 @@ const isFillable = async (handle: ElementHandle) =>
 /**
  * Visible, editable, empty fields whose `autocomplete` names an identity value, in frames on the
  * page's own site. Fields in any other frame, such as an ad or a chat widget, are never used. A
- * frame or field gets `ELEMENT_TIMEOUT_MS` to answer, so one that never does is passed over.
+ * frame or field gets `ELEMENT_TIMEOUT_MS` to answer, so one that never does is passed over. No
+ * further field is looked at once the deadline passes or `signal` aborts.
  */
 const findAutocompleteFields = async (
   page: Page,
   frameAllowed: (frameUrl: string) => boolean,
   /** In `Date.now()` time. */
   deadline: number,
+  signal: AbortSignal | undefined,
 ): Promise<AutocompleteFields> => {
   const found: Array<FoundField> = [];
   const stalled: Array<PreviewIdentityValue> = [];
+  const over = () => Date.now() >= deadline || signal?.aborted === true;
   const budget = () => Math.min(deadline, Date.now() + ELEMENT_TIMEOUT_MS);
   const ended = (unseen: Iterable<ElementHandle> = []) => {
     release([...found.map(({ handle }) => handle), ...unseen]);
@@ -332,7 +337,7 @@ const findAutocompleteFields = async (
   };
   for (const frame of page.frames()) {
     if (!frameAllowed(frame.url())) continue;
-    if (Date.now() >= deadline) throw ended();
+    if (over()) throw ended();
     const listing = frame
       .locator("input, select, textarea")
       .elementHandles()
@@ -343,7 +348,7 @@ const findAutocompleteFields = async (
       continue;
     }
     for (const [index, handle] of handles.entries()) {
-      if (Date.now() >= deadline) throw ended(handles.slice(index));
+      if (over()) throw ended(handles.slice(index));
       const until = budget();
       const attribute = await before(
         handle.getAttribute("autocomplete").catch(() => null),
@@ -359,7 +364,7 @@ const findAutocompleteFields = async (
       if (value !== undefined && fillable === LATE) stalled.push(value);
     }
   }
-  if (Date.now() >= deadline) throw ended();
+  if (over()) throw ended();
   return { found, stalled };
 };
 
@@ -437,15 +442,21 @@ interface FieldWrite {
   readonly document: string;
   /** In `Date.now()` time. */
   readonly deadline: number;
+  /** Aborted once nobody waits for the fill. */
+  readonly signal?: AbortSignal | undefined;
 }
 
 const writeIdentityField = async (input: FieldWrite): Promise<string | undefined> => {
   const { handle, value } = input;
+  // The caller may give up while the field is found, looked at or written; each ends the fill.
+  const cancelled = () => input.signal?.aborted === true;
+  if (cancelled()) throw callEnded();
   const frame = await handle.ownerFrame();
   if (frame === null || !input.frameAllowed(frame.url())) throw loginError(LEFT_SITE);
   const stored = input.values[value];
   if (stored === undefined) return missing(value, input.values);
   const write = await chooseWrite(handle, value, stored).catch(() => REFUSED);
+  if (cancelled()) throw callEnded();
   if (typeof write === "string") return write;
   const call = await callOnElement({
     page: input.page,
@@ -454,8 +465,10 @@ const writeIdentityField = async (input: FieldWrite): Promise<string | undefined
     frameAllowed: input.frameAllowed,
     document: input.document,
     deadline: input.deadline,
+    signal: input.signal,
     ...write,
   });
+  if (cancelled()) throw callEnded();
   switch (call.status) {
     case "expired":
       return NO_ANSWER;
@@ -480,44 +493,41 @@ const writeIdentityField = async (input: FieldWrite): Promise<string | undefined
 /**
  * Puts one value into the handle's element alone, in a frame on the page's site and the document
  * the fill is for, and never after the deadline, which also bounds looking at the field. Returns
- * why it was skipped, or undefined once filled.
+ * why it was skipped, or undefined once filled; a fill whose caller gave up fails instead.
  */
 export const fillIdentityField = async (input: FieldWrite): Promise<string | undefined> => {
   const written = await before(writeIdentityField(input), input.deadline);
   return written === LATE ? NO_ANSWER : written;
 };
 
-export interface IdentityContext {
+export interface IdentityContext extends BrowserSecretAccess.SecretAccessContext {
   readonly logins: Pick<
     BrowserLogins.BrowserLogins["Service"],
-    "identityCandidates" | "readIdentity" | "needsApproval" | "recordApproval" | "check"
+    | "escalation"
+    | "identityCandidates"
+    | "lookupIdentity"
+    | "readIdentity"
+    | "needsApproval"
+    | "recordApproval"
+    | "check"
   >;
-  readonly desktopChannel: Pick<
-    DesktopBrowserChannel.DesktopBrowserChannel["Service"],
-    "available" | "approveLogin"
-  >;
-  /** Runs a step of the login service; its failure becomes an operation error. */
-  readonly step: <A>(effect: Effect.Effect<A, BrowserLogins.BrowserLoginError>) => Promise<A>;
-  readonly runPromise: <A>(effect: Effect.Effect<A>) => Promise<A>;
 }
 
 /** The services the flows use, with runners for their steps from Playwright code. */
 export const makeIdentityContext = Effect.fn("ServerBrowserIdentity.makeContext")(function* (
   logins: IdentityContext["logins"],
   desktopChannel: IdentityContext["desktopChannel"],
+  relay: SecretRelay.SecretRelay["Service"] | undefined,
+  signal?: AbortSignal,
 ) {
-  const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
   const context: IdentityContext = {
     logins,
     desktopChannel,
-    step: (effect) =>
-      runPromise(
-        effect.pipe(
-          Effect.mapError((error) => loginError(error.message)),
-          Effect.catchDefect(() => Effect.fail(loginError("The password manager failed."))),
-        ),
-      ),
-    runPromise: (effect) => runPromise(effect),
+    relay,
+    ...BrowserSecretAccess.callRunners(
+      Effect.runPromiseWith(yield* Effect.context<never>()),
+      signal,
+    ),
   };
   return context;
 });
@@ -529,32 +539,79 @@ interface IdentityTab {
   readonly cdp: CDPSession;
 }
 
-const summary = (identity: BrowserLogins.BrowserIdentityCandidate) => ({
-  id: identity.id,
-  title: identity.title,
-  ...(identity.vault ? { vault: identity.vault } : {}),
-  account: identity.account,
-});
-
-const choose = (
-  identities: ReadonlyArray<BrowserLogins.BrowserIdentityCandidate>,
-  id: string | undefined,
-) =>
-  id === undefined
-    ? identities.length === 1
-      ? identities[0]
-      : undefined
-    : identities.find((identity) => identity.id === id);
-
 const requesterPrompt = (requester: PreviewLoginRequester | undefined) => ({
   ...(requester?.threadTitle ? { threadTitle: requester.threadTitle } : {}),
   ...(requester?.provider ? { agent: requester.provider } : {}),
 });
 
+const isIdentityValue = Schema.is(PreviewIdentityValue);
+
 /** Country before the rest, since a page may only list its states once a country is chosen. */
 const countryFirst = <A extends { readonly value: PreviewIdentityValue }>(
   targets: ReadonlyArray<A>,
 ) => [...targets].sort((a, b) => Number(b.value === "country") - Number(a.value === "country"));
+
+/**
+ * Finds the identity a fill or a read means, in the order every secret request follows (see
+ * `BrowserSecretAccess`), and reads it once whoever must approve did.
+ */
+const accessIdentity = (
+  context: IdentityContext,
+  input: {
+    readonly kind: "identity" | "identityRead";
+    readonly threadId: string;
+    readonly tabId?: string;
+    readonly origin?: string | undefined;
+    readonly identity: string | undefined;
+    readonly reference: string | undefined;
+    readonly requester: PreviewLoginRequester | undefined;
+    readonly deadlineMs: number;
+    readonly ready?: () => Promise<void>;
+  },
+) => {
+  const { logins } = context;
+  const requester = requesterPrompt(input.requester);
+  return context.step(
+    BrowserSecretAccess.resolve(
+      context,
+      {
+        kind: input.kind,
+        threadId: input.threadId,
+        ...requester,
+        ...(input.tabId ? { tabId: input.tabId } : {}),
+        ...(input.origin ? { origin: input.origin } : {}),
+        item: input.identity,
+        reference: input.reference,
+        deadline: Date.now() + (input.deadlineMs - performance.now()),
+        ready: input.ready && BrowserSecretAccess.pageStep(input.ready),
+      },
+      {
+        what: "an identity",
+        find: (reach) =>
+          input.reference === undefined
+            ? logins.identityCandidates(reach).pipe(Effect.map((found) => found.identities))
+            : logins
+                .lookupIdentity(input.reference, reach)
+                .pipe(Effect.map(({ identity }) => (identity === undefined ? [] : [identity]))),
+        read: (revision, identity) => logins.readIdentity(revision, identity),
+        relay: {
+          ask: {
+            kind: "identity",
+            purpose: input.kind === "identity" ? "fill" : "read",
+            threadId: input.threadId,
+            ...requester,
+            ...(input.origin ? { origin: input.origin } : {}),
+          },
+          // Only the values this server knows, whatever a newer device sends.
+          values: (values): SecretProviderIdentityValues =>
+            Object.fromEntries(
+              Object.entries(values).filter(([key]) => key !== "fullName" && isIdentityValue(key)),
+            ),
+        },
+      },
+    ),
+  );
+};
 
 /**
  * Fills the user's saved identity into a tab: the fields the agent named, or else every empty
@@ -568,76 +625,66 @@ export const fillIdentity = async (
   deadlineMs: number,
 ): Promise<PreviewAutomationFillIdentityResult> => {
   const { logins, step } = context;
-  const { revision, identities } = await step(logins.identityCandidates("identity"));
-  const identity = choose(identities, input.identity);
-  if (identity === undefined) {
-    return identities.length === 0
-      ? { status: "no_identity", tabId: tab.tabId }
-      : { status: "choose", tabId: tab.tabId, candidates: identities.map(summary) };
-  }
   const pageUrl = tab.page.url();
   const frameAllowed = (frameUrl: string) => BrowserLogins.loginCoversPage([pageUrl], frameUrl);
-  if (!frameAllowed(pageUrl)) {
-    throw loginError("Open the sign-up page first: identities fill only http and https pages.");
-  }
   // The page sees wall-clock time, so every step that reaches into it shares this deadline.
   const deadline = Date.now() + (deadlineMs - performance.now());
-  const remaining = () => deadline - Date.now();
+  const remaining = () => (context.signal?.aborted ? 0 : deadline - Date.now());
   const named = (input.fields ?? []).flatMap(({ locator, value }) => {
     const target = ServerBrowserPage.targetLocator(tab.page, { locator });
     return target === null ? [] : [{ value, locator: target }];
   });
-  if (named.length > 0) {
-    await checkIdentityLocators(named, frameAllowed, deadline);
-  } else {
-    const { found, stalled } = await findAutocompleteFields(tab.page, frameAllowed, deadline);
-    release(found.map(({ handle }) => handle));
-    if (found.length === 0) {
-      throw loginError(
-        stalled.length > 0
-          ? "The fields tagged with autocomplete did not answer in time. Use preview_act."
-          : "No empty fields tagged with autocomplete were found. Pass `fields` with aria-ref locators from preview_snapshot.",
-      );
-    }
+  let document: string | undefined;
+  const access = await accessIdentity(context, {
+    kind: "identity",
+    threadId: tab.threadId,
+    tabId: tab.tabId,
+    origin: frameAllowed(pageUrl) ? new URL(pageUrl).origin : undefined,
+    identity: input.identity,
+    reference: input.reference,
+    requester: input.requester,
+    deadlineMs,
+    ready: async () => {
+      if (!frameAllowed(pageUrl)) {
+        throw loginError("Open the sign-up page first: identities fill only http and https pages.");
+      }
+      if (named.length > 0) {
+        await checkIdentityLocators(named, frameAllowed, deadline);
+      } else {
+        const { found, stalled } = await findAutocompleteFields(
+          tab.page,
+          frameAllowed,
+          deadline,
+          context.signal,
+        );
+        release(found.map(({ handle }) => handle));
+        if (found.length === 0) {
+          throw loginError(
+            stalled.length > 0
+              ? "The fields tagged with autocomplete did not answer in time. Use preview_act."
+              : "No empty fields tagged with autocomplete were found. Pass `fields` with aria-ref locators from preview_snapshot.",
+          );
+        }
+      }
+      document = await documentId(tab.cdp);
+    },
+  });
+  if (access.status === "none") return { status: "no_identity", tabId: tab.tabId };
+  if (access.status === "choose") {
+    return { status: "choose", tabId: tab.tabId, candidates: [...access.candidates] };
   }
-  const document = await documentId(tab.cdp);
-  const ask = await step(logins.needsApproval(revision, tab.threadId, "identity"));
-  if (ask !== false) {
-    // Only a desktop app attached to this server can ask, also for tabs it does not draw.
-    if (!context.desktopChannel.available) {
-      throw loginError(
-        "Nobody can approve filling an identity on this machine. Ask the user to fill the form in the tab, or to choose Don't ask in Settings > Browser > Logins for this environment.",
-      );
-    }
-    const approved = await context.runPromise(
-      context.desktopChannel.approveLogin(
-        { threadId: tab.threadId, tabId: tab.tabId },
-        Math.max(0, remaining()),
-        {
-          kind: "identity",
-          providerLabel: identity.account,
-          loginTitle: identity.title,
-          ...(identity.vault ? { vault: identity.vault } : {}),
-          origin: new URL(pageUrl).origin,
-          ...requesterPrompt(input.requester),
-          scope: ask,
-        },
-      ),
-    );
-    if (!approved) throw loginError("The user did not approve filling this identity.");
-    if (remaining() <= 0) throw loginError("The approval came after the call ended.");
-    await step(logins.recordApproval(revision, tab.threadId, "identity"));
-  }
-  const values = identityValues(await step(logins.readIdentity(revision, identity)));
+  const values = identityValues(access.values);
   // The page may have moved on, or the settings changed, while the user was deciding.
-  if ((await documentId(tab.cdp)) !== document) {
+  if (document === undefined || (await documentId(tab.cdp)) !== document) {
     throw loginError(
       "The page changed before the identity was filled. Take a fresh snapshot and try again.",
     );
   }
-  await step(logins.check(revision));
+  await step(logins.check(access.revision));
   const scanned =
-    named.length > 0 ? undefined : await findAutocompleteFields(tab.page, frameAllowed, deadline);
+    named.length > 0
+      ? undefined
+      : await findAutocompleteFields(tab.page, frameAllowed, deadline, context.signal);
   const targets = countryFirst<IdentityTarget>(scanned?.found ?? named);
   const filled: Array<PreviewIdentityValue> = [];
   const skipped: Array<{ readonly value: PreviewIdentityValue; readonly reason: string }> = (
@@ -667,6 +714,7 @@ export const fillIdentity = async (
           frameAllowed,
           document,
           deadline: fieldDeadline,
+          signal: context.signal,
         });
         if (reason === undefined) filled.push(target.value);
         else skipped.push({ value: target.value, reason });
@@ -677,12 +725,19 @@ export const fillIdentity = async (
   } finally {
     await Promise.all(targets.map((target) => target.handle?.dispose().catch(() => undefined)));
   }
-  return { status: "filled", tabId: tab.tabId, identity: summary(identity), filled, skipped };
+  return {
+    status: "filled",
+    tabId: tab.tabId,
+    identity: BrowserSecretAccess.summary(access.item),
+    filled,
+    skipped,
+  };
 };
 
 /**
- * Hands one identity's values to the agent, for a browser this server does not control. The user
- * approves under its own setting; the values go to the agent and its model provider as they are.
+ * Hands one identity's values to the agent, for a browser this server does not control. They go
+ * to the agent and its model provider as they are, so a person approves unless a service account
+ * on this machine holds the identity.
  */
 export const readIdentity = async (
   context: IdentityContext,
@@ -690,36 +745,19 @@ export const readIdentity = async (
   input: PreviewAutomationReadIdentityRequest,
   deadlineMs: number,
 ): Promise<PreviewAutomationReadIdentityResult> => {
-  const { logins, step } = context;
-  const remaining = () => deadlineMs - performance.now();
-  const { revision, identities } = await step(logins.identityCandidates("identityRead"));
-  const identity = choose(identities, input.identity);
-  if (identity === undefined) {
-    return identities.length === 0
-      ? { status: "no_identity" }
-      : { status: "choose", candidates: identities.map(summary) };
-  }
-  const ask = await step(logins.needsApproval(revision, threadId, "identityRead"));
-  if (ask !== false) {
-    if (!context.desktopChannel.available) {
-      throw loginError(
-        "Nobody can approve showing an identity on this machine. Fill the built-in browser with preview_fill_identity instead, or ask the user to choose Don't ask under Identity details for other browsers in Settings > Browser > Logins.",
-      );
-    }
-    const approved = await context.runPromise(
-      context.desktopChannel.approveLogin({ threadId }, Math.max(0, remaining()), {
-        kind: "identityRead",
-        providerLabel: identity.account,
-        loginTitle: identity.title,
-        ...(identity.vault ? { vault: identity.vault } : {}),
-        ...requesterPrompt(input.requester),
-        scope: ask,
-      }),
-    );
-    if (!approved) throw loginError("The user did not approve showing this identity.");
-    if (remaining() <= 0) throw loginError("The approval came after the call ended.");
-    await step(logins.recordApproval(revision, threadId, "identityRead"));
-  }
-  const values = identityValues(await step(logins.readIdentity(revision, identity)));
-  return { status: "read", identity: summary(identity), values };
+  const access = await accessIdentity(context, {
+    kind: "identityRead",
+    threadId,
+    identity: input.identity,
+    reference: input.reference,
+    requester: input.requester,
+    deadlineMs,
+  });
+  if (access.status === "none") return { status: "no_identity" };
+  if (access.status === "choose") return { status: "choose", candidates: [...access.candidates] };
+  return {
+    status: "read",
+    identity: BrowserSecretAccess.summary(access.item),
+    values: identityValues(access.values),
+  };
 };

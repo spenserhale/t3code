@@ -885,20 +885,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     secretsFeatureOnly: true,
   },
   {
-    id: "browser-login-approval",
-    title: "Ask before filling",
+    id: "browser-secret-escalation",
+    title: "Outside this machine's service accounts",
     to: "/settings/browser",
     searchTerms: [
-      "login approval every once per thread until restart dialog 1password don't ask never service account",
-    ],
-    secretsFeatureOnly: true,
-  },
-  {
-    id: "browser-identity-read",
-    title: "Identity details for other browsers",
-    to: "/settings/browser",
-    searchTerms: [
-      "identity sign up form name email phone address personal details read agent chrome codex computer use approval",
+      "login identity approval ask my device refuse touch id mac desktop app relay remote unattended 1password service account",
     ],
     secretsFeatureOnly: true,
   },

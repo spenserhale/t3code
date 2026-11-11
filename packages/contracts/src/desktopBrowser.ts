@@ -22,7 +22,8 @@ export const DesktopBrowserEvent = Schema.Union([
     type: Schema.Literal("loginApproval"),
     ...ApprovalKey,
     requestId: TrimmedNonEmptyString,
-    approved: Schema.Boolean,
+    /** Allow once, allow for this thread, or false for Deny. */
+    approved: Schema.Union([Schema.Literals(["once", "thread"]), Schema.Literal(false)]),
   }),
 ]);
 export type DesktopBrowserEvent = typeof DesktopBrowserEvent.Type;
@@ -52,14 +53,18 @@ export const DesktopBrowserCommand = Schema.Union([
     ...ApprovalKey,
     requestId: TrimmedNonEmptyString,
     kind: Schema.optional(Schema.Literals(["login", "identity", "identityRead", "newLogin"])),
+    /** The password managers that would be opened. */
     providerLabel: Schema.String,
-    /** The saved item's title, a login's or an identity's. */
-    loginTitle: Schema.String,
+    /** The item's title, when known before anything is read, such as a new login's. */
+    loginTitle: Schema.optional(Schema.String),
+    /** The item the agent named, such as `op://Vault/Item`. */
+    reference: Schema.optional(Schema.String),
     vault: Schema.optional(Schema.String),
     origin: Schema.optional(Schema.String),
     threadTitle: Schema.optional(Schema.String),
     agent: Schema.optional(Schema.String),
-    scope: Schema.Literals(["request", "thread", "application"]),
+    /** The machine a relayed request came from; absent for this server's own threads. */
+    machine: Schema.optional(Schema.String),
     /** The server stops waiting after this long; a prompt not yet shown by then is never shown. */
     timeoutMs: Schema.Finite,
   }),
@@ -73,5 +78,7 @@ export const DesktopBrowserCommand = Schema.Union([
     document: TrimmedNonEmptyString,
     url: Schema.String,
   }),
+  /** The server stopped waiting: a prompt not yet answered closes as a Deny. */
+  Schema.Struct({ type: Schema.Literal("loginApprovalCancel"), requestId: TrimmedNonEmptyString }),
 ]);
 export type DesktopBrowserCommand = typeof DesktopBrowserCommand.Type;
