@@ -10,7 +10,6 @@ import {
   type SecretCommandSource,
   type ThreadId,
 } from "@t3tools/contracts";
-import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -76,6 +75,9 @@ const FORCE_KILL_AFTER = Duration.seconds(1);
 export const SECRET_MASK = "[secret]";
 
 const utf8 = new TextEncoder();
+const MASK_BYTES = utf8.encode(SECRET_MASK);
+/** Reads UTF-8 as `Buffer.toString` does: a byte order mark stays in the text. */
+const utf8Decoder = () => new TextDecoder("utf-8", { ignoreBOM: true });
 
 /** Shorter, a mask would hide ordinary words and numbers too, so such a secret is refused. */
 const MIN_SECRET_LENGTH = 4;
@@ -96,13 +98,16 @@ const maskForms = (secrets: ReadonlyArray<string>) =>
   ].filter((form) => form.length > 0);
 
 /**
- * Where `text` holds any form of any secret, as `[start, end)` runs in order. Every match counts,
- * overlapping ones included, and matches that overlap or touch make one run.
+ * Where `text` holds any of `forms`, as `[start, end)` runs in order. Every match counts,
+ * overlapping ones included, and matches that overlap or touch make one run. A run that began
+ * before `text` and reaches `covered` characters into it counts as a match of that length.
  */
-const secretRuns = (text: string, secrets: ReadonlyArray<string>) => {
+const secretRuns = (text: string, forms: ReadonlyArray<string>, covered: number) => {
   // +1 where a match starts and -1 where it ends: a run is where the sum stays above zero.
   const edges = new Int32Array(text.length + 1);
-  for (const form of maskForms(secrets)) {
+  edges[0]! += 1;
+  edges[covered]! -= 1;
+  for (const form of forms) {
     for (let at = text.indexOf(form); at !== -1; at = text.indexOf(form, at + 1)) {
       edges[at]! += 1;
       edges[at + form.length]! -= 1;
@@ -120,44 +125,83 @@ const secretRuns = (text: string, secrets: ReadonlyArray<string>) => {
   return runs;
 };
 
-/** As much of `text` as fits in `room` bytes of UTF-8, never part of a character. */
-const fitting = (text: string, room: number) =>
-  room <= 0 ? "" : text.slice(0, utf8.encodeInto(text, new Uint8Array(room)).read);
-
 /**
- * `text` with each run of secrets replaced by one mask, at most `maxBytes` of it in UTF-8, and
- * only what starts before `end`. Runs are found in all of `text` first, so one that starts before
- * `end` is masked whole. A mask that does not fit is left out whole.
+ * Masks a command's output as it arrives: each run of secrets becomes one mask, wherever chunks
+ * divide it. Keeps at most `maxBytes` of the masked text in UTF-8, cut between characters, with a
+ * mask that does not fit left out whole. What is written after that is dropped unread.
  */
-export const maskSecrets = (
-  text: string,
-  secrets: ReadonlyArray<string>,
-  maxBytes: number,
-  end = text.length,
-) => {
-  let shown = "";
-  let room = maxBytes;
-  const add = (piece: string, mask: boolean) => {
-    const bytes = utf8.encode(piece).length;
-    if (bytes <= room) {
-      shown += piece;
-      room -= bytes;
-      return true;
-    }
-    if (!mask) shown += fitting(piece, room);
-    return false;
+export const makeOutputMasker = (secrets: ReadonlyArray<string>, maxBytes: number) => {
+  const forms = maskForms(secrets);
+  // A match can start in this many of the last characters and end in output still to come.
+  const hold = Math.max(1, ...forms.map((form) => form.length)) - 1;
+  const decoder = utf8Decoder();
+  // Bytes, not text: a piece of text cut from a chunk would keep that whole chunk in memory.
+  const shown = new Uint8Array(maxBytes);
+  let used = 0;
+  let cut = false;
+  /** Read, and not shown yet. */
+  let pending = "";
+  /** How far into `pending` a run that already has its mask reaches, or -1 when none does. */
+  let masked = -1;
+
+  /** Shows `piece`, or as much of it as fits and never part of a character. */
+  const addText = (piece: string) => {
+    const { read, written } = utf8.encodeInto(piece, shown.subarray(used));
+    used += written;
+    return read === piece.length;
   };
-  let at = 0;
-  for (const [start, stop] of secretRuns(text, secrets)) {
-    if (start >= end) break;
-    if (!add(text.slice(at, start), false) || !add(SECRET_MASK, true)) {
-      return { text: shown, cut: true };
+  /** Shows a mask whole, or nothing. */
+  const addMask = () => {
+    if (MASK_BYTES.length > maxBytes - used) return false;
+    shown.set(MASK_BYTES, used);
+    used += MASK_BYTES.length;
+    return true;
+  };
+
+  /** Shows what of `pending` starts before `end`, each run as one mask: whether it all fit. */
+  const show = (end: number) => {
+    let at = 0;
+    for (const [start, stop] of secretRuns(pending, forms, Math.max(0, masked))) {
+      if (start >= end) break;
+      // A run that goes on from one already masked gets no second mask.
+      const goesOn = start === 0 && masked >= 0;
+      if (!addText(pending.slice(at, start)) || !(goesOn || addMask())) return false;
+      at = stop;
     }
-    at = stop;
-  }
-  const rest = text.slice(at, Math.max(at, end));
-  if (!add(rest, false)) return { text: shown, cut: true };
-  return { text: shown, cut: at + rest.length < text.length };
+    if (!addText(pending.slice(at, end))) return false;
+    masked = at < end ? -1 : at - end;
+    pending = pending.slice(end);
+    return true;
+  };
+  /** Shows up to `end`. Once something does not fit, nothing after it is shown or kept. */
+  const advance = (end: number) => {
+    cut = !show(end);
+    if (cut) pending = "";
+  };
+
+  return {
+    /** The next bytes of the output. */
+    write: (chunk: Uint8Array) => {
+      if (cut) return;
+      pending += decoder.decode(chunk, { stream: true });
+      let end = pending.length - hold;
+      // More at a time than is held back, so no character is searched more than twice.
+      if (end <= hold) return;
+      // Never between the two halves of one character.
+      if (pending.codePointAt(end - 1)! > 0xffff) end -= 1;
+      advance(end);
+    },
+    /** The output is over, so what was held back is shown too. */
+    end: () => {
+      if (!cut) {
+        pending += decoder.decode();
+        advance(pending.length);
+      }
+      return { text: utf8Decoder().decode(shown.subarray(0, used)), cut };
+    },
+    /** How much is kept: the bytes that come back, and the characters not shown yet. */
+    held: () => used + pending.length,
+  };
 };
 
 const displayCommand = (argv: ReadonlyArray<string>) => {
@@ -268,28 +312,28 @@ const make = Effect.gen(function* () {
     return found.values;
   });
 
-  /** At most `OUTPUT_LIMIT` bytes of a stream, with every secret masked. */
+  /**
+   * At most `OUTPUT_LIMIT` bytes of a stream once every secret in it is masked. The stream is
+   * read to its end even past that, so a command never waits on a full pipe.
+   */
   const collectMasked = (
     stream: Stream.Stream<Uint8Array, PlatformError.PlatformError>,
     secrets: ReadonlyArray<string>,
-  ) => {
-    // Enough past the limit to hold a secret that starts before it, so it is masked whole.
-    const margin = Math.max(0, ...maskForms(secrets).map((form) => utf8.encode(form).length));
-    return collectUint8StreamText({ stream, maxBytes: OUTPUT_LIMIT + margin }).pipe(
-      Effect.map((collected) => {
-        // A capture cut short may end inside a secret, so its last `margin` is never shown.
-        const end = collected.truncated
-          ? Math.max(0, collected.text.length - margin)
-          : collected.text.length;
-        const { text, cut } = maskSecrets(collected.text, secrets, OUTPUT_LIMIT, end);
-        return { text, truncated: collected.truncated || cut };
-      }),
+  ) =>
+    stream.pipe(
+      Stream.runFold(
+        () => makeOutputMasker(secrets, OUTPUT_LIMIT),
+        (masker, chunk) => {
+          masker.write(chunk);
+          return masker;
+        },
+      ),
+      Effect.map((masker) => masker.end()),
       Effect.mapError(
         () =>
           new SecretCommandError({ reason: "failed", message: "The output could not be read." }),
       ),
     );
-  };
 
   const execute = Effect.fn("SecretCommands.execute")(function* (input: {
     readonly argv: ReadonlyArray<string>;
@@ -413,7 +457,7 @@ const make = Effect.gen(function* () {
         exitCode: output.exitCode,
         stdout: output.stdout.text,
         stderr: output.stderr.text,
-        truncated: output.stdout.truncated || output.stderr.truncated,
+        truncated: output.stdout.cut || output.stderr.cut,
         sources: {
           ...(input.stdin === undefined ? {} : { stdin: secretFor(input.stdin).source }),
           ...(env.length === 0

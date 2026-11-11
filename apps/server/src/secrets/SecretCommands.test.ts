@@ -604,7 +604,7 @@ describe("SecretCommands", () => {
       const outputs = [
         // A secret just before the cap: its mask does not fit, so neither shows.
         `${"a".repeat(limit - 3)}fc-work-123 and more`,
-        // Two bytes a character: the capture stops inside the secret, which must not show at all.
+        // Two bytes a character: the cap falls just before the secret, which must not show at all.
         `${"é".repeat(limit / 2 + 2)}fc-work-123 and more`,
         // Masks longer than what they hide: the cap counts what comes back.
         `${"wxyz ".repeat(13_107)}w`,
@@ -629,6 +629,21 @@ describe("SecretCommands", () => {
       }).pipe(Effect.provide(fixture.layer));
     },
   );
+
+  it.effect("reads past 64 KiB of output to its end when what comes back fits", () => {
+    // 72,008 bytes from the command, 54,008 once masked.
+    const fixture = setup({
+      run: () => ({ stdout: `${"fc-work-123\n".repeat(6_000)}SUCCESS\n` }),
+    });
+    return Effect.gen(function* () {
+      const result = yield* run({ command: ["print"], stdin: FIRECRAWL });
+      assert.strictEqual(
+        result.stdout,
+        `${`${SecretCommands.SECRET_MASK}\n`.repeat(6_000)}SUCCESS\n`,
+      );
+      assert.isFalse(result.truncated);
+    }).pipe(Effect.provide(fixture.layer));
+  });
 
   it.effect("stops a command that runs past its timeout through its handle", () => {
     const fixture = setup({ run: () => ({ hang: true }) });
@@ -732,9 +747,84 @@ describe("SecretCommands", () => {
       assert.isFalse(SECRETS.some((secret) => JSON.stringify(result).includes(secret)));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+
+  it.live("reads tens of megabytes from a real command to the end, with its exit code", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-secret-command-" });
+      const fixture = setup({ workspaceRoot: root, real: true });
+      const mask = SecretCommands.SECRET_MASK;
+      const script = [
+        "const key = process.env.FIRECRAWL_KEY;",
+        // 33 MB of one key after another is a single mask, so stdout never reaches its cap.
+        "const keys = Buffer.from(key.repeat(100_000));",
+        "for (let block = 0; block < 30; block++) process.stdout.write(keys);",
+        'process.stdout.write("SUCCESS\\n");',
+        // 32 MB of lines that are 16 bytes once masked: 4,096 of them fill stderr's cap.
+        'const lines = Buffer.from(("0123456" + key + "\\n").repeat(100_000));',
+        "for (let block = 0; block < 17; block++) process.stderr.write(lines);",
+        "process.exitCode = 7;",
+      ].join("\n");
+      const result = yield* run({
+        command: [process.execPath, "-e", script],
+        env: { FIRECRAWL_KEY: FIRECRAWL },
+      }).pipe(Effect.provide(fixture.layer));
+      assert.deepStrictEqual(
+        {
+          exitCode: result.exitCode,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          truncated: result.truncated,
+        },
+        {
+          exitCode: 7,
+          stdout: `${mask}SUCCESS\n`,
+          stderr: `0123456${mask}\n`.repeat(4_096),
+          truncated: true,
+        },
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });
 
-describe("maskSecrets", () => {
+describe("makeOutputMasker", () => {
+  /** What comes back for output that arrives in these chunks. */
+  const maskChunks = (
+    chunks: ReadonlyArray<Uint8Array>,
+    secrets: ReadonlyArray<string>,
+    maxBytes: number,
+  ) => {
+    const masker = SecretCommands.makeOutputMasker(secrets, maxBytes);
+    for (const chunk of chunks) masker.write(chunk);
+    return masker.end();
+  };
+
+  /** The same for `text` whole, a byte at a time, and cut anywhere into two chunks or three. */
+  const maskSecrets = (text: string, secrets: ReadonlyArray<string>, maxBytes: number) => {
+    const bytes = encoder.encode(text);
+    const whole = maskChunks([bytes], secrets, maxBytes);
+    const single = Array.from(bytes, (_, at) => bytes.subarray(at, at + 1));
+    assert.deepStrictEqual(
+      maskChunks(single, secrets, maxBytes),
+      whole,
+      `${text} a byte at a time`,
+    );
+    for (let first = 0; first <= bytes.length; first++) {
+      for (let second = first; second <= bytes.length; second++) {
+        assert.deepStrictEqual(
+          maskChunks(
+            [bytes.subarray(0, first), bytes.subarray(first, second), bytes.subarray(second)],
+            secrets,
+            maxBytes,
+          ),
+          whole,
+          `${text} cut at ${first} and ${second}`,
+        );
+      }
+    }
+    return whole;
+  };
+
   it("masks overlapping, contained, touching and repeated matches as one, leaving no part", () => {
     const mask = SecretCommands.SECRET_MASK;
     for (const [text, secrets, masked] of [
@@ -750,39 +840,120 @@ describe("maskSecrets", () => {
       ["key=padded-789xyz", ["  padded-789\n", "789xyz"], `key=${mask}`],
       ["BBBBCCDDDD", ["AAAA\nBBBBCC", "CCDDDD"], mask],
     ] as const) {
+      assert.deepStrictEqual(maskSecrets(text, secrets, 100), { text: masked, cut: false }, text);
+    }
+  });
+
+  it("masks the same wherever chunks divide a secret, its lines or a character beside it", () => {
+    const mask = SecretCommands.SECRET_MASK;
+    for (const [text, secrets, shown] of [
+      // One secret.
+      ["key=fc-work-123;", ["fc-work-123"], `key=${mask};`],
+      // Two that overlap, one inside another, ones that touch, and one that repeats.
+      ["xxabcdeyy", ["bcde", "abc"], `xx${mask}yy`],
+      ["xabcdefx", ["bcd", "abcdef"], `x${mask}x`],
+      ["abcdwxyz-ababab-abab", ["abcd", "wxyz", "abab"], `${mask}-${mask}-${mask}`],
+      // A multi-line secret whole, then one of its lines alone.
+      [`a ${PEM}b MIIBsecretline c`, [PEM], `a ${mask}b ${mask} c`],
+      // Characters of two, three and four bytes, beside a secret and inside one.
+      [
+        "é€😀fc-work-123😀€é p€ss😀wörd!",
+        ["fc-work-123", "p€ss😀wörd"],
+        `é€😀${mask}😀€é ${mask}!`,
+      ],
+    ] as const) {
+      // More than a secret's length on each side, so a chunk can end at every offset between.
+      const pad = ".".repeat(1 + Math.max(...secrets.map((secret) => secret.length)));
       assert.deepStrictEqual(
-        SecretCommands.maskSecrets(text, secrets, 100),
-        { text: masked, cut: false },
+        maskSecrets(`${pad}${text}${pad}`, secrets, 1_000),
+        { text: `${pad}${shown}${pad}`, cut: false },
         text,
       );
     }
+    // Each line of a multi-line secret in a chunk of its own, between two of other output.
+    const lines = [".".repeat(60), ...PEM.split(/(?<=\n)/), ".".repeat(60)];
+    assert.deepStrictEqual(
+      maskChunks(
+        lines.map((line) => encoder.encode(line)),
+        [PEM],
+        1_000,
+      ),
+      { text: `${".".repeat(60)}${mask}${".".repeat(60)}`, cut: false },
+    );
+    // A byte order mark stays; bytes that are no character, the last ones too, become U+FFFD.
+    const stray = [
+      Uint8Array.of(0xef, 0xbb, 0xbf, 0xff),
+      encoder.encode("fc-work-123"),
+      Uint8Array.of(0xe2, 0x82),
+    ];
+    assert.deepStrictEqual(maskChunks(stray, ["fc-work-123"], 1_000), {
+      text: `\uFEFF\uFFFD${mask}\uFFFD`,
+      cut: false,
+    });
   });
 
   it("returns at most the bytes asked, never part of a mask, a character or a secret", () => {
     const mask = SecretCommands.SECRET_MASK;
     const secrets = ["abcdef", " pad "];
-    for (const [text, maxBytes, end, shown] of [
-      ["xx abcdef yy pad", 100, undefined, { text: `xx ${mask} yy ${mask}`, cut: false }],
+    for (const [text, maxBytes, shown] of [
+      ["xx abcdef yy pad", 100, { text: `xx ${mask} yy ${mask}`, cut: false }],
       // A mask fits whole or not at all.
-      ["1234abcdef5678", 12, undefined, { text: `1234${mask}`, cut: true }],
-      ["1234abcdef5678", 11, undefined, { text: "1234", cut: true }],
-      ["12345678abcdef", 5, undefined, { text: "12345", cut: true }],
+      ["1234abcdef5678", 12, { text: `1234${mask}`, cut: true }],
+      ["1234abcdef5678", 11, { text: "1234", cut: true }],
+      ["12345678abcdef", 5, { text: "12345", cut: true }],
       // Text is cut between characters.
-      ["aéé", 4, undefined, { text: "aé", cut: true }],
-      // Only what starts before `end` shows, and a secret that does is masked whole.
-      ["1234abcdef5678", 100, 6, { text: `1234${mask}`, cut: true }],
-      ["12345678abcdef", 100, 6, { text: "123456", cut: true }],
+      ["aéé", 4, { text: "aé", cut: true }],
+      // A character of four bytes counts as four, wherever it was held back.
+      ["x😀😀😀😀😀😀", 25, { text: "x😀😀😀😀😀😀", cut: false }],
+      // A run that goes on past a full cap leaves nothing out; anything after it does.
+      ["abcdefabcdef", 8, { text: mask, cut: false }],
+      ["abcdefabcdef!", 8, { text: mask, cut: true }],
+      // Nothing follows a cut: not text that would fit, nor a character it stopped in.
+      ["1234abcdef5678 and moré", 11, { text: "1234", cut: true }],
+      ["a😀abcdefxyabcdef", 4, { text: "a", cut: true }],
     ] as const) {
-      assert.deepStrictEqual(
-        SecretCommands.maskSecrets(text, secrets, maxBytes, end),
-        shown,
-        `${text} ${maxBytes} ${end}`,
-      );
+      assert.deepStrictEqual(maskSecrets(text, secrets, maxBytes), shown, `${text} ${maxBytes}`);
     }
     // A mask is never masked again, even by a secret that reads "secret".
-    assert.deepStrictEqual(
-      SecretCommands.maskSecrets("abcdefgh", ["abc", "abcdefgh", "secret"], 100),
-      { text: mask, cut: false },
-    );
+    assert.deepStrictEqual(maskSecrets("abcdefgh", ["abc", "abcdefgh", "secret"], 100), {
+      text: mask,
+      cut: false,
+    });
+  });
+
+  it("keeps what comes back and under two secrets' length more, however much is written", () => {
+    const mask = SecretCommands.SECRET_MASK;
+    const limit = 64 * 1024;
+    const secret = "fc-work-123";
+    /** Writes 32 MiB of `line` over and over, in chunks that cut it anywhere: the most kept. */
+    const flood = (masker: ReturnType<typeof SecretCommands.makeOutputMasker>, line: string) => {
+      const size = 60_000;
+      const lines = encoder.encode(line.repeat(Math.ceil(size / line.length) + 1));
+      let most = 0;
+      let written = 0;
+      for (; written < 32 * 1024 * 1024; written += size) {
+        const from = written % line.length;
+        masker.write(lines.subarray(from, from + size));
+        most = Math.max(most, masker.held());
+      }
+      // What is left of the line the last chunk stopped in.
+      masker.write(lines.subarray(written % line.length, line.length));
+      return most;
+    };
+
+    // One secret after another is a single mask, so the cap is never reached and all is read.
+    const endless = SecretCommands.makeOutputMasker([secret], limit);
+    assert.isAtMost(flood(endless, secret), mask.length + 2 * secret.length);
+    endless.write(encoder.encode("SUCCESS"));
+    assert.deepStrictEqual(endless.end(), { text: `${mask}SUCCESS`, cut: false });
+
+    // Past the cap nothing more is kept: 4,681 masked lines and two bytes are 64 KiB exactly.
+    const capped = SecretCommands.makeOutputMasker([secret], limit);
+    assert.isAtMost(flood(capped, `line ${secret}\n`), limit + 2 * secret.length);
+    assert.strictEqual(capped.held(), limit);
+    assert.deepStrictEqual(capped.end(), {
+      text: `${`line ${mask}\n`.repeat(4_681)}li`,
+      cut: true,
+    });
   });
 });
