@@ -274,6 +274,16 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "browser",
     "browser",
   ),
+  preview_fill_identity: tool(
+    ["Fill", "Filling", "Filled", "a saved identity in the preview browser"],
+    "browser",
+    "browser",
+  ),
+  preview_read_identity: tool(
+    ["Read", "Reading", "Read", "a saved identity"],
+    "browser",
+    "browser",
+  ),
   preview_wait_for: tool(
     ["Wait", "Waiting", "Waited", "for the preview page"],
     "browser",

@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { type EnvironmentId, managedPolicyDeniedMessage } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  managedPolicyDeniedMessage,
+  type SecretProviderId,
+} from "@t3tools/contracts";
 
 import {
+  browserLoginsWrite,
   clearBrowserProfileData,
   importFailureReason,
   importPolicyRefusal,
@@ -82,5 +87,37 @@ describe("importPolicyRefusal", () => {
 
   it("leaves other failures to their reason token", () => {
     expect(importPolicyRefusal(failure("readFailed"))).toBeUndefined();
+  });
+});
+
+describe("browserLoginsWrite", () => {
+  const work = "work" as SecretProviderId;
+  const current = {
+    secretProviderIds: [work],
+    approval: "thread",
+    identityReadApproval: "never",
+  } as const;
+
+  it("keeps every other browser login setting, since the server replaces them whole", () => {
+    expect(browserLoginsWrite(current, { approval: "request" })).toEqual({
+      secretProviderIds: [work],
+      approval: "request",
+      identityReadApproval: "never",
+    });
+    expect(browserLoginsWrite(current, { identityReadApproval: "off" })).toEqual({
+      secretProviderIds: [work],
+      approval: "thread",
+      identityReadApproval: "off",
+    });
+    // No provider turns logins off; the approvals stay for when one is chosen again.
+    expect(browserLoginsWrite(current, { secretProviderIds: [] })).toEqual({
+      approval: "thread",
+      identityReadApproval: "never",
+    });
+    // The single provider saved before several could be chosen carries over.
+    expect(browserLoginsWrite({ secretProviderId: work, approval: "thread" }, {})).toEqual({
+      secretProviderIds: [work],
+      approval: "thread",
+    });
   });
 });

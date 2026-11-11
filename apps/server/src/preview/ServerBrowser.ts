@@ -35,8 +35,10 @@ import {
   type PreviewAutomationTypeInput,
   type PreviewAutomationUploadInput,
   type PreviewAutomationWaitForInput,
+  type PreviewAutomationFillIdentityRequest,
   type PreviewAutomationFillLoginRequest,
   type PreviewAutomationFillLoginResult,
+  type PreviewAutomationReadIdentityRequest,
   type PreviewLoginField,
   PreviewClearProfileError,
   type PreviewEvent,
@@ -86,6 +88,7 @@ import * as BrowserLogins from "./BrowserLogins.ts";
 import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as PreviewManager from "./Manager.ts";
+import * as ServerBrowserIdentity from "./ServerBrowserIdentity.ts";
 import * as ServerBrowserLogin from "./ServerBrowserLogin.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
@@ -496,6 +499,9 @@ const make = Effect.gen(function* () {
   };
   // Scrubbed before the cut, so a filled secret crossing it cannot leave its start showing.
   const pageText = (text: string, limit: number) => filledSecrets.scrub(text).slice(0, limit);
+  const identities = Option.isNone(browserLogins)
+    ? undefined
+    : yield* ServerBrowserIdentity.makeIdentityContext(browserLogins.value, desktopChannel);
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
@@ -2148,6 +2154,13 @@ const make = Effect.gen(function* () {
           deadlineMs,
         );
       }
+      case "readIdentity":
+        return ServerBrowserIdentity.readIdentity(
+          identityContext(),
+          request.threadId,
+          input as PreviewAutomationReadIdentityRequest,
+          deadlineMs,
+        );
       case "recordingStop": {
         if (
           !request.tabIdExplicit &&
@@ -2261,6 +2274,13 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  const identityContext = () => {
+    if (identities === undefined) {
+      throw ServerBrowserLogin.loginError("This server cannot use saved identities.");
+    }
+    return identities;
+  };
+
   const fillLogin = async (
     tab: ServerTab,
     input: PreviewAutomationFillLoginRequest,
@@ -2325,7 +2345,7 @@ const make = Effect.gen(function* () {
         "preview_evaluate ran in this page, so a login cannot be filled here. Reload the page with preview_navigate, then call preview_fill_login again.",
       );
     }
-    const ask = await loginStep(logins.needsApproval(revision, tab.threadId));
+    const ask = await loginStep(logins.needsApproval(revision, tab.threadId, "login"));
     if (ask !== false) {
       // Only a desktop app attached to this server can ask, also for tabs it does not draw.
       if (!desktopChannel.available) {
@@ -2350,7 +2370,7 @@ const make = Effect.gen(function* () {
       );
       if (!approved) throw ServerBrowserLogin.loginError("The user did not approve this login.");
       if (expired()) throw ServerBrowserLogin.loginError("The approval came after the call ended.");
-      await loginStep(logins.recordApproval(revision, tab.threadId));
+      await loginStep(logins.recordApproval(revision, tab.threadId, "login"));
     }
     const values = await loginStep(logins.read(revision, login, fields));
     const absent = fields.filter((field) => values[field] === undefined);
@@ -2517,6 +2537,15 @@ const make = Effect.gen(function* () {
         return recordAction(tab, "fillLogin", () =>
           fillLogin(tab, input as PreviewAutomationFillLoginRequest, deadlineMs),
         );
+      case "fillIdentity":
+        return recordAction(tab, "fillIdentity", () =>
+          ServerBrowserIdentity.fillIdentity(
+            identityContext(),
+            tab,
+            input as PreviewAutomationFillIdentityRequest,
+            deadlineMs,
+          ),
+        );
       case "waitFor":
         return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
       case "recordingStart": {
@@ -2555,8 +2584,11 @@ const make = Effect.gen(function* () {
         },
       };
     }
-    // The fill's own result holds only titles and field names.
-    if (operation === "fillLogin") return outcome;
+    // The fills' own results hold only titles and field names, and an identity read holds what
+    // the user allowed the agent to see.
+    if (operation === "fillLogin" || operation === "fillIdentity" || operation === "readIdentity") {
+      return outcome;
+    }
     // Screenshot bytes are not text, and a page holding a fill gets none taken.
     if (operation === "snapshot") {
       const { screenshot, ...rest } = outcome.result as PreviewAutomationSnapshot;

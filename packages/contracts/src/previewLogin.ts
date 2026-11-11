@@ -21,6 +21,20 @@ export const BrowserLoginApproval = Schema.Literals(["request", "thread", "appli
 export type BrowserLoginApproval = typeof BrowserLoginApproval.Type;
 export const DEFAULT_BROWSER_LOGIN_APPROVAL: BrowserLoginApproval = "thread";
 
+/**
+ * How often the user is asked before an identity's values are shown to the agent, for browsers
+ * the server does not control. `off` never shows them.
+ */
+export const BrowserIdentityReadApproval = Schema.Literals([
+  "off",
+  "request",
+  "thread",
+  "application",
+  "never",
+]);
+export type BrowserIdentityReadApproval = typeof BrowserIdentityReadApproval.Type;
+export const DEFAULT_BROWSER_IDENTITY_READ_APPROVAL: BrowserIdentityReadApproval = "request";
+
 export const BROWSER_LOGIN_PROVIDERS_MAX = 8;
 
 export const BrowserLoginSettings = Schema.Struct({
@@ -28,9 +42,12 @@ export const BrowserLoginSettings = Schema.Struct({
   secretProviderId: Schema.optional(SecretProviderId),
   /** The configured secret providers logins come from. None turns the feature off. */
   secretProviderIds: Schema.optional(Schema.Array(SecretProviderId)),
+  /** Also covers filling an identity into the built-in browser. */
   approval: BrowserLoginApproval.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_LOGIN_APPROVAL)),
   ),
+  /** Absent means `DEFAULT_BROWSER_IDENTITY_READ_APPROVAL`. */
+  identityReadApproval: Schema.optional(BrowserIdentityReadApproval),
 });
 export type BrowserLoginSettings = typeof BrowserLoginSettings.Type;
 
@@ -49,6 +66,9 @@ export const browserLoginProviderIds = (
   (settings.secretProviderId === undefined ? [] : [settings.secretProviderId]);
 
 const LoginLocator = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
+const ApprovalTimeoutMs = Schema.optional(
+  Schema.Int.check(Schema.isGreaterThan(0)).check(Schema.isLessThanOrEqualTo(180_000)),
+).annotate({ description: "Default 120000, which includes waiting for the user to approve." });
 
 export const PreviewAutomationFillLoginInput = Schema.Struct({
   tabId: Schema.optional(PreviewTabId),
@@ -70,9 +90,7 @@ export const PreviewAutomationFillLoginInput = Schema.Struct({
     description:
       "`aria-ref=<ref>` per field from `preview_snapshot`, when the fields are not found on their own.",
   }),
-  timeoutMs: Schema.optional(
-    Schema.Int.check(Schema.isGreaterThan(0)).check(Schema.isLessThanOrEqualTo(180_000)),
-  ).annotate({ description: "Default 120000, which includes waiting for the user to approve." }),
+  timeoutMs: ApprovalTimeoutMs,
 });
 export type PreviewAutomationFillLoginInput = typeof PreviewAutomationFillLoginInput.Type;
 
@@ -119,3 +137,106 @@ export const PreviewAutomationFillLoginResult = Schema.Union([
   }),
 ]);
 export type PreviewAutomationFillLoginResult = typeof PreviewAutomationFillLoginResult.Type;
+
+/**
+ * Filling a sign-up form with an identity from the user's password manager: name, contact
+ * details and address. These values are personal, not secret: the agent can read them back from
+ * the page, and `preview_read_identity` hands them over directly once the user allows it.
+ */
+export const PreviewIdentityValue = Schema.Literals([
+  "firstName",
+  "middleInitial",
+  "lastName",
+  "fullName",
+  "email",
+  "phone",
+  "company",
+  "jobTitle",
+  "birthDate",
+  "address",
+  "street",
+  "city",
+  "state",
+  "postalCode",
+  "country",
+  "username",
+]);
+export type PreviewIdentityValue = typeof PreviewIdentityValue.Type;
+
+const IdentityChoice = Schema.optional(
+  TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+).annotate({
+  description: "Identity id from an earlier `choose` result. Omit to use the only one saved.",
+});
+
+const PREVIEW_IDENTITY_FIELDS_MAX = 40;
+
+export const PreviewAutomationFillIdentityInput = Schema.Struct({
+  tabId: Schema.optional(PreviewTabId),
+  identity: IdentityChoice,
+  // The tool's description explains `fields`, so it carries no description of its own.
+  fields: Schema.optional(
+    Schema.Array(Schema.Struct({ locator: LoginLocator, value: PreviewIdentityValue })).check(
+      Schema.isMaxLength(PREVIEW_IDENTITY_FIELDS_MAX),
+    ),
+  ),
+  timeoutMs: ApprovalTimeoutMs,
+});
+export type PreviewAutomationFillIdentityInput = typeof PreviewAutomationFillIdentityInput.Type;
+
+export const PreviewAutomationFillIdentityRequest = Schema.Struct({
+  ...PreviewAutomationFillIdentityInput.fields,
+  requester: Schema.optional(PreviewLoginRequester),
+});
+export type PreviewAutomationFillIdentityRequest = typeof PreviewAutomationFillIdentityRequest.Type;
+
+export const PreviewAutomationFillIdentityResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("filled"),
+    tabId: PreviewTabId,
+    identity: PreviewLoginCandidate,
+    /** One entry per field filled, so a value can appear twice. */
+    filled: Schema.Array(PreviewIdentityValue),
+    /** Fields left for the agent to finish, such as a custom dropdown, with why. */
+    skipped: Schema.Array(Schema.Struct({ value: PreviewIdentityValue, reason: Schema.String })),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("choose"),
+    tabId: PreviewTabId,
+    candidates: Schema.Array(PreviewLoginCandidate),
+  }),
+  Schema.Struct({ status: Schema.Literal("no_identity"), tabId: PreviewTabId }),
+]);
+export type PreviewAutomationFillIdentityResult = typeof PreviewAutomationFillIdentityResult.Type;
+
+export const PreviewAutomationReadIdentityInput = Schema.Struct({
+  identity: IdentityChoice,
+  timeoutMs: ApprovalTimeoutMs,
+});
+export type PreviewAutomationReadIdentityInput = typeof PreviewAutomationReadIdentityInput.Type;
+
+export const PreviewAutomationReadIdentityRequest = Schema.Struct({
+  ...PreviewAutomationReadIdentityInput.fields,
+  requester: Schema.optional(PreviewLoginRequester),
+});
+export type PreviewAutomationReadIdentityRequest = typeof PreviewAutomationReadIdentityRequest.Type;
+
+export const PreviewIdentityValues = Schema.Record(
+  PreviewIdentityValue,
+  Schema.optionalKey(Schema.String),
+);
+export type PreviewIdentityValues = typeof PreviewIdentityValues.Type;
+
+export const PreviewAutomationReadIdentityResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("read"),
+    identity: PreviewLoginCandidate,
+    values: PreviewIdentityValues,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("choose"),
+    candidates: Schema.Array(PreviewLoginCandidate),
+  }),
+  Schema.Struct({ status: Schema.Literal("no_identity") }),
+]);
+export type PreviewAutomationReadIdentityResult = typeof PreviewAutomationReadIdentityResult.Type;

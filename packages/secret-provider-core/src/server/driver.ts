@@ -45,6 +45,54 @@ export interface SecretProviderLogins<Config = unknown> {
   ) => Effect.Effect<SecretProviderLoginValues | undefined, never, SecretProviderDriverServices>;
 }
 
+export type SecretProviderIdentityField =
+  | "firstName"
+  | "middleInitial"
+  | "lastName"
+  | "email"
+  | "phone"
+  | "company"
+  | "jobTitle"
+  | "birthDate"
+  | "address"
+  | "street"
+  | "city"
+  | "state"
+  | "postalCode"
+  | "country"
+  | "username";
+
+/** A saved identity (name, contact details, address), without its values. */
+export interface SecretProviderIdentity {
+  readonly id: string;
+  readonly title: string;
+  readonly vault?: string;
+  /** For a provider that must name the vault to read the identity. Server-side only. */
+  readonly vaultId?: string;
+}
+
+/**
+ * `birthDate` is `YYYY-MM-DD` when the provider stores a date; `country` is as stored. `address`
+ * is the whole address on one line, given instead of its parts when the provider has no parts.
+ */
+export type SecretProviderIdentityValues = Partial<Record<SecretProviderIdentityField, string>>;
+
+/** Optional: a provider that can fill personal details into sign-up forms. */
+export interface SecretProviderIdentities<Config = unknown> {
+  /** `undefined` when the provider could not be read. */
+  readonly list: (
+    config: Config,
+  ) => Effect.Effect<
+    ReadonlyArray<SecretProviderIdentity> | undefined,
+    never,
+    SecretProviderDriverServices
+  >;
+  readonly read: (
+    config: Config,
+    identity: SecretProviderIdentity,
+  ) => Effect.Effect<SecretProviderIdentityValues | undefined, never, SecretProviderDriverServices>;
+}
+
 export interface SecretProviderDriver {
   readonly kind: SecretProviderKind;
   readonly definition: SecretProviderDefinition;
@@ -57,6 +105,7 @@ export interface SecretProviderDriver {
     references: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<string | undefined>, never, SecretProviderDriverServices>;
   readonly logins?: SecretProviderLogins;
+  readonly identities?: SecretProviderIdentities;
 }
 
 export const defineSecretProviderDriver = <Config>(driver: {
@@ -67,9 +116,11 @@ export const defineSecretProviderDriver = <Config>(driver: {
     references: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<string | undefined>, never, SecretProviderDriverServices>;
   readonly logins?: SecretProviderLogins<Config>;
+  readonly identities?: SecretProviderIdentities<Config>;
 }): SecretProviderDriver => {
   const isConfig = Schema.is(driver.definition.configSchema);
   const logins = driver.logins;
+  const identities = driver.identities;
   return {
     kind: driver.kind,
     definition: driver.definition,
@@ -85,6 +136,16 @@ export const defineSecretProviderDriver = <Config>(driver: {
               isConfig(config) ? logins.list(config) : Effect.sync(() => undefined),
             read: (config, login, fields) =>
               isConfig(config) ? logins.read(config, login, fields) : Effect.sync(() => undefined),
+          },
+        }),
+    ...(identities === undefined
+      ? {}
+      : {
+          identities: {
+            list: (config) =>
+              isConfig(config) ? identities.list(config) : Effect.sync(() => undefined),
+            read: (config, identity) =>
+              isConfig(config) ? identities.read(config, identity) : Effect.sync(() => undefined),
           },
         }),
   };

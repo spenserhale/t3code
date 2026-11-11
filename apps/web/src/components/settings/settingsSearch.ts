@@ -894,6 +894,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     secretsFeatureOnly: true,
   },
   {
+    id: "browser-identity-read",
+    title: "Identity details for other browsers",
+    to: "/settings/browser",
+    searchTerms: [
+      "identity sign up form name email phone address personal details read agent chrome codex computer use approval",
+    ],
+    secretsFeatureOnly: true,
+  },
+  {
     id: "device-sources",
     title: "Device sources",
     to: "/settings/devices",

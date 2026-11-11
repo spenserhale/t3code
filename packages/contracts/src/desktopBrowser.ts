@@ -7,6 +7,12 @@ const TabKey = {
   tabId: TrimmedNonEmptyString,
 };
 
+/** Reading an identity for the agent involves no tab. */
+const ApprovalKey = {
+  threadId: TrimmedNonEmptyString,
+  tabId: Schema.optional(TrimmedNonEmptyString),
+};
+
 export const DesktopBrowserEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("attached"), ...TabKey }),
   /** Its `<webview>` went away: closed, crashed, swapped, or devtools took the debugger. */
@@ -14,7 +20,7 @@ export const DesktopBrowserEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("cdp"), ...TabKey, message: Schema.String }),
   Schema.Struct({
     type: Schema.Literal("loginApproval"),
-    ...TabKey,
+    ...ApprovalKey,
     requestId: TrimmedNonEmptyString,
     approved: Schema.Boolean,
   }),
@@ -37,15 +43,20 @@ export const DesktopBrowserCommand = Schema.Union([
     threadId: TrimmedNonEmptyString,
     active: Schema.Boolean,
   }),
-  /** Ask the user, in a native dialog, before a password manager login is filled into the tab. */
+  /**
+   * Ask the user, in a native dialog, before a password manager login or identity is filled into
+   * the tab, or before an identity is shown to the agent (no tab, no origin).
+   */
   Schema.Struct({
     type: Schema.Literal("loginApproval"),
-    ...TabKey,
+    ...ApprovalKey,
     requestId: TrimmedNonEmptyString,
+    kind: Schema.optional(Schema.Literals(["login", "identity", "identityRead"])),
     providerLabel: Schema.String,
+    /** The saved item's title, a login's or an identity's. */
     loginTitle: Schema.String,
     vault: Schema.optional(Schema.String),
-    origin: Schema.String,
+    origin: Schema.optional(Schema.String),
     threadTitle: Schema.optional(Schema.String),
     agent: Schema.optional(Schema.String),
     scope: Schema.Literals(["request", "thread", "application"]),

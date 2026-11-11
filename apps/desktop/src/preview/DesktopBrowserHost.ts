@@ -488,12 +488,14 @@ export const make = Effect.gen(function* () {
         fills.set(id, filled);
         return;
       }
-      const tab = tabs.get(keyOf(command.value));
       if (command.value.type === "loginApproval") {
         const { threadId, tabId, requestId } = command.value;
-        // A tab the desktop does not show, such as an agent's headless tab, is asked about too.
+        // A tab the desktop does not show, such as an agent's headless tab, is asked about too;
+        // reading an identity names no tab at all.
+        const guest =
+          tabId === undefined ? undefined : tabs.get(keyOf({ threadId, tabId }))?.debuggee;
         const ask = Option.isSome(loginApproval)
-          ? loginApproval.value.ask(tab?.debuggee.webContents, command.value)
+          ? loginApproval.value.ask(guest?.webContents, command.value)
           : Effect.succeed(false);
         runFork(
           ask.pipe(
@@ -510,6 +512,7 @@ export const make = Effect.gen(function* () {
         );
         return;
       }
+      const tab = tabs.get(keyOf(command.value));
       if (!tab) return;
       if (command.value.type === "pointer") {
         const { threadId, tabId, phase, x, y } = command.value;
