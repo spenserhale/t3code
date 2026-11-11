@@ -98,6 +98,16 @@ export const fillLogin = async (
     return { frameCovered, targets };
   };
 
+  const lacks = (
+    login: BrowserSecretAccess.SecretItem,
+    values: Readonly<Partial<Record<PreviewLoginField, string>>>,
+  ) => {
+    const absent = fields.filter((field) => values[field] === undefined);
+    return absent.length === 0
+      ? undefined
+      : `The login "${login.title}" has no ${absent.join(" or ")}.`;
+  };
+
   /** The document a fill may go into: no recording, and no agent script in it. */
   const fillableDocument = async () => {
     if (tab.recording || tab.recordingStart) {
@@ -121,10 +131,8 @@ export const fillLogin = async (
     values: Readonly<Partial<Record<PreviewLoginField, string>>>,
     revision: string,
   ): Promise<PreviewAutomationFillLoginResult> => {
-    const absent = fields.filter((field) => values[field] === undefined);
-    if (absent.length > 0) {
-      throw loginError(`The login "${login.title}" has no ${absent.join(" or ")}.`);
-    }
+    const lacking = lacks(login, values);
+    if (lacking !== undefined) throw loginError(lacking);
     const unsafe = fields.filter(
       (field) => field !== "username" && !scrubbable(values[field] ?? ""),
     );
@@ -200,6 +208,7 @@ export const fillLogin = async (
           BrowserLogins.loginCoversPage(login.urls, pageUrl)
             ? undefined
             : notForThisSite(login.title),
+        lacks,
         relay: {
           ask: { kind: "login", threadId: tab.threadId, ...requester, origin, fields },
           values: (values) =>

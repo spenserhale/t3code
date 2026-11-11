@@ -96,55 +96,75 @@ describe("SecretRelay", () => {
         const relay = yield* SecretRelay.SecretRelay;
         const laptop = yield* subscriber(relay, ["login"]);
         const desktop = yield* subscriber(relay, ["login"], "desktop");
-        const ask = Effect.gen(function* () {
-          const call = yield* relay.request(loginAsk, 60_000).pipe(Effect.forkScoped);
-          const { requestId } = yield* takeRequest(laptop.items);
-          const answer = (device: string, answer: SecretRelayAnswer) =>
-            relay.answer(requestId, answer, device);
-          const result = Fiber.join(call).pipe(
-            Effect.tap(() =>
-              Queue.take(laptop.items).pipe(
-                Effect.map((item) => assert.deepStrictEqual(item, { type: "ended", requestId })),
+        const ask = (accepts?: Parameters<typeof relay.request>[2]) =>
+          Effect.gen(function* () {
+            const call = yield* relay.request(loginAsk, 60_000, accepts).pipe(Effect.forkScoped);
+            const { requestId } = yield* takeRequest(laptop.items);
+            const answer = (device: string, answer: SecretRelayAnswer) =>
+              relay.answer(requestId, answer, device);
+            const result = Fiber.join(call).pipe(
+              Effect.tap(() =>
+                Queue.take(laptop.items).pipe(
+                  Effect.map((item) => assert.deepStrictEqual(item, { type: "ended", requestId })),
+                ),
               ),
-            ),
-          );
-          return { answer, result };
-        });
+            );
+            return { answer, result };
+          });
         const locked = { type: "unavailable", message: "1Password is locked." } as const;
 
         // A refusal does not wait for the laptop.
-        const refused = yield* ask;
+        const refused = yield* ask();
         yield* refused.answer("desktop", { type: "denied" });
         assert.deepStrictEqual(yield* refused.result, { type: "denied" });
 
         // A quick "none" on the laptop does not beat the user allowing on the desktop.
-        const allowed = yield* ask;
+        const allowed = yield* ask();
         yield* allowed.answer("laptop", { type: "none" });
         const choose = { type: "choose", candidates: [] } as const;
         yield* allowed.answer("desktop", choose);
         assert.deepStrictEqual(yield* allowed.result, choose);
 
-        const missing = yield* ask;
+        const missing = yield* ask();
         yield* missing.answer("laptop", locked);
         yield* missing.answer("desktop", { type: "none" });
         assert.deepStrictEqual(yield* missing.result, { type: "none" });
 
-        const unavailable = yield* ask;
+        const unavailable = yield* ask();
         yield* unavailable.answer("laptop", locked);
         yield* unavailable.answer("desktop", { type: "unavailable", message: "No app." });
         assert.deepStrictEqual(yield* unavailable.result, locked);
 
+        // Values the caller does not accept, such as a login without the one-time code asked
+        // for, are that device finding nothing: the desktop's request stays open.
+        const login = (values: Readonly<Record<string, string>>): SecretRelayAnswer => ({
+          type: "values",
+          item: { id: "device:work/g1", title: "Grafana", urls: ["https://grafana.example.com"] },
+          values: Object.fromEntries(
+            Object.entries(values).map(([field, value]) => [field, Redacted.make(value)]),
+          ),
+        });
+        const withCode = login({ password: "hunter2", totp: "123456" });
+        const lacking = yield* ask((answer) => "totp" in answer.values);
+        yield* lacking.answer("laptop", login({ password: "hunter2" }));
+        yield* lacking.answer("desktop", withCode);
+        assert.deepStrictEqual(yield* lacking.result, withCode);
+        const neither = yield* ask((answer) => "totp" in answer.values);
+        yield* neither.answer("laptop", login({ password: "hunter2" }));
+        yield* neither.answer("desktop", locked);
+        assert.deepStrictEqual(yield* neither.result, { type: "none" });
+
         // A device is still waited for while another of its subscriptions has the kind, as
         // after a reconnect.
         const reconnected = yield* subscriber(relay, ["login"], "desktop");
-        const reconnecting = yield* ask;
+        const reconnecting = yield* ask();
         yield* reconnecting.answer("laptop", { type: "none" });
         yield* desktop.leave;
         yield* reconnecting.answer("desktop", choose);
         assert.deepStrictEqual(yield* reconnecting.result, choose);
 
         // Once it has none left, the laptop's answer stands.
-        const leaving = yield* ask;
+        const leaving = yield* ask();
         yield* leaving.answer("laptop", { type: "none" });
         yield* reconnected.leave;
         assert.deepStrictEqual(yield* leaving.result, { type: "none" });

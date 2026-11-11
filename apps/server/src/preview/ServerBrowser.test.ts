@@ -3269,6 +3269,49 @@ it.live("what a service account cannot read goes on to the user's device", () =>
   );
 });
 
+it.live("a login without a field asked for is passed over for a source that has it", () => {
+  // Work's service account holds the username alone.
+  const server = loginServer(DesktopChannel.layer, {
+    unattended: true,
+    secret: (field) => (field === "password" ? "" : `${field}-value`),
+  });
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const device = yield* connectedDevice([
+          deviceLogin("device:personal/p1", "device-pw"),
+          // An older device answers with whatever it read.
+          {
+            type: "values",
+            item: { id: "device:old/o1", title: "Old", urls: ["https://good.test"] },
+            values: { username: Redacted.make("old-user") },
+          },
+          { type: "none" },
+        ]);
+        const { invoke } = yield* openLoginTab;
+        const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
+        expect(filled).toMatchObject({ status: "filled", login: { account: "Personal" } });
+        expect(yield* passwordField(context)).toEqual({ value: "device-pw", security: "disc" });
+        expect(device).toHaveLength(1);
+
+        // When nobody down the order has the password either, the login found says so.
+        yield* invoke("navigate", { url: "https://good.test/login" });
+        for (const asked of [2, 3]) {
+          const lacking = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(lacking.message).toContain('The login "Good" has no password.');
+          expect(device).toHaveLength(asked);
+        }
+        // A login the agent chose is never swapped for another account's.
+        const chosen = yield* invoke("fillLogin", { login: "work/g1" }).pipe(Effect.flip);
+        expect(chosen.message).toContain('The login "Good" has no password.');
+        expect(device).toHaveLength(3);
+        expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
 it.live("this machine's password managers having nothing go on to the user's device", () => {
   const asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }> =
     [];
