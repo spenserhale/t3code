@@ -19,6 +19,7 @@ import { CommandPalette } from "../components/CommandPalette";
 import { CustomSnoozeDialogHost } from "../components/CustomSnoozeDialog";
 import { GuestShareDialogHost } from "../components/chat/GuestShareControls";
 import { AddProjectToMachineDialogHost } from "../components/AddProjectToMachineDialog";
+import { ContinueOnMachineDialogHost } from "../components/ContinueOnMachineDialog";
 import { ConfirmDialogHost } from "../components/ConfirmDialogHost";
 import { JiraHost } from "../components/jira/JiraHost";
 import { DevReplayHost } from "../components/DevReplayHost";
@@ -214,6 +215,7 @@ function RootRouteBranch() {
         <ProjectCloneToastCoordinator />
         <AddProjectToMachineDialogHost />
         {primaryEnvironmentAuthenticated ? <JiraHost /> : null}
+        <ContinueOnMachineDialogHost />
         {import.meta.env.DEV && primaryEnvironmentAuthenticated ? <DevReplayHost /> : null}
         {primaryEnvironmentAuthenticated ? (
           <EventRouter skipInitialBootstrapNavigation={returningFromWelcome} />

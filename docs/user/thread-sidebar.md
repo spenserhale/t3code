@@ -58,6 +58,51 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Continue on another machine
+
+Hand a thread to another machine you have connected. Open the thread's menu in the header or on
+its sidebar row, pick **Continue on…**, and choose the machine. The command palette has
+**Continue on another machine** for the open thread. This is available on web and desktop.
+
+T3 Code commits the thread's uncommitted changes as `WIP: hand off to <machine>`, pushes the
+branch, and opens a draft on the other machine: in the same project, on a new worktree that
+continues that branch under the same name, with the conversation attached as a file and a short
+note naming the thread, the machine and the branch. Later pushes from there update the same branch
+and pull request. Add your instructions and send. The original thread settles when you send the
+first message there; **Undo** in the toast, or **Un-settle** on the thread, reverses that.
+
+- From the default branch, the work goes to a new `handoff/<thread title>` branch first. The
+  default branch is never pushed, and a repository that does not say which branch is its default
+  is treated the same way for every branch.
+- The other machine needs a checkout of the same repository, at the same place in it for a project
+  inside a larger repository. If it does not have one yet, the dialog offers **Add project to**
+  that machine; if it has several, the dialog asks which to use.
+- The other machine must be able to reach the remote the branch was pushed to. The dialog checks
+  that it can see the branch, fetches it there, and confirms the worktree holds the commit that was
+  pushed before it opens the draft. It stops if it cannot.
+- A branch of the same name that the other machine already has is used only if no worktree has it
+  checked out, it tracks that remote branch, it compares against the same base, and it can catch
+  up to the remote without a merge; otherwise the dialog stops and leaves it alone.
+- The files the dialog lists are the ones that are committed. If they change before the hand-off
+  starts, nothing is pushed and the dialog shows the new list for you to confirm.
+- A project without a git remote, or a thread without a project, hands over only the conversation,
+  into a thread without a project on the other machine.
+- The thread must not be working or waiting on an approval. If the remote has newer commits on
+  the branch, the push is refused and the dialog says so; pull, then hand off again.
+- If the source machine is away when you send, or the thread is busy, it is settled later; the
+  hand-off is kept until it has been.
+- Sending to several models at once starts each one on its own worktree and branch, since a branch
+  can be checked out in one worktree only. The original thread is settled when the first of them
+  starts.
+- The conversation is a copy. The thread, its provider session and its checkpoints stay where they
+  were, and the new thread starts a fresh provider session.
+
+An agent can do the same with its `t3_thread_continue_on_machine` tool, with the same checks: it
+commits, pushes and starts the thread on the other machine, and the original settles when the agent's
+turn ends. This needs Linked environments (**Settings → Labs**) and a
+[link](./remote-access.md#link-another-environment) to the other machine, which has to run a
+version of T3 Code that has the tool.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work.
