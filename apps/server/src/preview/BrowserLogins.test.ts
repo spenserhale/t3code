@@ -903,6 +903,7 @@ describe("SecretRelayDevice", () => {
       endpoint: () => Effect.die("The device draws no tab here."),
       pointer: () => Effect.void,
       turn: () => Effect.void,
+      loginFilled: () => Effect.void,
       approveLogin: (_key, _timeoutMs, prompt) =>
         Effect.sync(() => {
           prompts.push(prompt);

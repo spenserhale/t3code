@@ -14,9 +14,7 @@ import {
   fillCovered,
   findLoginTargets,
   loginError,
-  markFilled,
   scrubbable,
-  wasScripted,
 } from "./ServerBrowserLogin.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
@@ -31,6 +29,13 @@ export interface LoginFillContext extends BrowserSecretAccess.SecretAccessContex
     | "recordApproval"
     | "check"
   >;
+  /** Whether the agent ran script in this document of the tab, where it could hook a fill. */
+  readonly wasScripted: (document: string) => boolean;
+  /**
+   * Marks this document of the tab as holding a filled login: script, images and recording stay
+   * off there, and a desktop drawing the tab is told before any write.
+   */
+  readonly markFilled: (document: string) => Promise<void>;
   /** Adds filled values to what later results are scrubbed of. */
   readonly rememberSecrets: (values: ReadonlyArray<string>) => void;
 }
@@ -116,7 +121,7 @@ export const fillLogin = async (
       );
     }
     const document = await documentId(tab.cdp);
-    if (wasScripted(tab.page, document)) {
+    if (context.wasScripted(document)) {
       throw loginError(
         "preview_evaluate ran in this page, so a login cannot be filled here. Reload the page with preview_navigate, then call preview_fill_login again.",
       );
@@ -150,7 +155,7 @@ export const fillLogin = async (
     }
     await step(logins.check(revision));
     // Marked before the first write, so even a fill that fails partway blocks script here.
-    markFilled(tab.page, document);
+    await context.markFilled(document);
     context.rememberSecrets(
       fields.flatMap((field) => (field === "username" ? [] : [values[field] ?? ""])),
     );
@@ -165,6 +170,7 @@ export const fillLogin = async (
         target,
         value: values[field] ?? "",
         frameCovered: found.frameCovered,
+        document,
         deadline,
       });
     }
