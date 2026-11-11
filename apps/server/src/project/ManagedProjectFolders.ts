@@ -5,6 +5,7 @@ import {
   type ThreadId,
   VcsProcessSpawnError,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { newProjectFolderName } from "@t3tools/shared/path";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -22,7 +23,9 @@ import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { defaultNewProjectsRoot, resolveNewProjectsRoot } from "./newProjectsDirectory.ts";
 import * as ProjectService from "./ProjectService.ts";
 
 export class ScratchUnavailableError extends Schema.TaggedError<ScratchUnavailableError>()(
@@ -84,7 +87,19 @@ export class NamedProjectCreateError extends Schema.TaggedError<NamedProjectCrea
   }
 }
 
-export type NamedProjectError = NamedProjectFolderError | NamedProjectCreateError;
+export class NamedProjectSettingsError extends Schema.TaggedError<NamedProjectSettingsError>()(
+  "NamedProjectSettingsError",
+  { cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return "Failed to read where new projects go.";
+  }
+}
+
+export type NamedProjectError =
+  | NamedProjectFolderError
+  | NamedProjectCreateError
+  | NamedProjectSettingsError;
 
 export class ManagedProjectFolders extends Context.Service<
   ManagedProjectFolders,
@@ -97,6 +112,7 @@ export class ManagedProjectFolders extends Context.Service<
       readonly threadId: ThreadId;
       readonly text: string;
     }) => Effect.Effect<Option.Option<string>, ScratchFolderError>;
+    /** Where named projects go while `newProjectsDirectory` is empty. */
     readonly namedProjectsRoot: string;
     /** Removes failed/cancelled creations' folders only while no project owns them. */
     readonly createNamedProject: (input: { readonly name: string }) => Effect.Effect<
@@ -209,6 +225,7 @@ const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver.GitVcsDriver;
   const projects = yield* ProjectService.ProjectService;
   const random = yield* SecureRandom.SecureRandom;
+  const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
 
   // Non-recursive mkdir atomically claims a name; racers move on after AlreadyExists.
   const claimFreeFolder = Effect.fnUntraced(function* <E>(
@@ -341,36 +358,48 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const namedProjectsRoot = path.resolve(config.baseDir, "projects");
+  const namedProjectsRoot = defaultNewProjectsRoot(
+    config.baseDir,
+    path,
+    yield* HostProcess.HomeDirectory,
+  );
+
+  // Read at each creation, so a changed setting applies without a restart.
+  const currentNamedProjectsRoot = Effect.fn("ManagedProjectFolders.currentNamedProjectsRoot")(
+    function* () {
+      if (Option.isNone(serverSettings)) return namedProjectsRoot;
+      const settings = yield* serverSettings.value.getSettings.pipe(
+        Effect.mapError((cause) => new NamedProjectSettingsError({ cause })),
+      );
+      return resolveNewProjectsRoot(
+        settings.newProjectsDirectory,
+        namedProjectsRoot,
+        path,
+        yield* HostProcess.HomeDirectory,
+      );
+    },
+  );
 
   const claimNamedFolder = Effect.fn("ManagedProjectFolders.claimNamedFolder")(function* (
     name: string,
   ) {
+    const root = yield* currentNamedProjectsRoot();
     yield* fileSystem
-      .makeDirectory(namedProjectsRoot, { recursive: true })
-      .pipe(
-        Effect.mapError(
-          (cause) => new NamedProjectFolderError({ folder: namedProjectsRoot, cause }),
-        ),
-      );
+      .makeDirectory(root, { recursive: true })
+      .pipe(Effect.mapError((cause) => new NamedProjectFolderError({ folder: root, cause })));
     const folderName = newProjectFolderName(name);
     const claimed = yield* claimFreeFolder(
       (attempt) =>
         Effect.succeed(
           attempt > MAX_NAMED_FOLDER_ATTEMPTS
             ? Option.none()
-            : Option.some(
-                path.join(
-                  namedProjectsRoot,
-                  attempt === 1 ? folderName : `${folderName}-${attempt}`,
-                ),
-              ),
+            : Option.some(path.join(root, attempt === 1 ? folderName : `${folderName}-${attempt}`)),
         ),
       (folder, cause) => new NamedProjectFolderError({ folder, cause }),
     );
     if (Option.isSome(claimed)) return claimed.value;
     return yield* new NamedProjectFolderError({
-      folder: path.join(namedProjectsRoot, folderName),
+      folder: path.join(root, folderName),
       cause: `Every folder name for "${folderName}" is taken.`,
     });
   });
