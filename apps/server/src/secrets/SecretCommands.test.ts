@@ -7,6 +7,7 @@ import {
   SecretProviderId,
   SecretProviderKind,
   type SecretCommandInput,
+  type SecretRelayAnswer,
   type SecretRelayStreamItem,
   ThreadId,
 } from "@t3tools/contracts";
@@ -439,6 +440,48 @@ describe("SecretCommands", () => {
         `No password manager can open ${OPENAI}.`,
         "The user's device could not answer: Personal did not return it.",
       ]);
+    }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+  });
+
+  it.effect("passes over a device that answers without the secret for one that has it", () => {
+    const fixture = setup();
+    const item = { id: OPENAI, title: OPENAI, urls: [] };
+    return Effect.gen(function* () {
+      const relay = yield* SecretRelay.SecretRelay;
+      const requests = yield* Queue.unbounded<string>();
+      yield* relay.subscribe(["secretReference"], "old").pipe(
+        Stream.runForEach((asked) =>
+          asked.type === "request" ? Queue.offer(requests, asked.request.requestId) : Effect.void,
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      yield* relay
+        .subscribe(["secretReference"], "laptop")
+        .pipe(Stream.runDrain, Effect.forkScoped({ startImmediately: true }));
+      const answered = (laptop: SecretRelayAnswer) =>
+        Effect.gen(function* () {
+          const call = yield* run({ command: ["openai", "models", "list"], stdin: OPENAI }).pipe(
+            Effect.forkChild({ startImmediately: true }),
+          );
+          const requestId = yield* Queue.take(requests);
+          // An older device answers first, with whatever it read.
+          yield* relay.answer(requestId, { type: "values", item, values: {} }, "old");
+          yield* relay.answer(requestId, laptop, "laptop");
+          return yield* Fiber.join(call);
+        });
+
+      const result = yield* answered({
+        type: "values",
+        item,
+        values: { value: Redacted.make("sk-from-device") },
+      });
+      assert.deepStrictEqual(result.sources, { stdin: { type: "device" } });
+      assert.deepStrictEqual(fixture.processes.spawned[0]?.stdin, ["sk-from-device\n"]);
+
+      // On no device at all, it ends as it does when nobody has the secret.
+      const nobody = yield* answered({ type: "none" }).pipe(Effect.flip);
+      assert.strictEqual(nobody.message, `No password manager can open ${OPENAI}.`);
+      assert.lengthOf(fixture.processes.spawned, 1);
     }).pipe(Effect.scoped, Effect.provide(fixture.layer));
   });
 
