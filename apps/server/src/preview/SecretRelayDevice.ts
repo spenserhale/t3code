@@ -135,9 +135,12 @@ const make = Effect.gen(function* () {
         if (!BrowserLogins.loginCoversPage(login.urls, page)) {
           return unavailable(`The login "${login.title}" is saved for another site.`);
         }
-        const values = yield* logins.read(revision, login, [
-          ...new Set(request.fields ?? DEFAULT_FIELDS),
-        ]);
+        const fields = [...new Set(request.fields ?? DEFAULT_FIELDS)];
+        const values = yield* logins.read(revision, login, fields);
+        // Another device may hold what this login lacks, so only a named one goes back short.
+        if (item === undefined && fields.some((field) => values[field] === undefined)) {
+          return { type: "none" } as const;
+        }
         return {
           type: "values",
           item: { ...summary(login), urls: login.urls },

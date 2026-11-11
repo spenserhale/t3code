@@ -34,6 +34,8 @@ export class SecretRelayError extends Schema.TaggedError<SecretRelayError>()("Se
 /** A request as its caller makes it; the relay names it and sets when it expires. */
 export type SecretRelayAsk = Omit<SecretRelayRequest, "requestId" | "expiresAt">;
 
+export type SecretRelayValues = Extract<SecretRelayAnswer, { readonly type: "values" }>;
+
 export class SecretRelay extends Context.Service<
   SecretRelay,
   {
@@ -56,10 +58,14 @@ export class SecretRelay extends Context.Service<
       answer: SecretRelayAnswer,
       device: string,
     ) => Effect.Effect<void>;
-    /** Fails at once when no subscriber answers this kind, and when no answer comes in time. */
+    /**
+     * Fails at once when no subscriber answers this kind, and when no answer comes in time. Values
+     * `accepts` turns down, as lacking what was asked, count as that device answering `none`.
+     */
     readonly request: (
       ask: SecretRelayAsk,
       timeoutMs: number,
+      accepts?: (answer: SecretRelayValues) => boolean,
     ) => Effect.Effect<SecretRelayAnswer, SecretRelayError>;
   }
 >()("t3/secrets/SecretRelay") {}
@@ -77,6 +83,7 @@ interface Pending {
   readonly answer: Deferred.Deferred<SecretRelayAnswer>;
   /** Devices subscribed for its kind when it started that have neither answered nor left. */
   readonly waiting: Set<string>;
+  readonly accepts: ((answer: SecretRelayValues) => boolean) | undefined;
   inconclusive: Inconclusive | undefined;
 }
 
@@ -135,10 +142,12 @@ const make = () => {
     );
 
   const answer: SecretRelay["Service"]["answer"] = Effect.fn("SecretRelay.answer")(
-    function* (requestId, answer, device) {
-      yield* Effect.annotateCurrentSpan({ "secret_relay.answer": answer.type });
+    function* (requestId, given, device) {
+      yield* Effect.annotateCurrentSpan({ "secret_relay.answer": given.type });
       const waiting = pending.get(requestId);
       if (waiting === undefined) return;
+      const answer: SecretRelayAnswer =
+        given.type === "values" && waiting.accepts?.(given) === false ? { type: "none" } : given;
       if (answer.type === "none" || answer.type === "unavailable") {
         if (answer.type === "none" || waiting.inconclusive === undefined) {
           waiting.inconclusive = answer;
@@ -151,7 +160,7 @@ const make = () => {
   );
 
   const request: SecretRelay["Service"]["request"] = Effect.fn("SecretRelay.request")(
-    function* (ask, timeoutMs) {
+    function* (ask, timeoutMs, accepts) {
       yield* Effect.annotateCurrentSpan({ "secret_relay.kind": ask.kind });
       const devices = devicesFor(ask.kind);
       if (devices.size === 0) {
@@ -169,6 +178,7 @@ const make = () => {
           request: relayed,
           answer: answered,
           waiting: devices,
+          accepts,
           inconclusive: undefined,
         });
         send(ask.kind, { type: "request", request: relayed });
