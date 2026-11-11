@@ -182,6 +182,7 @@ import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as TriageService from "./triage/TriageService.ts";
+import * as SidebarStore from "./sidebar/SidebarStore.ts";
 import * as DesktopTelemetryReceiver from "./resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClient.ts";
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
@@ -771,6 +772,8 @@ const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   Layer.provideMerge(RemoteOpenTargets.layer),
   Layer.provideMerge(DirectEndpoints.layer),
   Layer.provideMerge(ServerLifecycleEvents.layer),
+  // Fork data outside the core schema; opened only when a fork feature first reads it.
+  Layer.provideMerge(SidebarStore.layer),
   Layer.provide(NetService.layer),
 );
 
