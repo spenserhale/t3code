@@ -988,6 +988,50 @@ describe("SecretRelayDevice", () => {
     },
   );
 
+  it.effect(
+    "set to refuse, reads only its service accounts and asks nobody when it has none",
+    () => {
+      const refusing = { ...bothProviders, escalation: "refuse" } as const;
+      const attended = makeService({ work: [github] }, refusing);
+      const asksNobody = deviceServer(attended, { available: true, answers: ["thread"] });
+      const held = { work: [github], personal: [github] };
+      const mixed = makeService(held, refusing, {}, undefined, ["work"]);
+      const asksForWork = deviceServer(mixed, { available: true, answers: ["once"] });
+      return Effect.gen(function* () {
+        yield* Effect.gen(function* () {
+          const relay = yield* SecretRelayDevice.SecretRelayDevice;
+          const answer = yield* relay.resolve({ request: request(), requester: linkMini });
+          assert.strictEqual(answer.type, "unavailable");
+          // Its own setting holds for another machine's request: no question, nothing touched.
+          assert.deepStrictEqual(asksNobody.prompts, []);
+          assert.deepStrictEqual(
+            { list: attended.calls.list, read: attended.calls.read },
+            { list: 0, read: [] },
+          );
+        }).pipe(Effect.provide(asksNobody.layer));
+        yield* Effect.gen(function* () {
+          const relay = yield* SecretRelayDevice.SecretRelayDevice;
+          const answer = yield* relay.resolve({ request: request(), requester: linkMini });
+          assert.strictEqual(answer.type === "values" && answer.item.id, "device:work/h1");
+          // The password manager a person unlocks is not named, listed or read, even when chosen.
+          const chosen = request({ item: "device:personal/h1" });
+          assert.strictEqual(
+            (yield* relay.resolve({ request: chosen, requester: linkMini })).type,
+            "unavailable",
+          );
+          assert.deepStrictEqual(
+            asksForWork.prompts.map((prompt) => prompt.providerLabel),
+            ["Work"],
+          );
+          assert.deepStrictEqual(
+            { list: mixed.calls.list, read: mixed.calls.read },
+            { list: 1, read: ["work:h1@v9"] },
+          );
+        }).pipe(Effect.provide(asksForWork.layer));
+      });
+    },
+  );
+
   it.effect("offers device ids to choose from, and reads only the one chosen once allowed", () => {
     const service = makeService({ work: [github], personal: [github] }, bothProviders);
     const device = deviceServer(service, { available: true, answers: ["once", false, "once"] });

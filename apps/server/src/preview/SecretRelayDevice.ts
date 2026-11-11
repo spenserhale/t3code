@@ -64,9 +64,18 @@ const make = Effect.gen(function* () {
       if (request.kind === "login" && origin === undefined) {
         return unavailable("The request did not name the site.");
       }
-      const { revision, providers } = yield* logins.escalation;
-      if (providers.length === 0) {
+      const { revision, escalation, providers: chosen } = yield* logins.escalation;
+      if (chosen.length === 0) {
         return unavailable("No password manager is chosen for browser logins on that device.");
+      }
+      // This device's own setting holds for another machine's request: set to refuse, it uses its
+      // service accounts alone, and with none it asks nobody.
+      const providers =
+        escalation === "refuse" ? chosen.filter(({ unattended }) => unattended) : chosen;
+      if (providers.length === 0) {
+        return unavailable(
+          "That device is set not to ask its user, and no service account is chosen for browser logins there.",
+        );
       }
       const item = request.item === undefined ? undefined : ownId(request.item);
       // An item this device offered earlier is read from its own password manager only.
@@ -76,7 +85,11 @@ const make = Effect.gen(function* () {
         return unavailable("That item could not be read; choose again.");
       }
       const reach: BrowserLogins.BrowserLoginReach =
-        provider === undefined ? "all" : { provider: provider.id };
+        provider !== undefined
+          ? { provider: provider.id }
+          : escalation === "refuse"
+            ? "unattended"
+            : "all";
       const reference = item === undefined ? request.reference : undefined;
       const kind: BrowserLogins.BrowserApprovalKind =
         request.kind === "login"
