@@ -269,6 +269,7 @@ const make = Effect.gen(function* () {
       ...(caller.threadTitle ? { threadTitle: caller.threadTitle } : {}),
       ...(caller.agent ? { agent: caller.agent } : {}),
     };
+    const empty = `${reference} came back without a value.`;
     const found = yield* BrowserSecretAccess.resolve(
       access,
       { kind: "secretReference", threadId: caller.threadId, ...requester, reference, deadline },
@@ -293,6 +294,8 @@ const make = Effect.gen(function* () {
                   : { type: "device" },
             })),
           ),
+        // A source that answers without the value is passed over, so it cannot end the request.
+        lacks: (_item, values) => (values === undefined ? empty : undefined),
         relay: {
           ask: { kind: "secretReference", threadId: caller.threadId, ...requester, command },
           values: ({ value }): Resolved | undefined =>
@@ -306,9 +309,7 @@ const make = Effect.gen(function* () {
     if (found.status !== "found") {
       return yield* refused(`No password manager can open ${reference}.`);
     }
-    if (found.values === undefined) {
-      return yield* refused(`The user's device did not return ${reference}.`);
-    }
+    if (found.values === undefined) return yield* refused(empty);
     return found.values;
   });
 
