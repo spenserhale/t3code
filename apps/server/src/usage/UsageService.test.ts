@@ -33,6 +33,7 @@ import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Scheduler from "effect/Scheduler";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -51,6 +52,9 @@ import * as AntigravityUsage from "../provider/Drivers/AntigravityUsage.ts";
 import * as ProviderHostLive from "../provider/ProviderHostLive.ts";
 import { totalTokens, type UsageRecord } from "@t3tools/provider-core/server/usage";
 import * as UsageService from "./UsageService.ts";
+import * as OpenRouterZdrRates from "./OpenRouterZdrRates.ts";
+import { buildMarketRates } from "./openRouterZdr.ts";
+import type { RateTable } from "./usagePricing.ts";
 import * as MuseSdk from "../../../../packages/provider-muse/src/server/sdk.ts";
 import { MuseUsageHome } from "@t3tools/provider-muse/server";
 import { makeScanCacheWriter, SCAN_CACHE_FILE_NAME } from "./usageScanCache.ts";
@@ -1815,6 +1819,90 @@ describe("UsageService", () => {
             ?.distinctSessions,
           1,
         );
+      }).pipe(Effect.scoped),
+  );
+
+  // The market's rates are held when the service starts, or arrive after it did.
+  it.live.each(["held at the start", "arriving later"] as const)(
+    "prices Ollama Cloud's models at the market rates %s, apart from the same model elsewhere",
+    (arrival) =>
+      Effect.gen(function* () {
+        const { settings, home } = yield* setup;
+        const directory = NodePath.join(home, "opencode", "storage", "message", "session-1");
+        const messages = {
+          priced: { providerID: "ollama-cloud", modelID: "gpt-oss:120b", cost: 0.05 },
+          unlisted: { providerID: "ollama-cloud", modelID: "mystery:7b", cost: 0.02 },
+          elsewhere: { providerID: "zai-coding-plan", modelID: "gpt-oss-120b" },
+          openRouterReported: {
+            providerID: "openrouter",
+            modelID: "anthropic/claude-sonnet-4.5",
+            cost: 0.07,
+          },
+          openRouterUnreported: { providerID: "openrouter", modelID: "openai/gpt-oss-120b" },
+        };
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(directory, { recursive: true });
+          for (const [id, fields] of Object.entries(messages)) {
+            await NodeFSP.writeFile(
+              NodePath.join(directory, `${id}.json`),
+              encodeUnknownJsonString({
+                id,
+                sessionID: "session-1",
+                role: "assistant",
+                time: { created: Date.parse("2026-08-01T10:00:00Z") },
+                tokens: { input: 1000, output: 100, cache: { read: 500, write: 0 } },
+                ...fields,
+              }),
+            );
+          }
+        });
+        const market = buildMarketRates(
+          new Map([
+            ["openai/gpt-oss-120b", { promptUsd: 1e-7, completionUsd: 4e-7, cacheReadUsd: 1e-8 }],
+          ]),
+        );
+        const held = yield* SubscriptionRef.make<RateTable>(
+          arrival === "held at the start" ? market : new Map(),
+        );
+        const service = yield* UsageService.make.pipe(
+          Effect.provide(
+            layerService({
+              prefix: "usage-service-ollama-cloud",
+              home,
+              settings,
+              ratesDocument: {
+                "claude-fable-5": { input_cost_per_token: 1e-5, output_cost_per_token: 5e-5 },
+              },
+            }),
+          ),
+          Effect.provideService(OpenRouterZdrRates.OpenRouterZdrRates, {
+            current: SubscriptionRef.get(held),
+            refresh: Effect.void,
+            changes: SubscriptionRef.changes(held),
+          }),
+        );
+        if (arrival === "arriving later") yield* SubscriptionRef.set(held, market);
+
+        const summary = yield* service.readSummary(WINDOW);
+        const bucket = (model: string) => summary.buckets.find((entry) => entry.model === model);
+        // The catalog's $0.05 is not what a plan cost; the market rate replaces it.
+        assert.strictEqual(bucket("ollama-cloud/gpt-oss:120b")?.costSource, "modelPriced");
+        assert.closeTo(
+          bucket("ollama-cloud/gpt-oss:120b")?.costUsd ?? -1,
+          1000 * 1e-7 + 500 * 1e-8 + 100 * 4e-7,
+          1e-12,
+        );
+        // A model with no market price keeps OpenCode's estimate.
+        assert.strictEqual(bucket("ollama-cloud/mystery:7b")?.costSource, "providerReported");
+        assert.strictEqual(bucket("ollama-cloud/mystery:7b")?.costUsd, 0.02);
+        // The market rates do not reach another provider's model of the same name.
+        assert.strictEqual(bucket("gpt-oss-120b")?.costSource, "unpriced");
+        // Nor to OpenRouter's: what OpenCode recorded stands, and a model it left unpriced stays so,
+        // though the market prices that model for Ollama Cloud.
+        assert.strictEqual(bucket("anthropic/claude-sonnet-4.5")?.costSource, "providerReported");
+        assert.strictEqual(bucket("anthropic/claude-sonnet-4.5")?.costUsd, 0.07);
+        assert.strictEqual(bucket("openai/gpt-oss-120b")?.costSource, "unpriced");
+        assert.strictEqual(summary.pricing.knownModels, 1);
       }).pipe(Effect.scoped),
   );
 

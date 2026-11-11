@@ -45,4 +45,40 @@ describe("server config forward compatibility", () => {
       }).usageLimits,
     ).toEqual({ ...usageLimits, subscriptions: [subscription] });
   });
+
+  it("reads the credit of a subscription, and drops only a credit it cannot read", () => {
+    const credit = {
+      allowanceUsd: 60,
+      balanceUsd: 41.2,
+      purchasedBalanceUsd: 25,
+      periodStart: "2026-10-15T09:30:00.000Z",
+      periodEnd: "2026-11-15T09:30:00.000Z",
+      planPriceUsd: 20,
+      openRouterValueUsd: 9.1,
+    };
+    const subscription = {
+      id: "ollama-cloud",
+      label: "Ollama Cloud",
+      credentialFingerprint: "ollama-fingerprint",
+      checkedAt: "2026-11-02T00:00:00.000Z",
+      windowIds: ["ollama_monthly"],
+    };
+    const decode = (entry: object) =>
+      decodeServerProvider({
+        ...baseProviderSnapshot,
+        usageLimits: {
+          checkedAt: "2026-11-02T00:00:00.000Z",
+          windows: [],
+          subscriptions: [entry],
+        },
+      }).usageLimits?.subscriptions;
+
+    expect(decode({ ...subscription, credit: { ...credit, future: true } })).toEqual([
+      { ...subscription, credit },
+    ]);
+    expect(decode(subscription)).toEqual([subscription]);
+    expect(decode({ ...subscription, credit: { ...credit, allowanceUsd: "sixty" } })).toEqual([
+      subscription,
+    ]);
+  });
 });

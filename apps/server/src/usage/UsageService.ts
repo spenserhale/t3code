@@ -25,6 +25,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
@@ -39,6 +40,8 @@ import type {
   TranscriptUsageFormat,
   UsageRecord,
 } from "@t3tools/provider-core/server/usage";
+import { OpenRouterZdrRates } from "./OpenRouterZdrRates.ts";
+import { withMarketRates, withoutCatalogCost } from "./openRouterZdr.ts";
 import { canonicalModelFilter, resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
@@ -156,6 +159,8 @@ export const make = Effect.gen(function* () {
   const hostEnvironment = yield* HostProcess.Environment;
   const hostname = yield* HostProcess.Hostname;
   const readerContext = yield* Effect.context<BuiltInUsageReadersEnv>();
+  // Optional, so a runtime without it prices Ollama Cloud's models from the LiteLLM table alone.
+  const market = yield* Effect.serviceOption(OpenRouterZdrRates);
 
   const fileCache: ScanCache = new Map();
   // Reads from concurrent windows can still hold the original record after it is corrected.
@@ -208,7 +213,13 @@ export const make = Effect.gen(function* () {
       Effect.map((value) => value.trim() || hostname),
       Effect.orElseSucceed(() => hostname),
     ));
-  let rates: RateTable = new Map();
+  let litellmRates: RateTable = new Map();
+  let marketRates: RateTable = new Map();
+  // LiteLLM's rates and Ollama Cloud's market rates: the table every reader prices with.
+  let rates: RateTable = litellmRates;
+  const publishRates = () => {
+    rates = withMarketRates(litellmRates, marketRates);
+  };
   let ratesFetchedAtMs: number | null = null;
   let ratesLastFailedAtMs: number | null = null;
   let ratesStatus: UsagePricing["status"] = "unavailable";
@@ -219,7 +230,7 @@ export const make = Effect.gen(function* () {
     source: LITELLM_RATES_URL,
     fetchedAt:
       ratesFetchedAtMs === null ? null : DateTime.formatIso(DateTime.makeUnsafe(ratesFetchedAtMs)),
-    knownModels: rates.size,
+    knownModels: litellmRates.size,
   });
 
   const fetchRates = (url: string, accept = "application/json") =>
@@ -247,7 +258,8 @@ export const make = Effect.gen(function* () {
       if (fromDisk !== null) {
         const parsed = parseRateTable(fromDisk.document);
         if (parsed.size > 0) {
-          rates = parsed;
+          litellmRates = parsed;
+          publishRates();
           ratesFetchedAtMs = fromDisk.fetchedAtMs;
           ratesStatus = "cached";
           if (now - fromDisk.fetchedAtMs < maxAgeMs) return;
@@ -263,11 +275,12 @@ export const make = Effect.gen(function* () {
     }
     if (fetched === null) {
       ratesLastFailedAtMs = yield* Clock.currentTimeMillis;
-      if (rates.size > 0) ratesStatus = "cached";
+      if (litellmRates.size > 0) ratesStatus = "cached";
       return;
     }
 
-    rates = fetched.parsed;
+    litellmRates = fetched.parsed;
+    publishRates();
     ratesFetchedAtMs = now;
     ratesLastFailedAtMs = null;
     ratesStatus = "fresh";
@@ -278,7 +291,26 @@ export const make = Effect.gen(function* () {
     );
   });
 
-  const ensureRates = (force: boolean) => ratesLock.withPermit(loadRates(force));
+  // Checking the rates also asks for the market's, which keeps itself fresh once it is asked.
+  const ensureRates = (force: boolean) =>
+    ratesLock
+      .withPermit(loadRates(force))
+      .pipe(
+        Effect.andThen(Option.isSome(market) ? Effect.asVoid(market.value.current) : Effect.void),
+      );
+
+  // Market rates reach `rates` as they arrive, so a reader that never checks them still has them.
+  if (Option.isSome(market)) {
+    yield* market.value.changes.pipe(
+      Stream.runForEach((held) =>
+        Effect.sync(() => {
+          marketRates = held;
+          publishRates();
+        }),
+      ),
+      Effect.forkScoped,
+    );
+  }
 
   const refreshRates = ensureRates(true).pipe(
     Effect.map(pricing),
@@ -714,6 +746,8 @@ export const make = Effect.gen(function* () {
       ],
       { concurrency: 2 },
     );
+    // The rates can be replaced while the scan runs; every record is priced with this table.
+    const scanRates = rates;
 
     const aggregator = new UsageAggregator({
       timeZone: input.timeZone,
@@ -721,7 +755,7 @@ export const make = Effect.gen(function* () {
       untilDay: input.untilDay,
       resolution: input.resolution ?? "day",
       ...hourlyWindow,
-      rates,
+      rates: scanRates,
       priceOverrides: createOverrideRateTable(settings.usagePriceOverrides),
       modelAliases: resolveModelAliases(settings.usageModelAliases),
       ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
@@ -815,7 +849,7 @@ export const make = Effect.gen(function* () {
         scannedFiles += 1;
         const eventOccurrences = new Map<string, number>();
         for (const rawRecord of file.records) {
-          const record = correctedRecord(rawRecord);
+          const record = withoutCatalogCost(correctedRecord(rawRecord), scanRates);
           let usageRecord = record;
           if (
             sharedSessionProviders.has(record.provider) &&

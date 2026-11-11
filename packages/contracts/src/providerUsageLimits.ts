@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 
 import {
   ForwardCompatibleArray,
+  ForwardCompatibleOptional,
   IsoDateTime,
   NonNegativeInt,
   TrimmedNonEmptyString,
@@ -28,15 +29,31 @@ export const ServerProviderResetCredits = Schema.Struct({
 });
 export type ServerProviderResetCredits = typeof ServerProviderResetCredits.Type;
 
+const Usd = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
+
 /**
- * One of the subscriptions a provider account holds, e.g. a Z.ai plan beside
- * OpenCode Go on one OpenCode account.
- *
- * `id` names the plan and is the same for every account on it. `windowIds`
- * says which of the account's `windows` are this subscription's; the windows
- * themselves stay in that one list; an id is unique within it, and a window
- * belongs to at most one subscription. `checkedAt` is its own, because a read
- * that failed keeps the last good result while its siblings move on.
+ * The credit pool a subscription draws on for one billing period, e.g. Ollama
+ * Cloud's included credit. Amounts are USD. It rides inside a subscription, so
+ * only a client that asked for subscriptions is sent it.
+ */
+export const ServerProviderUsageCredit = Schema.Struct({
+  allowanceUsd: Usd,
+  /** Included credit left; it expires with the period. */
+  balanceUsd: Usd,
+  /** Bought credit that has not expired. */
+  purchasedBalanceUsd: Schema.optional(Usd),
+  periodStart: IsoDateTime,
+  periodEnd: IsoDateTime,
+  planPriceUsd: Schema.optional(Usd),
+  /** What the included credit used this period would cost at OpenRouter's zero-data-retention rates. */
+  openRouterValueUsd: Schema.optional(Usd),
+});
+export type ServerProviderUsageCredit = typeof ServerProviderUsageCredit.Type;
+
+/**
+ * One of the subscriptions a provider account holds, e.g. a Z.ai plan beside OpenCode Go.
+ * `windowIds` names which of the account's `windows` are this subscription's; a window belongs
+ * to at most one. `checkedAt` is its own, because a failed read keeps the last good result.
  */
 export const ServerProviderUsageSubscription = Schema.Struct({
   id: TrimmedNonEmptyString,
@@ -46,6 +63,8 @@ export const ServerProviderUsageSubscription = Schema.Struct({
   checkedAt: IsoDateTime,
   windowIds: Schema.Array(TrimmedNonEmptyString),
   resetCredits: Schema.optional(ServerProviderResetCredits),
+  /** An unreadable credit drops itself, not the subscription it belongs to. */
+  credit: ForwardCompatibleOptional(ServerProviderUsageCredit),
 });
 export type ServerProviderUsageSubscription = typeof ServerProviderUsageSubscription.Type;
 

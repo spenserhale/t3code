@@ -5,14 +5,10 @@ import type { LimitAccount, LimitPoolMember } from "./usageLimits.ts";
 type AccountKey = (driver: ServerProvider["driver"], email: string | undefined) => string | null;
 
 /**
- * A provider account that holds several subscriptions, as one account per
- * subscription with its merge key. Each is matched by its own credential, so
- * it counts once across environments whatever else each of them is signed in
- * to. Windows no subscription claims stay on an account for the instance.
- *
- * A window id is unique within a provider's windows, so it names one window.
- * The first entry to claim an id owns the window, and the first entry for a
- * credential stands for it.
+ * A provider account that holds several subscriptions, as one account per subscription, merged
+ * by its own credential so it counts once across environments. Windows no subscription claims
+ * stay on an account for the instance. The first entry to claim a window id owns it, and the
+ * first entry for a credential stands for it.
  */
 function subscriptionAccounts(
   environment: LimitAccount["environments"][number],
@@ -52,6 +48,7 @@ function subscriptionAccounts(
         key: `${instanceKey}:${subscription.credentialFingerprint}`,
         displayName: instanceName ? `${instanceName} · ${subscription.label}` : subscription.label,
         subscription: subscription.id,
+        ...(subscription.credit ? { credit: subscription.credit } : {}),
         redeem: subscription.resetCredits ? native : null,
         limits: {
           checkedAt: subscription.checkedAt,
@@ -84,11 +81,9 @@ function subscriptionAccounts(
 }
 
 /**
- * Merges a provider that lists its subscriptions as one account per
- * subscription, and says whether it did. A provider that lists none is left
- * for the caller to merge as a single account. `accountKey` keys the account
- * that keeps the windows no subscription claims, so it matches an unlisted
- * account of the same login.
+ * Merges a provider that lists its subscriptions as one account per subscription, and says
+ * whether it did; one that lists none is left for the caller. `accountKey` keys the account that
+ * keeps the windows no subscription claims, so it matches an unlisted account of the same login.
  */
 export function mergeSubscriptions(
   merge: (key: string, account: LimitAccount) => void,
