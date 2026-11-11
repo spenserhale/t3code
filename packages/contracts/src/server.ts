@@ -645,6 +645,11 @@ export const ServerConfig = Schema.Struct({
   secretProviderSettings: Schema.optionalKey(Schema.Boolean),
   /** Secret settings may point at a secret provider; older servers drop the reference. */
   secretReferences: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Secret provider configs may hold credentials, such as a 1Password service account token, kept
+   * in the secret store. Older servers would save one in settings and send it to every client.
+   */
+  secretProviderCredentials: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**
