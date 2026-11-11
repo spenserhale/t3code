@@ -581,6 +581,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       try: evaluate,
       catch: (cause) => new PreviewOperationError({ ...errorContext, cause }),
     });
+  /** A capture that can reach a thread is refused while the page may show a filled login. */
+  const requireNoFill = Effect.fn("PreviewManager.requireNoFill")(function* (
+    tabId: string,
+    wc: Electron.WebContents,
+  ) {
+    const serverTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.serverTab;
+    if (serverTab !== undefined && (yield* browserHost.mayShowFill(serverTab, wc))) {
+      return yield* new PreviewCaptureWithheldError({ tabId });
+    }
+  });
   const capturePageWithRetry = Effect.fn("PreviewManager.capturePageWithRetry")(function* (
     errorContext: PreviewOperationContext,
     tabId: string,
@@ -594,6 +604,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     });
     const capture = Effect.gen(function* () {
       yield* requireCurrentGuest;
+      yield* requireNoFill(tabId, wc);
       const image = yield* Effect.tryPromise({
         try: (_signal) => wc.capturePage(),
         catch: (cause) => new PreviewOperationError({ ...errorContext, cause }),
@@ -605,6 +616,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         }),
       );
       yield* requireCurrentGuest;
+      // A fill or Back can come while Electron captures.
+      yield* requireNoFill(tabId, wc);
       return image;
     });
     return yield* capture.pipe(
@@ -2166,10 +2179,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               ),
               Effect.withSpan("PreviewManager.captureAnnotationScreenshot"),
               Effect.match({
-                onFailure: (): PreviewAnnotationSubmissionResult => ({
+                onFailure: (error): PreviewAnnotationSubmissionResult => ({
                   annotation: payload,
                   submission,
                   screenshotFailed: true,
+                  ...(error._tag === "PreviewCaptureWithheldError"
+                    ? { screenshotWithheld: true }
+                    : {}),
                 }),
                 onSuccess: (screenshot): PreviewAnnotationSubmissionResult =>
                   screenshot === null
@@ -3027,6 +3043,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     return yield* withTabLifecycleLock(
       tabId,
       Effect.gen(function* () {
+        yield* requireNoFill(tabId, yield* requireWebContents(tabId));
         yield* startFrameCapture(tabId, "recording");
         yield* SynchronizedRef.update(frameCaptureSessionsRef, (sessions) =>
           replaceMap(sessions, (copy) => {
@@ -3453,6 +3470,15 @@ export class PreviewAutomationDebuggerAttachedError extends Schema.TaggedError<P
   }
 }
 
+export class PreviewCaptureWithheldError extends Schema.TaggedError<PreviewCaptureWithheldError>()(
+  "PreviewCaptureWithheldError",
+  { tabId: Schema.String },
+) {
+  override get message(): string {
+    return `Preview tab ${this.tabId} may show a login the password manager filled, so it is not captured`;
+  }
+}
+
 export const PreviewManagerError = Schema.Union([
   PreviewTabNotFoundError,
   PreviewWebContentsNotFoundError,
@@ -3465,6 +3491,7 @@ export const PreviewManagerError = Schema.Union([
   PreviewArtifactImageLoadError,
   PreviewAutomationDevToolsOpenError,
   PreviewAutomationDebuggerAttachedError,
+  PreviewCaptureWithheldError,
 ]);
 export type PreviewManagerError = typeof PreviewManagerError.Type;
 

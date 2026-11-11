@@ -928,12 +928,15 @@ export interface PreviewAnnotationSubmissionResult {
   annotation: PreviewAnnotationPayload;
   submission: PreviewAnnotationSubmission;
   screenshotFailed?: boolean;
+  /** Left out because the password manager filled a login in the page. */
+  screenshotWithheld?: boolean;
 }
 export const PreviewAnnotationSubmissionResultSchema: Schema.Codec<PreviewAnnotationSubmissionResult> =
   Schema.Struct({
     annotation: PreviewAnnotationPayloadSchema,
     submission: PreviewAnnotationSubmissionSchema,
     screenshotFailed: Schema.optionalKey(Schema.Boolean),
+    screenshotWithheld: Schema.optionalKey(Schema.Boolean),
   });
 
 export const DesktopPreviewTabInputSchema = Schema.Struct({

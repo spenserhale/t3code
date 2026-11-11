@@ -619,6 +619,22 @@ it.effect("bounds large ARIA trees without dropping every server locator", () =>
   ).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("returns text alone, and saves nothing, for a page with images off", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { screenshot: _image, ...page } = snapshotResult;
+      const imagesOff = "Images are off until a new page loads.";
+      yield* serveSnapshots("mcp-images-off-client", { ...page, imagesOff });
+      const result = yield* callSnapshot({ includeImage: true, save: true });
+      expect(result.isError).toBe(false);
+      expect(result.content.map((content) => content.type)).toEqual(["text", "text", "text"]);
+      expect(result.structuredContent).toMatchObject({ imagesOff });
+      expect(result.structuredContent).not.toHaveProperty("screenshot");
+      expect(result.structuredContent).not.toHaveProperty("screenshotPath");
+    }),
+  ).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("keeps the snapshot text under the agent's output ceiling", () =>
   Effect.scoped(
     Effect.gen(function* () {

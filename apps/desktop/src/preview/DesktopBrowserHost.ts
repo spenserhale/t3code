@@ -5,6 +5,7 @@ import {
   DesktopBrowserEvent,
   type DesktopBrowserEvent as DesktopBrowserEventType,
 } from "@t3tools/contracts";
+import { mayShowFill, withoutFragment } from "@t3tools/shared/browserLoginExposure";
 import * as Context from "effect/Context";
 import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
@@ -16,6 +17,7 @@ import * as Stream from "effect/Stream";
 
 import { createCdpRelayConnection, type CdpRelayConnection } from "./CdpRelay.ts";
 import { sendPageCommand } from "./GuestInput.ts";
+import * as LoginApprovalDialog from "./LoginApprovalDialog.ts";
 
 const encodeEvent = Schema.encodeSync(Schema.fromJsonString(DesktopBrowserEvent));
 const decodeCommand = Schema.decodeUnknownOption(Schema.fromJsonString(DesktopBrowserCommand));
@@ -100,6 +102,14 @@ export class DesktopBrowserHost extends Context.Service<
       readonly key: DesktopBrowserTabKey;
       readonly active: boolean;
     }>;
+    /**
+     * Whether the guest's page may show a login the server filled into the tab, so its pixels
+     * must reach no thread. A page that cannot be asked counts as showing one.
+     */
+    readonly mayShowFill: (
+      key: DesktopBrowserTabKey,
+      webContents: Electron.WebContents,
+    ) => Effect.Effect<boolean>;
   }
 >()("@t3tools/desktop/preview/DesktopBrowserHost") {}
 
@@ -119,7 +129,10 @@ export const make = Effect.gen(function* () {
   const tabs = new Map<string, AttachedTab>();
   /** Threads whose agent turn runs, by the server's account. */
   const agentTurns = new Set<string>();
+  /** Documents a login was filled into, and the addresses they showed, by tab; kept past detaching. */
+  const fills = new Map<string, { readonly documents: Set<string>; readonly urls: Set<string> }>();
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
+  const loginApproval = yield* Effect.serviceOption(LoginApprovalDialog.LoginApprovalDialog);
 
   const nextScreenshot = (tab: AttachedTab) => {
     tab.screenshotTurn = null;
@@ -467,7 +480,36 @@ export const make = Effect.gen(function* () {
         else endAgentTurn(command.value.threadId);
         return;
       }
+      if (command.value.type === "loginFilled") {
+        const id = keyOf(command.value);
+        const filled = fills.get(id) ?? { documents: new Set<string>(), urls: new Set<string>() };
+        filled.documents.add(command.value.document);
+        filled.urls.add(withoutFragment(command.value.url));
+        fills.set(id, filled);
+        return;
+      }
       const tab = tabs.get(keyOf(command.value));
+      if (command.value.type === "loginApproval") {
+        const { threadId, tabId, requestId } = command.value;
+        // A tab the desktop does not show, such as an agent's headless tab, is asked about too.
+        const ask = Option.isSome(loginApproval)
+          ? loginApproval.value.ask(tab?.debuggee.webContents, command.value)
+          : Effect.succeed(false);
+        runFork(
+          ask.pipe(
+            Effect.flatMap((approved) =>
+              PubSub.publish(outbox, {
+                type: "loginApproval",
+                threadId,
+                tabId,
+                requestId,
+                approved,
+              }),
+            ),
+          ),
+        );
+        return;
+      }
       if (!tab) return;
       if (command.value.type === "pointer") {
         const { threadId, tabId, phase, x, y } = command.value;
@@ -500,9 +542,21 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  const exposed = (key: DesktopBrowserTabKey, webContents: Electron.WebContents) => {
+    const filled = fills.get(keyOf(key));
+    if (filled === undefined) return Effect.succeed(false);
+    return Effect.promise(() =>
+      mayShowFill(
+        (method, params) => webContents.debugger.sendCommand(method, params),
+        filled,
+      ).catch(() => true),
+    );
+  };
+
   return DesktopBrowserHost.of({
     pointers: Stream.fromPubSub(pointers),
     painting: Stream.fromPubSub(painting),
+    mayShowFill: exposed,
     // Subscribes before announcing, so no attach falls between the two.
     events: Stream.unwrap(
       Effect.gen(function* () {

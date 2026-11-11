@@ -196,3 +196,197 @@ describe("1Password driver", () => {
     }).pipe(Effect.provide(op.layer));
   });
 });
+
+describe("1Password logins", () => {
+  const listed = JSON.stringify([
+    {
+      id: "abc123",
+      title: "Grafana",
+      vault: { id: "v1", name: "Work" },
+      urls: [{ primary: true, href: "https://grafana.example.com/login" }],
+    },
+    { id: "nourl", title: "Wi-Fi", vault: { id: "v1", name: "Work" } },
+  ]);
+  const item = JSON.stringify({
+    id: "abc123",
+    fields: [
+      { id: "username", type: "STRING", purpose: "USERNAME", value: "ops@example.com" },
+      { id: "password", type: "CONCEALED", purpose: "PASSWORD", value: "hunter2" },
+      { id: "notes", type: "STRING", purpose: "NOTES", value: "" },
+      // Fields a login has no use for may hold values other than strings.
+      { id: "office", type: "ADDRESS", value: { street: "1 Main St", city: "Springfield" } },
+      { id: "otp", type: "OTP", value: "otpauth://totp/x?secret=ABC", totp: "123456" },
+    ],
+  });
+  const grafana = { id: "abc123", title: "Grafana", vault: "Work", urls: ["https://x"] };
+
+  it.effect("lists logins that have a website, without reading secrets", () => {
+    const op = fakeOp(() => ({ stdout: listed }));
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(yield* driver.logins!.list({ account }), [
+        {
+          id: "abc123",
+          title: "Grafana",
+          vault: "Work",
+          urls: ["https://grafana.example.com/login"],
+        },
+      ]);
+      assert.deepStrictEqual(op.invocations, [
+        [
+          "--cache=false",
+          "item",
+          "--account=my.1password.com",
+          "list",
+          "--categories=Login",
+          "--format=json",
+        ],
+      ]);
+      assert.strictEqual(op.options[0]?.env, undefined);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  describe("with a service account token", () => {
+    const config = { account, serviceAccountToken: "ops_test-token" };
+    const vaults = (...ids: ReadonlyArray<string>) =>
+      JSON.stringify(ids.map((id) => ({ id, name: `Vault ${id}` })));
+    const jira = JSON.stringify([
+      {
+        id: "jira1",
+        title: "Jira",
+        vault: { id: "v2", name: "Agents" },
+        urls: [{ href: "https://jira.example.com" }],
+      },
+    ]);
+    const vaultOf = (args: ReadonlyArray<string>) =>
+      args.find((arg) => arg.startsWith("--vault="))?.slice("--vault=".length);
+
+    it.effect("lists each vault it sees, then reads a login from its vault", () => {
+      const op = fakeOp((args) =>
+        args[1] === "vault"
+          ? { stdout: vaults("v1", "v2") }
+          : args[2] === "list"
+            ? { stdout: vaultOf(args) === "v1" ? listed : jira }
+            : { stdout: item },
+      );
+      return Effect.gen(function* () {
+        const logins = yield* driver.logins!.list(config);
+        assert.deepStrictEqual(logins, [
+          {
+            id: "abc123",
+            title: "Grafana",
+            vault: "Work",
+            vaultId: "v1",
+            urls: ["https://grafana.example.com/login"],
+          },
+          {
+            id: "jira1",
+            title: "Jira",
+            vault: "Agents",
+            vaultId: "v2",
+            urls: ["https://jira.example.com"],
+          },
+        ]);
+        assert.deepStrictEqual(yield* driver.logins!.read(config, logins![0]!, ["password"]), {
+          password: "hunter2",
+        });
+
+        const [vaultList, ...rest] = op.invocations;
+        assert.deepStrictEqual(vaultList, ["--cache=false", "vault", "list", "--format=json"]);
+        assert.sameDeepMembers(
+          rest.slice(0, 2).map((args) => [...args]),
+          [
+            ["--cache=false", "item", "list", "--vault=v1", "--categories=Login", "--format=json"],
+            ["--cache=false", "item", "list", "--vault=v2", "--categories=Login", "--format=json"],
+          ],
+        );
+        assert.deepStrictEqual(rest[2], [
+          "--cache=false",
+          "item",
+          "get",
+          "abc123",
+          "--vault=v1",
+          "--reveal",
+          "--format=json",
+        ]);
+        // The token goes only to op's environment: never an argument, never `--account` with it.
+        assert.isFalse(op.invocations.flat().some((arg) => arg.includes("ops_test-token")));
+        assert.isFalse(op.invocations.flat().some((arg) => arg.startsWith("--account")));
+        for (const { env } of op.options) {
+          const token = env?.OP_SERVICE_ACCOUNT_TOKEN;
+          assert.isTrue(Redacted.isRedacted(token) && Redacted.value(token) === "ops_test-token");
+        }
+      }).pipe(Effect.provide(op.layer));
+    });
+
+    it.effect("a vault that cannot be listed hides only its own logins", () => {
+      const op = fakeOp((args) =>
+        args[1] === "vault"
+          ? { stdout: vaults("v1", "--help", "v2") }
+          : vaultOf(args) === "v1"
+            ? { code: 1, stderr: "[ERROR] rate limited" }
+            : { stdout: jira },
+      );
+      return Effect.gen(function* () {
+        const logins = yield* driver.logins!.list(config);
+        assert.deepStrictEqual(
+          logins?.map((login) => login.id),
+          ["jira1"],
+        );
+        assert.isFalse(op.invocations.some((args) => vaultOf(args) === "--help"));
+      }).pipe(Effect.provide(op.layer));
+    });
+
+    it.effect("reads as not listing when every vault fails", () => {
+      const op = fakeOp((args) =>
+        args[1] === "vault" ? { stdout: vaults("v1", "v2") } : { code: 1, stderr: "[ERROR]" },
+      );
+      return Effect.gen(function* () {
+        assert.strictEqual(yield* driver.logins!.list(config), undefined);
+        assert.strictEqual(op.invocations.length, 3);
+      }).pipe(Effect.provide(op.layer));
+    });
+  });
+
+  it.effect("reads only the requested fields, with the current one-time code", () => {
+    const op = fakeOp(() => ({ stdout: item }));
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(yield* driver.logins!.read({ account }, grafana, ["password"]), {
+        password: "hunter2",
+      });
+      assert.deepStrictEqual(
+        yield* driver.logins!.read({ account }, grafana, ["username", "password", "totp"]),
+        { username: "ops@example.com", password: "hunter2", totp: "123456" },
+      );
+      assert.deepStrictEqual(op.invocations[0], [
+        "--cache=false",
+        "item",
+        "--account=my.1password.com",
+        "get",
+        "abc123",
+        "--reveal",
+        "--format=json",
+      ]);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect("reads a locked or failed account as undefined", () => {
+    const op = fakeOp(() => ({ code: 1, stderr: "[ERROR] account is locked" }));
+    return Effect.gen(function* () {
+      assert.strictEqual(yield* driver.logins!.list({ account }), undefined);
+      assert.strictEqual(yield* driver.logins!.read({ account }, grafana, ["password"]), undefined);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect("never passes an item or vault id that looks like a flag", () => {
+    const op = fakeOp(() => ({ stdout: item }));
+    return Effect.gen(function* () {
+      for (const flag of [
+        { ...grafana, id: "--help" },
+        { ...grafana, vaultId: "--help" },
+      ]) {
+        assert.strictEqual(yield* driver.logins!.read({ account }, flag, ["password"]), undefined);
+      }
+      assert.strictEqual(op.invocations.length, 0);
+    }).pipe(Effect.provide(op.layer));
+  });
+});

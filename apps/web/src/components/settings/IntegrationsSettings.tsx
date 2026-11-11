@@ -8,6 +8,9 @@ import {
   BrowserImportFailureReason,
   BROWSER_PROFILE_MAX_COUNT,
   type BrowserLinkTarget,
+  type BrowserLoginApproval,
+  BROWSER_LOGIN_PROVIDERS_MAX,
+  browserLoginProviderIds,
   type BrowserProfile,
   BrowserSearchEngine,
   BROWSER_CUSTOM_SEARCH_URL_MAX_LENGTH,
@@ -15,6 +18,7 @@ import {
   BROWSER_PROFILE_NAME_MAX_LENGTH,
   BROWSER_RECORDING_FRAME_RATES,
   DEFAULT_BROWSER_AUTO_SHOW_FLOATING_PREVIEW,
+  DEFAULT_BROWSER_LOGIN_APPROVAL,
   DEFAULT_BROWSER_PROFILE_ID,
   DEFAULT_BROWSER_LINK_TARGET,
   DEFAULT_BROWSER_RECORDING_FRAME_RATE,
@@ -35,6 +39,7 @@ import {
   type PreviewAppearancePreference,
   type PreviewViewportSetting,
   managedCapabilityDenial,
+  type SecretProviderId,
 } from "@t3tools/contracts";
 import { usePrimaryManagedPolicy } from "~/state/managedPolicy";
 import { isValidSearchUrlTemplate } from "@t3tools/shared/preview";
@@ -59,11 +64,13 @@ import {
   DeviceHubSetupStatus,
   deviceHubReadiness,
 } from "~/components/device/DeviceSetup";
-import { isElectron } from "../../env";
+import { isElectron, isSecretsFeatureEnabled } from "../../env";
+import { builtInSecretProviderDefinitions } from "@t3tools/secret-provider-definitions/registry";
 
 import { Badge } from "../ui/badge";
 import {
   Menu,
+  MenuCheckboxItem,
   MenuGroup,
   MenuGroupLabel,
   MenuItem,
@@ -88,6 +95,7 @@ import { DraftInput } from "../ui/draft-input";
 import { NumberField, NumberFieldGroup, NumberFieldInput } from "../ui/number-field";
 import {
   Select,
+  SelectButton,
   SelectGroup,
   SelectGroupLabel,
   SelectItem,
@@ -1570,6 +1578,141 @@ function BrowserProfilesSetting({ disabled }: { readonly disabled: boolean }) {
   );
 }
 
+const LOGIN_APPROVAL_OPTIONS: ReadonlyArray<{
+  readonly value: BrowserLoginApproval;
+  readonly label: string;
+}> = [
+  { value: "request", label: "Every login" },
+  { value: "thread", label: "Once per thread" },
+  { value: "application", label: "Once until restart" },
+  { value: "never", label: "Don't ask" },
+];
+
+function BrowserLoginSettings() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const { approval } = settings.browserLogins;
+  const chosen = browserLoginProviderIds(settings.browserLogins);
+  const providers = Object.entries(settings.secretProviders).flatMap(([id, provider]) => {
+    const definition = builtInSecretProviderDefinitions.find(provider.kind);
+    return definition?.supportsLogins === true
+      ? [{ id: id as SecretProviderId, label: `${provider.label} · ${definition.label}` }]
+      : [];
+  });
+  // A chosen provider that was since removed stays listed, so it can be unchosen.
+  const options = [
+    ...providers,
+    ...chosen
+      .filter((id) => !providers.some((provider) => provider.id === id))
+      .map((id) => ({ id, label: `${id} (unavailable)` })),
+  ];
+  const off = chosen.length === 0;
+  const save = (secretProviderIds: ReadonlyArray<SecretProviderId>, nextApproval = approval) =>
+    updateSettings({
+      browserLogins:
+        secretProviderIds.length === 0
+          ? { approval: nextApproval }
+          : { secretProviderIds: [...secretProviderIds], approval: nextApproval },
+    });
+
+  return (
+    <>
+      <SettingsRow
+        serverScoped
+        settingKeys={["browserLogins"]}
+        {...searchableSetting("browser-login-provider")}
+        description={
+          providers.length === 0 && off
+            ? "Add a 1Password provider in Settings > Secrets to let agents sign in to sites."
+            : "Agents can sign the built-in browser in to sites with logins saved here. They never see the values."
+        }
+        resetAction={
+          !off ? (
+            <SettingResetButton label="password managers for logins" onClick={() => save([])} />
+          ) : null
+        }
+        control={
+          <Menu>
+            <MenuTrigger
+              render={<SelectButton size="sm" />}
+              className="w-full min-w-0 sm:w-56"
+              aria-label="Password managers for logins"
+              disabled={options.length === 0}
+            >
+              {off
+                ? "Off"
+                : chosen
+                    .map((id) => options.find((option) => option.id === id)?.label ?? id)
+                    .join(", ")}
+            </MenuTrigger>
+            <MenuPopup align="end">
+              {options.map((option) => {
+                const checked = chosen.includes(option.id);
+                return (
+                  <MenuCheckboxItem
+                    key={option.id}
+                    checked={checked}
+                    closeOnClick={false}
+                    disabled={!checked && chosen.length >= BROWSER_LOGIN_PROVIDERS_MAX}
+                    onCheckedChange={(next) =>
+                      save(next ? [...chosen, option.id] : chosen.filter((id) => id !== option.id))
+                    }
+                  >
+                    {option.label}
+                  </MenuCheckboxItem>
+                );
+              })}
+            </MenuPopup>
+          </Menu>
+        }
+      />
+      <SettingsRow
+        serverScoped
+        settingKeys={["browserLogins"]}
+        {...searchableSetting("browser-login-approval")}
+        description="Like 1Password's approval setting. Only the desktop app that runs this environment can ask."
+        status={
+          approval === "never"
+            ? "Agents can fill any login these password managers can see, without asking. Use it with a service account limited to an agents vault."
+            : undefined
+        }
+        resetAction={
+          approval !== DEFAULT_BROWSER_LOGIN_APPROVAL ? (
+            <SettingResetButton
+              label="ask before filling"
+              onClick={() => save(chosen, DEFAULT_BROWSER_LOGIN_APPROVAL)}
+            />
+          ) : null
+        }
+        control={
+          <Select
+            value={approval}
+            onValueChange={(value) => save(chosen, value as BrowserLoginApproval)}
+            disabled={off}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-full min-w-0 sm:w-56"
+              aria-label="Ask before filling"
+            >
+              <SelectValue>
+                {LOGIN_APPROVAL_OPTIONS.find((option) => option.value === approval)?.label}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              {LOGIN_APPROVAL_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        }
+      />
+    </>
+  );
+}
+
 export function BrowserSettingsPanel() {
   const desktopOnly = !isElectron;
   const desktopOnlyMessage = desktopOnly ? "Only available in the desktop app." : undefined;
@@ -1579,6 +1722,11 @@ export function BrowserSettingsPanel() {
       <SettingsSection id="browser-agent-access" title="Agent access">
         <AgentBrowserAccessSetting />
       </SettingsSection>
+      {isSecretsFeatureEnabled ? (
+        <SettingsSection id="browser-logins" title="Logins">
+          <BrowserLoginSettings />
+        </SettingsSection>
+      ) : null}
       <SettingsSection id="browser" title="Browsing">
         <SettingsUnavailableGroup message={desktopOnlyMessage}>
           <BrowserProfilesSetting disabled={desktopOnly} />

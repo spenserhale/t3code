@@ -771,7 +771,12 @@ export function PreviewView({
         setPickActive(false);
         submitted = true;
       }
-      const { annotation: picked, submission, screenshotFailed = false } = result;
+      const {
+        annotation: picked,
+        submission,
+        screenshotFailed = false,
+        screenshotWithheld = false,
+      } = result;
       // Send annotations even if the optional crop fails or stalls; drop failed screenshots so prompts cannot
       // claim an attachment.
       const capture = capturePreviewAnnotationScreenshot(picked);
@@ -780,11 +785,20 @@ export function PreviewView({
       addPreviewAnnotation(threadRef, annotation);
       if (cropDropped) {
         toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not capture the picked element",
-            description: "The annotation was kept without the screenshot.",
-          }),
+          stackedThreadToast(
+            screenshotWithheld
+              ? {
+                  type: "warning",
+                  title: "Screenshot left out",
+                  description:
+                    "The password manager filled a login in this page. The annotation was kept without the screenshot.",
+                }
+              : {
+                  type: "error",
+                  title: "Could not capture the picked element",
+                  description: "The annotation was kept without the screenshot.",
+                },
+          ),
         );
       }
       const screenshotFile = capture.status === "captured" ? capture.file : null;

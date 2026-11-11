@@ -30,10 +30,14 @@ import {
   type PreviewAutomationScrollInput,
   type PreviewAutomationSelectInput,
   type PreviewAutomationSetColorSchemeInput,
+  type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
   type PreviewAutomationTypeInput,
   type PreviewAutomationUploadInput,
   type PreviewAutomationWaitForInput,
+  type PreviewAutomationFillLoginRequest,
+  type PreviewAutomationFillLoginResult,
+  type PreviewLoginField,
   PreviewClearProfileError,
   type PreviewEvent,
   type PreviewNavStatus,
@@ -44,6 +48,7 @@ import {
   type PreviewAppearancePreference,
 } from "@t3tools/contracts";
 import { AgentScope, agentScopeLauncherScript } from "@t3tools/shared/AgentScope";
+import { mayShowFill } from "@t3tools/shared/browserLoginExposure";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import { resolvePreviewViewport } from "@t3tools/shared/previewViewport";
@@ -77,9 +82,11 @@ import * as ServerConfig from "../config.ts";
 import { resolveRootCliCommand } from "../cli/invocation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+import * as BrowserLogins from "./BrowserLogins.ts";
 import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as PreviewManager from "./Manager.ts";
+import * as ServerBrowserLogin from "./ServerBrowserLogin.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
@@ -279,6 +286,12 @@ interface Recording {
   readonly framesInFlight: Set<Promise<void>>;
 }
 
+/** A recording takes frames while its page is known not to show a filled login, and never after. */
+interface RecordingGate {
+  state: "open" | "checking" | "shut";
+  check: number;
+}
+
 interface ServerTab {
   readonly threadId: ThreadId;
   readonly tabId: string;
@@ -331,6 +344,10 @@ interface ServerTab {
   } | null;
 
   recordingStart: Promise<Recording> | null;
+  /** Kept only while browser logins are on. */
+  recordingGate: RecordingGate | null;
+  /** Main documents loaded, counted only while browser logins are on. */
+  documentLoads: number;
   captureLock: Promise<void>;
   capturing: number;
 }
@@ -465,6 +482,20 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const previewBrowser = yield* PreviewBrowser.PreviewBrowser;
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
+  const browserLogins = yield* Effect.serviceOption(BrowserLogins.BrowserLogins);
+  const filledSecrets = ServerBrowserLogin.makeFilledSecrets();
+  const documentMarks = ServerBrowserLogin.makeDocumentMarks();
+  /** Whether the tab's main document may show a filled password or code. */
+  const exposed = async (tab: ServerTab) => {
+    const filled = documentMarks.filled(tabKey(tab.threadId, tab.tabId));
+    if (filled === undefined) return false;
+    return mayShowFill(
+      (method, params) => tab.cdp.send(method as "Page.getFrameTree", params as never),
+      filled,
+    );
+  };
+  // Scrubbed before the cut, so a filled secret crossing it cannot leave its start showing.
+  const pageText = (text: string, limit: number) => filledSecrets.scrub(text).slice(0, limit);
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
@@ -525,8 +556,8 @@ const make = Effect.gen(function* () {
     tab.dialog
       ? {
           type: tab.dialog.type(),
-          message: tab.dialog.message().slice(0, 4000),
-          defaultValue: tab.dialog.defaultValue().slice(0, 4000),
+          message: pageText(tab.dialog.message(), 4000),
+          defaultValue: pageText(tab.dialog.defaultValue(), 4000),
         }
       : null;
 
@@ -596,11 +627,11 @@ const make = Effect.gen(function* () {
     if (url === "about:blank" || url.startsWith("chrome-error://")) return;
     // A navigation that starts and fails during the title read leaves the URL unchanged.
     const generation = tab.navigationGeneration;
-    const title = (await tab.page.title().catch(() => "")).slice(0, 512);
+    const title = pageText(await tab.page.title().catch(() => ""), 512);
     if (tab.navigationGeneration !== generation || tab.loading || tab.page.url() !== url) return;
     report(tab, {
       _tag: "Success",
-      url: ServerBrowserPage.withoutDataPayload(url).slice(0, 2048),
+      url: pageText(ServerBrowserPage.withoutDataPayload(url), 2048),
       title,
     });
   };
@@ -738,6 +769,7 @@ const make = Effect.gen(function* () {
     clearAbortedNavigation(tab);
     // A desktop page outlives the connection unless its session closed with it.
     const end = tab.desktop && !closeSession && sessionOpen(tab) ? "reconnect" : "gone";
+    if (end === "gone") documentMarks.forget(key);
     for (const viewer of tab.viewers) viewer.push({ _tag: end });
     void tab.control.close().catch(constVoid);
     if (tab.desktop) void tab.desktop.close().catch(constVoid);
@@ -792,6 +824,40 @@ const make = Effect.gen(function* () {
       for (const close of opened.reverse()) await close().catch(constVoid);
       throw cause;
     }
+  };
+
+  /** Checks the page a recording now shows; one that may show a filled login shuts it for good. */
+  const checkGate = async (tab: ServerTab, gate: RecordingGate) => {
+    if (gate.state === "shut") return;
+    const check = ++gate.check;
+    gate.state = "checking";
+    const shows = await exposed(tab).catch(() => true);
+    if (gate.check === check && gate.state === "checking") gate.state = shows ? "shut" : "open";
+  };
+
+  /**
+   * Follows the main document over CDP, whose events come in order: a filled document's later
+   * addresses are kept for Back, and a recording stops taking frames as each new document loads.
+   */
+  const watchDocuments = async (tab: ServerTab) => {
+    const key = tabKey(tab.threadId, tab.tabId);
+    let main: { readonly frameId: string; readonly id: string } | undefined;
+    tab.cdp.on("Page.frameNavigated", ({ frame }) => {
+      if (frame.parentId !== undefined) return;
+      main = { frameId: frame.id, id: frame.loaderId };
+      tab.documentLoads += 1;
+      if (tab.recordingGate && documentMarks.filled(key)) void checkGate(tab, tab.recordingGate);
+    });
+    tab.cdp.on("Page.navigatedWithinDocument", ({ frameId, url }) => {
+      if (main?.frameId !== frameId || !documentMarks.noteAddress(key, main.id, url)) return;
+      const desktopKey = { threadId: tab.threadId, tabId: tab.tabId };
+      if (tab.desktop) runFork(desktopChannel.loginFilled(desktopKey, main.id, url));
+    });
+    await tab.cdp.send("Page.enable");
+    const loads = tab.documentLoads;
+    const { frameTree } = await tab.cdp.send("Page.getFrameTree");
+    if (tab.documentLoads === loads)
+      main = { frameId: frameTree.frame.id, id: frameTree.frame.loaderId };
   };
 
   const setUpTab = async (
@@ -879,6 +945,8 @@ const make = Effect.gen(function* () {
       closing: false,
       recording: null,
       recordingStart: null,
+      recordingGate: null,
+      documentLoads: 0,
       initialNavigation: null,
       navigationGeneration: 0,
       abortedNavigation: null,
@@ -904,6 +972,7 @@ const make = Effect.gen(function* () {
       });
       await cdp.send("Page.enable");
     }
+    if (Option.isSome(browserLogins)) await watchDocuments(tab);
     const isMainNavigation = (request: { isNavigationRequest(): boolean; frame(): unknown }) =>
       request.isNavigationRequest() && request.frame() === page.mainFrame();
     const navigationGenerations = new WeakMap<object, number>();
@@ -914,7 +983,7 @@ const make = Effect.gen(function* () {
       tab.loading = true;
       report(tab, {
         _tag: "Loading",
-        url: ServerBrowserPage.withoutDataPayload(request.url()).slice(0, 2048),
+        url: pageText(ServerBrowserPage.withoutDataPayload(request.url()), 2048),
         title: "",
       });
     });
@@ -938,7 +1007,7 @@ const make = Effect.gen(function* () {
     page.on("requestfailed", (request) => {
       const errorText = request.failure()?.errorText ?? "";
       pushBounded(tab.networkEntries, {
-        url: ServerBrowserPage.withoutDataPayload(request.url()),
+        url: filledSecrets.scrub(ServerBrowserPage.withoutDataPayload(request.url())),
         method: request.method(),
         status: null,
         failed: true,
@@ -969,7 +1038,7 @@ const make = Effect.gen(function* () {
       const { code, description } = ServerBrowserPage.parseNetError(errorText);
       report(tab, {
         _tag: "LoadFailed",
-        url: ServerBrowserPage.withoutDataPayload(request.url()).slice(0, 2048),
+        url: pageText(ServerBrowserPage.withoutDataPayload(request.url()), 2048),
         title: "",
         code,
         description,
@@ -977,7 +1046,7 @@ const make = Effect.gen(function* () {
     });
     page.on("response", (response) => {
       pushBounded(tab.networkEntries, {
-        url: ServerBrowserPage.withoutDataPayload(response.url()),
+        url: filledSecrets.scrub(ServerBrowserPage.withoutDataPayload(response.url())),
         method: response.request().method(),
         status: response.status(),
         failed: false,
@@ -987,7 +1056,7 @@ const make = Effect.gen(function* () {
     page.on("console", (message) => {
       pushBounded(tab.consoleEntries, {
         level: message.type(),
-        text: ServerBrowserPage.consoleText(message).slice(0, 2_000),
+        text: pageText(ServerBrowserPage.consoleText(message), 2_000),
         timestamp: new Date().toISOString(),
       });
     });
@@ -1064,7 +1133,7 @@ const make = Effect.gen(function* () {
     }
     report(tab, {
       _tag: "LoadFailed",
-      url: ServerBrowserPage.withoutDataPayload(url).slice(0, 2048),
+      url: pageText(ServerBrowserPage.withoutDataPayload(url), 2048),
       title: "",
       code: -3,
       description: "ERR_ABORTED",
@@ -1094,10 +1163,10 @@ const make = Effect.gen(function* () {
       }
       const saved: ServerDownload = {
         id,
-        fileName: download.suggestedFilename().slice(0, 255) || "download",
+        fileName: pageText(download.suggestedFilename(), 255) || "download",
         path,
         sizeBytes: size,
-        url: ServerBrowserPage.withoutDataPayload(download.url()).slice(0, 2048),
+        url: pageText(ServerBrowserPage.withoutDataPayload(download.url()), 2048),
         completedAt: new Date().toISOString(),
       };
       tab.downloads.push(saved);
@@ -1160,7 +1229,7 @@ const make = Effect.gen(function* () {
     tab.fileChooser = {
       id: NodeCrypto.randomUUID(),
       chooser,
-      accept: accept.slice(0, 1024),
+      accept: pageText(accept, 1024),
       offeredTo: null,
     };
     pushFileChooser(tab);
@@ -1688,11 +1757,17 @@ const make = Effect.gen(function* () {
     return run;
   };
 
-  const startRecording = (tab: ServerTab): Promise<Recording> => {
+  /** `loadsBefore` is `documentLoads` from before the caller checked the page. */
+  const startRecording = (tab: ServerTab, loadsBefore: number): Promise<Recording> => {
     const started = withCaptureLock(tab, async () => {
       if (tab.recording) return tab.recording;
       const encoder = await contexts.scratchPage();
       let session: CDPSession | null = null;
+      const gate: RecordingGate | null = Option.isSome(browserLogins)
+        ? { state: "open", check: 0 }
+        : null;
+      tab.recordingGate = gate;
+      if (gate && tab.documentLoads !== loadsBefore) void checkGate(tab, gate);
       try {
         await encoder.evaluate(ServerBrowserPage.recordingEncoderScript(recordingFrameRate));
         // Seed idle pages before returning so an immediate stop has a frame to encode.
@@ -1700,6 +1775,13 @@ const make = Effect.gen(function* () {
           format: "jpeg",
           quality: RECORDING_SCREENCAST.quality,
         });
+        // A new document loaded since the page was checked, and the seed may show it.
+        if (gate && gate.state !== "open") {
+          throw new ServerBrowserPage.ServerBrowserOperationError(
+            "PreviewAutomationExecutionError",
+            "The page loaded another document as the recording started. Start it again.",
+          );
+        }
         await encoder.evaluate(
           ([data, width]) =>
             (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
@@ -1709,6 +1791,12 @@ const make = Effect.gen(function* () {
         session = opened;
         const framesInFlight = new Set<Promise<void>>();
         opened.on("Page.screencastFrame", (frame) => {
+          if (gate && gate.state !== "open") {
+            void opened
+              .send("Page.screencastFrameAck", { sessionId: frame.sessionId })
+              .catch(constVoid);
+            return;
+          }
           const cssWidth = tab.page.viewportSize()?.width ?? frame.metadata.deviceWidth;
           const delivered: Promise<void> = encoder
             .evaluate(
@@ -1739,6 +1827,7 @@ const make = Effect.gen(function* () {
         tab.recording = recording;
         return recording;
       } catch (cause) {
+        if (tab.recordingGate === gate) tab.recordingGate = null;
         await encoder.close().catch(constVoid);
         await session?.detach().catch(constVoid);
         throw cause;
@@ -1808,6 +1897,7 @@ const make = Effect.gen(function* () {
       } finally {
         await recording.encoder.close().catch(constVoid);
         tab.recording = null;
+        tab.recordingGate = null;
       }
       const data = Buffer.concat(chunks);
       if (!mimeType || data.byteLength === 0) {
@@ -2128,7 +2218,7 @@ const make = Effect.gen(function* () {
             "A browser dialog is pending. Read preview_status.",
             "dialogPending",
           );
-        return executeTabOperation(tab, request);
+        return executeTabOperation(tab, request, deadlineMs);
       });
     }
     return tab.control.agent(
@@ -2143,7 +2233,7 @@ const make = Effect.gen(function* () {
         tab.agentOperating = !READ_OPERATIONS.has(request.operation);
         updateFileChooserInterception(tab);
         try {
-          return await executeTabOperation(tab, request);
+          return await executeTabOperation(tab, request, deadlineMs);
         } finally {
           tab.agentOperating = false;
           updateFileChooserInterception(tab);
@@ -2154,7 +2244,172 @@ const make = Effect.gen(function* () {
     );
   };
 
-  const executeTabOperation = async (tab: ServerTab, request: PreviewAutomationRequest) => {
+  const filledPageError = () =>
+    ServerBrowserLogin.loginError(
+      "The password manager filled a login in this page, so script and recording are off until a new page loads. Submit the form, or reload with preview_navigate.",
+    );
+  const IMAGES_OFF =
+    "The password manager filled a login in this page, so images are off until a new page loads. Submit the form, or reload with preview_navigate.";
+
+  const loginStep = <A>(effect: Effect.Effect<A, BrowserLogins.BrowserLoginError>) =>
+    runPromise(
+      effect.pipe(
+        Effect.mapError((error) => ServerBrowserLogin.loginError(error.message)),
+        Effect.catchDefect(() =>
+          Effect.fail(ServerBrowserLogin.loginError("The password manager failed.")),
+        ),
+      ),
+    );
+
+  const fillLogin = async (
+    tab: ServerTab,
+    input: PreviewAutomationFillLoginRequest,
+    deadlineMs: number,
+  ): Promise<PreviewAutomationFillLoginResult> => {
+    if (Option.isNone(browserLogins)) {
+      throw ServerBrowserLogin.loginError("This server cannot fill browser logins.");
+    }
+    const logins = browserLogins.value;
+    const pageUrl = tab.page.url();
+    const origin = URL.canParse(pageUrl) ? new URL(pageUrl).origin : pageUrl;
+    const { revision, logins: candidates } = await loginStep(logins.candidates(pageUrl));
+    const summary = (login: (typeof candidates)[number]) => ({
+      id: login.id,
+      title: login.title,
+      ...(login.vault ? { vault: login.vault } : {}),
+      account: login.account,
+    });
+    const login =
+      input.login === undefined
+        ? candidates.length === 1
+          ? candidates[0]
+          : undefined
+        : candidates.find((candidate) => candidate.id === input.login);
+    if (login === undefined) {
+      return candidates.length === 0
+        ? { status: "no_login", tabId: tab.tabId, origin }
+        : { status: "choose", tabId: tab.tabId, origin, candidates: candidates.map(summary) };
+    }
+    const fields = [...new Set<PreviewLoginField>(input.fields ?? ["username", "password"])];
+    const locators = Object.fromEntries(
+      Object.entries(input.locators ?? {}).flatMap(([field, locator]) => {
+        const target = ServerBrowserPage.targetLocator(tab.page, { locator });
+        return target === null ? [] : [[field, target]];
+      }),
+    );
+    const frameCovered = (frameUrl: string) => BrowserLogins.loginCoversPage(login.urls, frameUrl);
+    // The page sees wall-clock time, so the steps that reach into it share this deadline.
+    const deadline = Date.now() + (deadlineMs - performance.now());
+    const { targets, missing } = await ServerBrowserLogin.findLoginTargets({
+      page: tab.page,
+      fields,
+      locators,
+      frameCovered,
+      deadline,
+    });
+    if (missing.length > 0) {
+      throw ServerBrowserLogin.loginError(
+        `No ${missing.join(" or ")} field was found. Pass its aria-ref from preview_snapshot in \`locators\`, or leave it out of \`fields\`.`,
+      );
+    }
+    // A caller that gave up must not leave an approval or a fill behind.
+    const expired = () => performance.now() >= deadlineMs;
+    if (tab.recording || tab.recordingStart) {
+      throw ServerBrowserLogin.loginError(
+        "Stop the recording before filling a login, then start it again after signing in.",
+      );
+    }
+    const document = await ServerBrowserLogin.documentId(tab.cdp);
+    if (documentMarks.wasScripted(tabKey(tab.threadId, tab.tabId), document)) {
+      throw ServerBrowserLogin.loginError(
+        "preview_evaluate ran in this page, so a login cannot be filled here. Reload the page with preview_navigate, then call preview_fill_login again.",
+      );
+    }
+    const ask = await loginStep(logins.needsApproval(revision, tab.threadId));
+    if (ask !== false) {
+      // Only a desktop app attached to this server can ask, also for tabs it does not draw.
+      if (!desktopChannel.available) {
+        throw ServerBrowserLogin.loginError(
+          "Nobody can approve a login on this machine. Ask the user to sign in in the tab, or to choose Don't ask in Settings > Browser > Logins for this environment.",
+        );
+      }
+      const approved = await runPromise(
+        desktopChannel.approveLogin(
+          { threadId: tab.threadId, tabId: tab.tabId },
+          Math.max(0, deadlineMs - performance.now()),
+          {
+            providerLabel: login.account,
+            loginTitle: login.title,
+            ...(login.vault ? { vault: login.vault } : {}),
+            origin,
+            ...(input.requester?.threadTitle ? { threadTitle: input.requester.threadTitle } : {}),
+            ...(input.requester?.provider ? { agent: input.requester.provider } : {}),
+            scope: ask,
+          },
+        ),
+      );
+      if (!approved) throw ServerBrowserLogin.loginError("The user did not approve this login.");
+      if (expired()) throw ServerBrowserLogin.loginError("The approval came after the call ended.");
+      await loginStep(logins.recordApproval(revision, tab.threadId));
+    }
+    const values = await loginStep(logins.read(revision, login, fields));
+    const absent = fields.filter((field) => values[field] === undefined);
+    if (absent.length > 0) {
+      throw ServerBrowserLogin.loginError(
+        `The login "${login.title}" has no ${absent.join(" or ")}.`,
+      );
+    }
+    const unsafe = fields.filter(
+      (field) => field !== "username" && !ServerBrowserLogin.scrubbable(values[field] ?? ""),
+    );
+    if (unsafe.length > 0) {
+      throw ServerBrowserLogin.loginError(
+        `The login "${login.title}" cannot be filled: its ${unsafe.join(" and ")} could not be kept out of what you read, being shorter than 4 characters or holding a line break. Ask the user to sign in in the tab.`,
+      );
+    }
+    // The page may have moved on, or the settings changed, while the user was deciding.
+    if (
+      !frameCovered(tab.page.url()) ||
+      (await ServerBrowserLogin.documentId(tab.cdp)) !== document
+    ) {
+      throw ServerBrowserLogin.loginError("The page left the login's site before it was filled.");
+    }
+    await loginStep(logins.check(revision));
+    // Marked before the first write, so even a fill that fails partway blocks script here.
+    documentMarks.markFilled(tabKey(tab.threadId, tab.tabId), document, tab.page.url());
+    // Before the write, so the desktop refuses to capture the tab from then on.
+    if (tab.desktop) {
+      const desktopKey = { threadId: tab.threadId, tabId: tab.tabId };
+      await runPromise(desktopChannel.loginFilled(desktopKey, document, tab.page.url()));
+    }
+    filledSecrets.remember(
+      fields.flatMap((field) => (field === "username" ? [] : [values[field] ?? ""])),
+    );
+    for (const field of fields) {
+      const target = targets.get(field);
+      if (target === undefined) continue;
+      if (expired()) {
+        throw ServerBrowserLogin.loginError("The call ended before the login was filled.");
+      }
+      await ServerBrowserLogin.fillCovered({
+        page: tab.page,
+        cdp: tab.cdp,
+        field,
+        target,
+        value: values[field] ?? "",
+        frameCovered,
+        document,
+        deadline,
+      });
+    }
+    return { status: "filled", tabId: tab.tabId, login: summary(login), filled: fields };
+  };
+
+  const executeTabOperation = async (
+    tab: ServerTab,
+    request: PreviewAutomationRequest,
+    deadlineMs: number,
+  ) => {
     const input = request.input;
     switch (request.operation) {
       case "navigate": {
@@ -2190,12 +2445,21 @@ const make = Effect.gen(function* () {
         return { tabId: tab.tabId, colorScheme };
       }
       case "snapshot": {
-        return withScreencastsPaused(tab, () =>
+        // Text is scrubbed, but pixels of a filled page can show a revealed password or code.
+        const shows = () => exposed(tab).catch(() => true);
+        const before = await shows();
+        const snapshot = await withScreencastsPaused(tab, () =>
           ServerBrowserPage.snapshot({
             ...tab,
             renderScale: tab.desktop ? "display" : RENDER_SCALE,
+            scrub: filledSecrets.scrub,
+            images: !before,
           }),
         );
+        // Another agent's fill, or Back, can come while an observer's snapshot runs.
+        if (!before && !(await shows())) return snapshot;
+        const { screenshot: _withheld, ...text } = snapshot;
+        return { ...text, imagesOff: IMAGES_OFF };
       }
       case "click": {
         const clickInput = input as PreviewAutomationClickInput;
@@ -2232,19 +2496,76 @@ const make = Effect.gen(function* () {
         return recordAction(tab, "scroll", () =>
           ServerBrowserPage.scroll(tab.page, input as PreviewAutomationScrollInput),
         );
-      case "evaluate":
-        return ServerBrowserPage.evaluate(
-          tab.cdp,
-          input as PreviewAutomationEvaluateInput,
-          request.timeoutMs,
+      case "evaluate": {
+        const evaluateInput = input as PreviewAutomationEvaluateInput;
+        if (Option.isNone(browserLogins)) {
+          return ServerBrowserPage.evaluate(tab.cdp, evaluateInput, request.timeoutMs);
+        }
+        const key = tabKey(tab.threadId, tab.tabId);
+        const before = await ServerBrowserLogin.documentId(tab.cdp);
+        if (await exposed(tab).catch(() => true)) throw filledPageError();
+        documentMarks.markScripted(key, [before]);
+        try {
+          return await ServerBrowserPage.evaluate(tab.cdp, evaluateInput, request.timeoutMs);
+        } finally {
+          // The script may have started a navigation; its next document counts as scripted too.
+          const after = await ServerBrowserLogin.documentId(tab.cdp).catch(() => before);
+          documentMarks.markScripted(key, [after]);
+        }
+      }
+      case "fillLogin":
+        return recordAction(tab, "fillLogin", () =>
+          fillLogin(tab, input as PreviewAutomationFillLoginRequest, deadlineMs),
         );
       case "waitFor":
         return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
       case "recordingStart": {
-        const recording = await startRecording(tab);
+        const loads = tab.documentLoads;
+        if (await exposed(tab).catch(() => true)) throw filledPageError();
+        const recording = await startRecording(tab, loads);
         return { tabId: tab.tabId, recording: true, startedAt: recording.startedAt };
       }
     }
+  };
+
+  // Scrubbing a result catches a value a page copied elsewhere (storage, the title, another tab),
+  // so it outlives the tab it was filled in.
+  const scrubOutcome = (
+    operation: PreviewAutomationRequest["operation"],
+    outcome:
+      | { readonly ok: true; readonly result: unknown }
+      | {
+          readonly ok: false;
+          readonly error: {
+            readonly _tag: string;
+            readonly message: string;
+            readonly detail?: unknown;
+          };
+        },
+  ) => {
+    const scrub = filledSecrets.scrub;
+    if (!outcome.ok) {
+      const { detail, ...error } = outcome.error;
+      return {
+        ok: false as const,
+        error: {
+          ...error,
+          message: scrub(error.message),
+          ...(detail === undefined ? {} : { detail: scrub(detail) }),
+        },
+      };
+    }
+    // The fill's own result holds only titles and field names.
+    if (operation === "fillLogin") return outcome;
+    // Screenshot bytes are not text, and a page holding a fill gets none taken.
+    if (operation === "snapshot") {
+      const { screenshot, ...rest } = outcome.result as PreviewAutomationSnapshot;
+      return {
+        ok: true as const,
+        result: { ...scrub(rest), ...(screenshot === undefined ? {} : { screenshot }) },
+      };
+    }
+    return { ok: true as const, result: scrub(outcome.result) };
   };
 
   const handleRequest = (connectionId: string, request: PreviewAutomationRequest) =>
@@ -2266,6 +2587,7 @@ const make = Effect.gen(function* () {
           },
         }),
       }),
+      Effect.map((outcome) => scrubOutcome(request.operation, outcome)),
       Effect.flatMap((outcome) =>
         broker.respond({
           clientId: SERVER_HOST_CLIENT_ID,

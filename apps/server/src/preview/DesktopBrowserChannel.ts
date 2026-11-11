@@ -8,6 +8,7 @@ import {
   type DesktopBrowserCommand as DesktopBrowserCommandType,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -35,6 +36,13 @@ export interface DesktopTabKey {
 
 const keyOf = ({ threadId, tabId }: DesktopTabKey) => `${threadId}\u0000${tabId}`;
 
+export type DesktopLoginPrompt = Omit<
+  Extract<DesktopBrowserCommandType, { readonly type: "loginApproval" }>,
+  "type" | "threadId" | "tabId" | "requestId" | "timeoutMs"
+>;
+
+const LOGIN_APPROVAL_TIMEOUT = Duration.minutes(2);
+
 export class DesktopBrowserChannel extends Context.Service<
   DesktopBrowserChannel,
   {
@@ -51,6 +59,24 @@ export class DesktopBrowserChannel extends Context.Service<
     ) => Effect.Effect<void>;
     /** Never fails. A failed write means a broken channel; the next backend starts with no turns. */
     readonly turn: (threadId: string, active: boolean) => Effect.Effect<void>;
+    /**
+     * Asks the user in a native dialog. A missing app, a closed dialog, or no answer within
+     * `timeoutMs` (at most two minutes) is a no.
+     */
+    readonly approveLogin: (
+      key: DesktopTabKey,
+      timeoutMs: number,
+      prompt: DesktopLoginPrompt,
+    ) => Effect.Effect<boolean>;
+    /**
+     * Tells the desktop a login was filled into a document, or that one showed another address.
+     * Written before anything sent after it, the fill's own page commands included. Never fails.
+     */
+    readonly loginFilled: (
+      key: DesktopTabKey,
+      document: string,
+      url: string,
+    ) => Effect.Effect<void>;
   }
 >()("t3/preview/DesktopBrowserChannel") {}
 
@@ -83,8 +109,15 @@ const make = Effect.gen(function* () {
       pointer: Effect.fn("DesktopBrowserChannel.pointer")(function () {
         return Effect.void;
       }),
+      approveLogin: Effect.fn("DesktopBrowserChannel.approveLogin")(function () {
+        return Effect.succeed(false);
+      }),
+      loginFilled: Effect.fn("DesktopBrowserChannel.loginFilled")(function () {
+        return Effect.void;
+      }),
     });
   }
+  const loginApprovals = new Map<string, Deferred.Deferred<boolean>>();
 
   const command = (message: DesktopBrowserCommandType) =>
     writeLock.withPermits(1)(
@@ -114,6 +147,12 @@ const make = Effect.gen(function* () {
       const key = { threadId: event.threadId, tabId: event.tabId };
       const id = keyOf(key);
       switch (event.type) {
+        case "loginApproval": {
+          const pending = loginApprovals.get(event.requestId);
+          return pending
+            ? Deferred.succeed(pending, event.approved).pipe(Effect.asVoid)
+            : Effect.void;
+        }
         case "cdp": {
           const queue = inbound.get(id);
           return queue ? Queue.offer(queue, event.message).pipe(Effect.asVoid) : Effect.void;
@@ -227,6 +266,29 @@ const make = Effect.gen(function* () {
     }),
     pointer: Effect.fn("DesktopBrowserChannel.pointer")(function (key, pointer) {
       return command({ type: "pointer", ...key, ...pointer });
+    }),
+    approveLogin: Effect.fn("DesktopBrowserChannel.approveLogin")(
+      function* (key, timeoutMs, prompt) {
+        const requestId = NodeCrypto.randomUUID();
+        const answer = yield* Deferred.make<boolean>();
+        loginApprovals.set(requestId, answer);
+        const timeout = Duration.min(Duration.millis(timeoutMs), LOGIN_APPROVAL_TIMEOUT);
+        return yield* command({
+          type: "loginApproval",
+          ...key,
+          requestId,
+          ...prompt,
+          timeoutMs: Duration.toMillis(timeout),
+        }).pipe(
+          Effect.andThen(Deferred.await(answer)),
+          Effect.timeoutOption(timeout),
+          Effect.map((approved) => Option.getOrElse(approved, () => false)),
+          Effect.ensuring(Effect.sync(() => loginApprovals.delete(requestId))),
+        );
+      },
+    ),
+    loginFilled: Effect.fn("DesktopBrowserChannel.loginFilled")(function (key, document, url) {
+      return command({ type: "loginFilled", ...key, document, url });
     }),
   });
 });

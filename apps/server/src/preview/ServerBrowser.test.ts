@@ -8,14 +8,22 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { it } from "@effect/vitest";
 import {
+  type BrowserLoginApproval,
   type BrowserRecordingFrameRate,
   EnvironmentId,
   PreviewTabId,
   ProviderInstanceId,
+  SecretProviderId,
+  SecretProviderKind,
   ThreadId,
+  type PreviewAutomationFillLoginResult,
+  type PreviewAutomationOperation,
   type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
+  type PreviewNavStatus,
 } from "@t3tools/contracts";
+import { defineSecretProviderDriver } from "@t3tools/secret-provider-core/server/driver";
+import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
@@ -26,14 +34,17 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import type { BrowserContext, Page } from "playwright-core";
+import { chromium, type BrowserContext, type CDPSession, type Page } from "playwright-core";
 import { beforeEach, expect, vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
+import * as Settings from "../serverSettings.ts";
+import * as BrowserLogins from "./BrowserLogins.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
@@ -49,6 +60,7 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     }
     async contextFor(profileId: string, isolationKey?: string) {
       contextRequests.push({ profileId, isolated: isolationKey !== undefined });
+      if (realContext) return realContext;
       if (contextFailure) throw contextFailure;
       await contextGate?.promise;
       const context = makeContext(this.onClose);
@@ -62,7 +74,9 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
       return context as unknown as BrowserContext;
     }
     async scratchPage() {
-      return makeEncoderPage() as unknown as Page;
+      const encoder = makeEncoderPage();
+      encoderPages.push(encoder);
+      return encoder as unknown as Page;
     }
     async connectDesktopPage(endpoint: string) {
       const context = makeContext(undefined, desktopPageUrl);
@@ -298,6 +312,7 @@ function makeEncoderPage() {
 
 const contexts: ReturnType<typeof makeContext>[] = [];
 const encoderStreams: Array<{ frameRate: number | undefined; bitsPerSecond: number }> = [];
+const encoderPages: Array<ReturnType<typeof makeEncoderPage>> = [];
 const contextRequests: Array<{ profileId: string; isolated: boolean }> = [];
 let contextGate: PromiseWithResolvers<void> | null = null;
 let pageCopy = "";
@@ -308,6 +323,8 @@ let pageSetupFailure: Error | null = null;
 let initialNavigation: (() => Promise<void>) | null = null;
 let desktopRendersNext = false;
 let desktopPageUrl = "about:blank";
+/** A real headless Chromium context handed out instead of the fakes, when set. */
+let realContext: BrowserContext | null = null;
 /** Replaces the answer to the desktop page's size reads. */
 let desktopSizeAnswer: (() => Promise<Record<string, unknown>>) | null = null;
 const desktopDetaches = new NodeEvents.EventEmitter();
@@ -379,6 +396,8 @@ const dependencies = Layer.mergeAll(
       ),
     ),
     isAttached: (key) => Effect.sync(() => desktopRenders(key.tabId)),
+    approveLogin: () => Effect.succeed(false),
+    loginFilled: () => Effect.void,
     endpoint: (key) =>
       Effect.acquireRelease(Effect.succeed(`ws://desktop/${key.tabId}`), () =>
         Effect.sync(() => {
@@ -446,6 +465,7 @@ const openDesktopViewer = Effect.gen(function* () {
 beforeEach(() => {
   contexts.length = 0;
   encoderStreams.length = 0;
+  encoderPages.length = 0;
   contextRequests.length = 0;
   contextGate = null;
   contextFailure = null;
@@ -457,6 +477,7 @@ beforeEach(() => {
   desktopTabs.clear();
   desktopRendersNext = false;
   desktopPageUrl = "about:blank";
+  realContext = null;
   desktopSizeAnswer = null;
   desktopDetachReady = Promise.withResolvers<void>();
   desktopReleased = Promise.withResolvers<void>();
@@ -2326,3 +2347,418 @@ it.live("failed session and browser launches release capacity, as does closing a
     }),
   ).pipe(Effect.provide(layer)),
 );
+
+const loginKind = SecretProviderKind.make("fake_vault");
+const loginProvider = SecretProviderId.make("work");
+const LOGIN_PAGE = `<title>Sign in</title><input id="user" autocomplete="username"><input id="password" type="password" oninput="document.title = this.value">`;
+/** Pages other than the login page, by path. */
+const LOGIN_SITE: Partial<Record<string, string>> = {
+  "/first": "<title>password-1</title>",
+  // Copies the password into its log and text near their length limits, then clears the field.
+  "/echo": `<input id="user" autocomplete="username"><input id="password" type="password" oninput="
+    const value = this.value;
+    console.log('x'.repeat(1995) + value);
+    setTimeout(() => { this.value = ''; document.body.append('x'.repeat(19995) + value); });
+  ">`,
+  "/long": `<title>${"x".repeat(508)}password-value</title>`,
+  // A framework draws the code field again, without the attribute the fill set on it.
+  "/otp": `<input id="otp" autocomplete="one-time-code" oninput="
+    const fresh = document.createElement('input');
+    fresh.value = this.value;
+    this.replaceWith(fresh);
+  "><a href="/next">next</a>`,
+  "/next": "<p>next</p>",
+  // Logs the password as JSON and names a button with it, then clears the field.
+  "/quote": `<input id="user" autocomplete="username"><input id="password" type="password" oninput="
+    console.log(JSON.stringify({ password: this.value }));
+    document.getElementById('echo').setAttribute('aria-label', this.value);
+    setTimeout(() => { this.value = ''; document.body.append('cleared'); });
+  "><button id="echo">echo</button>`,
+};
+
+/** Real headless Chromium for the mocked contexts to hand out, serving a login page. */
+const realLoginBrowser = Effect.acquireRelease(
+  Effect.promise(async () => {
+    const browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext();
+    await context.route("https://good.test/**", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: LOGIN_SITE[new URL(route.request().url()).pathname] ?? LOGIN_PAGE,
+      }),
+    );
+    realContext = context;
+    return { browser, context };
+  }),
+  ({ browser }) => Effect.promise(() => browser.close()),
+);
+
+/** A server whose one password manager holds a login for https://good.test. */
+const loginServer = (
+  approval: BrowserLoginApproval,
+  desktopChannel: Layer.Layer<
+    DesktopChannel.DesktopBrowserChannel,
+    never,
+    ServerConfig.ServerConfig
+  >,
+  /** What the password manager holds for a field, on its nth read. */
+  secret: (field: string, read: number) => string = (field) => `${field}-value`,
+) => {
+  const reads: Array<string> = [];
+  const driver = defineSecretProviderDriver({
+    kind: loginKind,
+    definition: defineSecretProvider({
+      kind: loginKind,
+      label: "Fake Vault",
+      configSchema: Schema.Struct({}),
+      isReference: () => true,
+      referencePlaceholder: "",
+      invalidReferenceMessage: "",
+      supportsLogins: true,
+    }),
+    read: (_config, references) => Effect.succeed(references.map(() => undefined)),
+    logins: {
+      list: () =>
+        Effect.succeed([{ id: "g1", title: "Good", vaultId: "v1", urls: ["https://good.test"] }]),
+      read: (_config, login, fields) =>
+        Effect.sync(() => {
+          reads.push(login.id);
+          return Object.fromEntries(fields.map((field) => [field, secret(field, reads.length)]));
+        }),
+    },
+  });
+  const logins = Layer.effect(BrowserLogins.BrowserLogins, BrowserLogins.make([driver])).pipe(
+    Layer.provide(
+      Settings.layerTest({
+        secretProviders: { [loginProvider]: { kind: loginKind, label: "Work", config: {} } },
+        browserLogins: { secretProviderIds: [loginProvider], approval },
+      }),
+    ),
+  );
+  return {
+    reads,
+    layer: ServerBrowser.layer.pipe(
+      Layer.provideMerge(Layer.mergeAll(desktopChannel, logins)),
+      Layer.provideMerge(dependencies),
+    ),
+  };
+};
+
+/** Opens an agent tab on the login page; with no desktop to draw it, it is headless. */
+const openLoginTab = Effect.gen(function* () {
+  const { broker, tabId } = yield* ready;
+  const invoke = <A = void>(operation: PreviewAutomationOperation, input: object = {}) =>
+    broker.invoke<A>({ scope, tabId, operation, input });
+  yield* invoke("navigate", { url: "https://good.test/login" });
+  return { tabId, invoke };
+});
+
+const passwordField = (context: BrowserContext) =>
+  Effect.promise(() =>
+    context
+      .pages()[0]!
+      .locator("#password")
+      .evaluate((element) => {
+        const field = element as unknown as {
+          readonly value: string;
+          readonly style: { getPropertyValue: (name: string) => string };
+        };
+        return {
+          value: field.value,
+          security: field.style.getPropertyValue("-webkit-text-security"),
+        };
+      }),
+  );
+
+it.live(
+  "a headless tab is filled without asking under Don't ask, behind the same page guards",
+  () => {
+    const server = loginServer("never", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          yield* invoke("evaluate", { expression: "document.title" });
+          const scripted = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(scripted.message).toContain("preview_evaluate ran in this page");
+
+          yield* invoke("navigate", { url: "https://good.test/login" });
+          const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
+          expect(filled).toMatchObject({ status: "filled", filled: ["username", "password"] });
+          // Nothing else about the login, such as its vault id, reaches the agent.
+          expect(filled.status === "filled" && filled.login).toEqual({
+            id: "work/g1",
+            title: "Good",
+            account: "Work",
+          });
+          expect(yield* passwordField(context)).toEqual({
+            value: "password-value",
+            security: "disc",
+          });
+          for (const operation of ["evaluate", "recordingStart"] as const) {
+            const refused = yield* invoke(operation, { expression: "1" }).pipe(Effect.flip);
+            expect(refused.message).toContain("filled a login in this page");
+          }
+          // The page copied the password into its title.
+          const status = yield* invoke<PreviewAutomationStatus>("status");
+          expect(status.title).toBe("[filled by password manager]");
+          // Its pixels could show the password revealed, so only text comes back.
+          const filledSnapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(filledSnapshot.screenshot).toBeUndefined();
+          expect(filledSnapshot.imagesOff).toContain("preview_navigate");
+          expect(filledSnapshot.title).toBe("[filled by password manager]");
+
+          yield* invoke("navigate", { url: "https://good.test/login" });
+          const freshSnapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(freshSnapshot.screenshot?.mimeType).toBe("image/png");
+          expect(freshSnapshot.imagesOff).toBeUndefined();
+          yield* invoke("recordingStart");
+          const recording = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(recording.message).toContain("Stop the recording before filling a login");
+          expect(server.reads).toEqual(["g1"]);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live("refuses a password or code too short or too broken to keep out of results", () => {
+  const server = loginServer("never", DesktopChannel.layer, (field, read) =>
+    field === "password" ? (["abc", "pass\nword"][read - 1] ?? "") : `${field}-value`,
+  );
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        for (const _attempt of [1, 2]) {
+          const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(refused.message).toContain("Ask the user to sign in in the tab");
+        }
+        expect(server.reads).toEqual(["g1", "g1"]);
+        expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+        // Nothing was filled, so script still runs here.
+        yield* invoke("evaluate", { expression: "1" });
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("scrubs every password filled since the server started, however many", () => {
+  const server = loginServer("never", DesktopChannel.layer, (field, read) => `${field}-${read}`);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        for (const _fill of Array.from({ length: 101 })) {
+          yield* invoke("fillLogin", { fields: ["password"] });
+        }
+        // A page shows the first of them again.
+        yield* invoke("navigate", { url: "https://good.test/first" });
+        const status = yield* invoke<PreviewAutomationStatus>("status");
+        expect(status.title).toBe("[filled by password manager]");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("scrubs a filled password from page text before cutting it to length", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { tabId, invoke } = yield* openLoginTab;
+        yield* invoke("navigate", { url: "https://good.test/echo" });
+        yield* invoke("fillLogin");
+        yield* invoke("waitFor", { text: "xxxx" });
+        // A cut through "password-value" would leave its start, which no exact match finds.
+        const snapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        expect(snapshot.visibleText).not.toContain("passw");
+        expect(snapshot.consoleEntries.map((entry) => entry.text).join("\n")).not.toContain(
+          "passw",
+        );
+        // The title and address the tab list shows, which no result scrubbing reaches.
+        const events = yield* (yield* Manager.PreviewManager).subscribeEvents;
+        yield* invoke("navigate", {
+          url: `https://good.test/long?pad=${"x".repeat(2017)}password-value`,
+        });
+        const shown: Array<PreviewNavStatus> = [];
+        const loaded = (status: PreviewNavStatus | undefined) =>
+          status?._tag === "Success" && status.url.startsWith("https://good.test/long");
+        while (!loaded(shown.at(-1))) {
+          const event = yield* PubSub.take(events);
+          if (event.type === "navigated" && event.tabId === tabId) {
+            shown.push(event.snapshot.navStatus);
+          }
+        }
+        expect(JSON.stringify(shown)).not.toContain("pass");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("scrubs a filled password in the escaped forms a log or snapshot writes it in", () => {
+  const server = loginServer("never", DesktopChannel.layer, (field) =>
+    field === "password" ? String.raw`pa"ss\w0rd  x` : `${field}-value`,
+  );
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* invoke("navigate", { url: "https://good.test/quote" });
+        yield* invoke("fillLogin");
+        yield* invoke("waitFor", { text: "cleared" });
+        const snapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        const logged = snapshot.consoleEntries.map((entry) => entry.text).join("\n");
+        expect(logged).toContain("[filled by password manager]");
+        expect(logged).not.toContain("w0rd");
+        expect(snapshot.accessibilityTree).toContain("[filled by password manager]");
+        expect(snapshot.accessibilityTree).not.toContain("w0rd");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+/** Fills a code into a field the page draws again, then leaves for another page. */
+const fillCodeAndLeave = (invoke: Effect.Success<typeof openLoginTab>["invoke"]) =>
+  Effect.gen(function* () {
+    yield* invoke("navigate", { url: "https://good.test/otp" });
+    yield* invoke("fillLogin", { fields: ["totp"] });
+    yield* invoke("navigate", { url: "https://good.test/next" });
+  });
+
+it.live(
+  "a page Back restores at an address that held a fill takes no images, script or recording",
+  () => {
+    const server = loginServer("never", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          yield* fillCodeAndLeave(invoke);
+          // Back, as pressed in a viewer or the desktop: Chromium refills the field drawn afresh.
+          const page = context.pages()[0]!;
+          yield* Effect.promise(() => page.goBack());
+          expect(yield* Effect.promise(() => page.locator("#otp").inputValue())).toBe("totp-value");
+          const restored = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(restored.screenshot).toBeUndefined();
+          expect(restored.imagesOff).toContain("preview_navigate");
+          for (const operation of ["evaluate", "recordingStart"] as const) {
+            const refused = yield* invoke(operation, { expression: "1" }).pipe(Effect.flip);
+            expect(refused.message).toContain("filled a login in this page");
+          }
+          // A fresh visit to the same address restores nothing.
+          yield* invoke("navigate", { url: "https://good.test/otp" });
+          const fresh = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(fresh.screenshot?.mimeType).toBe("image/png");
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live("a running recording takes no frame of a page Back restores where a fill was", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      // The recording's own session, to see every frame it is sent.
+      const sessions: Array<CDPSession> = [];
+      const newCDPSession = context.newCDPSession.bind(context);
+      context.newCDPSession = async (page) => {
+        const session = await newCDPSession(page);
+        sessions.push(session);
+        return session;
+      };
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* fillCodeAndLeave(invoke);
+        const opened = sessions.length;
+        yield* invoke("recordingStart");
+        const recording = sessions[opened]!;
+        const page = context.pages()[0]!;
+        yield* Effect.promise(() => page.goBack());
+        // Anything the restored page draws reaches the recording's session as a frame.
+        const drawn = new Promise<{ readonly data: string }>((resolve) =>
+          recording.once("Page.screencastFrame", resolve),
+        );
+        yield* Effect.promise(() => page.evaluate("document.body.style.background = 'red'"));
+        const { data } = yield* Effect.promise(() => drawn);
+        const encoded = encoderPages
+          .at(-1)!
+          .evaluate.mock.calls.some(([, frame]) => Array.isArray(frame) && frame[0] === data);
+        expect(encoded).toBe(false);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live(
+  "a headless tab on a server without its desktop app refuses a login that needs approval",
+  () => {
+    const server = loginServer("thread", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(refused.message).toContain("Nobody can approve a login on this machine.");
+          expect(server.reads).toEqual([]);
+          expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live("a headless tab on a server with its desktop app asks there before filling", () => {
+  const asked: Array<{ readonly key: DesktopChannel.DesktopTabKey; readonly prompt: object }> = [];
+  const server = loginServer(
+    "thread",
+    Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
+      available: true,
+      // The desktop never draws the tab.
+      awaitAttached: () => Effect.succeed(false),
+      detached: Stream.empty,
+      attached: Stream.empty,
+      isAttached: () => Effect.succeed(false),
+      endpoint: () => Effect.die("The desktop does not draw this tab."),
+      pointer: () => Effect.void,
+      turn: () => Effect.void,
+      loginFilled: () => Effect.void,
+      approveLogin: (key, _timeoutMs, prompt) =>
+        Effect.sync(() => {
+          asked.push({ key, prompt });
+          return true;
+        }),
+    }),
+  );
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { tabId, invoke } = yield* openLoginTab;
+        const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
+        expect(filled.status).toBe("filled");
+        expect(asked).toEqual([
+          {
+            key: { threadId: scope.thread.threadId, tabId },
+            prompt: expect.objectContaining({
+              providerLabel: "Work",
+              loginTitle: "Good",
+              origin: "https://good.test",
+              scope: "thread",
+            }),
+          },
+        ]);
+        expect((yield* passwordField(context)).value).toBe("password-value");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});

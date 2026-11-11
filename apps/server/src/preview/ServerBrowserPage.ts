@@ -101,7 +101,7 @@ const refsFor = (page: Page) => {
   return state;
 };
 
-const targetLocator = (
+export const targetLocator = (
   page: Page,
   input: { readonly locator?: string | undefined; readonly selector?: string | undefined },
 ): Locator | null => {
@@ -504,6 +504,10 @@ type SnapshotInput = {
   readonly consoleEntries: ReadonlyArray<PreviewAutomationConsoleEntry>;
   readonly networkEntries: ReadonlyArray<PreviewAutomationNetworkEntry>;
   readonly actionTimeline: PreviewAutomationSnapshot["actionTimeline"];
+  /** Removes secrets from page text; it runs before the text is cut to length. */
+  readonly scrub?: (text: string) => string;
+  /** False takes no screenshot. */
+  readonly images?: boolean;
 };
 
 /** The scale a page renders at and its viewport in device-independent pixels. */
@@ -544,9 +548,11 @@ const capture = async (
         "url" | "title" | "loading" | "visibleText" | "interactiveElements"
       >
     >,
-    captureViewport(input.cdp, { format: "png" }).then((png) =>
-      scale < 1 ? shrinkPng(input.cdp, png, scale) : png,
-    ),
+    input.images === false
+      ? undefined
+      : captureViewport(input.cdp, { format: "png" }).then((png) =>
+          scale < 1 ? shrinkPng(input.cdp, png, scale) : png,
+        ),
   ]);
   void pageAndScreenshot.catch(constVoid);
   // Leaves time for the second read; a frame that never loads holds the tree until then.
@@ -572,11 +578,12 @@ const capture = async (
   }
   const [page, data] = await pageAndScreenshot;
   if (state.generation !== generation) throw pageChanged();
-  const mask = (text: string) => (dotted ? text.replace(dotted, MASKED_VALUE) : text);
+  const scrub = input.scrub ?? ((text: string) => text);
+  const mask = (text: string) => scrub(dotted ? text.replace(dotted, MASKED_VALUE) : text);
   // Redacted before the cut, so a payload crossing it can't leave its start showing, and before
   // masking, which could hide the `data:` scheme behind a password value's dots.
   const redacted = withoutTreeDataPayloads(tree);
-  const accessibilityTree = (dotted ? maskTree(redacted, dotted) : redacted)
+  const accessibilityTree = scrub(dotted ? maskTree(redacted, dotted) : redacted)
     .slice(0, MAX_VISIBLE_TEXT_LENGTH)
     .replace(/\[ref=((?:f\d+)?e\d+)\]/g, (_match, nativeRef: string) => {
       const ref = `t3-${generation}-${nativeRef}`;
@@ -592,18 +599,25 @@ const capture = async (
     consoleEntries: [...input.consoleEntries],
     networkEntries: [...input.networkEntries],
     actionTimeline: [...input.actionTimeline],
-    screenshot: {
-      mimeType: "image/png",
-      data,
-      ...pngSize(data),
-    },
+    ...(data === undefined
+      ? {}
+      : { screenshot: { mimeType: "image/png", data, ...pngSize(data) } }),
   };
 };
+
+/** A screenshot is taken unless the caller can turn images off. */
+type SnapshotOf<Input> = Input extends { readonly images: boolean }
+  ? PreviewAutomationSnapshot
+  : PreviewAutomationSnapshot & {
+      readonly screenshot: NonNullable<PreviewAutomationSnapshot["screenshot"]>;
+    };
 
 /** Snapshots begun per page; observers' snapshots aren't queued, so two can overlap. */
 const snapshotTurns = new WeakMap<Page, number>();
 
-export const snapshot = async (input: SnapshotInput): Promise<PreviewAutomationSnapshot> => {
+export const snapshot = async <Input extends SnapshotInput>(
+  input: Input,
+): Promise<SnapshotOf<Input>> => {
   const deadline = Date.now() + SNAPSHOT_TIMEOUT_MS;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
@@ -620,7 +634,7 @@ export const snapshot = async (input: SnapshotInput): Promise<PreviewAutomationS
       : Promise.reject(cause),
   );
   try {
-    return await Promise.race([captured, expired]);
+    return (await Promise.race([captured, expired])) as SnapshotOf<Input>;
   } catch (cause) {
     throw cause instanceof Error && cause.name === "TimeoutError" ? tooBusy() : cause;
   } finally {
