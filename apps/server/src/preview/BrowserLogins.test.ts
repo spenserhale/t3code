@@ -1209,6 +1209,34 @@ describe("SecretRelayDevice", () => {
     }).pipe(Effect.provide(device.layer));
   });
 
+  it.effect("set to refuse, reads a command's secret from its service accounts alone", () => {
+    const refusing = { ...bothProviders, escalation: "refuse" } as const;
+    const service = makeService({}, refusing, {}, undefined, ["work"]);
+    const device = deviceServer(service, { available: true, answers: ["once", "once"] });
+    return Effect.gen(function* () {
+      const relay = yield* SecretRelayDevice.SecretRelayDevice;
+      const resolve = (reference: string) =>
+        relay.resolve({
+          request: request({
+            kind: "secretReference",
+            reference,
+            command: "deploy",
+            origin: undefined,
+          }),
+          requester: linkMini,
+        });
+      const personal = "op://personal/Firecrawl/key";
+      assert.strictEqual((yield* resolve(personal)).type, "unavailable");
+      assert.strictEqual((yield* resolve("op://work/OpenAI/key")).type, "values");
+      // The password manager a person unlocks is neither named in the question nor read.
+      assert.deepStrictEqual(
+        device.prompts.map((prompt) => prompt.providerLabel),
+        ["Work", "Work"],
+      );
+      assert.deepStrictEqual(service.calls.read, [`work:${personal}`, "work:op://work/OpenAI/key"]);
+    }).pipe(Effect.provide(device.layer));
+  });
+
   it.effect(
     "says an identity read shows the agent the details, and asks about it on its own",
     () => {
