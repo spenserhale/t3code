@@ -2754,7 +2754,7 @@ const make = Effect.gen(function* () {
         environmentId,
         supportedOperations: [...PREVIEW_AUTOMATION_SERVER_OPERATIONS],
       },
-      { preferred: true },
+      { preferred: true, evictOnTimeout: false },
     )
     .pipe(
       Effect.flatMap((events) =>
@@ -2772,7 +2772,7 @@ const make = Effect.gen(function* () {
         ),
       ),
     );
-  // The broker disconnects timed-out hosts, including slow first installs. Reconnect.
+  // Timed-out requests leave this host connected; reconnect if its stream ends for another reason.
   yield* hostSession.pipe(
     Effect.exit,
     Effect.andThen(Effect.sleep(HOST_RECONNECT_DELAY)),

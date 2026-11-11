@@ -56,6 +56,11 @@ export interface PreviewAutomationInvokeInput {
 
 export interface PreviewAutomationConnectOptions {
   readonly preferred?: boolean;
+  /**
+   * Defaults to true. An in-process host reconnects as itself, so evicting it on a timeout only
+   * fails its other pending requests.
+   */
+  readonly evictOnTimeout?: boolean;
 }
 
 export class PreviewAutomationBroker extends Context.Service<
@@ -82,6 +87,7 @@ interface ClientConnection {
   readonly supportedOperations: ReadonlySet<PreviewAutomationOperation>;
   readonly focused: boolean;
   readonly preferred: boolean;
+  readonly evictOnTimeout: boolean;
   readonly liveTabs: NonNullable<PreviewAutomationHostFocus["liveTabs"]>;
   readonly focusOrder: number;
   readonly queue: Queue.Queue<PreviewAutomationStreamEvent, Cause.Done>;
@@ -420,6 +426,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       supportedOperations: new Set(host.supportedOperations ?? PREVIEW_AUTOMATION_V1_OPERATIONS),
       focused: false,
       preferred: options?.preferred ?? false,
+      evictOnTimeout: options?.evictOnTimeout ?? true,
       liveTabs: [],
       focusOrder: 0,
       queue,
@@ -662,7 +669,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         // The enclosing operation owns the span for this inline handler.
         onNone: Effect.fnUntraced(function* () {
           // Never replay possibly applied actions; slow metadata reads must not evict the host.
-          if (input.updateCurrentTab !== false) {
+          if (input.updateCurrentTab !== false && connection.evictOnTimeout) {
             yield* disconnect(connection.clientId, connection.queue, true);
           }
           return yield* new PreviewAutomationTimeoutError(requestContext);
