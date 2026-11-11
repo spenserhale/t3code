@@ -173,12 +173,19 @@ const makeService = (
         account: Schema.String,
         serviceAccountToken: Schema.optional(Schema.String),
       }),
-      isReference: () => true,
+      isReference: (reference) => reference.startsWith("op://"),
       referencePlaceholder: "",
       invalidReferenceMessage: "",
       supportsLogins: true,
     }),
-    read: (_config, references) => Effect.succeed(references.map(() => undefined)),
+    // `op://<account>/...` names a secret of that account.
+    read: ({ account }, references) =>
+      Effect.sync(() =>
+        references.map((reference) => {
+          calls.read.push(`${account}:${reference}`);
+          return reference.startsWith(`op://${account}/`) ? `secret-${account}` : undefined;
+        }),
+      ),
     unattended: ({ serviceAccountToken }) => serviceAccountToken !== undefined,
     logins: {
       // `op://<account>/<id>` names a login of that account.
@@ -479,6 +486,48 @@ describe("BrowserLogins", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect(
+    "reads a secret only from providers of the reach asked, while the settings hold",
+    () => {
+      const { layer, calls } = makeService({}, bothProviders, {}, undefined, ["work"]);
+      return Effect.gen(function* () {
+        const settings = yield* Settings.ServerSettingsService;
+        const logins = yield* BrowserLogins.BrowserLogins;
+        const reference = "op://personal/OpenAI/key";
+        const unattended = yield* logins.secretSources(reference, "unattended");
+        assert.deepStrictEqual(unattended.accounts, ["Work"]);
+        const missing = yield* logins
+          .readSecret(unattended.revision, reference, "unattended")
+          .pipe(Effect.flip);
+        assert.deepStrictEqual(
+          { reason: missing.reason, message: missing.message },
+          {
+            reason: "unreadable",
+            message: `Work did not return ${reference}. It may be locked, the reference may be wrong, or the request was denied there.`,
+          },
+        );
+        const attended = yield* logins.secretSources(reference, "attended");
+        assert.deepStrictEqual(attended.accounts, ["Personal"]);
+        const secret = yield* logins.readSecret(attended.revision, reference, "attended");
+        assert.strictEqual(secret.account, "Personal");
+        assert.strictEqual(Redacted.value(secret.value), "secret-personal");
+        // Each step asked only its own providers, and finding the sources read nothing.
+        assert.deepStrictEqual(calls.read, [`work:${reference}`, `personal:${reference}`]);
+        // Syntax no chosen provider reads has no source.
+        assert.deepStrictEqual((yield* logins.secretSources("vault://x/y", "all")).accounts, []);
+
+        yield* settings.updateSettings({
+          browserLogins: { secretProviderIds: [personal], approval: "thread" },
+        });
+        const error = yield* logins
+          .readSecret(attended.revision, reference, "attended")
+          .pipe(Effect.flip);
+        assert.strictEqual(error.reason, "changed");
+        assert.lengthOf(calls.read, 2);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("remembers Allow for this thread for that thread, machine and kind only", () => {
     const { layer } = makeService({ work: [github] });
     return Effect.gen(function* () {
@@ -495,6 +544,7 @@ describe("BrowserLogins", () => {
         [threadA, "identity"],
         [threadA, "identityRead"],
         [threadA, "newLogin"],
+        [threadA, "secretReference"],
       ] as const) {
         assert.isTrue(yield* logins.needsApproval(revision, scope, kind));
       }
@@ -1109,6 +1159,81 @@ describe("SecretRelayDevice", () => {
       );
       assert.deepStrictEqual(device.lookedUpBefore, [0, 1, 2]);
       assert.deepStrictEqual(service.calls.read, ["work:h1@v9"]);
+    }).pipe(Effect.provide(device.layer));
+  });
+
+  it.effect("asks before reading a secret for a command, naming the command", () => {
+    const service = makeService({}, bothProviders, {}, undefined, ["work"]);
+    const device = deviceServer(service, { available: true, answers: [false, "thread"] });
+    return Effect.gen(function* () {
+      const relay = yield* SecretRelayDevice.SecretRelayDevice;
+      const command = "wide-search auth set firecrawl --stdin";
+      const resolve = (reference: string, threadId = "thread-a") =>
+        relay.resolve({
+          request: request({
+            kind: "secretReference",
+            reference,
+            command,
+            origin: undefined,
+            threadId,
+          }),
+          requester: linkMini,
+        });
+      const firecrawl = "op://personal/Firecrawl/key";
+      assert.deepStrictEqual(yield* resolve(firecrawl), { type: "denied" });
+      assert.deepStrictEqual(service.calls.read, []);
+      assert.deepStrictEqual(reveal(yield* resolve(firecrawl)), {
+        type: "values",
+        item: { id: firecrawl, title: firecrawl, account: "Personal", urls: [] },
+        values: { value: "secret-personal" },
+      });
+      // A service account on the device is asked about too: the secret leaves the device.
+      assert.deepStrictEqual(device.prompts[1], {
+        kind: "secretReference",
+        providerLabel: "Work, Personal",
+        reference: firecrawl,
+        command,
+        machine: "LinkMini",
+        threadTitle: "Deploy",
+        agent: "codex",
+      });
+      // Allowed for this thread on LinkMini: another secret for it is read without asking.
+      assert.strictEqual((yield* resolve("op://work/OpenAI/key")).type, "values");
+      const missing = yield* resolve("op://elsewhere/OpenAI/key");
+      assert.strictEqual(missing.type, "unavailable");
+      assert.lengthOf(device.prompts, 2);
+      // Syntax no password manager here reads: nothing to ask about.
+      assert.deepStrictEqual(yield* resolve("vault://x/y", "thread-b"), { type: "none" });
+      assert.lengthOf(device.prompts, 2);
+      assert.isFalse(device.logs.some((line) => line.includes("secret-")));
+    }).pipe(Effect.provide(device.layer));
+  });
+
+  it.effect("set to refuse, reads a command's secret from its service accounts alone", () => {
+    const refusing = { ...bothProviders, escalation: "refuse" } as const;
+    const service = makeService({}, refusing, {}, undefined, ["work"]);
+    const device = deviceServer(service, { available: true, answers: ["once", "once"] });
+    return Effect.gen(function* () {
+      const relay = yield* SecretRelayDevice.SecretRelayDevice;
+      const resolve = (reference: string) =>
+        relay.resolve({
+          request: request({
+            kind: "secretReference",
+            reference,
+            command: "deploy",
+            origin: undefined,
+          }),
+          requester: linkMini,
+        });
+      const personal = "op://personal/Firecrawl/key";
+      assert.strictEqual((yield* resolve(personal)).type, "unavailable");
+      assert.strictEqual((yield* resolve("op://work/OpenAI/key")).type, "values");
+      // The password manager a person unlocks is neither named in the question nor read.
+      assert.deepStrictEqual(
+        device.prompts.map((prompt) => prompt.providerLabel),
+        ["Work", "Work"],
+      );
+      assert.deepStrictEqual(service.calls.read, [`work:${personal}`, "work:op://work/OpenAI/key"]);
     }).pipe(Effect.provide(device.layer));
   });
 

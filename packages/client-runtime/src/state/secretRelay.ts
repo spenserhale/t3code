@@ -13,6 +13,7 @@ import {
   type EnvironmentId,
   type SecretRelayAnswer,
   type SecretRelayAnswerInput,
+  type SecretRelayKind,
   type SecretRelayRequest,
   type SecretRelayStreamItem,
   sessionGrantsScope,
@@ -35,6 +36,13 @@ import { request, subscribe } from "../rpc/client.ts";
 import { createEnvironmentRpcCommand } from "./runtime.ts";
 
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1"]);
+
+/** What this device's server can answer. A server sends only the kinds a client names. */
+export const SECRET_RELAY_KINDS = [
+  "login",
+  "identity",
+  "secretReference",
+] as const satisfies ReadonlyArray<SecretRelayKind>;
 
 /** Nobody between can read what crosses: TLS, an SSH tunnel, or a socket on this machine. */
 export function isEncryptedConnection(
@@ -157,7 +165,7 @@ const relayEnvironment = Effect.fn("SecretRelay.relayEnvironment")(function* <Re
   yield* serveSecretRelay({
     requests: registry.followStream(
       environmentId,
-      subscribe(WS_METHODS.subscribeSecretRelay, { kinds: ["login", "identity"] }),
+      subscribe(WS_METHODS.subscribeSecretRelay, { kinds: [...SECRET_RELAY_KINDS] }),
     ),
     resolve,
     // A route can change under a live subscription, so each answer checks the one it takes.

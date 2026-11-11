@@ -22,8 +22,8 @@ export class LoginApprovalDialog extends Context.Service<
   LoginApprovalDialog,
   {
     /**
-     * Asks the user before an agent's tab is filled with a saved login or identity, before an
-     * identity is shown to the agent, or before either is sent to another machine. Closing the
+     * Asks before an agent's tab is filled with a saved login or identity, an identity is shown to
+     * the agent, a secret goes to its command, or any of these goes to another machine. Closing the
      * dialog, or `cancelled` aborting, is a Deny. `guest` is absent for a tab the desktop does not
      * show, such as an agent's headless tab, and for a request with no tab.
      */
@@ -43,6 +43,8 @@ const THREAD_NOTE: Record<ApprovalKind, string> = {
   identityRead: "Allow for this thread lets it see saved identities until the app restarts.",
   newLogin:
     "Allow for this thread lets it create logins and fill their passwords until the app restarts.",
+  secretReference:
+    "Allow for this thread lets it use any saved secret in its commands until the app restarts.",
 };
 
 const ANSWERS: ReadonlyArray<LoginApprovalAnswer> = [false, "once", "thread"];
@@ -97,6 +99,17 @@ const wording = (prompt: LoginApprovalPrompt, who: string) => {
         detail: [
           `${who} is signing up and wants ${prompt.loginTitle === undefined ? "a login" : `"${prompt.loginTitle}"`} saved with a generated password before the form is sent.`,
           "The agent will not see the password.",
+        ],
+      };
+    case "secretReference":
+      return {
+        message:
+          to === undefined
+            ? `Use a secret from ${from} in a command?`
+            : `Send a secret from ${from} to ${to}?`,
+        detail: [
+          `${who} wants to use ${item ?? "a secret"} for: ${prompt.command ?? "a command"}`,
+          "The agent will not see it. The command gets it as input or in its environment, and its output comes back with it masked.",
         ],
       };
   }

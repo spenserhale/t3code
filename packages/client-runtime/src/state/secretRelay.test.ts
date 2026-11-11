@@ -7,6 +7,7 @@ import {
   EnvironmentId,
   type SecretRelayAnswer,
   type SecretRelayAnswerInput,
+  SecretRelayKind,
   type SecretRelayRequest,
   type SecretRelayStreamItem,
 } from "@t3tools/contracts";
@@ -25,10 +26,16 @@ import {
 } from "../connection/model.ts";
 import {
   isEncryptedConnection,
+  SECRET_RELAY_KINDS,
   type SecretRelayCandidate,
   secretRelayEnvironmentIds,
   serveSecretRelay,
 } from "./secretRelay.ts";
+
+// A kind the desktop does not subscribe for is never sent to it, so it would never be answered.
+it("subscribes for every kind a relayed request can be", () => {
+  assert.deepStrictEqual([...SECRET_RELAY_KINDS].sort(), [...SecretRelayKind.literals].sort());
+});
 
 const bearer = (id: string) =>
   new BearerConnectionTarget({

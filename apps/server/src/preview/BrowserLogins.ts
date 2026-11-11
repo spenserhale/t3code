@@ -26,6 +26,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -63,8 +64,16 @@ export interface BrowserIdentityCandidate extends SecretProviderIdentity {
   readonly account: string;
 }
 
-/** What a prompt allows: filling a login, filling an identity, or showing one to the agent. */
-export type BrowserApprovalKind = "login" | "identity" | "identityRead" | "newLogin";
+/**
+ * What a prompt allows: filling a login, filling an identity, showing one to the agent, saving a
+ * new login, or handing a secret to the agent's command.
+ */
+export type BrowserApprovalKind =
+  | "login"
+  | "identity"
+  | "identityRead"
+  | "newLogin"
+  | "secretReference";
 
 /**
  * Which chosen providers a step uses. Unattended ones, such as a service account, are used without
@@ -103,6 +112,13 @@ export interface BrowserNewLogin {
 export interface BrowserNewPassword {
   readonly login: BrowserLoginCandidate;
   readonly password: string;
+}
+
+/** A secret read for an agent's command, and the chosen provider that had it. */
+export interface BrowserSecret {
+  readonly value: Redacted.Redacted<string>;
+  /** The provider's name in Settings > Secrets, such as "Work 1Password". */
+  readonly account: string;
 }
 
 export class BrowserLogins extends Context.Service<
@@ -163,6 +179,23 @@ export class BrowserLogins extends Context.Service<
       revision: string,
       identity: BrowserIdentityCandidate,
     ) => Effect.Effect<SecretProviderIdentityValues, BrowserLoginError>;
+    /**
+     * The chosen providers of that reach that take a secret reference such as
+     * `op://Vault/Item/field`, by their names in Settings > Secrets, found without reading it.
+     */
+    readonly secretSources: (
+      reference: string,
+      reach: BrowserLoginReach,
+    ) => Effect.Effect<
+      { readonly revision: string; readonly accounts: ReadonlyArray<string> },
+      BrowserLoginError
+    >;
+    /** What the reference names, from the first of those providers that returns it. */
+    readonly readSecret: (
+      revision: string,
+      reference: string,
+      reach: BrowserLoginReach,
+    ) => Effect.Effect<BrowserSecret, BrowserLoginError>;
     /**
      * Whether a person must approve this kind of step, from an attended provider, for this
      * thread: false once they chose "Allow for this thread" under the current settings.
@@ -277,6 +310,8 @@ interface Source {
   readonly unattended: boolean;
   readonly logins: SecretProviderLogins;
   readonly identities?: SecretProviderIdentities;
+  readonly isReference: (reference: string) => boolean;
+  readonly read: SecretProviderDriver["read"];
 }
 
 interface Resolved {
@@ -315,6 +350,8 @@ const resolve = Effect.fn("BrowserLogins.resolve")(function* (
       unattended: driver.unattended?.(configured.config) ?? false,
       logins: driver.logins,
       ...(driver.identities === undefined ? {} : { identities: driver.identities }),
+      isReference: driver.definition.isReference,
+      read: driver.read,
     });
   }
   const named = ids.join(", ");
@@ -678,6 +715,42 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     loginLists.running.clear();
   });
 
+  const secretSources: BrowserLogins["Service"]["secretSources"] = Effect.fn(
+    "BrowserLogins.secretSources",
+  )(function* (reference, reach) {
+    const { revision, sources } = yield* reachable(reach);
+    return {
+      revision,
+      accounts: sources
+        .filter((source) => source.isReference(reference))
+        .map((source) => source.account),
+    };
+  });
+
+  const readSecret: BrowserLogins["Service"]["readSecret"] = Effect.fn("BrowserLogins.readSecret")(
+    function* (revision, reference, reach) {
+      const sources = (yield* currentAt(revision)).sources.filter(
+        (source) => inReach(source, reach) && source.isReference(reference),
+      );
+      for (const source of sources) {
+        const [value] = yield* source
+          .read(source.config, [reference])
+          .pipe(Effect.provideContext(driverServices));
+        if (value === undefined) continue;
+        // The read can wait on the password manager's own prompt; settings may change meanwhile.
+        yield* currentAt(revision);
+        return { value: Redacted.make(value), account: source.account };
+      }
+      return yield* new BrowserLoginError({
+        reason: "unreadable",
+        message:
+          sources.length === 0
+            ? `No password manager chosen for browser logins reads ${reference}.`
+            : `${sources.map((source) => source.account).join(", ")} did not return ${reference}. It may be locked, the reference may be wrong, or the request was denied there.`,
+      });
+    },
+  );
+
   // Logins created here, by thread and id, for the server's life: only these get a new password.
   const createdLogins = new Map<
     string,
@@ -878,6 +951,8 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     identityCandidates,
     lookupIdentity,
     readIdentity,
+    secretSources,
+    readSecret,
     newLoginDestination,
     createLogin,
     readNewLogin,

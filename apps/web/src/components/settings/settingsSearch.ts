@@ -880,7 +880,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Password managers for logins",
     to: "/settings/browser",
     searchTerms: [
-      "agent sign in log in credentials 1password fill website browser work personal accounts",
+      "agent sign in log in credentials 1password fill website browser work personal accounts api key secret command",
     ],
     secretsFeatureOnly: true,
   },
@@ -889,7 +889,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Outside this machine's service accounts",
     to: "/settings/browser",
     searchTerms: [
-      "login identity approval ask my device refuse touch id mac desktop app relay remote unattended 1password service account",
+      "login identity api key secret command approval ask my device refuse touch id mac desktop app relay remote unattended 1password service account",
     ],
     secretsFeatureOnly: true,
   },

@@ -137,7 +137,10 @@ export interface SecretCatalog<Item extends SecretItem, Values> {
   };
   /** What the dialog names when the catalog knows it before anything is read. */
   readonly prompt?: Partial<
-    Pick<DesktopBrowserChannel.DesktopLoginPrompt, "providerLabel" | "loginTitle" | "vault">
+    Pick<
+      DesktopBrowserChannel.DesktopLoginPrompt,
+      "providerLabel" | "loginTitle" | "vault" | "command"
+    >
   >;
   /** The refusal when nobody could be asked, where the general one does not fit. */
   readonly refusal?: (escalation: BrowserSecretEscalation) => string;
@@ -168,6 +171,7 @@ const ASKED_FOR: Record<BrowserLogins.BrowserApprovalKind, string> = {
   identity: "filling this identity",
   identityRead: "showing this identity",
   newLogin: "this new login",
+  secretReference: "using this secret in a command",
 };
 
 const refused = (message: string) =>

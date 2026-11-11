@@ -27,3 +27,27 @@ it("refuses a t3_thread_update whose fields do not fit its action", () => {
     true,
   );
 });
+
+it("takes run_with_secrets secrets only as 1Password references, and at least one", () => {
+  const decode = Schema.decodeUnknownExit(
+    OrchestratorToolkit.tools.run_with_secrets.parametersSchema,
+  );
+  const command = ["wide-search", "auth", "set", "firecrawl", "--stdin"];
+  const reference = "op://Employee/Firecrawl/Apikeys/default";
+  expect(Exit.isSuccess(decode({ command, stdin: reference }))).toBe(true);
+  expect(Exit.isSuccess(decode({ command, env: { FIRECRAWL_API_KEY: reference } }))).toBe(true);
+  for (const input of [
+    { command },
+    { command, env: {} },
+    { command, stdin: "fc-live-123" },
+    { command, env: { FIRECRAWL_API_KEY: "fc-live-123" } },
+    { command, env: { firecrawl: reference } },
+    {
+      command,
+      env: Object.fromEntries(Array.from({ length: 9 }, (_, index) => [`KEY_${index}`, reference])),
+    },
+    { command: [], stdin: reference },
+  ]) {
+    expect(Exit.isFailure(decode(input)), JSON.stringify(input)).toBe(true);
+  }
+});

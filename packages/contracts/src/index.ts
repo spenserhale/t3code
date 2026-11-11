@@ -72,6 +72,7 @@ export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
+export * from "./secretCommand.ts";
 export * from "./secretRequest.ts";
 export * from "./secretRelay.ts";
 export * from "./secretReference.ts";
