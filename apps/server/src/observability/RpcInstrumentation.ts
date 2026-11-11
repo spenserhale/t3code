@@ -86,6 +86,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.serverPrepareTriage]: "server",
   [WS_METHODS.serverGetUsageSummary]: "server",
   [WS_METHODS.serverRefreshUsageRates]: "server",
+  [WS_METHODS.serverGetThreadUsage]: "server",
+  [WS_METHODS.serverListThreadUsage]: "server",
   [WS_METHODS.serverSignalProcess]: "server",
   [WS_METHODS.serverReportClientActivity]: "server",
   [WS_METHODS.scheduledTasksSubscribe]: "scheduledTasks",
