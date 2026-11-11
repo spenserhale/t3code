@@ -4,6 +4,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
   type ManagedPolicyDocument,
+  MAX_EFFORT_SLIDER_STEPS,
   ModelSelection,
   ProjectId,
   ProjectScript,
@@ -217,6 +218,41 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       }),
     ).pipe(Effect.provide(layerServerSettings())),
   );
+  it.effect("persists favorite efforts, the effort slider and a project's own copies of both", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const provider = ProviderInstanceId.make("codex_work");
+      const projectId = ProjectId.make("project-a");
+      const high = [{ id: "reasoningEffort", value: "high" }];
+      const steps = [
+        createModelSelection(provider, "luna", [{ id: "reasoningEffort", value: "low" }]),
+        createModelSelection(provider, "sol", high),
+      ];
+      yield* service.updateSettings({
+        favorites: [{ provider, model: "sol", options: high }],
+        effortSlider: steps,
+        projectSettingsOverrides: {
+          [projectId]: { favorites: [{ provider, model: "luna" }], effortSlider: [steps[1]!] },
+        },
+      });
+      const toggled = yield* service.updateSettings({
+        setModelFavorites: [{ provider, model: "luna", favorite: true }],
+      });
+      assert.deepEqual(toggled.favorites, [
+        { provider, model: "sol", options: high },
+        { provider, model: "luna" },
+      ]);
+      const saved = yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath));
+      assert.deepEqual(saved.favorites, toggled.favorites);
+      assert.deepEqual(saved.effortSlider, steps);
+      assert.deepEqual(saved.projectSettingsOverrides[projectId], {
+        favorites: [{ provider, model: "luna" }],
+        effortSlider: [steps[1]!],
+      });
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
   it.effect("migrates saved token delivery to paragraph buffering without resetting settings", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
@@ -250,6 +286,39 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       );
       assert.equal(persisted.responseStreamingMode, "turn");
       assert.deepEqual(persisted.projectSettingsOverrides, settings.projectSettingsOverrides);
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("loads a settings file whose slider has more steps than a write may hold", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const steps = Array.from({ length: MAX_EFFORT_SLIDER_STEPS + 1 }, (_, index) => ({
+        instanceId: "codex",
+        model: `model-${index}`,
+      }));
+      yield* fs.writeFileString(
+        config.settingsPath,
+        JSON.stringify({
+          enableAgentBrowserAccess: false,
+          effortSlider: steps,
+          projectSettingsOverrides: { hand: { effortSlider: steps } },
+        }),
+      );
+
+      const settings = yield* service.getSettings;
+      assert.isFalse(settings.enableAgentBrowserAccess);
+      assert.lengthOf(settings.effortSlider, steps.length);
+      assert.lengthOf(settings.projectSettingsOverrides[ProjectId.make("hand")]!.effortSlider!, 7);
+
+      // The file is still trusted, so ordinary writes go through instead of being refused.
+      yield* service.updateSettings({ responseStreamingMode: "turn" });
+      const persisted = yield* decodeServerSettingsJson(
+        yield* fs.readFileString(config.settingsPath),
+      );
+      assert.equal(persisted.responseStreamingMode, "turn");
+      assert.isFalse(persisted.enableAgentBrowserAccess);
     }).pipe(Effect.provide(layerServerSettings())),
   );
 

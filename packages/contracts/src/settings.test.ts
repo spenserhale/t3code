@@ -14,6 +14,8 @@ import {
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
   idleCompactionPatch,
+  isNullableProjectSettingsOverride,
+  MAX_EFFORT_SLIDER_STEPS,
   requiredScopesForProjectMutation,
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
@@ -502,5 +504,105 @@ describe("server model preferences", () => {
     const input = { favorites: [], providerModelPreferences: {} };
     expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
     expect(decodeServerSettingsPatch(input)).toEqual(input);
+  });
+});
+
+describe("favorites with efforts and the effort slider", () => {
+  const provider = ProviderInstanceId.make("codex");
+  const projectId = ProjectId.make("project-a");
+  const effort = [{ id: "reasoningEffort", value: "high" }];
+  const steps = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      instanceId: provider,
+      model: `model-${index}`,
+      options: effort,
+    }));
+
+  it("keeps a favorite's effort optional, so favorites from older builds still decode", () => {
+    const decoded = decodeServerSettings({
+      favorites: [
+        { provider, model: "sol" },
+        { provider, model: "luna", options: effort },
+      ],
+    });
+    expect(decoded.favorites).toEqual([
+      { provider, model: "sol" },
+      { provider, model: "luna", options: effort },
+    ]);
+    expect(encodeServerSettings(decoded).favorites).toEqual(decoded.favorites);
+    expect(decodeClientSettings({ favorites: [{ provider, model: "sol" }] }).favorites).toEqual([
+      { provider, model: "sol" },
+    ]);
+  });
+
+  it("defaults the slider to off and refuses to write a longer one than it has room for", () => {
+    expect(decodeServerSettings({}).effortSlider).toEqual([]);
+    expect(DEFAULT_SERVER_SETTINGS.effortSlider).toEqual([]);
+    expect(decodeServerSettingsPatch({ effortSlider: steps(MAX_EFFORT_SLIDER_STEPS) })).toEqual({
+      effortSlider: steps(MAX_EFFORT_SLIDER_STEPS),
+    });
+    expect(() =>
+      decodeServerSettingsPatch({ effortSlider: steps(MAX_EFFORT_SLIDER_STEPS + 1) }),
+    ).toThrow();
+    expect(decodeServerSettingsPatch({ effortSlider: [] })).toEqual({ effortSlider: [] });
+  });
+
+  it("reads a longer list from a hand-edited file instead of invalidating every setting", () => {
+    const long = steps(MAX_EFFORT_SLIDER_STEPS + 1);
+    const settings = decodeServerSettings({
+      defaultAutoPull: true,
+      effortSlider: long,
+      projectSettingsOverrides: { [projectId]: { effortSlider: long } },
+    });
+    expect(settings.defaultAutoPull).toBe(true);
+    expect(settings.effortSlider).toHaveLength(long.length);
+    expect(settings.projectSettingsOverrides[projectId]?.effortSlider).toHaveLength(long.length);
+  });
+
+  it("carries a favorite's effort in a toggle but leaves hidden models as they were", () => {
+    expect(
+      decodeServerSettingsPatch({
+        setModelFavorites: [{ provider, model: "sol", favorite: true, options: effort }],
+      }).setModelFavorites,
+    ).toEqual([{ provider, model: "sol", favorite: true, options: effort }]);
+    expect(
+      decodeServerSettingsPatch({
+        setModelsHidden: [{ provider, model: "sol", hidden: true, options: effort }],
+      }).setModelsHidden,
+    ).toEqual([{ provider, model: "sol", hidden: true }]);
+  });
+
+  it("lets a project override either list, and clearing the override is removing it", () => {
+    const decoded = decodeServerSettings({
+      projectSettingsOverrides: {
+        [projectId]: {
+          favorites: [{ provider, model: "sol", options: effort }],
+          effortSlider: steps(2),
+        },
+      },
+    });
+    expect(decoded.projectSettingsOverrides[projectId]).toEqual({
+      favorites: [{ provider, model: "sol", options: effort }],
+      effortSlider: steps(2),
+    });
+    expect(isNullableProjectSettingsOverride("favorites")).toBe(false);
+    expect(isNullableProjectSettingsOverride("effortSlider")).toBe(false);
+  });
+
+  it("writes a project's entry back whole even when its slider is longer than a write may be", () => {
+    // Entries are replaced whole, so an unrelated edit carries every other list along unchanged.
+    const entry = decodeServerSettings({
+      projectSettingsOverrides: {
+        [projectId]: { defaultAutoPull: true, effortSlider: steps(MAX_EFFORT_SLIDER_STEPS + 1) },
+      },
+    }).projectSettingsOverrides[projectId];
+
+    const sent = encodeServerSettingsPatch({
+      projectSettingsOverrides: { [projectId]: { ...entry, defaultAutoPull: false } },
+    });
+
+    expect(decodeServerSettingsPatch(sent).projectSettingsOverrides?.[projectId]).toMatchObject({
+      defaultAutoPull: false,
+    });
   });
 });

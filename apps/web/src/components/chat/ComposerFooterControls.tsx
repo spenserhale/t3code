@@ -17,8 +17,9 @@ import { focusRequestedPermission, useComposerMenuProps } from "./composerEventS
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ContextWindowMeter, ContextWindowMeterPlaceholder } from "./ContextWindowMeter";
 import { resolveModelPickerSelectedModel } from "./ModelPickerContent";
-import { ProviderModelPicker } from "./ProviderModelPicker";
+import { type ModelPick, ProviderModelPicker } from "./ProviderModelPicker";
 import { runtimeModeConfig } from "./runtimeModeConfig";
+import type { ProviderModelSelectOptions } from "./useComposerSelection";
 import { useComposerMenuState } from "./useComposerMenuState";
 
 export type RuntimeModeOption = {
@@ -355,11 +356,11 @@ export function ComposerModelPicker({
   readonly onProviderModelSelect: (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: { focusComposer?: boolean },
+    options?: ProviderModelSelectOptions,
   ) => void;
 }) {
   const { instanceEntries, modelOptionsByInstance } = pickerProps;
-  const toggleModel = (instanceId: ProviderInstanceId, model: string) => {
+  const toggleModel = (instanceId: ProviderInstanceId, model: string, pick?: ModelPick) => {
     const current = multipleModelSelections ?? [selectedModelSelection];
     const matchesModel = (selection: ModelSelection) => {
       if (selection.instanceId !== instanceId) return false;
@@ -374,7 +375,15 @@ export function ComposerModelPicker({
     const exists = current.some(matchesModel);
     const next = exists
       ? current.filter((selection) => !matchesModel(selection))
-      : [...current, createModelSelection(instanceId, model)];
+      : [...current, createModelSelection(instanceId, model, pick?.options)];
+    // The primary model is sent with the options the effort control shows, so a favorite's saved
+    // effort for it has to land there, or a send would carry the control's older effort instead.
+    if (!exists && pick && matchesModel(selectedModelSelection)) {
+      onProviderModelSelect(instanceId, model, {
+        focusComposer: false,
+        modelOptions: pick.options,
+      });
+    }
     if (next.length > 1) {
       onMultipleModelSelectionsChange(next);
     } else {
@@ -382,6 +391,10 @@ export function ComposerModelPicker({
       const remaining = next[0] ?? selectedModelSelection;
       onProviderModelSelect(remaining.instanceId, remaining.model, {
         focusComposer: false,
+        // A favorite added to several models keeps its effort when it ends up the only one.
+        ...(multipleModelSelections !== null && remaining.options?.length
+          ? { modelOptions: remaining.options }
+          : {}),
       });
     }
   };
@@ -396,9 +409,9 @@ export function ComposerModelPicker({
             onToggleModel: toggleModel,
           }
         : {})}
-      onInstanceModelChange={(instanceId, model) => {
+      onInstanceModelChange={(instanceId, model, pick) => {
         onMultipleModelSelectionsChange(null);
-        onProviderModelSelect(instanceId, model);
+        onProviderModelSelect(instanceId, model, pick ? { modelOptions: pick.options } : undefined);
       }}
     />
   );
