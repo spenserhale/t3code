@@ -83,6 +83,9 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
       return encoder as unknown as Page;
     }
     async connectDesktopPage(endpoint: string) {
+      if (realContext) {
+        return { browser: { close: async () => {} }, page: await realContext.newPage() };
+      }
       const context = makeContext(undefined, desktopPageUrl);
       context.page.viewportSize.mockReturnValue(null);
       desktopConnections.push({ endpoint, context });
@@ -3100,3 +3103,54 @@ it.live(
     );
   },
 );
+
+it.live("a desktop that draws the tab is told of a new password before it is written", () => {
+  const told: Array<object> = [];
+  const server = loginServer(
+    "never",
+    Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
+      available: true,
+      awaitAttached: () => Effect.succeed(true),
+      detached: Stream.empty,
+      attached: Stream.empty,
+      isAttached: () => Effect.succeed(true),
+      endpoint: () => Effect.succeed("ws://desktop/tab"),
+      pointer: () => Effect.void,
+      turn: () => Effect.void,
+      approveLogin: () => Effect.succeed(false),
+      // What the page's fields hold as the desktop hears of the fill.
+      loginFilled: (key, _document, url) =>
+        newPasswordFields(realContext!).pipe(
+          Effect.map((fields) => {
+            told.push({ key, url, written: fields.map((field) => field.value) });
+          }),
+        ),
+    }),
+  );
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.promise(() =>
+        context.route("https://www.good.test/signup", (route) =>
+          route.fulfill({ contentType: "text/html", body: NEW_ACCOUNT_PAGE }),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const { tabId, invoke } = yield* openLoginTab;
+        yield* invoke("navigate", { url: "https://www.good.test/signup" });
+        yield* invoke("fillNewLogin", { username: "ada@example.com" });
+        expect(told).toEqual([
+          {
+            key: { threadId: scope.thread.threadId, tabId },
+            url: "https://www.good.test/signup",
+            written: ["", ""],
+          },
+        ]);
+        expect((yield* newPasswordFields(context)).map((field) => field.value)).toEqual([
+          "generated-24",
+          "generated-24",
+        ]);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
