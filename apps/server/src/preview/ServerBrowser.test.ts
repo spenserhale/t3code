@@ -4510,6 +4510,7 @@ it.live("cancelling a call closes this machine's dialog before anything is read"
     endpoint: () => Effect.die("The desktop does not draw this tab."),
     pointer: () => Effect.void,
     turn: () => Effect.void,
+    loginFilled: () => Effect.void,
     approveLogin: () =>
       Deferred.succeed(opened, undefined).pipe(
         Effect.andThen(Effect.never),
@@ -4689,7 +4690,6 @@ it.live("a desktop that draws the tab is told of a new password before it is wri
   const told: Array<object> = [];
   let reloads = false;
   const server = loginServer(
-    "never",
     Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
       available: true,
       awaitAttached: () => Effect.succeed(true),
@@ -4715,6 +4715,7 @@ it.live("a desktop that draws the tab is told of a new password before it is wri
           if (reloads) yield* Effect.promise(() => realContext!.pages()[0]!.reload());
         }),
     }),
+    { unattended: true },
   );
   return Effect.scoped(
     Effect.gen(function* () {
