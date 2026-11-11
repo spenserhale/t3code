@@ -376,7 +376,7 @@ describe("SecretCommands", () => {
       const input = { command: ["openai", "models", "list"], stdin: OPENAI };
       const nobody = yield* run(input).pipe(Effect.flip);
       assert.strictEqual(nobody.reason, "refused");
-      assert.include(nobody.message, "no T3 Code desktop app that can ask the user is connected");
+      assert.include(nobody.message, "no SECode desktop app that can ask the user is connected");
 
       const asked = yield* device(() => ({
         type: "values",

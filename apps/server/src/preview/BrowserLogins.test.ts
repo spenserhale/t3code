@@ -733,7 +733,7 @@ describe("BrowserLogins new logins", () => {
       assert.deepStrictEqual(
         created.map((entry) => entry.notes),
         [
-          'Created by T3 Code for the thread "Sign up for hosting" on 1970-01-01 for https://shop.test. It can be deleted if the sign-up did not finish.',
+          'Created by SECode for the thread "Sign up for hosting" on 1970-01-01 for https://shop.test. It can be deleted if the sign-up did not finish.',
         ],
       );
       // The list cached before the login existed is dropped, so preview_fill_login offers it now.

@@ -649,7 +649,7 @@ const make = Effect.gen(function* () {
           error.message.includes("'t3_thread_launch_lookup' not found")
             ? failure(
                 "capability_denied",
-                `${target.label} runs a T3 Code version that does not have t3_thread_launch_lookup, so it cannot say whether the launch went through. Both machines need a version that has it.`,
+                `${target.label} runs a SECode version that does not have t3_thread_launch_lookup, so it cannot say whether the launch went through. Both machines need a version that has it.`,
               )
             : failure(
                 error.code,
@@ -852,7 +852,7 @@ const make = Effect.gen(function* () {
           error.message.includes("'t3_worktree_open_branch' not found")
             ? failure(
                 "capability_denied",
-                `${target.label} runs a T3 Code version that does not have t3_worktree_open_branch, so it cannot open the branch. Both machines need a version that has it.${pushedNote}`,
+                `${target.label} runs a SECode version that does not have t3_worktree_open_branch, so it cannot open the branch. Both machines need a version that has it.${pushedNote}`,
               )
             : failure(error.code, `${error.message}${pushedNote}`),
         ),

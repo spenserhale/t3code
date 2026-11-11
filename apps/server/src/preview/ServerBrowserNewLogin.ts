@@ -147,7 +147,7 @@ export const fillNewLogin = async (
           ...(destination.vault ? { vault: destination.vault } : {}),
         },
         refusal: (escalation) =>
-          `Saving a new login to ${destination.account} needs the user's approval in the T3 Code desktop app on this machine.${
+          `Saving a new login to ${destination.account} needs the user's approval in the SECode desktop app on this machine.${
             escalation === "refuse" ? " This machine is set not to ask anyone." : ""
           } Ask the user to sign up in the tab, or to save new logins with a service account on this machine in Settings > Browser > Logins.`,
       },

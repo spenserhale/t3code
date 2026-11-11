@@ -56,7 +56,7 @@ const make = Effect.gen(function* () {
     function* ({ request, requester }) {
       yield* Effect.annotateCurrentSpan({ "secret_relay.kind": request.kind });
       if (!desktopChannel.available) {
-        return unavailable("No T3 Code desktop app is attached to that device's server to ask.");
+        return unavailable("No SECode desktop app is attached to that device's server to ask.");
       }
       const remaining = Effect.map(Clock.currentTimeMillis, (now) => request.expiresAt - now);
       if ((yield* remaining) <= 0) return unavailable("The request ended before it was shown.");

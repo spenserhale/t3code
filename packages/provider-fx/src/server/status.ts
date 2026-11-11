@@ -101,7 +101,7 @@ export const buildInitialFxProviderSnapshot = (
       auth: { status: "unknown" },
       message: settings.enabled
         ? "Checking fx CLI availability..."
-        : "fx is disabled in T3 Code settings.",
+        : "fx is disabled in SECode settings.",
     }),
   );
 
@@ -159,7 +159,7 @@ export const checkFxProviderStatus = Effect.fn("checkFxProviderStatus")(function
       version: null,
       status: "warning",
       auth: { status: "unknown" },
-      message: "fx is disabled in T3 Code settings.",
+      message: "fx is disabled in SECode settings.",
     });
   }
 

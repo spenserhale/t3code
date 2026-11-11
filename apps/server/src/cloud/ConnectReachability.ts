@@ -65,21 +65,21 @@ export function classifyReachability(
     fix: string,
     hint: string | null = null,
   ): Unreachable => ({ status: "unreachable", checkedAt, cause, reason, hint, fix });
-  const restart = "Restart T3 Code. If it stays, run `t3 connect` again.";
+  const restart = "Restart SECode. If it stays, run `t3 connect` again.";
 
   if (!facts.managedTunnelConfigured) {
     // A running server reads the link `t3 connect` stores only at startup.
     return fail(
       "not_linked",
       "The server has not set up a T3 Connect tunnel.",
-      "Run `t3 connect`, then restart T3 Code so it applies the link.",
+      "Run `t3 connect`, then restart SECode so it applies the link.",
     );
   }
   if (connector === null) {
     return fail(
       "connector_not_running",
       "The tunnel client (cloudflared) is not running.",
-      "Restart T3 Code. If it stays down, check the server log for relay client errors.",
+      "Restart SECode. If it stays down, check the server log for relay client errors.",
     );
   }
   const status = endpoint?.kind === "status" ? endpoint.status : null;
@@ -112,7 +112,7 @@ export function classifyReachability(
     return fail(
       "origin_unreachable",
       "The tunnel is up, but it cannot reach the T3 server on this machine.",
-      "Restart T3 Code so the tunnel uses the port the server listens on.",
+      "Restart SECode so the tunnel uses the port the server listens on.",
     );
   }
   if (endpoint === null || connector.readyConnections === 0) {

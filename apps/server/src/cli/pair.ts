@@ -69,7 +69,7 @@ export class NoRunningServerError extends Schema.TaggedError<NoRunningServerErro
 ) {
   override get message(): string {
     return [
-      "No running T3 Code server found.",
+      "No running SECode server found.",
       ...this.checkedStatePaths.map((statePath) => `  checked ${statePath}`),
       ...(this.inLinkedWorktree
         ? ["In a linked worktree, pass --base-dir to pair with a server outside it."]
@@ -85,7 +85,7 @@ export class IncompatibleServerProtocolError extends Schema.TaggedError<Incompat
 ) {
   override get message(): string {
     return [
-      `The running T3 Code server (${this.serverVersion}) speaks orchestration protocol ${String(this.serverProtocolVersion)}, but this CLI speaks protocol ${String(ORCHESTRATION_PROTOCOL_VERSION)}.`,
+      `The running SECode server (${this.serverVersion}) speaks orchestration protocol ${String(this.serverProtocolVersion)}, but this CLI speaks protocol ${String(ORCHESTRATION_PROTOCOL_VERSION)}.`,
       `Pair with the matching CLI instead: \`npx t3@${this.serverVersion} pair\`.`,
     ].join("\n");
   }
@@ -123,7 +123,7 @@ export class ServesOtherEnvironmentError extends Schema.TaggedError<ServesOtherE
   { servePort: Schema.Number },
 ) {
   override get message(): string {
-    return `Tailscale Serve on HTTPS port ${String(this.servePort)} already fronts a different T3 Code server. Pass --tailscale-serve-port to publish this one on another port.`;
+    return `Tailscale Serve on HTTPS port ${String(this.servePort)} already fronts a different SECode server. Pass --tailscale-serve-port to publish this one on another port.`;
   }
 }
 
@@ -141,7 +141,7 @@ export class ServePortOccupiedError extends Schema.TaggedError<ServePortOccupied
   { servePort: Schema.Number },
 ) {
   override get message(): string {
-    return `HTTPS port ${String(this.servePort)} on the tailnet already serves something that is not a T3 Code server. Pass --tailscale-serve-port to publish this one on another port.`;
+    return `HTTPS port ${String(this.servePort)} on the tailnet already serves something that is not a SECode server. Pass --tailscale-serve-port to publish this one on another port.`;
   }
 }
 
@@ -482,7 +482,7 @@ export const pairCommand = Command.make("pair", {
   tailscaleServePort: tailscaleServePortFlag,
 }).pipe(
   Command.withDescription(
-    "Mint a pairing token for a running T3 Code server and print it as a QR code.",
+    "Mint a pairing token for a running SECode server and print it as a QR code.",
   ),
   Command.withHandler((flags) =>
     Effect.gen(function* () {

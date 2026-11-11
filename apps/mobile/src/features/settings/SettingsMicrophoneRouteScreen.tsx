@@ -96,8 +96,8 @@ const KINDS: Record<
 
 const UNAVAILABLE_EXPLANATION =
   Platform.OS === "android"
-    ? "T3 Code's voice input uses Google's on-device speech recognition, which needs Android 12 or later with compatible Google speech services for the device language. Without it, the composer has no microphone button, and allowing microphone access won't add one. Keyboard voice typing is separate and isn't affected."
-    : "T3 Code's voice input uses Apple's on-device speech transcription, which needs iOS 26 or later on a device that supports it. Without it, the composer has no microphone button, and allowing microphone access won't add one. Apple keyboard dictation is separate and isn't affected.";
+    ? "SECode's voice input uses Google's on-device speech recognition, which needs Android 12 or later with compatible Google speech services for the device language. Without it, the composer has no microphone button, and allowing microphone access won't add one. Keyboard voice typing is separate and isn't affected."
+    : "SECode's voice input uses Apple's on-device speech transcription, which needs iOS 26 or later on a device that supports it. Without it, the composer has no microphone button, and allowing microphone access won't add one. Apple keyboard dictation is separate and isn't affected.";
 
 export function SettingsMicrophoneRouteScreen() {
   const transcriber = useAtomValue(localVoiceTranscriberAtom);
@@ -196,7 +196,7 @@ function MicrophoneSettings() {
             <Text className="px-2 text-sm text-foreground-muted">
               {permission === "ask"
                 ? "Voice input needs microphone access before it can record or list your microphones."
-                : "Microphone access is off for T3 Code. Turn it on in Settings to use voice input."}
+                : "Microphone access is off for SECode. Turn it on in Settings to use voice input."}
             </Text>
           </>
         ) : null}

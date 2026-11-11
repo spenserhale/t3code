@@ -128,7 +128,7 @@ export function formatThreadLink(ref: ThreadLink, label?: string): string {
   return cleaned ? `[${cleaned}](${threadLinkHref(ref)})` : `<${threadLinkHref(ref)}>`;
 }
 
-/** What a person copies out of T3 Code: a Markdown link that opens the thread anywhere. */
+/** What a person copies out of SECode: a Markdown link that opens the thread anywhere. */
 export function formatHostedThreadLink(
   ref: ScopedThreadRef,
   label: string,

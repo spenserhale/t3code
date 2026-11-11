@@ -82,7 +82,7 @@ export const protectedResourceMetadata = (
   authorization_servers: [urls.issuer],
   scopes_supported: MCP_OAUTH_SCOPES,
   bearer_methods_supported: ["header"],
-  resource_name: "T3 Code",
+  resource_name: "SECode",
 });
 
 export const authorizationServerMetadata = (
@@ -141,7 +141,7 @@ const ClientIdPayload = Schema.Struct({
   v: Schema.Literal(1),
   n: Schema.String,
   r: Schema.Array(Schema.String),
-  /** Registered as another T3 Code environment's peer link. */
+  /** Registered as another SECode environment's peer link. */
   p: Schema.optionalKey(Schema.Literal(1)),
 });
 const decodeClientIdPayload = Schema.decodeUnknownOption(Schema.fromJsonString(ClientIdPayload));

@@ -1,6 +1,6 @@
 /**
  * Prices the provider turns orchestration already projects when asked, storing nothing, so a new
- * price or model mapping reaches every past run. Counts only work driven through T3 Code.
+ * price or model mapping reaches every past run. Counts only work driven through SECode.
  */
 import {
   ThreadId,

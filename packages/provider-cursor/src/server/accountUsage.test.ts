@@ -351,7 +351,7 @@ describe("readCursorAccountUsage", () => {
         accountKey: null,
         records: [],
         missing: false,
-        error: "Allow Keychain access on the Mac running T3 Code, then refresh.",
+        error: "Allow Keychain access on the Mac running SECode, then refresh.",
       });
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );

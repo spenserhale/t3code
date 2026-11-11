@@ -384,7 +384,7 @@ const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 /** What the saved item says about itself, so the user can tell a login left by a sign-up. */
 const newLoginNotes = (input: BrowserNewLogin, today: string) =>
   [
-    "Created by T3 Code",
+    "Created by SECode",
     input.threadTitle ? ` for the thread "${oneLine(input.threadTitle)}"` : "",
     ` on ${today} for ${input.url}.`,
     " It can be deleted if the sign-up did not finish.",

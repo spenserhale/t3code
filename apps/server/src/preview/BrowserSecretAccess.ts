@@ -163,7 +163,7 @@ const refusalMessage = (what: string, escalation: BrowserSecretEscalation) =>
   `No service account on this machine can open ${what}, and ${
     escalation === "refuse"
       ? "this machine is set not to ask the user's device"
-      : "no T3 Code desktop app that can ask the user is connected"
+      : "no SECode desktop app that can ask the user is connected"
   }. It needs Touch ID on a connected Mac, or a service account on this machine with access to that item.`;
 
 const ASKED_FOR: Record<BrowserLogins.BrowserApprovalKind, string> = {
@@ -327,7 +327,7 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
       if (!desktopChannel.available) {
         return yield* unreadable(
           named,
-          `${provider.account} needs the user's approval in the T3 Code desktop app on this machine.`,
+          `${provider.account} needs the user's approval in the SECode desktop app on this machine.`,
         );
       }
       yield* approve(provider.account);
