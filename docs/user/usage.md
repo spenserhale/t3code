@@ -178,6 +178,42 @@ across providers. Type a name next to an account to put it in a group of your ow
 to return it to its email. Naming a group turns grouping on. Groups are saved on the device where
 you set them.
 
+A subscription you use only some days, such as a work account, can have a schedule. In **Groups**,
+choose when each group is used: every day, Monday to Friday, Monday to Friday between 9 and 5, or
+your own days, hours and time zone. Hours may run overnight, from an evening into the next morning
+(an end earlier than the start), and belong to the day they begin on. An account that differs can
+have its own schedule. Pace and the burn-down below then count only the scheduled time, so a work
+account is not shown as behind on a Sunday. Schedules are saved on the device where you set them and
+apply whether or not grouping is on.
+
+While Reminders are on, or a Burn-down is open, T3 Code reads the last 90 days of token totals from
+each connected environment in the background, and learns your usual pattern from them once a
+provider has two weeks of use (all of a provider's accounts count together). An environment that
+cannot be reached is asked again later while the others keep their totals. Pace is judged against
+that pattern, so a heavy Monday is not "ahead", and against even spending until the pattern is
+known. It reads as how far in reserve or in deficit an account is, what share the pattern would have
+used by now, and whether the window lasts until the reset or runs out. It is left out for the first
+few percent of a window. If a reset credit empties a window early, pace and the forecasts count from
+then.
+
+Each session, weekly and monthly window has a **Burn-down** below its bar. It charts what was left
+over the window against that line, forecasts where the window ends, shows how many points of the
+window each day used against what the line allows that day, and how much of your last windows you
+used. Choose the forecast: the run rate so far, the weekday pattern, or your recent trend. T3 Code
+records readings while it is open, so the history starts when you first open it and has gaps while
+the app is closed; days it was closed for are estimated from the readings either side.
+
+Choose **Reminders** to be nudged when a subscription is about to reset with allowance to spare:
+a weekly window within a day of its reset, or a monthly one within three days, with at least a
+quarter of it left and the forecast saying that much will go unused, during the days and hours its
+schedule says it is used. A window that cannot be forecast yet is left out until it can. One notice
+lists every window that qualifies, soonest reset first, and mentions each window once per reset.
+Choose when it comes (as windows come up, once a day for each group, in the app only, or off), how
+much left triggers it, and whether 5-hour session windows count. Reminders follow your notification
+settings and permission, and arrive only while T3 Code is open. The same windows are listed as
+**Use today** at the top of Limits and in the hover card on the sidebar's Usage button, which also
+shows a dot while there are any.
+
 Opening Limits checks the selected connected environments automatically. Each client waits at
 least five minutes between automatic checks of an environment, including after a failed check.
 If a window still looks stale, refresh Limits to re-check every provider and hub.

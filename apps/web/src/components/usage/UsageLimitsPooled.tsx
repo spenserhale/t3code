@@ -10,9 +10,15 @@ import {
   type LimitPool,
   type LimitPoolMember,
   type LimitPoolWindow,
-  paceRemainingPercent,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
+import {
+  paceLabel,
+  paceOutlook,
+  scheduledPaceRemaining,
+  windowPace,
+} from "@t3tools/shared/usageLimitPace";
+import { describeLimitSchedule, limitSchedulePreset } from "@t3tools/shared/usageLimitSchedule";
 import type { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import { AlertTriangleIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
@@ -40,14 +46,26 @@ import { Alert, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { CreditLines } from "./UsageCreditLines";
 import {
-  PaceIcon,
   ResetCreditDialog,
   barColor,
   usePaceMark,
   resetCreditsSummary,
   useResetCredit,
 } from "./UsageLimits";
+import { BurnDownDisclosure } from "./UsageLimitBurnDown";
 import { LimitGroupSections, useLimitPools } from "./UsageLimitGroupSections";
+import { useUsageLimitGroups } from "./usageLimitGroupPreferences";
+import {
+  LimitPaceContext,
+  PACE_REFERENCE_NAME,
+  PaceBadge,
+  PaceText,
+  usePoolPace,
+  useWindowPaceInputs,
+} from "./UsageLimitPace";
+import { useDailyTokens } from "./usageLimitDailyTokens";
+import { useUsageLimitHistory } from "./usageLimitHistoryStore";
+import { UseTodayCard } from "./UseTodayList";
 
 function accountInitials(email: string): string {
   const [local = "", domain = ""] = email.split("@");
@@ -103,7 +121,7 @@ export function AccountAvatar({
   return account.email ? <AccountChip email={account.email} /> : null;
 }
 
-function AccountName({
+export function AccountName({
   account,
   className,
 }: {
@@ -151,7 +169,9 @@ function SegmentPopover({
 }) {
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const remaining = remainingPercent(window);
-  const timeLeft = paceRemainingPercent(window, now);
+  const { schedule, detail } = useWindowPaceInputs(account, window, now);
+  const pace = windowPace(window, now, schedule, detail);
+  const outlook = pace ? paceOutlook(pace) : null;
   const resetsIn = formatResetsIn(window, now);
   const where =
     account.environments.length > 0
@@ -192,7 +212,15 @@ function SegmentPopover({
             {resetsIn ? ` · ${resetsIn.replace("resets in ", "in ")}` : ""}
           </Row>
         ) : null}
-        {timeLeft !== null ? <Row label="Even pace">{timeLeft}% left by now</Row> : null}
+        {pace ? <Row label="Pace">{paceLabel(pace)}</Row> : null}
+        {pace ? (
+          <Row label="Expected">{Math.round(pace.expectedUsedPercent)}% used by now</Row>
+        ) : null}
+        {outlook ? <Row label="Outlook">{outlook}</Row> : null}
+        {pace ? <Row label="Against">{PACE_REFERENCE_NAME[pace.reference]}</Row> : null}
+        {schedule && limitSchedulePreset(schedule) !== "everyDay" ? (
+          <Row label="Schedule">{describeLimitSchedule(schedule)}</Row>
+        ) : null}
         {reset && reset.restoresPercent > 0 ? (
           <Row label="Restores">+{reset.restoresPercent}% of pool</Row>
         ) : null}
@@ -345,7 +373,8 @@ function SegmentTriggers({
   const popover = use(SegmentPopoverContext) ?? undefined;
   const payload: SegmentPayload = { account, window, reset, redeem };
   const remaining = remainingPercent(window);
-  const timeLeft = paceRemainingPercent(window, now);
+  const { schedule, detail } = useWindowPaceInputs(account, window, now);
+  const timeLeft = scheduledPaceRemaining(window, now, schedule, detail);
   const [segmentRef, paceMark] = usePaceMark(timeLeft);
   const resetsIn = formatResetsIn(window, now);
   const credits = account.limits.resetCredits?.availableCount ?? 0;
@@ -543,6 +572,7 @@ function PoolWindowCard({
   readonly description?: string | undefined;
 }) {
   const nextRefill = pool.resets.find((reset) => reset.restoresPercent > 0);
+  const pace = usePoolPace(pool, now);
   return (
     <div className="grid items-center gap-x-6 gap-y-3 rounded-lg border border-border/60 p-4 md:grid-cols-[11rem_minmax(0,1fr)]">
       <div className="flex flex-col gap-1">
@@ -553,7 +583,7 @@ function PoolWindowCard({
           </span>
           <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
             <span>left</span>
-            {pool.pace ? <PaceIcon pace={pool.pace} /> : null}
+            {pace ? <PaceBadge pace={pace} /> : null}
           </span>
         </span>
         {nextRefill && pool.columns.length > 1 ? (
@@ -561,12 +591,14 @@ function PoolWindowCard({
             ↻ +{nextRefill.restoresPercent}%
           </span>
         ) : null}
+        {pace ? <PaceText pace={pace} /> : null}
       </div>
       <PoolBar pool={pool} color={color} now={now} />
       {description ? (
         <p className="text-xs text-muted-foreground md:col-span-2">{description}</p>
       ) : null}
       <CreditLines pool={pool} />
+      <BurnDownDisclosure pool={pool} color={color} />
     </div>
   );
 }
@@ -612,7 +644,18 @@ export function PoolSection({
   );
 }
 
-export function UsageLimitsPooled({
+export function UsageLimitsPooled(props: Parameters<typeof UsageLimitsPooledBody>[0]) {
+  const [groups] = useUsageLimitGroups();
+  const history = useUsageLimitHistory();
+  const dailyTokens = useDailyTokens(props.now);
+  return (
+    <LimitPaceContext value={{ groups, history, dailyTokens }}>
+      <UsageLimitsPooledBody {...props} />
+    </LimitPaceContext>
+  );
+}
+
+function UsageLimitsPooledBody({
   presentations,
   now,
   cursorPrompt,
@@ -634,6 +677,7 @@ export function UsageLimitsPooled({
     ) + 1;
   return (
     <div className="flex flex-col gap-8">
+      <UseTodayCard />
       {pools.length === 0 && notices.length === 0 && !cursorPrompt && externalLinks.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           No provider on the selected environments reports subscription limits.

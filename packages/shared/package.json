@@ -387,6 +387,26 @@
       "types": "./src/usageLimitsGlance.ts",
       "import": "./src/usageLimitsGlance.ts"
     },
+    "./usageLimitSchedule": {
+      "types": "./src/usageLimitSchedule.ts",
+      "import": "./src/usageLimitSchedule.ts"
+    },
+    "./usageLimitPace": {
+      "types": "./src/usageLimitPace.ts",
+      "import": "./src/usageLimitPace.ts"
+    },
+    "./usageLimitHistory": {
+      "types": "./src/usageLimitHistory.ts",
+      "import": "./src/usageLimitHistory.ts"
+    },
+    "./usageLimitForecast": {
+      "types": "./src/usageLimitForecast.ts",
+      "import": "./src/usageLimitForecast.ts"
+    },
+    "./usageLimitReminders": {
+      "types": "./src/usageLimitReminders.ts",
+      "import": "./src/usageLimitReminders.ts"
+    },
     "./desktopAppControl": {
       "types": "./src/desktopAppControl.ts",
       "import": "./src/desktopAppControl.ts"
