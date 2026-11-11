@@ -3740,3 +3740,56 @@ it.live("a desktop that draws the tab is told of a new password before it is wri
     }),
   );
 });
+
+it.live("a desktop that draws the tab is told of a login before it is written there alone", () => {
+  const told: Array<object> = [];
+  let reloads = false;
+  const server = loginServer(
+    Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
+      available: true,
+      awaitAttached: () => Effect.succeed(true),
+      detached: Stream.empty,
+      attached: Stream.empty,
+      isAttached: () => Effect.succeed(true),
+      endpoint: () => Effect.succeed("ws://desktop/tab"),
+      pointer: () => Effect.void,
+      turn: () => Effect.void,
+      approveLogin: () => Effect.succeed(false),
+      // What the password field holds as the desktop hears of the fill; the page may then reload.
+      loginFilled: (key, _document, url) =>
+        passwordField(realContext!).pipe(
+          Effect.map(({ value }) => void told.push({ key, url, written: value })),
+          Effect.andThen(
+            Effect.promise(async () => {
+              if (reloads) await realContext!.pages()[0]!.reload();
+            }),
+          ),
+        ),
+    }),
+    { unattended: true },
+  );
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { tabId, invoke } = yield* openLoginTab;
+        yield* invoke("fillLogin");
+        expect(told).toEqual([
+          {
+            key: { threadId: scope.thread.threadId, tabId },
+            url: "https://good.test/login",
+            written: "",
+          },
+        ]);
+        expect((yield* passwordField(context)).value).toBe("password-value");
+
+        // The page the desktop was told of is the only one written: its reload takes nothing.
+        yield* invoke("navigate", { url: "https://good.test/login" });
+        reloads = true;
+        const moved = yield* invoke("fillLogin").pipe(Effect.flip);
+        expect(moved.message).toContain("The page loaded another document");
+        expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
