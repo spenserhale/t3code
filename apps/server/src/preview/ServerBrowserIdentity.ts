@@ -317,16 +317,19 @@ const isFillable = async (handle: ElementHandle) =>
 /**
  * Visible, editable, empty fields whose `autocomplete` names an identity value, in frames on the
  * page's own site. Fields in any other frame, such as an ad or a chat widget, are never used. A
- * frame or field gets `ELEMENT_TIMEOUT_MS` to answer, so one that never does is passed over.
+ * frame or field gets `ELEMENT_TIMEOUT_MS` to answer, so one that never does is passed over. No
+ * further field is looked at once the deadline passes or `signal` aborts.
  */
 const findAutocompleteFields = async (
   page: Page,
   frameAllowed: (frameUrl: string) => boolean,
   /** In `Date.now()` time. */
   deadline: number,
+  signal: AbortSignal | undefined,
 ): Promise<AutocompleteFields> => {
   const found: Array<FoundField> = [];
   const stalled: Array<PreviewIdentityValue> = [];
+  const over = () => Date.now() >= deadline || signal?.aborted === true;
   const budget = () => Math.min(deadline, Date.now() + ELEMENT_TIMEOUT_MS);
   const ended = (unseen: Iterable<ElementHandle> = []) => {
     release([...found.map(({ handle }) => handle), ...unseen]);
@@ -334,7 +337,7 @@ const findAutocompleteFields = async (
   };
   for (const frame of page.frames()) {
     if (!frameAllowed(frame.url())) continue;
-    if (Date.now() >= deadline) throw ended();
+    if (over()) throw ended();
     const listing = frame
       .locator("input, select, textarea")
       .elementHandles()
@@ -345,7 +348,7 @@ const findAutocompleteFields = async (
       continue;
     }
     for (const [index, handle] of handles.entries()) {
-      if (Date.now() >= deadline) throw ended(handles.slice(index));
+      if (over()) throw ended(handles.slice(index));
       const until = budget();
       const attribute = await before(
         handle.getAttribute("autocomplete").catch(() => null),
@@ -361,7 +364,7 @@ const findAutocompleteFields = async (
       if (value !== undefined && fillable === LATE) stalled.push(value);
     }
   }
-  if (Date.now() >= deadline) throw ended();
+  if (over()) throw ended();
   return { found, stalled };
 };
 
@@ -439,15 +442,21 @@ interface FieldWrite {
   readonly document: string;
   /** In `Date.now()` time. */
   readonly deadline: number;
+  /** Aborted once nobody waits for the fill. */
+  readonly signal?: AbortSignal | undefined;
 }
 
 const writeIdentityField = async (input: FieldWrite): Promise<string | undefined> => {
   const { handle, value } = input;
+  // The caller may give up while the field is found, looked at or written; each ends the fill.
+  const cancelled = () => input.signal?.aborted === true;
+  if (cancelled()) throw callEnded();
   const frame = await handle.ownerFrame();
   if (frame === null || !input.frameAllowed(frame.url())) throw loginError(LEFT_SITE);
   const stored = input.values[value];
   if (stored === undefined) return missing(value, input.values);
   const write = await chooseWrite(handle, value, stored).catch(() => REFUSED);
+  if (cancelled()) throw callEnded();
   if (typeof write === "string") return write;
   const call = await callOnElement({
     page: input.page,
@@ -456,8 +465,10 @@ const writeIdentityField = async (input: FieldWrite): Promise<string | undefined
     frameAllowed: input.frameAllowed,
     document: input.document,
     deadline: input.deadline,
+    signal: input.signal,
     ...write,
   });
+  if (cancelled()) throw callEnded();
   switch (call.status) {
     case "expired":
       return NO_ANSWER;
@@ -482,7 +493,7 @@ const writeIdentityField = async (input: FieldWrite): Promise<string | undefined
 /**
  * Puts one value into the handle's element alone, in a frame on the page's site and the document
  * the fill is for, and never after the deadline, which also bounds looking at the field. Returns
- * why it was skipped, or undefined once filled.
+ * why it was skipped, or undefined once filled; a fill whose caller gave up fails instead.
  */
 export const fillIdentityField = async (input: FieldWrite): Promise<string | undefined> => {
   const written = await before(writeIdentityField(input), input.deadline);
@@ -640,7 +651,12 @@ export const fillIdentity = async (
       if (named.length > 0) {
         await checkIdentityLocators(named, frameAllowed, deadline);
       } else {
-        const { found, stalled } = await findAutocompleteFields(tab.page, frameAllowed, deadline);
+        const { found, stalled } = await findAutocompleteFields(
+          tab.page,
+          frameAllowed,
+          deadline,
+          context.signal,
+        );
         release(found.map(({ handle }) => handle));
         if (found.length === 0) {
           throw loginError(
@@ -666,7 +682,9 @@ export const fillIdentity = async (
   }
   await step(logins.check(access.revision));
   const scanned =
-    named.length > 0 ? undefined : await findAutocompleteFields(tab.page, frameAllowed, deadline);
+    named.length > 0
+      ? undefined
+      : await findAutocompleteFields(tab.page, frameAllowed, deadline, context.signal);
   const targets = countryFirst<IdentityTarget>(scanned?.found ?? named);
   const filled: Array<PreviewIdentityValue> = [];
   const skipped: Array<{ readonly value: PreviewIdentityValue; readonly reason: string }> = (
@@ -696,6 +714,7 @@ export const fillIdentity = async (
           frameAllowed,
           document,
           deadline: fieldDeadline,
+          signal: context.signal,
         });
         if (reason === undefined) filled.push(target.value);
         else skipped.push({ value: target.value, reason });

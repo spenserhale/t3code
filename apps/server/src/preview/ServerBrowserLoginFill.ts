@@ -172,6 +172,7 @@ export const fillLogin = async (
         frameCovered: found.frameCovered,
         document,
         deadline,
+        signal: context.signal,
       });
     }
     return {

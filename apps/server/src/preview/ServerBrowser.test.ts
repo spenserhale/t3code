@@ -55,10 +55,13 @@ import * as Broker from "../mcp/PreviewAutomationBroker.ts";
 import * as SecretRelay from "../secrets/SecretRelay.ts";
 import * as Settings from "../serverSettings.ts";
 import * as BrowserLogins from "./BrowserLogins.ts";
+import * as BrowserSecretAccess from "./BrowserSecretAccess.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
+import * as ServerBrowserLoginFill from "./ServerBrowserLoginFill.ts";
+import * as ServerBrowserNewLogin from "./ServerBrowserNewLogin.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 
 vi.mock("./ServerBrowserContexts.ts", () => ({
@@ -3793,3 +3796,95 @@ it.live("a desktop that draws the tab is told of a login before it is written th
     }),
   );
 });
+
+type LoginFill = (
+  context: ServerBrowserLoginFill.LoginFillContext & ServerBrowserNewLogin.NewLoginContext,
+  tab: Parameters<typeof ServerBrowserNewLogin.fillNewLogin>[1],
+  deadlineMs: number,
+) => Promise<unknown>;
+
+it.live.each([
+  [
+    "a saved login",
+    "https://good.test/login",
+    ((context, tab, deadlineMs) =>
+      ServerBrowserLoginFill.fillLogin(
+        context,
+        tab,
+        { fields: ["password"] },
+        deadlineMs,
+      )) satisfies LoginFill,
+  ],
+  [
+    "a new password",
+    "https://www.good.test/signup",
+    ((context, tab, deadlineMs) =>
+      ServerBrowserNewLogin.fillNewLogin(
+        context,
+        tab,
+        { username: "ada@example.com" },
+        deadlineMs,
+      )) satisfies LoginFill,
+  ],
+] as const)(
+  "%s is not written once its call is cancelled while the write is prepared",
+  ([, url, fill]) => {
+    const server = loginServer(DesktopChannel.layer, { unattended: true });
+    const cancelled = new AbortController();
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const logins = yield* BrowserLogins.BrowserLogins;
+          const outcome = yield* Effect.promise(async () => {
+            await context.route("https://www.good.test/signup", (route) =>
+              route.fulfill({ contentType: "text/html", body: NEW_ACCOUNT_PAGE }),
+            );
+            const page = await context.newPage();
+            await page.goto(url);
+            const cdp = await context.newCDPSession(page);
+            const send = cdp.send.bind(cdp);
+            // The field's node is asked for only once its write is under way.
+            cdp.send = ((method: string, params?: object) => {
+              if (method === "DOM.describeNode") cancelled.abort();
+              return send(method as "DOM.describeNode", params as never);
+            }) as typeof cdp.send;
+            return fill(
+              {
+                logins,
+                desktopChannel: { available: false, approveLogin: () => Effect.succeed(false) },
+                relay: undefined,
+                ...BrowserSecretAccess.callRunners(Effect.runPromise, cancelled.signal),
+                wasScripted: () => false,
+                markFilled: async () => {},
+                rememberSecrets: () => {},
+              },
+              {
+                threadId: scope.thread.threadId,
+                tabId: "tab-1",
+                page,
+                cdp,
+                recording: null,
+                recordingStart: null,
+              },
+              Number.MAX_SAFE_INTEGER,
+            ).then(
+              () => "filled",
+              (cause: Error) => cause.message,
+            );
+          });
+          expect(outcome).toContain("The call ended before the login was filled.");
+          const written = yield* Effect.promise(() =>
+            context
+              .pages()[0]!
+              .locator("input")
+              .evaluateAll((fields) =>
+                fields.map((field) => (field as unknown as { readonly value: string }).value),
+              ),
+          );
+          expect(written).toEqual(["", ""]);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);

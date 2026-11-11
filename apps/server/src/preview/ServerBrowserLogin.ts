@@ -237,6 +237,7 @@ export const before = <A>(promise: Promise<A>, deadline: number): Promise<A | ty
 
 export type ElementCall =
   | { readonly status: "returned"; readonly value: unknown }
+  /** `expired` once the deadline passed or the caller gave up. */
   | { readonly status: "expired" | "threw" }
   /** The element is not in exactly one frame the caller allows, or could not be tagged there. */
   | { readonly status: "left" }
@@ -258,10 +259,12 @@ export const callOnElement = async (input: {
   readonly document: string;
   /** In `Date.now()` time. */
   readonly deadline: number;
+  /** Aborted once nobody waits for the call; the function is not sent to the page after that. */
+  readonly signal?: AbortSignal | undefined;
   readonly functionDeclaration: string;
   readonly args: ReadonlyArray<string | number>;
 }): Promise<ElementCall> => {
-  const late = () => Date.now() >= input.deadline;
+  const late = () => Date.now() >= input.deadline || input.signal?.aborted === true;
   const frame = await input.handle.ownerFrame();
   if (frame === null || !input.frameAllowed(frame.url())) return { status: "left" };
   const origin = new URL(frame.url()).origin;
@@ -376,7 +379,7 @@ export const callOnElement = async (input: {
 /**
  * Writes into the element the locator resolved to and nowhere else; keystrokes would follow focus
  * into any frame. Only frames on the login's site are written, only in the document the fill is
- * for, and never after the deadline.
+ * for, and never after the deadline or once `signal` aborts.
  */
 export const fillCovered = async (input: {
   readonly page: Page;
@@ -389,11 +392,13 @@ export const fillCovered = async (input: {
   readonly document: string;
   /** In `Date.now()` time. */
   readonly deadline: number;
+  /** Aborted once nobody waits for the call. */
+  readonly signal?: AbortSignal | undefined;
 }) => {
   const expired = () => loginError("The call ended before the login was filled.");
   const left = () => loginError("The page left the login's site before it was filled.");
   const remaining = input.deadline - Date.now();
-  if (remaining <= 0) throw expired();
+  if (remaining <= 0 || input.signal?.aborted) throw expired();
   const handle = await input.target.elementHandle({ timeout: Math.min(MAX_TIMER_MS, remaining) });
   if (handle === null) throw loginError("A login field disappeared before it was filled.");
   try {
@@ -404,6 +409,7 @@ export const fillCovered = async (input: {
       frameAllowed: input.frameCovered,
       document: input.document,
       deadline: input.deadline,
+      signal: input.signal,
       functionDeclaration: WRITE_FIELD,
       args: [input.value],
     });
