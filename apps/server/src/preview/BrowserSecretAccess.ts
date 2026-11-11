@@ -236,7 +236,7 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
     return yield* found(item, yield* catalog.read(revision, item));
   });
 
-  /** A choice among several items, the one there is read, or undefined when there is none. */
+  /** A choice among several items, the one there is read, or undefined when none serves. */
   const take = Effect.fn("BrowserSecretAccess.take")(function* (
     reach: BrowserLogins.BrowserLoginReach,
   ): Effect.fn.Return<SecretAccess<Item, Values> | undefined, BrowserLogins.BrowserLoginError> {

@@ -74,7 +74,7 @@ const make = Effect.gen(function* () {
         escalation === "refuse" ? chosen.filter(({ unattended }) => unattended) : chosen;
       if (providers.length === 0) {
         return unavailable(
-          "That device is set not to ask its user, and no service account is chosen for browser logins there.",
+          "That device is set to use only its service accounts, and none is chosen for browser logins there.",
         );
       }
       const item = request.item === undefined ? undefined : ownId(request.item);
