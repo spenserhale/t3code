@@ -2585,6 +2585,9 @@ const connectedDevice = (answers: ReadonlyArray<SecretRelayAnswer>) =>
     return asked;
   });
 
+/** The agent's id for an item a device offered: made here, it names neither provider nor item. */
+const DEVICE_ITEM_ID = /^device:[0-9a-f-]{36}$/;
+
 /** Opens an agent tab on the login page; with no desktop to draw it, it is headless. */
 const openLoginTab = Effect.gen(function* () {
   const { broker, tabId } = yield* ready;
@@ -2981,15 +2984,20 @@ it.live(
           });
           expect(choose).toMatchObject({
             status: "choose",
-            candidates: [item, { account: "Personal" }],
+            candidates: [
+              { title: "Good", account: "Work" },
+              { title: "Good", account: "Personal" },
+            ],
           });
+          const chosen = choose.status === "choose" ? (choose.candidates[0]?.id ?? "") : "";
+          expect(chosen).toMatch(DEVICE_ITEM_ID);
           const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin", {
-            login: "device:work/g1",
+            login: chosen,
           });
           expect(filled).toEqual({
             status: "filled",
             tabId,
-            login: item,
+            login: { ...item, id: chosen },
             filled: ["username", "password"],
           });
           expect(asked).toEqual([
@@ -3176,7 +3184,7 @@ it.live.each([
       } else if (device !== undefined && device.length > 0) {
         expect(yield* read).toEqual({
           status: "read",
-          identity: { id: "device:work/me", title: "Me", account: "Work" },
+          identity: { id: expect.stringMatching(DEVICE_ITEM_ID), title: "Me", account: "Work" },
           values: { firstName: "Grace", fullName: "Grace" },
         });
         expect(asked?.[0]).toMatchObject({ kind: "identity", purpose: "read" });
@@ -3249,7 +3257,10 @@ it.live("what a service account cannot read goes on to the user's device", () =>
         ]);
         const { invoke } = yield* openLoginTab;
         const bySite = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
-        expect(bySite).toMatchObject({ status: "filled", login: { id: "device:personal/p1" } });
+        expect(bySite).toMatchObject({
+          status: "filled",
+          login: { id: expect.stringMatching(DEVICE_ITEM_ID), account: "Personal" },
+        });
         expect(yield* passwordField(context)).toEqual({ value: "first-pw", security: "disc" });
         yield* invoke("navigate", { url: "https://good.test/login" });
         const byReference = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin", {
@@ -3327,7 +3338,10 @@ it.live("this machine's password managers having nothing go on to the user's dev
         const device = yield* connectedDevice([deviceLogin("device:personal/p1", "device-pw")]);
         const { invoke } = yield* openLoginTab;
         const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
-        expect(filled).toMatchObject({ status: "filled", login: { id: "device:personal/p1" } });
+        expect(filled).toMatchObject({
+          status: "filled",
+          login: { id: expect.stringMatching(DEVICE_ITEM_ID), account: "Personal" },
+        });
         expect(trail).toEqual(["ask login", "list Work logins"]);
         expect(device).toHaveLength(1);
         expect(yield* passwordField(context)).toEqual({ value: "device-pw", security: "disc" });
@@ -3344,7 +3358,8 @@ it.live("a login an earlier choose named goes only to its own password manager",
       yield* Effect.gen(function* () {
         const device = yield* connectedDevice([deviceLogin("device:personal/p1", "device-pw")]);
         const { invoke } = yield* openLoginTab;
-        for (const login of ["work/selected-item", "stranger/g1"]) {
+        // The last is a guess at a device's own id, which no choose here ever gave out.
+        for (const login of ["work/selected-item", "stranger/g1", "device:personal/p1"]) {
           const refused = yield* invoke("fillLogin", { login }).pipe(Effect.flip);
           expect(refused.message).toContain("could not be read; choose again");
         }

@@ -1,10 +1,11 @@
 /**
  * Secret requests this server cannot answer itself, relayed to the user's device. A client with a
  * desktop app subscribes for the kinds it can answer, has its own server ask the user and read the
- * item, and answers here. Every subscriber sees a request, and a quick `none` from one device must
- * not beat the user allowing on another.
+ * item, and answers here. Every subscriber sees a request, unless it names an item one device
+ * offered; and a quick `none` from one device must not beat the user allowing on another.
  */
 import {
+  SECRET_RELAY_DEVICE_PREFIX,
   type SecretRelayAnswer,
   SecretRelayKind,
   type SecretRelayRequest,
@@ -60,7 +61,9 @@ export class SecretRelay extends Context.Service<
     ) => Effect.Effect<void>;
     /**
      * Fails at once when no subscriber answers this kind, and when no answer comes in time. Values
-     * `accepts` turns down, as lacking what was asked, count as that device answering `none`.
+     * `accepts` turns down, as lacking what was asked, count as that device answering `none`. Items
+     * come back under ids made here; a request naming one reaches only the device that offered it,
+     * and finds no device when the id was not made here, is too old, or that device is gone.
      */
     readonly request: (
       ask: SecretRelayAsk,
@@ -83,18 +86,58 @@ interface Pending {
   readonly answer: Deferred.Deferred<SecretRelayAnswer>;
   /** Devices subscribed for its kind when it started that have neither answered nor left. */
   readonly waiting: Set<string>;
+  /** The one device asked, about an item it offered; absent when every subscriber is asked. */
+  readonly device: string | undefined;
   readonly accepts: ((answer: SecretRelayValues) => boolean) | undefined;
   inconclusive: Inconclusive | undefined;
 }
+
+/** An item a device offered, kept under the id the agent has for it. */
+interface Offer {
+  readonly device: string;
+  /** The device's own id for the item, sent back to it as it gave it. */
+  readonly item: string;
+  readonly at: number;
+}
+
+const OFFER_TTL_MS = 60 * 60_000;
+const OFFER_LIMIT = 1_000;
 
 const isKind = Schema.is(SecretRelayKind);
 
 const make = () => {
   const subscribers = new Set<Subscriber>();
   const pending = new Map<string, Pending>();
-  const send = (kind: SecretRelayKind, item: SecretRelayStreamItem) => {
+  // By the agent's id, oldest offer first, and those ids by device and item.
+  const offers = new Map<string, Offer>();
+  const offerIds = new Map<string, string>();
+  const offerKey = (device: string, item: string) => `${device}\u0000${item}`;
+
+  /**
+   * The id the agent gets for an item a device offered: `fresh`, or the one it already has. It
+   * names neither the device's password manager nor its item, so only this server can route it.
+   */
+  const offer = (device: string, item: string, fresh: string, now: number) => {
+    const key = offerKey(device, item);
+    const id = offerIds.get(key) ?? fresh;
+    // A blank id could not be sent back to its device, so its item stays nobody's.
+    if (item.trim() === "") return id;
+    offers.delete(id);
+    offers.set(id, { device, item, at: now });
+    offerIds.set(key, id);
+    for (const [oldest, old] of offers) {
+      if (offers.size <= OFFER_LIMIT && now - old.at < OFFER_TTL_MS) break;
+      offers.delete(oldest);
+      offerIds.delete(offerKey(old.device, old.item));
+    }
+    return id;
+  };
+
+  const hears = (subscriber: Subscriber, { request, device }: Pending) =>
+    subscriber.kinds.has(request.kind) && (device === undefined || device === subscriber.device);
+  const send = (about: Pending, item: SecretRelayStreamItem) => {
     for (const subscriber of subscribers) {
-      if (subscriber.kinds.has(kind)) Queue.offerUnsafe(subscriber.queue, item);
+      if (hears(subscriber, about)) Queue.offerUnsafe(subscriber.queue, item);
     }
   };
   const devicesFor = (kind: SecretRelayKind) =>
@@ -120,9 +163,9 @@ const make = () => {
         Effect.sync(() => {
           const subscriber: Subscriber = { kinds: new Set(kinds.filter(isKind)), device, queue };
           subscribers.add(subscriber);
-          for (const { request } of pending.values()) {
-            if (subscriber.kinds.has(request.kind)) {
-              Queue.offerUnsafe(queue, { type: "request", request });
+          for (const waiting of pending.values()) {
+            if (hears(subscriber, waiting)) {
+              Queue.offerUnsafe(queue, { type: "request", request: waiting.request });
             }
           }
           return subscriber;
@@ -145,7 +188,9 @@ const make = () => {
     function* (requestId, given, device) {
       yield* Effect.annotateCurrentSpan({ "secret_relay.answer": given.type });
       const waiting = pending.get(requestId);
-      if (waiting === undefined) return;
+      if (waiting === undefined || (yield* Deferred.isDone(waiting.answer))) return;
+      // Asked of one device, a request takes no other's answer.
+      if (waiting.device !== undefined && waiting.device !== device) return;
       const answer: SecretRelayAnswer =
         given.type === "values" && waiting.accepts?.(given) === false ? { type: "none" } : given;
       if (answer.type === "none" || answer.type === "unavailable") {
@@ -155,33 +200,63 @@ const make = () => {
         stopWaiting(waiting, device);
         return;
       }
-      yield* Deferred.succeed(waiting.answer, answer);
+      if (answer.type === "denied") {
+        yield* Deferred.succeed(waiting.answer, answer);
+        return;
+      }
+      const now = yield* Clock.currentTimeMillis;
+      const offered = (item: string) =>
+        Effect.map(randomUuidV4, (uuid) =>
+          offer(device, item, `${SECRET_RELAY_DEVICE_PREFIX}${uuid}`, now),
+        );
+      yield* Deferred.succeed(
+        waiting.answer,
+        answer.type === "values"
+          ? { ...answer, item: { ...answer.item, id: yield* offered(answer.item.id) } }
+          : {
+              ...answer,
+              candidates: yield* Effect.forEach(answer.candidates, (candidate) =>
+                Effect.map(offered(candidate.id), (id) => ({ ...candidate, id })),
+              ),
+            },
+      );
     },
   );
 
   const request: SecretRelay["Service"]["request"] = Effect.fn("SecretRelay.request")(
     function* (ask, timeoutMs, accepts) {
       yield* Effect.annotateCurrentSpan({ "secret_relay.kind": ask.kind });
-      const devices = devicesFor(ask.kind);
+      const now = yield* Clock.currentTimeMillis;
+      const subscribed = devicesFor(ask.kind);
+      const offered = ask.item === undefined ? undefined : offers.get(ask.item);
+      // An item goes back to the device that offered it and to no other, so never to a guess.
+      const owner =
+        offered !== undefined && now - offered.at < OFFER_TTL_MS && subscribed.has(offered.device)
+          ? offered
+          : undefined;
+      const devices = ask.item === undefined ? subscribed : new Set(owner ? [owner.device] : []);
       if (devices.size === 0) {
         return yield* new SecretRelayError({ reason: "no_device" });
       }
       const requestId = yield* randomUuidV4;
       const relayed: SecretRelayRequest = {
         ...ask,
+        ...(owner === undefined ? {} : { item: owner.item }),
         requestId,
-        expiresAt: (yield* Clock.currentTimeMillis) + timeoutMs,
+        expiresAt: now + timeoutMs,
       };
       const answered = yield* Deferred.make<SecretRelayAnswer>();
+      const waiting: Pending = {
+        request: relayed,
+        answer: answered,
+        waiting: devices,
+        device: owner?.device,
+        accepts,
+        inconclusive: undefined,
+      };
       yield* Effect.sync(() => {
-        pending.set(requestId, {
-          request: relayed,
-          answer: answered,
-          waiting: devices,
-          accepts,
-          inconclusive: undefined,
-        });
-        send(ask.kind, { type: "request", request: relayed });
+        pending.set(requestId, waiting);
+        send(waiting, { type: "request", request: relayed });
       });
       return yield* Deferred.await(answered).pipe(
         Effect.timeoutOrElse({
@@ -191,7 +266,7 @@ const make = () => {
         Effect.ensuring(
           Effect.sync(() => {
             pending.delete(requestId);
-            send(ask.kind, { type: "ended", requestId });
+            send(waiting, { type: "ended", requestId });
           }),
         ),
       );
