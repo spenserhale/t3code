@@ -108,4 +108,28 @@ describe("buildThreadActionMenuItems", () => {
     expect(submenu?.children?.every((child) => child.disabled)).toBe(true);
     expect(threadActionRequiresOperate("continue-on:laptop")).toBe(true);
   });
+
+  it("offers snoozing until a thread only on servers that can link threads", () => {
+    const snoozeChildren = (state: Partial<ThreadActionMenuState>) =>
+      buildThreadActionMenuItems({ ...baseState, ...state })
+        .find((item) => item.id === "snooze")
+        ?.children?.map((child) => child.id);
+    expect(snoozeChildren({})).toEqual(["snooze:hour", "snooze:custom"]);
+    expect(snoozeChildren({ threadWait: { waiting: false } })).toEqual([
+      "snooze:hour",
+      "snooze:custom",
+      "snooze-until-thread",
+    ]);
+  });
+
+  it("offers Stop waiting instead of Wake thread on a waiting thread", () => {
+    const ids = (threadWait: ThreadActionMenuState["threadWait"]) =>
+      buildThreadActionMenuItems({ ...baseState, isSnoozed: true, threadWait }).map(
+        (item) => item.id,
+      );
+    expect(ids({ waiting: true })).toContain("stop-waiting");
+    expect(ids({ waiting: true })).not.toContain("unsnooze");
+    expect(ids({ waiting: false })).toContain("unsnooze");
+    expect(ids(undefined)).toContain("unsnooze");
+  });
 });

@@ -19,6 +19,8 @@ export type ThreadActionMenuId =
   | "snooze"
   | `snooze:${string}`
   | "unsnooze"
+  | "snooze-until-thread"
+  | "stop-waiting"
   | "rename"
   | "regenerate-title"
   | "mark-unread"
@@ -103,6 +105,8 @@ export interface ThreadActionMenuState {
   readonly canShareWithGuest?: boolean;
   /** A No project thread with its own folder, on a server that can promote it. */
   readonly canTurnIntoProject?: boolean;
+  /** Set only when the server can snooze a thread until another is done. */
+  readonly threadWait?: { readonly waiting: boolean } | undefined;
 }
 
 /** Local navigation, read markers, and copying remain available to read-only clients. */
@@ -168,7 +172,9 @@ export function buildThreadActionMenuItems(
     ...(state.supports.snooze
       ? [
           state.isSnoozed
-            ? { id: "unsnooze" as const, label: "Wake thread", icon: "clock" }
+            ? state.threadWait?.waiting
+              ? { id: "stop-waiting" as const, label: "Stop waiting", icon: "clock" }
+              : { id: "unsnooze" as const, label: "Wake thread", icon: "clock" }
             : {
                 id: "snooze" as const,
                 label: "Snooze",
@@ -184,6 +190,9 @@ export function buildThreadActionMenuItems(
                     label: "Custom…",
                     separatorBefore: state.snoozePresets.length > 0,
                   },
+                  ...(state.threadWait
+                    ? [{ id: "snooze-until-thread" as const, label: "Until thread…" }]
+                    : []),
                 ],
               },
         ]

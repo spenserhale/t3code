@@ -433,6 +433,11 @@ import {
   SourceControlSignInResult,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
+import {
+  WsThreadWaitsClearRpc,
+  WsThreadWaitsSetRpc,
+  WsThreadWaitsSubscribeRpc,
+} from "./threadWait.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
@@ -2209,6 +2214,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerListThreadUsageRpc,
   WsServerSignalProcessRpc,
   WsScheduledTasksSubscribeRpc,
+  WsThreadWaitsSubscribeRpc,
+  WsThreadWaitsSetRpc,
+  WsThreadWaitsClearRpc,
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,
   WsScheduledTasksDeleteRpc,

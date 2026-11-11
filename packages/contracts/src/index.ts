@@ -68,6 +68,7 @@ export * from "./usage.ts";
 export * from "./threadUsage.ts";
 export * from "./jiraIssues.ts";
 export * from "./scheduledTask.ts";
+export * from "./threadWait.ts";
 export * from "./worktreeMcp.ts";
 export * from "./resourceTelemetry.ts";
 export * from "./rpc.ts";
