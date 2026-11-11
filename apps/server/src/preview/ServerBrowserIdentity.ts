@@ -296,47 +296,71 @@ const callEnded = () => loginError("The call ended before the identity was fille
 
 type FoundField = { readonly value: PreviewIdentityValue; readonly handle: ElementHandle };
 
-const scanAutocompleteFields = async (
-  page: Page,
-  frameAllowed: (frameUrl: string) => boolean,
-): Promise<ReadonlyArray<FoundField>> => {
-  const found: Array<FoundField> = [];
-  for (const frame of page.frames()) {
-    if (!frameAllowed(frame.url())) continue;
-    const handles = await frame
-      .locator("input, select, textarea")
-      .elementHandles()
-      .catch(() => []);
-    for (const handle of handles) {
-      const value = autocompleteValue(await handle.getAttribute("autocomplete").catch(() => null));
-      const fillable =
-        value !== undefined &&
-        (await handle.isVisible().catch(() => false)) &&
-        (await handle.isEditable().catch(() => false)) &&
-        (await fieldInfo(handle).catch(() => undefined))?.empty === true;
-      if (fillable) found.push({ value, handle });
-      else await handle.dispose().catch(() => undefined);
-    }
-  }
-  return found;
+interface AutocompleteFields {
+  readonly found: ReadonlyArray<FoundField>;
+  /** What the fields that did not answer in their time ask for. */
+  readonly stalled: ReadonlyArray<PreviewIdentityValue>;
+}
+
+// Not awaited, so a page that stopped answering cannot hold the call here.
+const release = (handles: Iterable<ElementHandle>) => {
+  for (const handle of handles) void handle.dispose().catch(() => undefined);
 };
+
+const isFillable = async (handle: ElementHandle) =>
+  (await handle.isVisible().catch(() => false)) &&
+  (await handle.isEditable().catch(() => false)) &&
+  (await fieldInfo(handle).catch(() => undefined))?.empty === true;
 
 /**
  * Visible, editable, empty fields whose `autocomplete` names an identity value, in frames on the
- * page's own site. Fields in any other frame, such as an ad or a chat widget, are never used.
+ * page's own site. Fields in any other frame, such as an ad or a chat widget, are never used. A
+ * frame or field gets `ELEMENT_TIMEOUT_MS` to answer, so one that never does is passed over.
  */
 const findAutocompleteFields = async (
   page: Page,
   frameAllowed: (frameUrl: string) => boolean,
+  /** In `Date.now()` time. */
   deadline: number,
-) => {
-  const scan = scanAutocompleteFields(page, frameAllowed);
-  const found = await before(scan, deadline);
-  if (found !== LATE) return found;
-  void scan
-    .then((fields) => Promise.all(fields.map(({ handle }) => handle.dispose())))
-    .catch(() => undefined);
-  throw callEnded();
+): Promise<AutocompleteFields> => {
+  const found: Array<FoundField> = [];
+  const stalled: Array<PreviewIdentityValue> = [];
+  const budget = () => Math.min(deadline, Date.now() + ELEMENT_TIMEOUT_MS);
+  const ended = (unseen: Iterable<ElementHandle> = []) => {
+    release([...found.map(({ handle }) => handle), ...unseen]);
+    return callEnded();
+  };
+  for (const frame of page.frames()) {
+    if (!frameAllowed(frame.url())) continue;
+    if (Date.now() >= deadline) throw ended();
+    const listing = frame
+      .locator("input, select, textarea")
+      .elementHandles()
+      .catch(() => []);
+    const handles = await before(listing, budget());
+    if (handles === LATE) {
+      void listing.then(release);
+      continue;
+    }
+    for (const [index, handle] of handles.entries()) {
+      if (Date.now() >= deadline) throw ended(handles.slice(index));
+      const until = budget();
+      const attribute = await before(
+        handle.getAttribute("autocomplete").catch(() => null),
+        until,
+      );
+      const value = attribute === LATE ? undefined : autocompleteValue(attribute);
+      const fillable = value !== undefined && (await before(isFillable(handle), until));
+      if (value !== undefined && fillable === true) {
+        found.push({ value, handle });
+        continue;
+      }
+      release([handle]);
+      if (value !== undefined && fillable === LATE) stalled.push(value);
+    }
+  }
+  if (Date.now() >= deadline) throw ended();
+  return { found, stalled };
 };
 
 /**
@@ -566,11 +590,13 @@ export const fillIdentity = async (
   if (named.length > 0) {
     await checkIdentityLocators(named, frameAllowed, deadline);
   } else {
-    const found = await findAutocompleteFields(tab.page, frameAllowed, deadline);
-    await Promise.all(found.map(({ handle }) => handle.dispose().catch(() => undefined)));
+    const { found, stalled } = await findAutocompleteFields(tab.page, frameAllowed, deadline);
+    release(found.map(({ handle }) => handle));
     if (found.length === 0) {
       throw loginError(
-        "No empty fields tagged with autocomplete were found. Pass `fields` with aria-ref locators from preview_snapshot.",
+        stalled.length > 0
+          ? "The fields tagged with autocomplete did not answer in time. Use preview_act."
+          : "No empty fields tagged with autocomplete were found. Pass `fields` with aria-ref locators from preview_snapshot.",
       );
     }
   }
@@ -610,11 +636,13 @@ export const fillIdentity = async (
     );
   }
   await step(logins.check(revision));
-  const targets = countryFirst<IdentityTarget>(
-    named.length > 0 ? named : await findAutocompleteFields(tab.page, frameAllowed, deadline),
-  );
+  const scanned =
+    named.length > 0 ? undefined : await findAutocompleteFields(tab.page, frameAllowed, deadline);
+  const targets = countryFirst<IdentityTarget>(scanned?.found ?? named);
   const filled: Array<PreviewIdentityValue> = [];
-  const skipped: Array<{ readonly value: PreviewIdentityValue; readonly reason: string }> = [];
+  const skipped: Array<{ readonly value: PreviewIdentityValue; readonly reason: string }> = (
+    scanned?.stalled ?? []
+  ).map((value) => ({ value, reason: NO_ANSWER }));
   try {
     for (const target of targets) {
       if (remaining() <= 0) throw callEnded();
