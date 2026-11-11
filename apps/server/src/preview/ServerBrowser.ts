@@ -3294,7 +3294,7 @@ const make = Effect.gen(function* () {
       case "fillLogin":
         return recordAction(tab, "fillLogin", () =>
           ServerBrowserLoginFill.fillLogin(
-            secretContext(signal, "This server cannot fill browser logins."),
+            loginContext(tab, signal),
             tab,
             input as PreviewAutomationFillLoginRequest,
             deadlineMs,
