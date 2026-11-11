@@ -34,6 +34,22 @@ function getPromptErrorMessage(error: unknown): string {
     : message;
 }
 
+function sshPasswordPromptIdentity(request: DesktopSshPasswordPromptRequest): string {
+  return `${request.username ?? ""}@${request.destination}`;
+}
+
+// Every reconnect attempt for an offline machine asks for the password again,
+// so one host can queue dozens of identical dialogs while the user is away.
+// Keep one prompt per destination: a repeated request replaces the older ones
+// because only the newest prompt is still pending on the desktop side.
+export function enqueueSshPasswordPrompt(
+  queue: readonly DesktopSshPasswordPromptRequest[],
+  request: DesktopSshPasswordPromptRequest,
+): readonly DesktopSshPasswordPromptRequest[] {
+  const identity = sshPasswordPromptIdentity(request);
+  return [...queue.filter((existing) => sshPasswordPromptIdentity(existing) !== identity), request];
+}
+
 let promptQueue: readonly DesktopSshPasswordPromptRequest[] = [];
 const promptQueueListeners = new Set<() => void>();
 
@@ -49,7 +65,7 @@ function setPromptQueue(next: readonly DesktopSshPasswordPromptRequest[]) {
 export function startSshPasswordPromptQueue(): () => void {
   return (
     window.desktopBridge?.onSshPasswordPrompt((request) => {
-      setPromptQueue([...promptQueue, request]);
+      setPromptQueue(enqueueSshPasswordPrompt(promptQueue, request));
     }) ?? (() => undefined)
   );
 }
