@@ -240,6 +240,7 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { commandFeatureUsage, featureUsage } from "./telemetry/FeatureUsage.ts";
 import type { TelemetryOwner } from "./telemetry/Identify.ts";
 import * as ThreadUsageHandlers from "./usage/ThreadUsageHandlers.ts";
+import * as JiraHandlers from "./jira/JiraHandlers.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as TriageService from "./triage/TriageService.ts";
@@ -1426,6 +1427,7 @@ export const layerWsRpc = (
               ),
               Effect.orElseSucceed(() => null),
             );
+      const jiraHandlers = yield* JiraHandlers.make;
       const usage = yield* UsageService.UsageService;
       const threadUsageHandlers = yield* ThreadUsageHandlers.make;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
@@ -2666,6 +2668,7 @@ export const layerWsRpc = (
           processResourceMonitor.readHistory(input),
         [WS_METHODS.serverGetResourceTelemetryHistory]: (input) =>
           resourceTelemetry.readHistory(input),
+        ...jiraHandlers,
         [WS_METHODS.serverGetUsageSummary]: (input) => usage.readSummary(input),
         ...threadUsageHandlers,
         [WS_METHODS.serverRefreshUsageRates]: (_input) => usage.refreshRates,
