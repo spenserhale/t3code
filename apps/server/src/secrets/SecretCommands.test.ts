@@ -198,6 +198,7 @@ const setup = (
     endpoint: () => Effect.die("No tab is drawn here."),
     pointer: () => Effect.void,
     turn: () => Effect.void,
+    loginFilled: () => Effect.void,
     approveLogin: (key, timeoutMs, prompt) =>
       Effect.suspend(() => {
         prompts.push(prompt);
