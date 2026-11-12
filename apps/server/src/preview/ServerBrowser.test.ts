@@ -6123,6 +6123,18 @@ it.live(
         const { context } = yield* realLoginBrowser;
         yield* Effect.gen(function* () {
           const { tabId, invoke } = yield* openLoginTab;
+          // A locator that leads to no one element is refused before anyone is asked or anything read.
+          for (const [locator, problem] of [
+            ["#missing", "matches nothing on this page"],
+            ["input", "matches 2 elements"],
+          ] as const) {
+            const refused = yield* invoke("fillLogin", {
+              fields: ["password"],
+              locators: { password: locator },
+            }).pipe(Effect.flip);
+            expect({ asked, trail }).toEqual({ asked: [], trail: [] });
+            expect(refused.message).toContain(`The password locator ${problem}`);
+          }
           const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
           expect(filled.status).toBe("filled");
           // Asked before the password manager is touched at all, so the login is not named.
