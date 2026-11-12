@@ -2780,6 +2780,9 @@ const shownDocument = (context: BrowserContext) =>
     return frameTree.frame.loaderId;
   });
 
+/** What a desktop is told of a page: the browser's own id, which leads a fill's name for it. */
+const toldDocument = (named: string) => named.split(" ", 1)[0];
+
 it.live(
   "a headless tab is filled without asking under Don't ask, behind the same page guards",
   () => {
@@ -4121,7 +4124,12 @@ it.live("a desktop that draws the tab is told of a new password before it is wri
         Effect.gen(function* () {
           const shown = yield* shownDocument(realContext!);
           const fields = yield* newPasswordFields(realContext!);
-          told.push({ key, document, shown, written: fields.map((field) => field.value) });
+          told.push({
+            key,
+            document: toldDocument(document),
+            shown,
+            written: fields.map((field) => field.value),
+          });
         }),
     }),
   );
