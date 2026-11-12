@@ -719,6 +719,9 @@ const make = Effect.gen(function* () {
   const browserLogins = yield* Effect.serviceOption(BrowserLogins.BrowserLogins);
   const filledSecrets = ServerBrowserLogin.makeFilledSecrets();
   const documentMarks = ServerBrowserLogin.makeDocumentMarks();
+  // Each desktop tab has a connection, and so a Playwright context, of its own, whatever its
+  // pages share inside the app. So every tab the desktop draws counts as one browser profile.
+  const desktopProfile = {};
   /** Whether the tab's main document may show a filled password or code. */
   const exposed = async (tab: ServerTab) => {
     const filled = documentMarks.filled(tabKey(tab.threadId, tab.tabId));
@@ -1170,7 +1173,8 @@ const make = Effect.gen(function* () {
     // A desktop page outlives the connection unless its session closed with it.
     const end =
       (tab.desktop || reopening) && !closeSession && sessionOpen(tab) ? "reconnect" : "gone";
-    if (end === "gone") documentMarks.forget(key);
+    // A headless page drops its marks once it has closed. A desktop page is only known gone here.
+    if (end === "gone" && tab.desktop) documentMarks.close(key);
     for (const viewer of tab.viewers) viewer.push({ _tag: end });
     void tab.control.close().catch(constVoid);
     if (tab.desktop) void tab.desktop.close().catch(constVoid);
@@ -1569,6 +1573,13 @@ const make = Effect.gen(function* () {
     }
     page.on("close", () => dropTab(tab, true));
     page.on("crash", () => reopenCrashedTab(tab));
+    if (Option.isSome(browserLogins)) {
+      if (page.isClosed()) throw new Error("The page closed before it became a tab.");
+      documentMarks.open(key, desktop ? desktopProfile : page.context(), () =>
+        ServerBrowserLogin.frameOrigins(page),
+      );
+      if (!desktop) page.once("close", () => documentMarks.close(key));
+    }
     tabs.set(key, tab);
     reportLiveTabs();
     // A desktop page navigates on its own and can finish loading before these listeners attach.
@@ -1899,6 +1910,12 @@ const make = Effect.gen(function* () {
   };
 
   const adoptPopup = async (opener: ServerTab, popup: Page) => {
+    // Its opener's script can already be in it, before it is a tab or if it never becomes one.
+    if (Option.isSome(browserLogins) && !popup.isClosed()) {
+      const profile = popup.context();
+      documentMarks.hold(profile, popup);
+      popup.once("close", () => documentMarks.release(profile, popup));
+    }
     if (opener.closing) {
       await popup.close().catch(constVoid);
       return;
@@ -2945,6 +2962,8 @@ const make = Effect.gen(function* () {
         });
       await runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
       dropTab(tab, false);
+      // Answered once the page is gone, so a tab opened next finds the browser without it.
+      if (!tab.desktop) await tab.page.close().catch(constVoid);
       return {};
     }
     // Resolve dialogs outside the queue, with ownership checked, to unblock waiting clicks.
@@ -2999,8 +3018,7 @@ const make = Effect.gen(function* () {
 
   const offForFill = (what: string, them: string) =>
     `${what} off on this page. The password manager filled a login in this tab, and this page either holds that login or was reached with Back or Forward, which can bring a filled value back. Submit the form, or reload: preview_navigate to this page's address loads it fresh and turns ${them} back on.`;
-  const filledPageError = () =>
-    ServerBrowserLogin.loginError(offForFill("Script and recording are", "them"));
+  const filledPageError = () => ServerBrowserLogin.loginError(offForFill("Recording is", "it"));
   const IMAGES_OFF = offForFill("Images are", "images");
   const IMAGE_LEFT_OUT =
     "The page loaded another document while this snapshot was taken. The password manager filled a login in this tab, so the image was left out: a page showing that login may have been on screen in between. Take the snapshot again.";
@@ -3341,15 +3359,36 @@ const make = Effect.gen(function* () {
           return ServerBrowserPage.evaluate(tab.cdp, evaluateInput, request.timeoutMs);
         }
         const key = tabKey(tab.threadId, tab.tabId);
-        const before = await ServerBrowserLogin.documentId(tab.cdp);
-        if (await exposed(tab).catch(() => true)) throw filledPageError();
-        documentMarks.markScripted(key, [before]);
+        let admitted = false;
         try {
-          return await ServerBrowserPage.evaluate(tab.cdp, evaluateInput, request.timeoutMs);
+          return await ServerBrowserLogin.evaluateAdmitted(
+            tab.cdp,
+            evaluateInput,
+            request.timeoutMs,
+            (origins) => {
+              const filled = documentMarks.admitScript(key, origins);
+              if (filled !== undefined) {
+                const [threadId, tabId] = filled.tab.split("\u0000");
+                throw ServerBrowserLogin.scriptOff(
+                  filled.origin,
+                  filled.tab === key
+                    ? "this tab"
+                    : threadId === tab.threadId
+                      ? `tab ${tabId}`
+                      : "a tab of another thread",
+                );
+              }
+              admitted = true;
+            },
+          );
         } finally {
-          // The script may have started a navigation; its next document counts as scripted too.
-          const after = await ServerBrowserLogin.documentId(tab.cdp).catch(() => before);
-          documentMarks.markScripted(key, [after]);
+          // The script may have taken the tab to another site.
+          if (admitted) {
+            documentMarks.noteScript(
+              key,
+              await ServerBrowserLogin.pageOrigins(tab.cdp).catch(() => []),
+            );
+          }
         }
       }
       case "fillLogin":
@@ -3449,6 +3488,10 @@ const make = Effect.gen(function* () {
       const key = tabKey(event.threadId, event.tabId);
       const tab = tabs.get(key);
       if (event.type === "closed" && !tab && pendingTabs.has(key)) closedPendingTabs.add(key);
+      // A desktop tab can close while its connection is away.
+      if (event.type === "closed" && !tab && documentMarks.profile(key) === desktopProfile) {
+        documentMarks.close(key);
+      }
       if (!tab) return;
       if (event.type === "closed") {
         closedSessions.add(key);

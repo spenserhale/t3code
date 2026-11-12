@@ -1,9 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Playwright callbacks run outside the Effect runtime.
-import type { PreviewLoginField } from "@t3tools/contracts";
+import type { PreviewAutomationEvaluateInput, PreviewLoginField } from "@t3tools/contracts";
 import * as NodeCrypto from "node:crypto";
 import type { CDPSession, Frame, Locator, Page } from "playwright-core";
 
-import { ServerBrowserOperationError } from "./ServerBrowserPage.ts";
+import { evaluate, ServerBrowserOperationError } from "./ServerBrowserPage.ts";
 
 const LOGIN_ERROR = "PreviewAutomationExecutionError";
 
@@ -336,40 +336,180 @@ export const documentId = async (cdp: CDPSession): Promise<string> => {
   return frameTree.frame.loaderId;
 };
 
+/** `tab` names the tab the login was filled in, as the agent would. */
+export const scriptOff = (origin: string, tab: string) =>
+  loginError(
+    `The password manager filled a login on this site (${origin}) in this browser, in ${tab}, so preview_evaluate is off here until that tab is closed. Close that tab and open the site in a new one, which stays signed in.`,
+  );
+const fillOff = (origin: string) =>
+  loginError(
+    `preview_evaluate has run on this site (${origin}) in this browser, so the password manager will not fill a login into a page that is on it or frames it. Close this browser's tabs, open the page again, and call preview_fill_login before any preview_evaluate.`,
+  );
+const TAB_CLOSED = "The tab closed.";
+
+/** The origin of an address, or none when it has none of its own, as a blank page's has. */
+const originsOf = (url: string) => {
+  const origin = URL.canParse(url) ? new URL(url).origin : "null";
+  return origin === "null" ? [] : [origin];
+};
+
 /**
- * What each tab's documents held, by tab, so a desktop tab that reconnects keeps it. The agent's
- * script and a filled login never share a document: script ran first means reload before filling,
- * and a fill means a new document before script runs again.
+ * The origins of the frames now in a page, by their addresses. A frame without one of its own,
+ * such as a blank one, is on the origin of the frame that made it.
+ */
+export const frameOrigins = (page: Page): ReadonlyArray<string> => [
+  ...new Set(page.frames().flatMap((frame) => originsOf(frame.url()))),
+];
+
+// A blank page's address has no origin; `self.origin` is the one it inherited from its opener.
+const SCRIPT_ORIGINS = "[location.origin, self.origin]";
+
+const UNKNOWN_SITE =
+  "This page does not say which site it is on, so preview_evaluate did not run. Load the page again with preview_navigate.";
+
+/** The origins a page's script runs on, from the page's answer to `SCRIPT_ORIGINS`. */
+const scriptOrigins = (answer: unknown): ReadonlyArray<string> => {
+  if (!Array.isArray(answer) || answer.length !== 2) throw loginError(UNKNOWN_SITE);
+  const origins = answer.filter((origin): origin is string => typeof origin === "string");
+  if (origins.length !== 2) throw loginError(UNKNOWN_SITE);
+  return [...new Set(origins)].filter((origin) => origin !== "null");
+};
+
+/** The origin a page's main frame shows by its address, if that has one. */
+export const pageOrigins = async (cdp: CDPSession): Promise<ReadonlyArray<string>> =>
+  originsOf((await cdp.send("Page.getFrameTree")).frameTree.frame.url);
+
+/**
+ * Runs agent script in a page once `admit` has taken the origins it will run on. `admit` throws
+ * to refuse them.
+ */
+export const evaluateAdmitted = (
+  cdp: CDPSession,
+  input: PreviewAutomationEvaluateInput,
+  timeoutMs: number,
+  admit: (origins: ReadonlyArray<string>) => void,
+) =>
+  evaluate(cdp, input, timeoutMs, async (script) => {
+    const { result, exceptionDetails } = await cdp.send("Runtime.evaluate", {
+      expression: SCRIPT_ORIGINS,
+      returnByValue: true,
+    });
+    admit(scriptOrigins(exceptionDetails === undefined ? result.value : undefined));
+    return cdp.send("Runtime.evaluate", script);
+  });
+
+/**
+ * Where agent script ran and where logins were filled, by browser profile: the pages that share
+ * storage and can hold each other's windows. Script outlives its document in any window of its
+ * origin that the document could reach, and dies with the last of them. So in one profile,
+ * script and a filled login never meet on an origin.
  */
 export const makeDocumentMarks = () => {
+  const profiles = new Map<
+    object,
+    {
+      /** The profile's pages still open. While there is one, script may be alive in it. */
+      readonly open: Set<unknown>;
+      /** Origins agent script has run on since the profile last had no page open. */
+      readonly scripted: Set<string>;
+    }
+  >();
   const tabs = new Map<
     string,
     {
-      /** Documents the agent ran script in, where it could have hooked a later fill. */
-      readonly scripted: Set<string>;
+      readonly profile: object;
+      readonly origins: () => ReadonlyArray<string>;
       /** Documents a login was filled into. */
+      readonly documents: Set<string>;
+      /** Origins that had a frame in the tab's page when a login was filled into it. */
       readonly filled: Set<string>;
     }
   >();
-  const marksOf = (tab: string) => {
-    const existing = tabs.get(tab);
-    if (existing) return existing;
-    const created = { scripted: new Set<string>(), filled: new Set<string>() };
-    tabs.set(tab, created);
-    return created;
+  const enter = (profile: object, page: unknown) => {
+    const existing = profiles.get(profile);
+    if (existing) return void existing.open.add(page);
+    profiles.set(profile, { open: new Set([page]), scripted: new Set() });
+  };
+  const leave = (profile: object, page: unknown) => {
+    const open = profiles.get(profile)?.open;
+    // Its last page gone, the profile has no document left for script to be alive in.
+    if (open?.delete(page) && open.size === 0) profiles.delete(profile);
+  };
+  /** Throws where agent script has run on one of the origins, since the profile last emptied. */
+  const refuseScripted = (profile: object, origins: ReadonlyArray<string>) => {
+    const scripted = profiles.get(profile)?.scripted;
+    const origin = origins.find((each) => scripted?.has(each));
+    if (origin !== undefined) throw fillOff(origin);
+  };
+  const known = (tab: string) => {
+    const marks = tabs.get(tab);
+    if (marks === undefined) throw loginError(TAB_CLOSED);
+    return marks;
   };
   return {
-    markScripted: (tab: string, documentIds: ReadonlyArray<string>) => {
-      for (const id of documentIds) marksOf(tab).scripted.add(id);
+    /** A page that is no tab yet, such as a window a page just opened, can already hold script. */
+    hold: enter,
+    release: leave,
+    /** A tab's page joins a profile. `origins` names the origins of the frames now in it. */
+    open: (tab: string, profile: object, origins: () => ReadonlyArray<string>) => {
+      // A desktop tab whose connection came back keeps what its page held.
+      const held = tabs.get(tab);
+      if (held !== undefined && held.profile !== profile) leave(held.profile, tab);
+      enter(profile, tab);
+      tabs.set(tab, {
+        profile,
+        origins,
+        documents: held?.documents ?? new Set(),
+        filled: held?.filled ?? new Set(),
+      });
     },
-    wasScripted: (tab: string, id: string) => tabs.get(tab)?.scripted.has(id) === true,
-    markFilled: (tab: string, id: string) => void marksOf(tab).filled.add(id),
+    /** The tab's page is gone, and with it its history, where a filled value outlives a page. */
+    close: (tab: string) => {
+      const marks = tabs.get(tab);
+      if (marks === undefined) return;
+      tabs.delete(tab);
+      leave(marks.profile, tab);
+    },
+    profile: (tab: string) => tabs.get(tab)?.profile,
+    /**
+     * Marks the origins agent script is about to run on, in the same step as finding that no
+     * open tab of the profile filled a login on one. Otherwise marks nothing, and names the
+     * origin and that tab.
+     */
+    admitScript: (tab: string, origins: ReadonlyArray<string>) => {
+      const { profile } = known(tab);
+      for (const [other, marks] of tabs) {
+        const origin = origins.find((each) => marks.filled.has(each));
+        if (marks.profile === profile && origin !== undefined) return { origin, tab: other };
+      }
+      const scripted = profiles.get(profile)?.scripted;
+      for (const origin of origins) scripted?.add(origin);
+      return undefined;
+    },
+    /** Script that has run may have taken its page to these origins. */
+    noteScript: (tab: string, origins: ReadonlyArray<string>) => {
+      const scripted = profiles.get(tabs.get(tab)?.profile ?? {})?.scripted;
+      for (const origin of origins) scripted?.add(origin);
+    },
+    /** Throws where agent script has run on the origin of a frame now in the tab's page. */
+    wasScripted: (tab: string, _document: string): boolean => {
+      const { profile, origins } = known(tab);
+      refuseScripted(profile, origins());
+      return false;
+    },
+    /** Checks the same again, and in the same step marks those origins filled by this tab. */
+    markFilled: (tab: string, document: string) => {
+      const marks = known(tab);
+      const origins = marks.origins();
+      refuseScripted(marks.profile, origins);
+      for (const origin of origins) marks.filled.add(origin);
+      marks.documents.add(document);
+    },
     /** The documents a login was filled into, for a tab that has had one. */
     filled: (tab: string): ReadonlySet<string> | undefined => {
-      const filled = tabs.get(tab)?.filled;
-      return filled !== undefined && filled.size > 0 ? filled : undefined;
+      const documents = tabs.get(tab)?.documents;
+      return documents !== undefined && documents.size > 0 ? documents : undefined;
     },
-    forget: (tab: string) => void tabs.delete(tab),
   };
 };
 
