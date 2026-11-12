@@ -295,7 +295,8 @@ const make = Effect.gen(function* () {
       },
     ),
     loginFilled: Effect.fn("DesktopBrowserChannel.loginFilled")(function (key, document) {
-      return command({ type: "loginFilled", ...key, document });
+      // The desktop knows a document by the browser's own id, which a fill's name for it leads.
+      return command({ type: "loginFilled", ...key, document: document.split(" ", 1)[0]! });
     }),
   });
 });

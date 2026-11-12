@@ -8,7 +8,7 @@ import {
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { loginCoversPage } from "./BrowserLogins.ts";
-import { documentId, fillCovered, makeDocumentMarks } from "./ServerBrowserLogin.ts";
+import { documentId, fillCovered, frameOrigins, makeDocumentMarks } from "./ServerBrowserLogin.ts";
 
 const frameCovered = (url: string) => loginCoversPage(["https://good.test"], url);
 const NO_DEADLINE = Number.MAX_SAFE_INTEGER;
@@ -55,7 +55,7 @@ describe("filling a saved login", () => {
   beforeEach(async () => {
     context = await browser.newContext();
     // Two fake sites, so origins are real without a network.
-    await context.route(/^https:\/\/(good|evil)\.test\//, (route) => {
+    await context.route(/^https:\/\/(?:\w+\.)?(good|evil)\.test\//, (route) => {
       const url = new URL(route.request().url());
       // A page that knows the fill's tag and puts it on its own field.
       const copied = url.pathname === "/copy" ? (url.searchParams.get("tag") ?? "") : undefined;
@@ -202,6 +202,43 @@ describe("filling a saved login", () => {
         deadline: NO_DEADLINE,
       }),
     ).rejects.toThrow("left the login's site");
+    expect(await target.inputValue()).toBe("");
+  });
+
+  it("refuses a frame that moved to another origin of the login's site since the page was checked", async () => {
+    const marks = makeDocumentMarks();
+    const profile = {};
+    // Script is alive on one origin of the site, in another window of the browser.
+    marks.open("watcher", profile, () => ["https://sub.good.test"]);
+    marks.admitScript("watcher", ["https://sub.good.test"]);
+    marks.open("tab", profile, () => frameOrigins(page));
+    const target = frameInput();
+    await target.waitFor();
+    // The fill finds the page clear of script, frame and all, and marks it.
+    const document = await documentId(cdp);
+    expect(marks.wasScripted("tab", document)).toBe(false);
+    marks.markFilled("tab", document);
+    const moved = page.waitForEvent("framenavigated", (frame) =>
+      frame.url().startsWith("https://sub.good.test/"),
+    );
+    await page
+      .locator("iframe")
+      .evaluate(
+        (frame) => ((frame as unknown as { src: string }).src = "https://sub.good.test/frame"),
+      );
+    await (await moved).waitForLoadState();
+    await expect(
+      fillCovered({
+        page,
+        cdp,
+        field: "password",
+        target,
+        value: "hunter2",
+        frameCovered,
+        document,
+        deadline: NO_DEADLINE,
+      }),
+    ).rejects.toThrow("loaded another document");
     expect(await target.inputValue()).toBe("");
   });
 
