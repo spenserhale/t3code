@@ -6289,10 +6289,10 @@ it.live("a desktop that draws the tab is told of a new password before it is wri
       turn: () => Effect.void,
       approveLogin: () => Effect.succeed(false),
       // What the page's fields hold as the desktop hears of the fill.
-      loginFilled: (key, _document, url) =>
+      loginFilled: (key) =>
         newPasswordFields(realContext!).pipe(
           Effect.map((fields) => {
-            told.push({ key, url, written: fields.map((field) => field.value) });
+            told.push({ key, written: fields.map((field) => field.value) });
           }),
         ),
     }),
@@ -6310,11 +6310,7 @@ it.live("a desktop that draws the tab is told of a new password before it is wri
         yield* invoke("navigate", { url: "https://www.good.test/signup" });
         yield* invoke("fillNewLogin", { username: "ada@example.com" });
         expect(told).toEqual([
-          {
-            key: { threadId: scope.thread.threadId, tabId },
-            url: "https://www.good.test/signup",
-            written: ["", ""],
-          },
+          { key: { threadId: scope.thread.threadId, tabId }, written: ["", ""] },
         ]);
         expect((yield* newPasswordFields(context)).map((field) => field.value)).toEqual([
           "generated-24",
