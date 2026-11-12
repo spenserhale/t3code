@@ -42,6 +42,7 @@ const personal = SecretProviderId.make("personal");
 const caller = { threadId: ThreadId.make("thread-a"), threadTitle: "Deploy", agent: "codex" };
 const FIRECRAWL = "op://Agents/Firecrawl/key";
 const OPENAI = "op://Employee/OpenAI/key";
+const QUOTED = "op://Agents/Quoted/password";
 
 /** What each account's vault holds. `work` signs in with a service account. */
 const PEM = "-----BEGIN KEY-----\nMIIBsecretline\nxy\n-----END KEY-----\n";
@@ -53,6 +54,8 @@ const vaults: Readonly<Record<string, Readonly<Record<string, string>>>> = {
     "op://Agents/Four/key": "wxyz",
     "op://Agents/Pin/code": "123",
     "op://Agents/PaddedPin/code": " 12\n",
+    // A password that JSON and a quoted string each write with escapes.
+    [QUOTED]: String.raw`pa"ss\w0rd`,
   },
   personal: { [OPENAI]: "sk-personal-456" },
 };
@@ -771,24 +774,30 @@ describe("SecretCommands", () => {
         '  console.log("env=" + process.env.FIRECRAWL_KEY);',
         '  console.log("stdin=" + JSON.stringify(input));',
         '  console.log("trimmed=" + process.env.PADDED.trim());',
+        // A password with a quote and a backslash, as JSON and as Node prints an object.
+        "  console.log(JSON.stringify({ password: process.env.TOKEN }));",
+        "  console.log({ password: process.env.TOKEN });",
         '  console.error("err=" + input.trim());',
         "});",
       ].join("\n");
       const result = yield* run({
         command: [process.execPath, "-e", script],
         stdin: FIRECRAWL,
-        env: { FIRECRAWL_KEY: FIRECRAWL, PADDED: "op://Agents/Padded/key" },
+        env: { FIRECRAWL_KEY: FIRECRAWL, PADDED: "op://Agents/Padded/key", TOKEN: QUOTED },
         cwd: "tools",
       }).pipe(Effect.provide(fixture.layer));
       assert.deepStrictEqual(
         { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr },
         {
           exitCode: 0,
-          stdout: 'cwd=tools\nenv=[secret]\nstdin="[secret]\\n"\ntrimmed=[secret]\n',
+          stdout:
+            'cwd=tools\nenv=[secret]\nstdin="[secret]\\n"\ntrimmed=[secret]\n' +
+            '{"password":"[secret]"}\n{ password: \'[secret]\' }\n',
           stderr: "err=[secret]\n",
         },
       );
       assert.isFalse(SECRETS.some((secret) => JSON.stringify(result).includes(secret)));
+      assert.notInclude(result.stdout, "w0rd");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -893,6 +902,8 @@ describe("makeOutputMasker", () => {
     for (const [text, secrets, shown] of [
       // One secret.
       ["key=fc-work-123;", ["fc-work-123"], `key=${mask};`],
+      // One that JSON writes with escapes.
+      [String.raw`{"password":"pa\"ss\\w0rd"}`, [String.raw`pa"ss\w0rd`], `{"password":"${mask}"}`],
       // Two that overlap, one inside another, ones that touch, and one that repeats.
       ["xxabcdeyy", ["bcde", "abc"], `xx${mask}yy`],
       ["xabcdefx", ["bcd", "abcdef"], `x${mask}x`],
@@ -934,6 +945,95 @@ describe("makeOutputMasker", () => {
       text: `\uFEFF\uFFFD${mask}\uFFFD`,
       cut: false,
     });
+  });
+
+  it("masks a secret as programs and shells write it when they print a string", () => {
+    const mask = SecretCommands.SECRET_MASK;
+    const secrets = [
+      String.raw`it's "p\ss" & <1>$2!`,
+      "pässwörd€😀",
+      "QUJD/kRF+w==",
+      "fc-work-123",
+    ];
+    // Each line is what the tool named printed for one of the secrets.
+    for (const [tool, printed, shown] of [
+      [
+        "JSON.stringify",
+        String.raw`{"password":"it's \"p\\ss\" & <1>$2!"}`,
+        `{"password":"${mask}"}`,
+      ],
+      [
+        "JSON.stringify of that",
+        String.raw`{"body":"{\"password\":\"it's \\\"p\\\\ss\\\" & <1>$2!\"}"}`,
+        String.raw`{"body":"{\"password\":\"${mask}\"}"}`,
+      ],
+      [
+        "Python json.dumps",
+        String.raw`{"password": "p\u00e4ssw\u00f6rd\u20ac\ud83d\ude00"}`,
+        `{"password": "${mask}"}`,
+      ],
+      [
+        "Go json.Marshal",
+        String.raw`{"password":"it's \"p\\ss\" \u0026 \u003c1\u003e$2!"}`,
+        `{"password":"${mask}"}`,
+      ],
+      ["PHP json_encode", String.raw`{"key":"QUJD\/kRF+w=="}`, `{"key":"${mask}"}`],
+      [
+        "Python repr",
+        String.raw`{'password': 'it\'s "p\\ss" & <1>$2!'}`,
+        `{'password': '${mask}'}`,
+      ],
+      ["Node console.log", '{ password: `it\'s "p\\\\ss" & <1>$2!` }', `{ password: \`${mask}\` }`],
+      ["bash set -x", String.raw`+ curl -u 'it'\''s "p\ss" & <1>$2!'`, `+ curl -u '${mask}'`],
+      ["Python shlex.quote", String.raw`curl -u 'it'"'"'s "p\ss" & <1>$2!'`, `curl -u '${mask}'`],
+      [
+        "bash set -x of JSON",
+        String.raw`+ curl -d '{"password":"it'\''s \"p\\ss\" & <1>$2!"}'`,
+        `+ curl -d '{"password":"${mask}"}'`,
+      ],
+      [
+        "bash export -p",
+        String.raw`declare -x TOKEN="it's \"p\\ss\" & <1>\$2!"`,
+        `declare -x TOKEN="${mask}"`,
+      ],
+      ["bash printf %q", String.raw`it\'s\ \"p\\ss\"\ \&\ \<1\>\$2\!`, mask],
+      ["zsh printf %q", String.raw`it\'s\ \"p\\ss\"\ \&\ \<1\>\$2!`, mask],
+      [
+        "encodeURIComponent",
+        "?p=it's%20%22p%5Css%22%20%26%20%3C1%3E%242!&q=QUJD%2FkRF%2Bw%3D%3D",
+        `?p=${mask}&q=${mask}`,
+      ],
+      [
+        "curl --data-urlencode",
+        "password=it%27s%20%22p%5Css%22%20%26%20%3C1%3E%242%21",
+        `password=${mask}`,
+      ],
+      ["Python urlencode", "password=it%27s+%22p%5Css%22+%26+%3C1%3E%242%21", `password=${mask}`],
+      [
+        "Ruby CGI.escapeHTML",
+        String.raw`<input value="it&#39;s &quot;p\ss&quot; &amp; &lt;1&gt;$2!">`,
+        `<input value="${mask}">`,
+      ],
+      ["Python html.escape", String.raw`it&#x27;s &quot;p\ss&quot; &amp; &lt;1&gt;$2!`, mask],
+      ["PHP htmlspecialchars", String.raw`it&#039;s &quot;p\ss&quot; &amp; &lt;1&gt;$2!`, mask],
+      ["Go html.EscapeString", String.raw`it&#39;s &#34;p\ss&#34; &amp; &lt;1&gt;$2!`, mask],
+      // Printed as they are, each is one mask.
+      ["echo", "key=fc-work-123 key=QUJD/kRF+w==", `key=${mask} key=${mask}`],
+    ] as const) {
+      const bytes = encoder.encode(printed);
+      const single = Array.from(bytes, (_, at) => bytes.subarray(at, at + 1));
+      for (const chunks of [[bytes], single]) {
+        assert.deepStrictEqual(
+          maskChunks(chunks, secrets, 1_000),
+          { text: shown, cut: false },
+          tool,
+        );
+      }
+    }
+    // With nothing to escape there is one form, so no more is held back than its length less one.
+    const plain = SecretCommands.makeOutputMasker(["fc-work-123"], 1_000);
+    plain.write(encoder.encode("key=fc-work-123 and more"));
+    assert.strictEqual(plain.held(), `key=${mask}`.length + "fc-work-123".length - 1);
   });
 
   it("returns at most the bytes asked, never part of a mask, a character or a secret", () => {

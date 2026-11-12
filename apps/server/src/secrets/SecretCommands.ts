@@ -31,6 +31,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as BrowserLogins from "../preview/BrowserLogins.ts";
 import * as BrowserSecretAccess from "../preview/BrowserSecretAccess.ts";
 import * as DesktopBrowserChannel from "../preview/DesktopBrowserChannel.ts";
+import { secretForms } from "../preview/ServerBrowserLogin.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { threadWorkspaceRoot } from "../project/threadWorkspaceRoot.ts";
 import { isWithinRoot } from "../workspace/KnownWorkspaces.ts";
@@ -82,20 +83,111 @@ const utf8Decoder = () => new TextDecoder("utf-8", { ignoreBOM: true });
 /** Shorter, a mask would hide ordinary words and numbers too, so such a secret is refused. */
 const MIN_SECRET_LENGTH = 4;
 
-/** Each secret whole and trimmed, and each of its lines long enough to mask on its own. */
-const maskForms = (secrets: ReadonlyArray<string>) =>
-  [
-    ...new Set(
-      secrets.flatMap((secret) => [
-        secret,
-        secret.trim(),
-        ...secret
-          .split(/\r\n|\r|\n/)
-          .map((line) => line.trim())
-          .filter((line) => line.length >= MIN_SECRET_LENGTH),
+const NAMED_ESCAPES: Readonly<Record<string, string>> = {
+  "\b": "\\b",
+  "\t": "\\t",
+  "\n": "\\n",
+  "\f": "\\f",
+  "\r": "\\r",
+};
+const NOT_ASCII = /[\u007f-\uffff]/g;
+const HTML_ENTITIES: Readonly<Record<string, string>> = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
+
+const hex = (unit: string, digits: number, upper = false) => {
+  const code = unit.charCodeAt(0).toString(16).padStart(digits, "0");
+  return upper ? code.toUpperCase() : code;
+};
+
+/** `form` with each character `unsafe` matches as a `\uXXXX` escape. */
+const unicodeEscaped = (form: string, unsafe: RegExp, upper = false) =>
+  form.replace(unsafe, (unit) => `\\u${hex(unit, 4, upper)}`);
+
+/**
+ * `text` inside a shell's single quotes, which end and begin again around each `'` in it: as
+ * `set -x` and `ls` write it, and as Python's shlex.quote does.
+ */
+const singleQuoted = (text: string) => [
+  text.replaceAll("'", "'\\''"),
+  text.replaceAll("'", "'\"'\"'"),
+];
+
+/**
+ * What a command or a shell writes for `text` by itself when it prints a string, beyond the forms a
+ * page shows it in. Not the encodings someone has to ask for, such as base64, hex, a hash or the
+ * text reversed: a command can always transform a secret on purpose, as it can under `op run`.
+ */
+const printedForms = (text: string): ReadonlyArray<string> => {
+  const json = JSON.stringify(text).slice(1, -1);
+  // encodeURIComponent, then the characters it leaves that curl and Python's quote encode too.
+  const strict = encodeURIComponent(text.toWellFormed()).replace(
+    /[!'()*]/g,
+    (char) => `%${hex(char, 2, true)}`,
+  );
+  return [
+    // JSON as other languages write it: with PHP's `\/`; with Go's `\u003c` for `<`, `>` and `&`,
+    // or PowerShell's for `'` too; with Python's `\uXXXX` for what is not ASCII, in either case.
+    ...[json, json.replaceAll("/", "\\/")]
+      .flatMap((form) => [form, unicodeEscaped(form, /[<>&]/g), unicodeEscaped(form, /[<>&']/g)])
+      .flatMap((form) => [
+        form,
+        unicodeEscaped(form, NOT_ASCII),
+        unicodeEscaped(form, NOT_ASCII, true),
       ]),
+    // A quoted string as Node's util.inspect and Python's repr write it: `\\`, a `\'` or neither
+    // quote escaped, and control characters as `\n` or `\xNN`.
+    ...["", "'"].flatMap((quote) =>
+      [false, true].map((upper) =>
+        text.replace(/[\\'\p{Cc}]/gu, (char) =>
+          char === "\\" || char === quote
+            ? `\\${char}`
+            : char === "'"
+              ? char
+              : (NAMED_ESCAPES[char] ?? `\\x${hex(char, 2, upper)}`),
+        ),
+      ),
     ),
-  ].filter((form) => form.length > 0);
+    // A shell's double quotes (`export -p`), and the backslashes of `printf %q` in bash and in zsh.
+    text.replace(/[\\"$`]/g, "\\$&"),
+    text.replace(/[ !"$&'()*,;<>?[\\\]^`{|}]/g, "\\$&"),
+    text.replace(/[ "#$&'()*;<>?[\\\]^`{|}]/g, "\\$&"),
+    // Every reserved character URL-encoded, with a space as `%20` or as `+`.
+    strict,
+    strict.replaceAll("%20", "+"),
+    // HTML entities, with each quote in every spelling in use, or left as it is.
+    ...['"', "&quot;", "&#34;"].flatMap((double) =>
+      ["'", "&#39;", "&#x27;", "&#039;", "&apos;"].map((single) =>
+        text.replace(/[&<>"']/g, (char) => HTML_ENTITIES[char] ?? (char === '"' ? double : single)),
+      ),
+    ),
+  ];
+};
+
+/**
+ * What is masked: each secret whole and trimmed, and each of its lines long enough to mask on its
+ * own, in every form a page or a command writes it, and each of those as a JSON string or a
+ * shell's single quotes hold it. A form too short to mask on its own is left out, unless it is the
+ * secret itself.
+ */
+const maskForms = (secrets: ReadonlyArray<string>) => {
+  const plain = new Set(
+    secrets.flatMap((secret) => [
+      secret,
+      secret.trim(),
+      ...secret
+        .split(/\r\n|\r|\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length >= MIN_SECRET_LENGTH),
+    ]),
+  );
+  const written = [...plain]
+    .flatMap((text) => [...secretForms(text), ...printedForms(text)])
+    .flatMap((form) => [form, JSON.stringify(form).slice(1, -1), ...singleQuoted(form)])
+    .filter((form) => form.length >= MIN_SECRET_LENGTH);
+  return [...new Set([...plain, ...written])].filter((form) => form.length > 0);
+};
+
+/** Forms by the secrets they were built from, which a command's two streams are both masked for. */
+const builtForms = new WeakMap<ReadonlyArray<string>, ReadonlyArray<string>>();
 
 /**
  * Where `text` holds any of `forms`, as `[start, end)` runs in order. Every match counts,
@@ -131,9 +223,10 @@ const secretRuns = (text: string, forms: ReadonlyArray<string>, covered: number)
  * mask that does not fit left out whole. What is written after that is dropped unread.
  */
 export const makeOutputMasker = (secrets: ReadonlyArray<string>, maxBytes: number) => {
-  const forms = maskForms(secrets);
+  const forms = builtForms.get(secrets) ?? maskForms(secrets);
+  builtForms.set(secrets, forms);
   // A match can start in this many of the last characters and end in output still to come.
-  const hold = Math.max(1, ...forms.map((form) => form.length)) - 1;
+  const hold = forms.reduce((longest, form) => Math.max(longest, form.length), 1) - 1;
   const decoder = utf8Decoder();
   // Bytes, not text: a piece of text cut from a chunk would keep that whole chunk in memory.
   const shown = new Uint8Array(maxBytes);
