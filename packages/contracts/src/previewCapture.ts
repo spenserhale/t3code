@@ -28,7 +28,7 @@ export class PreviewCaptureFailure extends Schema.TaggedError<PreviewCaptureFail
       case "capture-failed":
         return `Preview capture failed during ${this.stage}. Check the preview host and target tab before retrying.`;
       case "login-filled":
-        return "The password manager filled a login in this page, so it is not captured until another page loads.";
+        return "The password manager filled a login in this tab, and this page holds it or was reached with Back or Forward, which can bring it back. It is not captured until it is reloaded.";
     }
   }
 }

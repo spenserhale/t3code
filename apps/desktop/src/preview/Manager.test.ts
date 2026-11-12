@@ -1973,12 +1973,7 @@ describe("PreviewManager", () => {
       yield* manager.createTab("tab_1", { serverTab });
       yield* manager.registerWebview("tab_1", 42);
       yield* host.handleCommandLine(
-        JSON.stringify({
-          type: "loginFilled",
-          ...serverTab,
-          document: "doc-1",
-          url: "https://good.test/",
-        }),
+        JSON.stringify({ type: "loginFilled", ...serverTab, document: "doc-1" }),
       );
 
       const pick = yield* manager.pickElement("tab_1").pipe(Effect.forkChild);

@@ -855,28 +855,17 @@ const make = Effect.gen(function* () {
   };
 
   /**
-   * Follows the main document over CDP, whose events come in order: a filled document's later
-   * addresses are kept for Back, and a recording stops taking frames as each new document loads.
+   * Follows the main document over CDP, whose events come in order: a recording stops taking
+   * frames as each new document loads.
    */
   const watchDocuments = async (tab: ServerTab) => {
     const key = tabKey(tab.threadId, tab.tabId);
-    let main: { readonly frameId: string; readonly id: string } | undefined;
     tab.cdp.on("Page.frameNavigated", ({ frame }) => {
       if (frame.parentId !== undefined) return;
-      main = { frameId: frame.id, id: frame.loaderId };
       tab.documentLoads += 1;
       if (tab.recordingGate && documentMarks.filled(key)) void checkGate(tab, tab.recordingGate);
     });
-    tab.cdp.on("Page.navigatedWithinDocument", ({ frameId, url }) => {
-      if (main?.frameId !== frameId || !documentMarks.noteAddress(key, main.id, url)) return;
-      const desktopKey = { threadId: tab.threadId, tabId: tab.tabId };
-      if (tab.desktop) runFork(desktopChannel.loginFilled(desktopKey, main.id, url));
-    });
     await tab.cdp.send("Page.enable");
-    const loads = tab.documentLoads;
-    const { frameTree } = await tab.cdp.send("Page.getFrameTree");
-    if (tab.documentLoads === loads)
-      main = { frameId: frameTree.frame.id, id: frameTree.frame.loaderId };
   };
 
   const setUpTab = async (
@@ -2298,12 +2287,11 @@ const make = Effect.gen(function* () {
     );
   };
 
+  const offForFill = (what: string, them: string) =>
+    `${what} off on this page. The password manager filled a login in this tab, and this page either holds that login or was reached with Back or Forward, which can bring a filled value back. Submit the form, or reload: preview_navigate to this page's address loads it fresh and turns ${them} back on.`;
   const filledPageError = () =>
-    ServerBrowserLogin.loginError(
-      "The password manager filled a login in this page, so script and recording are off until a new page loads. Submit the form, or reload with preview_navigate.",
-    );
-  const IMAGES_OFF =
-    "The password manager filled a login in this page, so images are off until a new page loads. Submit the form, or reload with preview_navigate.";
+    ServerBrowserLogin.loginError(offForFill("Script and recording are", "them"));
+  const IMAGES_OFF = offForFill("Images are", "images");
 
   const loginStep = <A>(effect: Effect.Effect<A, BrowserLogins.BrowserLoginError>) =>
     runPromise(
@@ -2430,11 +2418,11 @@ const make = Effect.gen(function* () {
     }
     await loginStep(logins.check(revision));
     // Marked before the first write, so even a fill that fails partway blocks script here.
-    documentMarks.markFilled(tabKey(tab.threadId, tab.tabId), document, tab.page.url());
+    documentMarks.markFilled(tabKey(tab.threadId, tab.tabId), document);
     // Before the write, so the desktop refuses to capture the tab from then on.
     if (tab.desktop) {
       const desktopKey = { threadId: tab.threadId, tabId: tab.tabId };
-      await runPromise(desktopChannel.loginFilled(desktopKey, document, tab.page.url()));
+      await runPromise(desktopChannel.loginFilled(desktopKey, document));
     }
     filledSecrets.remember(
       fields.flatMap((field) => (field === "username" ? [] : [values[field] ?? ""])),

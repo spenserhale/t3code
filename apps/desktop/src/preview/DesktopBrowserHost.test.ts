@@ -183,29 +183,37 @@ describe("DesktopBrowserHost", () => {
   it.effect("knows which of a tab's pages may show a login the server filled", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;
-      const page = { loaderId: "doc-1", url: "https://good.test/login", refuse: false };
+      const page = { loaderId: "doc-1", loadedBy: "navigate", refuse: false };
       const asked: Array<string> = [];
       const guest = {
         debugger: {
           sendCommand: async (method: string) => {
             asked.push(method);
             if (page.refuse) throw new Error("No debugger attached.");
-            return { frameTree: { frame: { id: "main", ...page } } };
+            if (method === "Page.createIsolatedWorld") return { executionContextId: 5 };
+            if (method === "Runtime.evaluate") return { result: { value: page.loadedBy } };
+            return { frameTree: { frame: { id: "main", loaderId: page.loaderId } } };
           },
         },
       } as unknown as Electron.WebContents;
       // A tab never filled is not asked about.
       expect(yield* host.mayShowFill(key, guest)).toBe(false);
       expect(asked).toEqual([]);
-      yield* host.handleCommandLine(
-        encodeJson({ type: "loginFilled", ...key, document: "doc-1", url: page.url }),
-      );
+      yield* host.handleCommandLine(encodeJson({ type: "loginFilled", ...key, document: "doc-1" }));
       expect(yield* host.mayShowFill(key, guest)).toBe(true);
       expect(yield* host.mayShowFill({ ...key, tabId: "tab-2" }, guest)).toBe(false);
-      Object.assign(page, { loaderId: "doc-2", url: "https://good.test/home" });
-      expect(yield* host.mayShowFill(key, guest)).toBe(false);
+      // Any other page of the tab is clear only when a fresh visit or a reload loaded it.
+      for (const [loadedBy, shows] of [
+        ["navigate", false],
+        ["reload", false],
+        ["back_forward", true],
+        ["", true],
+      ] as const) {
+        Object.assign(page, { loaderId: "doc-2", loadedBy });
+        expect(yield* host.mayShowFill(key, guest)).toBe(shows);
+      }
       // A page that cannot be asked counts as showing it.
-      page.refuse = true;
+      Object.assign(page, { loadedBy: "navigate", refuse: true });
       expect(yield* host.mayShowFill(key, guest)).toBe(true);
     }),
   );
