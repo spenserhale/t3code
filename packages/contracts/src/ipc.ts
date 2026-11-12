@@ -953,7 +953,10 @@ export interface PreviewAnnotationSubmissionResult {
   annotation: PreviewAnnotationPayload;
   submission: PreviewAnnotationSubmission;
   screenshotFailed?: boolean;
-  /** Left out because the password manager filled a login in the page. */
+  /**
+   * The page may show a login the password manager filled, so the screenshot was left out and
+   * `annotation` holds nothing the page supplied but its origin.
+   */
   screenshotWithheld?: boolean;
 }
 export const PreviewAnnotationSubmissionResultSchema: Schema.Codec<PreviewAnnotationSubmissionResult> =
