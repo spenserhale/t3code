@@ -558,6 +558,55 @@ const makeTestPictureInPictureWindow = (loadURL: () => Promise<void> = async () 
   return { pictureInPictureWindow, send, webContentsListeners };
 };
 
+/** A server tab's guest, whose page answers what `mayShowFill` asks of it. */
+const makeServerGuest = () => {
+  const page = { loaderId: "doc-1", loadedBy: "navigate", url: "https://good.test/login" };
+  const listeners: Array<readonly [string, (...args: Array<unknown>) => void]> = [];
+  const capturePage = vi.fn(async () => ({
+    isEmpty: () => false,
+    getSize: () => ({ width: 2000, height: 1200 }),
+    toPNG: () => Buffer.from("png"),
+    toJPEG: () => Buffer.from("jpeg"),
+    toDataURL: () => "data:image/png;base64,full",
+  }));
+  const sendCommand = vi.fn(async (method: string): Promise<unknown> => {
+    if (method === "Page.getFrameTree") {
+      return { frameTree: { frame: { id: "main", loaderId: page.loaderId } } };
+    }
+    if (method === "Page.createIsolatedWorld") return { executionContextId: 5 };
+    return method === "Runtime.evaluate" ? { result: { value: page.loadedBy } } : undefined;
+  });
+  const listen = (event: string, listener: (...args: Array<unknown>) => void) => {
+    listeners.push([event, listener]);
+  };
+  const guest = Object.assign(makeTestPreviewWebContents(capturePage, 42), {
+    isDevToolsOpened: () => false,
+    getUserAgent: () => "Electron",
+    getURL: () => page.url,
+    isFocused: () => true,
+    on: vi.fn(listen),
+    once: vi.fn(listen),
+    ipc: { on: vi.fn(listen), off: vi.fn(), removeListener: vi.fn() },
+    debugger: { isAttached: () => false, attach: vi.fn(), sendCommand, on: vi.fn(), off: vi.fn() },
+  });
+  /** Runs every listener the manager put on the guest for an event or channel. */
+  const emit = (event: string, ...args: Array<unknown>) => {
+    for (const [, listener] of listeners.filter(([name]) => name === event)) listener(...args);
+  };
+  return {
+    guest,
+    page,
+    capturePage,
+    sendCommand,
+    emit,
+    /** The guest loads a main document, as Electron reports it. */
+    load: (loaderId: string, loadedBy: string) => {
+      Object.assign(page, { loaderId, loadedBy });
+      emit("did-navigate");
+    },
+  };
+};
+
 describe("PreviewManager", () => {
   beforeEach(() => {
     browserWindowConstructor.mockReset();
@@ -1927,82 +1976,127 @@ describe("PreviewManager", () => {
     }).pipe(Effect.provide(managerLayer()), Effect.scoped),
   );
 
-  effectIt.effect("takes no screenshot of a page the password manager filled a login in", () =>
+  effectIt.effect("takes no screenshot or page text of a page that may show a filled login", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.DesktopBrowserHost;
       const serverTab = { threadId: "thread-1", tabId: "server-tab-1" };
-      let onPicked: ((event: unknown, ...args: unknown[]) => void) | undefined;
-      const capturePage = vi.fn(async () => ({
-        isEmpty: () => false,
-        getSize: () => ({ width: 2000, height: 1200 }),
-        toPNG: () => Buffer.from("png"),
-        toJPEG: () => Buffer.from("jpeg"),
-        toDataURL: () => "data:image/png;base64,full",
-      }));
-      fromId.mockReturnValue(
-        Object.assign(makeTestPreviewWebContents(capturePage, 42), {
-          isDevToolsOpened: () => false,
-          getUserAgent: () => "Electron",
-          isFocused: () => true,
-          once: vi.fn(),
-          ipc: {
-            on: vi.fn((channel: string, listener: typeof onPicked) => {
-              if (channel === "preview:element-picked") onPicked = listener;
-            }),
-            off: vi.fn(),
-            removeListener: vi.fn(),
-          },
-          debugger: {
-            isAttached: () => false,
-            attach: vi.fn(),
-            sendCommand: vi.fn(async (method: string) =>
-              method === "Page.getFrameTree"
-                ? {
-                    frameTree: {
-                      frame: { id: "main", loaderId: "doc-1", url: "https://good.test/" },
-                    },
-                  }
-                : undefined,
-            ),
-            on: vi.fn(),
-            off: vi.fn(),
-          },
-        }),
-      );
+      const { guest, page, capturePage, emit } = makeServerGuest();
+      // The page copied the filled password into its address, its title and the picked field.
+      page.url = "https://good.test/login?next=password-value";
+      fromId.mockReturnValue(guest);
       const manager = yield* PreviewManager.PreviewManager;
       yield* manager.createTab("tab_1", { serverTab });
       yield* manager.registerWebview("tab_1", 42);
+      const rect = { x: 10, y: 20, width: 200, height: 30 };
+      const frame = {
+        functionName: "PasswordValue",
+        fileName: "/src/password-value.tsx",
+        lineNumber: 3,
+        columnNumber: 7,
+      };
+      const annotation: PreviewAnnotationPayload = {
+        id: "annotation_1",
+        pageUrl: page.url,
+        pageTitle: "password-value",
+        comment: "Why is this red?",
+        elements: [
+          {
+            id: "element_1",
+            rect,
+            element: {
+              pageUrl: page.url,
+              pageTitle: "password-value",
+              tagName: "input",
+              selector: 'input[value="password-value"]',
+              htmlPreview: '<input type="text" value="password-value">',
+              componentName: "PasswordValue",
+              source: frame,
+              stack: [frame],
+              styles: '--hint: "password-value";',
+              pickedAt: "2026-11-10T00:00:00.000Z",
+            },
+          },
+        ],
+        regions: [{ id: "region_1", rect }],
+        strokes: [
+          { id: "stroke_1", color: "#2563eb", width: 3, points: [{ x: 1, y: 2 }], bounds: rect },
+        ],
+        styleChanges: [
+          {
+            targetId: "element_1",
+            selector: 'input[value="password-value"]',
+            property: "color",
+            previousValue: "password-value",
+            value: "red",
+          },
+        ],
+        screenshot: null,
+        createdAt: "2026-11-10T00:00:00.000Z",
+      };
+      const pick = Effect.gen(function* () {
+        const picking = yield* manager.pickElement("tab_1").pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        emit("preview:element-picked", {}, annotation, null, "send", 2);
+        return yield* Fiber.join(picking);
+      });
+
+      // Until a login is filled in the tab, an annotation carries what the page supplied.
+      const before = yield* pick;
+      expect(before?.screenshotWithheld).toBeUndefined();
+      expect(before?.annotation).toEqual({
+        ...annotation,
+        screenshot: expect.objectContaining({ dataUrl: "data:image/png;base64,full" }),
+      });
+      expect(capturePage).toHaveBeenCalledOnce();
+
       yield* host.handleCommandLine(
         JSON.stringify({ type: "loginFilled", ...serverTab, document: "doc-1" }),
       );
-
-      const pick = yield* manager.pickElement("tab_1").pipe(Effect.forkChild);
-      yield* Effect.yieldNow;
-      onPicked?.(
-        {},
-        {
-          id: "annotation_1",
-          pageUrl: "https://good.test/",
-          pageTitle: "Sign in",
-          comment: "Why is this red?",
-          elements: [],
-          regions: [],
-          strokes: [],
-          styleChanges: [],
-          screenshot: null,
-          createdAt: "2026-11-10T00:00:00.000Z",
-        },
-        null,
-        "send",
-        2,
-      );
-      const picked = yield* Fiber.join(pick);
+      const picked = yield* pick;
       expect(picked?.screenshotWithheld).toBe(true);
-      expect(picked?.annotation.screenshot).toBeNull();
+      // What the person wrote, drew and chose, and the site, but nothing the page supplied.
+      expect(picked?.annotation).toEqual({
+        id: "annotation_1",
+        pageUrl: "https://good.test",
+        pageTitle: null,
+        comment: "Why is this red?",
+        elements: [
+          {
+            id: "element_1",
+            rect,
+            element: {
+              pageUrl: "https://good.test",
+              pageTitle: null,
+              tagName: "",
+              selector: null,
+              htmlPreview: "",
+              componentName: null,
+              source: null,
+              stack: [],
+              styles: "",
+              pickedAt: "2026-11-10T00:00:00.000Z",
+            },
+          },
+        ],
+        regions: annotation.regions,
+        strokes: annotation.strokes,
+        styleChanges: [
+          {
+            targetId: "element_1",
+            selector: null,
+            property: "color",
+            previousValue: "",
+            value: "red",
+          },
+        ],
+        screenshot: null,
+        createdAt: "2026-11-10T00:00:00.000Z",
+      });
+      expect(JSON.stringify(picked)).not.toContain("password-value");
       for (const capture of [manager.captureScreenshot("tab_1"), manager.startRecording("tab_1")]) {
         expect((yield* Effect.flip(capture))._tag).toBe("PreviewCaptureWithheldError");
       }
-      expect(capturePage).not.toHaveBeenCalled();
+      expect(capturePage).toHaveBeenCalledOnce();
     }).pipe(Effect.provide(managerLayer()), Effect.scoped),
   );
 

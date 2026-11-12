@@ -89,6 +89,7 @@ import {
 import { isPreviewAnnotationPayload } from "./PickedElementPayload.ts";
 import { captureFavicon, safeHttpOrigin, selectFaviconCandidates } from "./FaviconCapture.ts";
 import { DEFAULT_RECORDING_INPUT_OPTIONS, type RecordingInputOptions } from "./RecordingInput.ts";
+import { withoutPageContent } from "./withheldAnnotation.ts";
 
 export type PreviewNavStatus =
   | { kind: "Idle" }
@@ -2232,14 +2233,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               ),
               Effect.withSpan("PreviewManager.captureAnnotationScreenshot"),
               Effect.match({
-                onFailure: (error): PreviewAnnotationSubmissionResult => ({
-                  annotation: payload,
-                  submission,
-                  screenshotFailed: true,
-                  ...(error._tag === "PreviewCaptureWithheldError"
-                    ? { screenshotWithheld: true }
-                    : {}),
-                }),
+                onFailure: (error): PreviewAnnotationSubmissionResult =>
+                  error._tag === "PreviewCaptureWithheldError"
+                    ? {
+                        annotation: withoutPageContent(
+                          payload,
+                          (wc.isDestroyed() ? null : safeHttpOrigin(wc.getURL())) ?? "",
+                        ),
+                        submission,
+                        screenshotFailed: true,
+                        screenshotWithheld: true,
+                      }
+                    : { annotation: payload, submission, screenshotFailed: true },
                 onSuccess: (screenshot): PreviewAnnotationSubmissionResult =>
                   screenshot === null
                     ? { annotation: payload, submission, screenshotFailed: true }

@@ -808,9 +808,9 @@ export function PreviewView({
             screenshotWithheld
               ? {
                   type: "warning",
-                  title: "Screenshot left out",
+                  title: "Page details left out",
                   description:
-                    "The password manager filled a login in this page. The annotation was kept without the screenshot.",
+                    "The password manager filled a login in this tab, and this page may show it. Your comment and marks were kept, without the screenshot or anything read from the page. Reload the page to annotate it in full.",
                 }
               : {
                   type: "error",
