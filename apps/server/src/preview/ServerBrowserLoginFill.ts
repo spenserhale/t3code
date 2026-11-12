@@ -107,6 +107,17 @@ export const fillLogin = async (
     return { frameCovered, targets };
   };
 
+  /** A locator given for a field must lead to one element, whatever site the login is for. */
+  const checkLocators = async () => {
+    for (const field of fields) {
+      const matches = await locators[field]?.count();
+      if (matches === undefined || matches === 1) continue;
+      throw loginError(
+        `The ${field} locator matches ${matches === 0 ? "nothing on this page" : `${matches} elements`}. Take a fresh snapshot and pass the field's aria-ref from preview_snapshot.`,
+      );
+    }
+  };
+
   const lacks = (
     login: BrowserSecretAccess.SecretItem,
     values: Readonly<Partial<Record<PreviewLoginField, string>>>,
@@ -202,6 +213,7 @@ export const fillLogin = async (
         deadline,
         // Before anyone is asked or anything read; the login's own sites are checked once known.
         ready: BrowserSecretAccess.pageStep(async () => {
+          await checkLocators();
           if (Object.keys(locators).length === 0) await findTargets([pageUrl]);
           document = await fillableDocument();
         }),
