@@ -164,7 +164,7 @@ const textOf = (field: unknown, key: "type" | "purpose" | "value" | "totp") => {
   return typeof value === "string" ? value : undefined;
 };
 
-// An Identity's ADDRESS field may not hold a string, so identity values decode as unknown.
+// A value is not always a string, so identity values decode as unknown.
 const IdentityField = Schema.Struct({
   id: Schema.optional(Schema.String),
   type: Schema.optional(Schema.String),
@@ -175,15 +175,6 @@ const IdentityField = Schema.Struct({
 type IdentityField = typeof IdentityField.Type;
 const decodeIdentityItem = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ fields: Schema.optional(Schema.Array(IdentityField)) })),
-);
-const decodeAddressObject = Schema.decodeUnknownOption(
-  Schema.Struct({
-    street: Schema.optional(Schema.String),
-    city: Schema.optional(Schema.String),
-    state: Schema.optional(Schema.String),
-    zip: Schema.optional(Schema.String),
-    country: Schema.optional(Schema.String),
-  }),
 );
 
 type ListedVaultItem = {
@@ -294,11 +285,11 @@ const findIdentityField = (
   );
   for (const id of ids) {
     const found = filled.find((field) => field.id?.toLowerCase() === id);
-    if (found) return found.value;
+    if (found) return found;
   }
   for (const label of labels) {
     const found = filled.find((field) => field.label?.trim().toLowerCase() === label);
-    if (found) return found.value;
+    if (found) return found;
   }
   return undefined;
 };
@@ -321,29 +312,55 @@ const toBirthDate = (value: unknown) => {
   );
 };
 
+// What `op` prints for an empty part of an address, so every address has the same five places.
+const NO_ADDRESS_PART = "<nil>";
+
+const addressPart = (place: string | undefined) => {
+  const text = place?.trim();
+  return text === undefined || text.length === 0 || text === NO_ADDRESS_PART ? undefined : text;
+};
+
+const onOneLine = (text: string, separators: RegExp) =>
+  text
+    .split(separators)
+    .flatMap((part) => addressPart(part) ?? [])
+    .join(", ");
+
+const hasDigit = (text: string) => /\d/.test(text);
+
 /**
- * How `op` prints an Identity's ADDRESS field is unverified. Parts come only from an object; a
- * string stays whole, on one line, because splitting one assigned the wrong parts. Parsing a
- * string can return once its format is checked against a real item.
+ * `op` 2.41 prints an ADDRESS as "street, city, state, zip, Country" when it knows the stored
+ * country code, and as "street, city, state, country, zip" when it does not. An address with no
+ * country has no value at all. Checked against real items whose parts were known.
+ * A comma in the street is kept; one in another part cannot be told from it, and moves the parts.
  */
 const parseAddress = (
-  value: unknown,
+  field: IdentityField | undefined,
 ): Partial<Record<AddressField | "address", string | undefined>> => {
-  if (typeof value === "string") {
-    const parts = value.split(/[\n,]/).map((part) => part.trim());
-    return { address: parts.filter((part) => part.length > 0).join(", ") };
-  }
-  if (typeof value !== "object" || value === null) return {};
-  const address = Option.getOrUndefined(decodeAddressObject(value));
-  return address === undefined
-    ? {}
-    : {
-        street: address.street,
-        city: address.city,
-        state: address.state,
-        postalCode: address.zip,
-        country: address.country,
-      };
+  if (typeof field?.value !== "string") return {};
+  const whole = { address: onOneLine(field.value, /[\n,]/) };
+  const places = field.value.split(", ");
+  if (field.type?.toUpperCase() !== "ADDRESS" || places.length < 5) return whole;
+  const [city, state, fourth, fifth] = places.slice(-4).map(addressPart);
+  // A country is never empty and has no digit, which tells it from the postal code beside it.
+  const [postalCode, country] =
+    fourth === undefined || fifth === undefined
+      ? [undefined, fourth ?? fifth]
+      : hasDigit(fourth) === hasDigit(fifth)
+        ? [undefined, undefined]
+        : hasDigit(fourth)
+          ? [fourth, fifth]
+          : [fifth, fourth];
+  if (country === undefined) return whole;
+  const street = addressPart(onOneLine(places.slice(0, -4).join(", "), /\n/));
+  return {
+    address: [street, city, state, postalCode, country].filter(Predicate.isNotUndefined).join(", "),
+    street,
+    city,
+    state,
+    postalCode,
+    country,
+  };
 };
 
 /** Picks an Identity's values out of `op item get --format json`, by field id, then label. */
@@ -366,7 +383,7 @@ const parseIdentityValues = (stdout: string): SecretProviderIdentityValues | und
     "jobTitle",
     "username",
   ] as const) {
-    set(field, trimmedText(findIdentityField(fields, IDENTITY_FIELDS[field])));
+    set(field, trimmedText(findIdentityField(fields, IDENTITY_FIELDS[field])?.value));
   }
   set(
     "birthDate",
@@ -375,16 +392,10 @@ const parseIdentityValues = (stdout: string): SecretProviderIdentityValues | und
         fields,
         IDENTITY_FIELDS.birthDate,
         (value) => isText(value) || Number.isFinite(value),
-      ),
+      )?.value,
     ),
   );
-  const address = parseAddress(
-    findIdentityField(
-      fields,
-      IDENTITY_FIELDS.address,
-      (value) => isText(value) || (typeof value === "object" && value !== null),
-    ),
-  );
+  const address = parseAddress(findIdentityField(fields, IDENTITY_FIELDS.address));
   for (const field of ["address", "street", "city", "state", "postalCode", "country"] as const) {
     set(field, address[field]);
   }
