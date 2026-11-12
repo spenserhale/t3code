@@ -89,12 +89,12 @@ export const fillLogin = async (
   // The page sees wall-clock time, so the steps that reach into it share this deadline.
   const deadline = Date.now() + (deadlineMs - performance.now());
 
-  /** The fields, in frames on the login's site only. */
-  const findTargets = async (urls: ReadonlyArray<string>) => {
+  /** The fields sought, in frames on the given site only. */
+  const findTargets = async (urls: ReadonlyArray<string>, sought = fields) => {
     const frameCovered = (frameUrl: string) => BrowserLogins.loginCoversPage(urls, frameUrl);
     const { targets, missing } = await findLoginTargets({
       page: tab.page,
-      fields,
+      fields: sought,
       locators,
       frameCovered,
       deadline,
@@ -214,7 +214,11 @@ export const fillLogin = async (
         // Before anyone is asked or anything read; the login's own sites are checked once known.
         ready: BrowserSecretAccess.pageStep(async () => {
           await checkLocators();
-          if (Object.keys(locators).length === 0) await findTargets([pageUrl]);
+          // A field with no locator must be on the page's own site, whatever else has one.
+          await findTargets(
+            [pageUrl],
+            fields.filter((field) => locators[field] === undefined),
+          );
           document = await fillableDocument();
         }),
       },

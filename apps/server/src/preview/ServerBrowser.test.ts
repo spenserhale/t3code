@@ -3940,6 +3940,13 @@ it.live(
             expect({ asked, trail }).toEqual({ asked: [], trail: [] });
             expect(refused.message).toContain(`The password locator ${problem}`);
           }
+          // So is a field the page lacks, when only another field was given a locator.
+          const absent = yield* invoke("fillLogin", {
+            fields: ["password", "totp"],
+            locators: { password: "#password" },
+          }).pipe(Effect.flip);
+          expect({ asked, trail }).toEqual({ asked: [], trail: [] });
+          expect(absent.message).toContain("No totp field was found.");
           const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
           expect(filled.status).toBe("filled");
           // Asked before the password manager is touched at all, so the login is not named.
