@@ -37,7 +37,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { chromium, type BrowserContext, type CDPSession, type Page } from "playwright-core";
+import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { beforeEach, expect, vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
@@ -74,9 +74,9 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
       return context as unknown as BrowserContext;
     }
     async scratchPage() {
-      const encoder = makeEncoderPage();
-      encoderPages.push(encoder);
-      return encoder as unknown as Page;
+      // A real tab's recording is encoded by a real page, so stopping it yields a video.
+      if (realContext) return (await realContext.browser()!.newContext()).newPage();
+      return makeEncoderPage() as unknown as Page;
     }
     async connectDesktopPage(endpoint: string) {
       const context = makeContext(undefined, desktopPageUrl);
@@ -312,7 +312,6 @@ function makeEncoderPage() {
 
 const contexts: ReturnType<typeof makeContext>[] = [];
 const encoderStreams: Array<{ frameRate: number | undefined; bitsPerSecond: number }> = [];
-const encoderPages: Array<ReturnType<typeof makeEncoderPage>> = [];
 const contextRequests: Array<{ profileId: string; isolated: boolean }> = [];
 let contextGate: PromiseWithResolvers<void> | null = null;
 let pageCopy = "";
@@ -494,7 +493,6 @@ const openDesktopViewer = Effect.gen(function* () {
 beforeEach(() => {
   contexts.length = 0;
   encoderStreams.length = 0;
-  encoderPages.length = 0;
   contextRequests.length = 0;
   contextGate = null;
   contextFailure = null;
@@ -2569,6 +2567,10 @@ const LOGIN_SITE: Partial<Record<string, string>> = {
   "/otp": `${CODE_FIELD}<a href="/next">next</a>`,
   // The same, in an app that gives itself a new address each time it loads.
   "/moves": `<script>history.replaceState({}, "", "/moves/" + Math.random())</script>${CODE_FIELD}`,
+  // The same, in an app that moves on at once when Back brings it up.
+  "/hops": `<script>
+    if (performance.getEntriesByType("navigation")[0].type === "back_forward") location.replace("/other");
+  </script>${CODE_FIELD}`,
   "/next": "<p>next</p>",
   "/other": "<p>other</p>",
   // Logs the password as JSON and names a button with it, then clears the field.
@@ -2829,7 +2831,7 @@ it.live("scrubs a filled password in the escaped forms a log or snapshot writes 
 /** Fills a code into a field the page draws again, then leaves for another page. */
 const fillCodeAndLeave = (
   invoke: Effect.Success<typeof openLoginTab>["invoke"],
-  path: "/otp" | "/moves" = "/otp",
+  path: "/otp" | "/moves" | "/hops" = "/otp",
 ) =>
   Effect.gen(function* () {
     yield* invoke("navigate", { url: `https://good.test${path}` });
@@ -3021,37 +3023,79 @@ it.live("a snapshot takes no image of a restored page that came and went as it r
   );
 });
 
-it.live("a running recording takes no frame of a page Back restores where a fill was", () => {
+/** The recordings the server has written for a thread to attach. */
+const savedRecordings = Effect.gen(function* () {
+  const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+  return yield* Effect.promise(() =>
+    NodeFSP.readdir(attachmentsDir).catch((): Array<string> => []),
+  );
+});
+
+it.live("a recording during which the tab went Back after a fill is discarded whole", () => {
   const server = loginServer("never", DesktopChannel.layer);
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
-      // The recording's own session, to see every frame it is sent.
-      const sessions: Array<CDPSession> = [];
-      const newCDPSession = context.newCDPSession.bind(context);
-      context.newCDPSession = async (page) => {
-        const session = await newCDPSession(page);
-        sessions.push(session);
-        return session;
-      };
       yield* Effect.gen(function* () {
         const { invoke } = yield* openLoginTab;
         yield* fillCodeAndLeave(invoke);
-        const opened = sessions.length;
         yield* invoke("recordingStart");
-        const recording = sessions[opened]!;
         const page = context.pages()[0]!;
         yield* Effect.promise(() => page.goBack());
-        // Anything the restored page draws reaches the recording's session as a frame.
-        const drawn = new Promise<{ readonly data: string }>((resolve) =>
-          recording.once("Page.screencastFrame", resolve),
+        expect(yield* codeField(page)).toBe("totp-value");
+        const discarded = yield* invoke("recordingStop").pipe(Effect.flip);
+        expect(discarded.message).toContain("recording was discarded");
+        expect(discarded.message).toContain("Back or Forward");
+        expect(yield* savedRecordings).toEqual([]);
+        // It is over, and the next one is judged on its own: fresh visits and a reload refill
+        // nothing, so a recording across them is kept.
+        yield* Effect.promise(() => page.reload());
+        yield* invoke("recordingStart");
+        yield* invoke("navigate", { url: "https://good.test/other" });
+        yield* Effect.promise(() => page.reload());
+        yield* invoke("navigate", { url: "https://good.test/next" });
+        const kept = yield* invoke<{ readonly path: string }>("recordingStop");
+        expect(yield* savedRecordings).toHaveLength(1);
+        expect((yield* Effect.promise(() => NodeFSP.stat(kept.path))).size).toBeGreaterThan(0);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a recording is discarded when a restored page was up only for a moment", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* fillCodeAndLeave(invoke, "/hops");
+        yield* invoke("recordingStart");
+        const page = context.pages()[0]!;
+        // Back loads the page with its code, and its script leaves for a fresh page at once.
+        yield* Effect.promise(() =>
+          Promise.all([page.waitForURL("**/other"), page.goBack().catch(() => null)]),
         );
-        yield* Effect.promise(() => page.evaluate("document.body.style.background = 'red'"));
-        const { data } = yield* Effect.promise(() => drawn);
-        const encoded = encoderPages
-          .at(-1)!
-          .evaluate.mock.calls.some(([, frame]) => Array.isArray(frame) && frame[0] === data);
-        expect(encoded).toBe(false);
+        const discarded = yield* invoke("recordingStop").pipe(Effect.flip);
+        expect(discarded.message).toContain("recording was discarded");
+        expect(yield* savedRecordings).toEqual([]);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a recording in a tab no login was filled in is kept across Back", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* invoke("navigate", { url: "https://good.test/next" });
+        yield* invoke("recordingStart");
+        yield* Effect.promise(() => context.pages()[0]!.goBack());
+        yield* invoke("recordingStop");
+        expect(yield* savedRecordings).toHaveLength(1);
       }).pipe(Effect.provide(server.layer));
     }),
   );
