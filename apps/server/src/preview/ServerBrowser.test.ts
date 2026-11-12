@@ -2961,6 +2961,66 @@ it.live("a tab no login was filled in keeps its images and script after Back", (
   );
 });
 
+it.live("a snapshot takes no image of a restored page that came and went as it ran", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      // Back lands right after the page is found clear, and the restored page leaves again
+      // just before it is asked once more.
+      let step: "idle" | "restore" | "leave" | "left" = "idle";
+      let shown = "";
+      const newCDPSession = context.newCDPSession.bind(context);
+      context.newCDPSession = async (target) => {
+        const session = await newCDPSession(target);
+        const send = session.send.bind(session) as (
+          method: string,
+          params?: { readonly expression?: string; readonly worldName?: string },
+        ) => Promise<unknown>;
+        Object.assign(session, {
+          send: async (method: string, params?: Parameters<typeof send>[1]) => {
+            const page = context.pages()[0]!;
+            if (
+              step === "restore" &&
+              method === "Runtime.evaluate" &&
+              params?.expression?.includes('getEntriesByType("navigation")')
+            ) {
+              step = "leave";
+              const loadedBy = await send(method, params);
+              await page.goBack();
+              return loadedBy;
+            }
+            if (
+              step === "leave" &&
+              method === "Page.createIsolatedWorld" &&
+              params?.worldName === "t3-login-exposure"
+            ) {
+              step = "left";
+              shown = await page.locator("#otp").inputValue();
+              await page.goto("https://good.test/other");
+            }
+            return send(method, params);
+          },
+        });
+        return session;
+      };
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* fillCodeAndLeave(invoke);
+        step = "restore";
+        const snapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        expect(step).toBe("left");
+        expect(shown).toBe("totp-value");
+        expect(snapshot.screenshot).toBeUndefined();
+        expect(snapshot.imagesOff).toContain("Take the snapshot again");
+        // Nothing moved this time.
+        const settled = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        expect(settled.screenshot?.mimeType).toBe("image/png");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
 it.live("a running recording takes no frame of a page Back restores where a fill was", () => {
   const server = loginServer("never", DesktopChannel.layer);
   return Effect.scoped(
