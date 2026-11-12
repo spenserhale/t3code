@@ -783,7 +783,7 @@ export const scrubbable = (secret: string) =>
  * snapshot names), with Playwright's `\xNN` escapes (snapshot text), URL-encoded (a form sent in
  * the address), and with `'` doubled inside a single-quoted snapshot key.
  */
-const secretForms = (secret: string) =>
+export const secretForms = (secret: string) =>
   [secret, collapsed(secret)].flatMap((base) => {
     const quoted = base.replace(/[\\"\p{Cc}]/gu, (char) =>
       '\\"\b\f\n\r\t'.includes(char)
