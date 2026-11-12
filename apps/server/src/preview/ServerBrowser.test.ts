@@ -6970,9 +6970,9 @@ it.live("a desktop that draws the tab is told of a login before it is written th
       turn: () => Effect.void,
       approveLogin: () => Effect.succeed(false),
       // What the password field holds as the desktop hears of the fill; the page may then reload.
-      loginFilled: (key, _document, url) =>
+      loginFilled: (key) =>
         passwordField(realContext!).pipe(
-          Effect.map(({ value }) => void told.push({ key, url, written: value })),
+          Effect.map(({ value }) => void told.push({ key, written: value })),
           Effect.andThen(
             Effect.promise(async () => {
               if (reloads) await realContext!.pages()[0]!.reload();
@@ -6988,13 +6988,7 @@ it.live("a desktop that draws the tab is told of a login before it is written th
       yield* Effect.gen(function* () {
         const { tabId, invoke } = yield* openLoginTab;
         yield* invoke("fillLogin");
-        expect(told).toEqual([
-          {
-            key: { threadId: scope.thread.threadId, tabId },
-            url: "https://good.test/login",
-            written: "",
-          },
-        ]);
+        expect(told).toEqual([{ key: { threadId: scope.thread.threadId, tabId }, written: "" }]);
         expect((yield* passwordField(context)).value).toBe("password-value");
 
         // The page the desktop was told of is the only one written: its reload takes nothing.
