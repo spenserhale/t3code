@@ -23,6 +23,10 @@ export const previewBridge = nativePreviewBridge
         ...nativePreviewBridge.recording,
         startScreencast: async (tabId: string) =>
           unwrapPreviewCaptureResult(await nativePreviewBridge.recording.startScreencast(tabId)),
+        save: async (tabId: string, mimeType: string, data: Uint8Array) =>
+          unwrapPreviewCaptureResult(
+            await nativePreviewBridge.recording.save(tabId, mimeType, data),
+          ),
       },
     }
   : null;

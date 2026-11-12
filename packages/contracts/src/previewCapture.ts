@@ -12,7 +12,7 @@ export class PreviewCaptureFailure extends Schema.TaggedError<PreviewCaptureFail
       "capture-failed",
       "login-filled",
     ]),
-    stage: Schema.Literals(["screenshot", "capture-page", "recording-start"]),
+    stage: Schema.Literals(["screenshot", "capture-page", "recording-start", "recording-save"]),
   },
 ) {
   override get message(): string {
@@ -28,7 +28,9 @@ export class PreviewCaptureFailure extends Schema.TaggedError<PreviewCaptureFail
       case "capture-failed":
         return `Preview capture failed during ${this.stage}. Check the preview host and target tab before retrying.`;
       case "login-filled":
-        return "The password manager filled a login in this tab, and this page holds it or was reached with Back or Forward, which can bring it back. It is not captured until it is reloaded.";
+        return this.stage === "recording-save"
+          ? "The recording was not saved. The password manager filled a login in this tab while it recorded, or the tab went Back or Forward after one, and such a page can show the login. Record again without Back or Forward, or reload the page first."
+          : "The password manager filled a login in this tab, and this page holds it or was reached with Back or Forward, which can bring it back. It is not captured until it is reloaded.";
     }
   }
 }

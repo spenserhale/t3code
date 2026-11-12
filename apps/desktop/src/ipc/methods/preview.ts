@@ -535,13 +535,19 @@ const copyArtifactToClipboard = DesktopIpc.makeIpcMethod({
   }),
 });
 
-const saveRecording = DesktopIpc.makeIpcMethod({
+export const saveRecording = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PREVIEW_RECORDING_SAVE_CHANNEL,
   payload: DesktopPreviewRecordingSaveInputSchema,
-  result: DesktopPreviewRecordingArtifactSchema,
+  result: Schema.Union([DesktopPreviewRecordingArtifactSchema, PreviewCaptureFailure]),
   handler: Effect.fn("desktop.ipc.preview.saveRecording")(function* ({ tabId, mimeType, data }) {
     const manager = yield* PreviewManager.PreviewManager;
-    return yield* manager.saveRecording(tabId, mimeType, data);
+    // Only a withheld recording has a reason the person can act on.
+    return yield* manager.saveRecording(tabId, mimeType, data).pipe(
+      Effect.catchTags({
+        PreviewCaptureWithheldError: (error) =>
+          Effect.succeed(normalizeCaptureFailure(error, "recording-save")),
+      }),
+    );
   }),
 });
 

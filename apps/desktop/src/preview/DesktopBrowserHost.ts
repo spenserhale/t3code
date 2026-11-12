@@ -203,6 +203,8 @@ export class DesktopBrowserHost extends Context.Service<
       key: DesktopBrowserTabKey,
       webContents: Electron.WebContents,
     ) => Effect.Effect<boolean>;
+    /** How many of the tab's documents the server has filled a login into, so far. */
+    readonly filledDocuments: (key: DesktopBrowserTabKey) => number;
   }
 >()("@t3tools/desktop/preview/DesktopBrowserHost") {}
 
@@ -918,6 +920,7 @@ export const make = Effect.gen(function* () {
     pointers: Stream.fromPubSub(pointers),
     painting: Stream.fromPubSub(painting),
     mayShowFill: exposed,
+    filledDocuments: (key) => fills.get(keyOf(key))?.size ?? 0,
     // Subscribes before announcing, so no attach falls between the two.
     events: Stream.unwrap(
       Effect.gen(function* () {
