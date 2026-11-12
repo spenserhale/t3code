@@ -72,8 +72,9 @@ export interface SecretProviderIdentity {
 }
 
 /**
- * `birthDate` is `YYYY-MM-DD` when the provider stores a date; `country` is as stored. `address`
- * is the whole address on one line, given instead of its parts when the provider has no parts.
+ * `birthDate` is `YYYY-MM-DD` when the provider stores a date; `country` is as the provider gives
+ * it, a name or a code. `address` is the whole address on one line; its parts come with it when
+ * the provider can tell them apart.
  */
 export type SecretProviderIdentityValues = Partial<Record<SecretProviderIdentityField, string>>;
 

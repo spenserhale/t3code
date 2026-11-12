@@ -527,7 +527,7 @@ describe("1Password identities", () => {
           id: "address",
           type: "ADDRESS",
           label: "address",
-          value: "1 Main St, Springfield, IL, 62701, us",
+          value: "1 Main St, Springfield, IL, 62701, United States",
         },
       ]);
       assert.deepStrictEqual(values, {
@@ -540,7 +540,12 @@ describe("1Password identities", () => {
         jobTitle: "Programmer",
         username: "ada",
         birthDate: "1990-05-17",
-        address: "1 Main St, Springfield, IL, 62701, us",
+        address: "1 Main St, Springfield, IL, 62701, United States",
+        street: "1 Main St",
+        city: "Springfield",
+        state: "IL",
+        postalCode: "62701",
+        country: "United States",
       });
     }),
   );
@@ -579,6 +584,7 @@ describe("1Password identities", () => {
 
   it.effect.each([
     ["epoch seconds", "642902400", "1990-05-17"],
+    ["what op 2.41.1 printed for 1990-04-23, a minute past noon UTC", "640872060", "1990-04-23"],
     ["epoch seconds in a JSON number", 642902400, "1990-05-17"],
     ["an ISO date", "1990-05-17", "1990-05-17"],
     ["seconds before 1970", "-86400", "1969-12-31"],
@@ -590,41 +596,112 @@ describe("1Password identities", () => {
     }),
   );
 
-  // The CLI's ADDRESS output is unverified: parts come only from an object, and a string is kept
-  // whole, since splitting one assigns the wrong parts.
+  // Each value is what `op` 2.41.1 printed for a real item whose parts were known (2026-11-11).
+  const usAddress = {
+    address: "1 Main St, Springfield, IL, 62701, United States",
+    street: "1 Main St",
+    city: "Springfield",
+    state: "IL",
+    postalCode: "62701",
+    country: "United States",
+  };
   it.effect.each([
+    ["a country code op knows", "1 Main St, Springfield, IL, 62701, United States", usAddress],
     [
-      "an object",
-      { street: "1 Main St", city: "Springfield", state: "IL", zip: "62701", country: "us" },
-      { street: "1 Main St", city: "Springfield", state: "IL", postalCode: "62701", country: "us" },
+      "a country op does not know, which it puts before the postal code",
+      "1 Main St, Springfield, IL, United States, 62701",
+      usAddress,
     ],
     [
-      "an object with empty parts",
-      { street: "10 Downing St", city: "London", state: "", zip: "SW1A 2AA", country: "gb" },
-      { street: "10 Downing St", city: "London", postalCode: "SW1A 2AA", country: "gb" },
+      "a comma in the street",
+      "1 Main St, Apt 4, Springfield, IL, 62701, United States",
+      {
+        ...usAddress,
+        address: "1 Main St, Apt 4, Springfield, IL, 62701, United States",
+        street: "1 Main St, Apt 4",
+      },
     ],
     [
-      "a string with more parts than expected",
-      "1 Main St, Apt 4, Springfield, IL 62701, us",
-      { address: "1 Main St, Apt 4, Springfield, IL 62701, us" },
+      "a street on two lines",
+      "1 Main St\nApt 4, Springfield, IL, 62701, United States",
+      {
+        ...usAddress,
+        address: "1 Main St, Apt 4, Springfield, IL, 62701, United States",
+        street: "1 Main St, Apt 4",
+      },
     ],
     [
-      "a string ending in a state code",
+      "no state",
+      "10 Downing Street, London, <nil>, SW1A 2AA, United Kingdom",
+      {
+        address: "10 Downing Street, London, SW1A 2AA, United Kingdom",
+        street: "10 Downing Street",
+        city: "London",
+        postalCode: "SW1A 2AA",
+        country: "United Kingdom",
+      },
+    ],
+    [
+      "no postal code",
+      "1 Main St, Springfield, IL, <nil>, United States",
+      {
+        address: "1 Main St, Springfield, IL, United States",
+        street: "1 Main St",
+        city: "Springfield",
+        state: "IL",
+        country: "United States",
+      },
+    ],
+    [
+      "no postal code and a country op does not know",
+      "1 Main St, Springfield, IL, zz, <nil>",
+      {
+        address: "1 Main St, Springfield, IL, zz",
+        street: "1 Main St",
+        city: "Springfield",
+        state: "IL",
+        country: "zz",
+      },
+    ],
+    [
+      "no city",
+      "1 Main St, <nil>, IL, 62701, United States",
+      {
+        address: "1 Main St, IL, 62701, United States",
+        street: "1 Main St",
+        state: "IL",
+        postalCode: "62701",
+        country: "United States",
+      },
+    ],
+    // Without a digit to mark the postal code, the last two places cannot be told apart.
+    [
+      "a postal code without a digit",
+      "1 Main St, Springfield, IL, none, United States",
+      { address: "1 Main St, Springfield, IL, none, United States" },
+    ],
+    [
+      "fewer places than an address has",
       "1 Main St, Sacramento, CA",
       { address: "1 Main St, Sacramento, CA" },
     ],
-    [
-      "lines of text with empty parts",
-      "10 Downing St\nLondon, , SW1A 2AA\ngb",
-      { address: "10 Downing St, London, SW1A 2AA, gb" },
-    ],
     ["only separators", " , \n, ", {}],
     ["something else", 42, {}],
-  ] as const)("reads an address given as %s", ([, value, address]) =>
+  ] as const)("reads an address with %s", ([, value, address]) =>
     Effect.gen(function* () {
       assert.deepStrictEqual(
         yield* readFields([{ id: "address", type: "ADDRESS", label: "address", value }]),
         address,
+      );
+    }),
+  );
+
+  it.effect("keeps a text field named address whole, since only an ADDRESS has known places", () =>
+    Effect.gen(function* () {
+      const value = "Flat 2, 1 Main St, Springfield, 62701, United States";
+      assert.deepStrictEqual(
+        yield* readFields([{ id: "x1", type: "STRING", label: "Address", value }]),
+        { address: value },
       );
     }),
   );

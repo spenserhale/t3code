@@ -398,7 +398,9 @@ const ADDRESS_PARTS: ReadonlySet<PreviewIdentityValue> = new Set([
 
 /** Why a value the identity lacks was not filled. */
 const missing = (value: PreviewIdentityValue, values: PreviewIdentityValues) =>
-  ADDRESS_PARTS.has(value) && values.address !== undefined
+  ADDRESS_PARTS.has(value) &&
+  values.address !== undefined &&
+  [...ADDRESS_PARTS].every((part) => values[part] === undefined)
     ? `The identity's address is stored as one line, so its ${value} is not filled on its own. Get the address with preview_read_identity, then fill the field with preview_act.`
     : `The identity has no ${value}.`;
 

@@ -377,6 +377,21 @@ describe("filling a saved identity", () => {
         Promise.all(["#street", "#city", "#whole"].map((selector) => valueOf(selector))),
       );
       expect(values).toEqual(["", "", address]);
+
+      // An address that also came in parts fills them, and one it lacks is only missing.
+      const { context: inParts } = yield* identityServer({
+        address: "1 Main St, IL",
+        street: "1 Main St",
+        state: "IL",
+      });
+      yield* Effect.promise(() => page.goto("https://shop.test/address"));
+      const some = yield* Effect.promise(async () =>
+        fillIdentity(inParts, await tab(), {}, NO_DEADLINE),
+      );
+      expect(some).toMatchObject({
+        filled: ["street"],
+        skipped: [{ value: "city", reason: "The identity has no city." }],
+      });
     }),
   );
 
