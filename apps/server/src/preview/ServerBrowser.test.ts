@@ -4107,6 +4107,7 @@ it.live(
 
 it.live("a desktop that draws the tab is told of a new password before it is written", () => {
   const told: Array<object> = [];
+  let reloads = false;
   const server = loginServer(
     "never",
     Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
@@ -4119,7 +4120,7 @@ it.live("a desktop that draws the tab is told of a new password before it is wri
       pointer: () => Effect.void,
       turn: () => Effect.void,
       approveLogin: () => Effect.succeed(false),
-      // What the page shows and holds as the desktop hears of the fill.
+      // What the page shows and holds as the desktop hears of the fill; the page may then reload.
       loginFilled: (key, document) =>
         Effect.gen(function* () {
           const shown = yield* shownDocument(realContext!);
@@ -4130,6 +4131,7 @@ it.live("a desktop that draws the tab is told of a new password before it is wri
             shown,
             written: fields.map((field) => field.value),
           });
+          if (reloads) yield* Effect.promise(() => realContext!.pages()[0]!.reload());
         }),
     }),
   );
@@ -4151,6 +4153,23 @@ it.live("a desktop that draws the tab is told of a new password before it is wri
         expect((yield* newPasswordFields(context)).map((field) => field.value)).toEqual([
           "generated-24",
           "generated-24",
+        ]);
+
+        // The document the desktop was told of is the only one written: its reload takes nothing.
+        yield* invoke("navigate", { url: "https://www.good.test/signup" });
+        const second = yield* shownDocument(context);
+        reloads = true;
+        const moved = yield* invoke("fillNewLogin", { username: "ada@example.com" }).pipe(
+          Effect.flip,
+        );
+        expect(moved.message).toContain("The page loaded another document");
+        expect(told.slice(1)).toEqual([
+          { key, document: second, shown: second, written: ["", ""] },
+        ]);
+        expect(yield* shownDocument(context)).not.toBe(second);
+        expect(yield* newPasswordFields(context)).toEqual([
+          { value: "", security: "" },
+          { value: "", security: "" },
         ]);
       }).pipe(Effect.provide(server.layer));
     }),
