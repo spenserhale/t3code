@@ -32,6 +32,8 @@ const FOCUS_IDLE = "5 seconds";
 /** Well inside the server's 10 s DESKTOP_ATTACH_TIMEOUT, for a first page that never reports it is up. */
 const FIRST_PAGE_TIMEOUT = "5 seconds";
 const ERR_ABORTED = -3;
+/** How long a page gets to give way to a fresh document. The server waits 10 seconds for a tab. */
+const FRESH_LOAD_LIMIT = "8 seconds";
 
 export interface DesktopBrowserTabKey {
   readonly threadId: string;
@@ -119,6 +121,8 @@ export class DesktopBrowserHost extends Context.Service<
     ) => Effect.Effect<boolean>;
     /** How many of the tab's documents the server has filled a login into, so far. */
     readonly filledDocuments: (key: DesktopBrowserTabKey) => number;
+    /** A guest's page opened a window, which script in the page can reach for as long as it lives. */
+    readonly windowOpened: (opener: Electron.WebContents, window: Electron.BrowserWindow) => void;
   }
 >()("@t3tools/desktop/preview/DesktopBrowserHost") {}
 
@@ -143,6 +147,11 @@ export const make = Effect.gen(function* () {
   const shownTabs = new Map<string, boolean>();
   /** Documents a login was filled into, by tab; kept past detaching. */
   const fills = new Map<string, Set<string>>();
+  /** How many backends have connected. Each knows nothing of what the one before did in a page. */
+  let backend = 0;
+  /** The backend each guest was last told to, which may have run script in it or filled it. */
+  const toldTo = new WeakMap<Electron.WebContents, number>();
+  const openedWindows = new WeakMap<Electron.WebContents, Set<Electron.BrowserWindow>>();
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
   const loginApproval = yield* Effect.serviceOption(LoginApprovalDialog.LoginApprovalDialog);
 
@@ -443,6 +452,107 @@ export const make = Effect.gen(function* () {
     if (announced) emit({ type: "detached", ...key });
   };
 
+  const mainDocument = (tab: AttachedTab) =>
+    Effect.tryPromise(
+      () =>
+        tab.debuggee.debugger.sendCommand("Page.getFrameTree") as Promise<{
+          readonly frameTree: { readonly frame: { readonly loaderId: string } };
+        }>,
+    ).pipe(
+      Effect.map((tree) => tree.frameTree.frame.loaderId),
+      Effect.option,
+    );
+
+  /** Starts a load in the guest and waits until its document is in, it has ended, or time is up. */
+  const load = (guest: Electron.WebContents, start: () => Promise<void> | void) =>
+    Effect.callback<void>((resume) => {
+      const stop = () => guest.off("did-navigate", done);
+      const done = () => {
+        stop();
+        resume(Effect.void);
+      };
+      guest.on("did-navigate", done);
+      // Ended without a document, as when the server sends none to show.
+      start()?.then(done, done);
+      return Effect.sync(stop);
+    }).pipe(Effect.timeoutOption(FRESH_LOAD_LIMIT));
+
+  /**
+   * Replaces the tab's page with a fresh document, so nothing an earlier backend left in it, or
+   * in a window it opened, can still run. A blank page stands in for one that will not load
+   * again. A tab a login was filled in loses its history too. False when the old page may be
+   * left, or its history.
+   */
+  const startAfresh = Effect.fn("DesktopBrowserHost.startAfresh")(
+    function* (tab: AttachedTab) {
+      const guest = tab.debuggee.webContents;
+      for (const window of openedWindows.get(guest) ?? []) {
+        if (!window.isDestroyed()) window.destroy();
+      }
+      const old = yield* mainDocument(tab);
+      if (Option.isNone(old) || guest.isDestroyed()) return false;
+      const replaced = mainDocument(tab).pipe(
+        Effect.map((now) => Option.isSome(now) && now.value !== old.value),
+      );
+      const address = guest.getURL();
+      // Electron's reload does nothing on a page a form post made, so the address is loaded
+      // again. One with a fragment would only scroll the page it is, so that page is reloaded.
+      const again = address.includes("#")
+        ? () => guest.reload()
+        : () => guest.loadURL(address || "about:blank");
+      // A page can refuse to unload; this one may not.
+      const letGo = (event: Electron.Event) => event.preventDefault();
+      guest.on("will-prevent-unload", letGo);
+      const fresh = yield* load(guest, again).pipe(
+        Effect.andThen(replaced),
+        Effect.flatMap((done) =>
+          done
+            ? Effect.succeed(true)
+            : load(guest, () => guest.loadURL("about:blank")).pipe(Effect.andThen(replaced)),
+        ),
+        Effect.ensuring(Effect.sync(() => guest.off("will-prevent-unload", letGo))),
+      );
+      if (!fresh) return false;
+      const id = keyOf(tab.key);
+      if (!fills.has(id)) return true;
+      // The fresh page is the one entry left, so no page of the tab can bring a filled value back.
+      guest.navigationHistory.clear();
+      if (guest.navigationHistory.length() > 1) return false;
+      fills.delete(id);
+      return true;
+    },
+    Effect.catchDefect(() => Effect.succeed(false)),
+  );
+
+  /**
+   * Tells the backend of a tab. One that an earlier backend drove starts afresh first: the new
+   * one has forgotten where script ran, and every secret it would scrub or keep off images.
+   */
+  const announce = (tab: AttachedTab) =>
+    Effect.suspend(() => {
+      const guest = tab.debuggee.webContents;
+      const connection = backend;
+      const tell = Effect.suspend(() => {
+        // Gone by now, or left to a newer backend's own fresh start.
+        if (tabs.get(keyOf(tab.key)) !== tab || backend !== connection) return Effect.void;
+        if (connection > 0) toldTo.set(guest, connection);
+        const shown = shownTabs.get(keyOf(tab.key));
+        return PubSub.publish(outbox, { type: "attached", ...tab.key }).pipe(
+          Effect.andThen(
+            shown !== undefined
+              ? PubSub.publish(outbox, { type: "shown", ...tab.key, shown })
+              : Effect.void,
+          ),
+          Effect.asVoid,
+        );
+      });
+      if ((toldTo.get(guest) ?? connection) === connection) return tell;
+      // On its own, so a page slow to load holds up no other tab.
+      return Effect.sync(() => {
+        runFork(startAfresh(tab).pipe(Effect.flatMap((fresh) => (fresh ? tell : Effect.void))));
+      });
+    });
+
   const attach = (key: DesktopBrowserTabKey, debuggee: DesktopBrowserTabDebugger) => {
     const id = keyOf(key);
     if (tabs.get(id)?.debuggee.webContents === debuggee.webContents) return;
@@ -483,13 +593,8 @@ export const make = Effect.gen(function* () {
     tabs.set(id, tab);
     debuggee.debugger.on("message", tab.onMessage);
     debuggee.webContents.on("did-navigate", tab.onNewDocument);
-    const announce = () => {
-      emit({ type: "attached", ...key });
-      const shown = shownTabs.get(id);
-      if (shown !== undefined) emit({ type: "shown", ...key, shown });
-    };
     if (!debuggee.webContents.isLoadingMainFrame()) {
-      announce();
+      runFork(announce(tab));
       return;
     }
     // Electron does not pause a guest for the debugger, so Playwright connecting during its first
@@ -510,7 +615,7 @@ export const make = Effect.gen(function* () {
       // The manager's cleanup for a destroyed guest can still be queued behind another tab's attach.
       if (webContents.isDestroyed()) return detach(key);
       tab.stopWaiting();
-      announce();
+      runFork(announce(tab));
     };
     const timeout = runFork(
       Effect.sleep(FIRST_PAGE_TIMEOUT).pipe(Effect.andThen(Effect.sync(ready))),
@@ -596,20 +701,14 @@ export const make = Effect.gen(function* () {
   const announceAll = Effect.suspend(() => {
     // A new backend: the old one's turns ended without telling us.
     agentTurns.clear();
+    backend += 1;
     return Effect.forEach(
       [...tabs.values()],
       (tab) => {
         dropRelay(tab);
         // Announced once its first page is up.
         if (tab.stopWaiting !== null) return Effect.void;
-        const shown = shownTabs.get(keyOf(tab.key));
-        return PubSub.publish(outbox, { type: "attached", ...tab.key }).pipe(
-          Effect.andThen(
-            shown !== undefined
-              ? PubSub.publish(outbox, { type: "shown", ...tab.key, shown })
-              : Effect.void,
-          ),
-        );
+        return announce(tab);
       },
       { discard: true },
     );
@@ -631,6 +730,11 @@ export const make = Effect.gen(function* () {
     painting: Stream.fromPubSub(painting),
     mayShowFill: exposed,
     filledDocuments: (key) => fills.get(keyOf(key))?.size ?? 0,
+    windowOpened: (opener, window) => {
+      const windows = openedWindows.get(opener) ?? new Set();
+      openedWindows.set(opener, windows.add(window));
+      window.once("closed", () => windows.delete(window));
+    },
     // Subscribes before announcing, so no attach falls between the two.
     events: Stream.unwrap(
       Effect.gen(function* () {

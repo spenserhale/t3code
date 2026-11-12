@@ -38,9 +38,15 @@ const makeDebuggee = (
     /** The guest is still loading its first page. */
     readonly loading?: boolean;
     readonly refuse?: (method: string, sessionId: string | undefined) => boolean;
+    /** Clearing the tab's history leaves it as it was. */
+    readonly keepsHistory?: boolean;
+    readonly url?: string;
   } = {},
 ) => {
   const emitter = new NodeEvents.EventEmitter();
+  const page = { document: 1, entries: 3 };
+  const loads: Array<string> = [];
+  const loading: Array<() => void> = [];
   const pending: Array<() => void> = [];
   const focusChanges: Array<() => void> = [];
   const sent: Array<unknown> = [];
@@ -61,6 +67,10 @@ const makeDebuggee = (
           resolve({ targetInfo: { targetId: "GUEST" } });
           return;
         }
+        if (method === "Page.getFrameTree") {
+          resolve({ frameTree: { frame: { id: "main", loaderId: `document-${page.document}` } } });
+          return;
+        }
         if (method === "Emulation.setFocusEmulationEnabled") {
           focusEmulation.push(params?.enabled === true);
           if (options.deferFocus) focusChanges.push(() => resolve({}));
@@ -74,11 +84,22 @@ const makeDebuggee = (
   });
   let destroyed = false;
   const webContents = Object.assign(new NodeEvents.EventEmitter(), {
-    getURL: () => "http://localhost/",
+    getURL: () => options.url ?? "http://localhost/",
     getTitle: () => "Page",
     getUserAgent: () => "Electron",
     isLoadingMainFrame: () => options.loading === true,
     isDestroyed: () => destroyed,
+    reload: () => void loads.push("reload"),
+    loadURL: (url: string) => {
+      loads.push(url);
+      return new Promise<void>((resolve) => loading.push(resolve));
+    },
+    navigationHistory: {
+      clear: () => {
+        if (!options.keepsHistory) page.entries = 1;
+      },
+      length: () => page.entries,
+    },
   });
   return {
     tab: {
@@ -93,6 +114,22 @@ const makeDebuggee = (
     },
     failLoad: (code: number) =>
       webContents.emit("did-fail-load", {}, code, "Failed", "http://localhost/", true),
+    /** The addresses the host loaded in the tab, or "reload", in order. */
+    loads,
+    /** The tab's page gives way to a new document. */
+    commit: () => {
+      page.document += 1;
+      webContents.emit("did-navigate");
+    },
+    /** A load the host started ends with the old document still up. */
+    settleLoad: () => loading.splice(0).forEach((resolve) => resolve()),
+    /** The page tries to stay, as a `beforeunload` handler does. Yields whether it was let. */
+    refuseUnload: () => {
+      const event = { preventDefault: vi.fn() };
+      webContents.emit("will-prevent-unload", event);
+      return event.preventDefault.mock.calls.length === 0;
+    },
+    historyLength: () => page.entries,
     /** Ids of the commands the debugger received, in order. */
     sent,
     focusEmulation,
@@ -131,6 +168,18 @@ const watchReplies = (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) =>
     );
     yield* Effect.yieldNow;
     return replies;
+  });
+
+/** A backend connects: every event the host sends from then on. */
+const connectBackend = (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) =>
+  Effect.gen(function* () {
+    const events = yield* Queue.unbounded<DesktopBrowserEvent>();
+    yield* host.events.pipe(
+      Stream.runForEach((line) => Queue.offer(events, decodeEvent(new TextDecoder().decode(line)))),
+      Effect.forkScoped,
+    );
+    yield* settle;
+    return events;
   });
 
 /** Whether the client should paint the guest, each time that changes. */
@@ -218,14 +267,117 @@ describe("DesktopBrowserHost", () => {
     }),
   );
 
-  it.effect("announces tabs already attached to a backend that starts later", () =>
+  it.effect("tells a later backend of a tab only once its page has loaded afresh", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;
-      host.attach(key, makeDebuggee().tab);
+      const debuggee = makeDebuggee();
+      const opened = { destroy: vi.fn(), isDestroyed: () => false, once: vi.fn() };
+      const closed = { destroy: vi.fn(), isDestroyed: () => true, once: vi.fn() };
+      host.attach(key, debuggee.tab);
+      for (const window of [opened, closed]) {
+        host.windowOpened(debuggee.tab.webContents, window as unknown as Electron.BrowserWindow);
+      }
+      // The first backend finds the tab as it is: nothing drove it before.
+      expect(yield* Queue.take(yield* connectBackend(host))).toEqual({ type: "attached", ...key });
+      expect(debuggee.loads).toEqual([]);
 
-      expect(yield* takeEvents(host, 1)).toEqual([{ type: "attached", ...key }]);
-      expect(yield* takeEvents(host, 1)).toEqual([{ type: "attached", ...key }]);
-    }),
+      // A later one has forgotten where script ran and what was filled, so the page starts over,
+      // and a window it opened, where script could live on, goes.
+      const later = yield* connectBackend(host);
+      expect(opened.destroy).toHaveBeenCalledTimes(1);
+      expect(closed.destroy).not.toHaveBeenCalled();
+      expect(debuggee.loads).toEqual(["http://localhost/"]);
+      expect(debuggee.refuseUnload()).toBe(false);
+      expect(yield* Queue.size(later)).toBe(0);
+      debuggee.commit();
+      expect(yield* Queue.take(later)).toEqual({ type: "attached", ...key });
+      // No login was filled in it, so its history stays.
+      expect(debuggee.historyLength()).toBe(3);
+      // The page is let go only while it is being replaced.
+      expect(debuggee.refuseUnload()).toBe(true);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a tab that comes back under a later backend starts afresh too", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee();
+      host.attach(key, debuggee.tab);
+      yield* connectBackend(host);
+      host.detach(key);
+      const later = yield* connectBackend(host);
+      yield* Queue.clear(later);
+      host.attach(key, debuggee.tab);
+      yield* settle;
+      expect(debuggee.loads).toEqual(["http://localhost/"]);
+      expect(yield* Queue.size(later)).toBe(0);
+      debuggee.commit();
+      expect(yield* Queue.take(later)).toEqual({ type: "attached", ...key });
+      // A tab first seen under this backend is told of at once.
+      const fresh = makeDebuggee();
+      host.attach({ ...key, tabId: "tab-2" }, fresh.tab);
+      expect(yield* Queue.take(later)).toEqual({ type: "attached", ...key, tabId: "tab-2" });
+      expect(fresh.loads).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    { name: "loses its history and its fills", keepsHistory: false },
+    { name: "is kept from the backend when its history cannot be cleared", keepsHistory: true },
+  ])("a tab a login was filled in $name before a later backend is told", ({ keepsHistory }) =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee({ keepsHistory });
+      host.attach(key, debuggee.tab);
+      yield* connectBackend(host);
+      yield* host.handleCommandLine(
+        encodeJson({ type: "loginFilled", ...key, document: "document-1" }),
+      );
+      const later = yield* connectBackend(host);
+      // The history goes once the fresh page is up, so the filled page is no entry in it.
+      expect(debuggee.historyLength()).toBe(3);
+      debuggee.commit();
+      yield* settle;
+      expect(yield* Queue.clear(later)).toEqual(keepsHistory ? [] : [{ type: "attached", ...key }]);
+      expect(debuggee.historyLength()).toBe(keepsHistory ? 3 : 1);
+      expect(host.filledDocuments(key)).toBe(keepsHistory ? 1 : 0);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a page whose address has a fragment is reloaded, as loading it would scroll it", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee({ url: "http://localhost/#/route" });
+      host.attach(key, debuggee.tab);
+      yield* connectBackend(host);
+      const later = yield* connectBackend(host);
+      expect(debuggee.loads).toEqual(["reload"]);
+      debuggee.commit();
+      expect(yield* Queue.take(later)).toEqual({ type: "attached", ...key });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a page that will not load again gives way to a blank one, or is kept back", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const debuggee = makeDebuggee();
+      host.attach(key, debuggee.tab);
+      yield* connectBackend(host);
+      const later = yield* connectBackend(host);
+      // The load ends with the old document still up, as when its server sends nothing to show.
+      debuggee.settleLoad();
+      yield* settle;
+      expect(debuggee.loads).toEqual(["http://localhost/", "about:blank"]);
+      // The blank page does not come up either.
+      yield* TestClock.adjust("1 minute");
+      yield* settle;
+      expect(yield* Queue.size(later)).toBe(0);
+      expect(debuggee.refuseUnload()).toBe(true);
+      // The next backend tries again.
+      const next = yield* connectBackend(host);
+      debuggee.commit();
+      expect(yield* Queue.take(next)).toEqual({ type: "attached", ...key });
+    }).pipe(Effect.scoped),
   );
 
   it.effect("announces a guest still loading its first page only once that page is up", () =>
