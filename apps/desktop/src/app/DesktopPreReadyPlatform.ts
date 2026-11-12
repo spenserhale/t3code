@@ -70,6 +70,11 @@ export const make = Effect.gen(function* () {
         : null;
     const linux =
       platform === "linux" ? resolveEarlyLinuxElectronOptionsFromProcess(homeDirectory) : null;
+    const givenDisableFeatures = readCommandLineSwitchValue(
+      Electron.app.commandLine,
+      "disable-features",
+    );
+    let linuxDisableFeatures: string | null = null;
 
     if (linux !== null) {
       DesktopEarlyElectronStartup.restoreEarlyLinuxDeviceScaleFactor({
@@ -138,12 +143,11 @@ export const make = Effect.gen(function* () {
       if (linux.passwordStore !== null && linuxPasswordStoreCommandLine === null) {
         Electron.app.commandLine.appendSwitch("password-store", linux.passwordStore);
       }
-      // Chromium keeps only the last --disable-features value, so pass the merged list.
-      const disableFeatures = DesktopEarlyElectronStartup.resolveLinuxDisableFeaturesSwitch({
+      linuxDisableFeatures = DesktopEarlyElectronStartup.resolveLinuxDisableFeaturesSwitch({
         env: process.env,
         ozonePlatform: readCommandLineSwitchValue(Electron.app.commandLine, "ozone-platform"),
         enableFeatures: readCommandLineSwitchValue(Electron.app.commandLine, "enable-features"),
-        disableFeatures: readCommandLineSwitchValue(Electron.app.commandLine, "disable-features"),
+        disableFeatures: givenDisableFeatures,
         readHyprctlVersionJson: () =>
           NodeChildProcess.execFileSync("hyprctl", ["version", "-j"], {
             encoding: "utf8",
@@ -152,9 +156,13 @@ export const make = Effect.gen(function* () {
             maxBuffer: 64 * 1024,
           }),
       });
-      if (disableFeatures !== null) {
-        Electron.app.commandLine.appendSwitch("disable-features", disableFeatures);
-      }
+    }
+    // Chromium keeps only the last --disable-features value, so pass the merged list.
+    const disableFeatures = DesktopEarlyElectronStartup.withBackForwardCacheDisabled(
+      linuxDisableFeatures ?? givenDisableFeatures,
+    );
+    if (disableFeatures !== givenDisableFeatures) {
+      Electron.app.commandLine.appendSwitch("disable-features", disableFeatures);
     }
 
     return { linux, linuxPasswordStoreCommandLine };
