@@ -6996,7 +6996,7 @@ it.live("a desktop that draws the tab is told of a login before it is written th
         Effect.gen(function* () {
           const shown = yield* shownDocument(realContext!);
           const { value } = yield* passwordField(realContext!);
-          told.push({ key, document, shown, written: value });
+          told.push({ key, document: toldDocument(document), shown, written: value });
           if (reloads) yield* Effect.promise(() => realContext!.pages()[0]!.reload());
         }),
     }),
