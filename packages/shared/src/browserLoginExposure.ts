@@ -1,30 +1,20 @@
-/** The main documents of one browser tab that held a filled login, and every address they showed. */
-export interface FilledDocuments {
-  readonly documents: ReadonlySet<string>;
-  readonly urls: ReadonlySet<string>;
-}
-
-export const withoutFragment = (url: string) => url.split("#", 1)[0] ?? url;
-
 /** One CDP command, sent through Playwright or Electron. */
 type SendCommand = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
 
 const NAVIGATION_TYPE = `performance.getEntriesByType("navigation")[0]?.type ?? ""`;
 
 /**
- * Whether a tab's main document may show a filled password or code: it held a fill, or Back or
- * Forward reached an address one showed, where Chromium refills form fields. A reload or a fresh
- * visit refills none, so the page a site serves at its login address after signing in is clear.
+ * Whether a tab's main document may show a filled password or code. `filled` names the main
+ * documents a login was filled into in this tab, and has at least one. Any other document counts
+ * unless a fresh navigation or a reload loaded it: Back and Forward refill form fields, whatever
+ * address the page shows by then, and a reload refills none.
  */
-export const mayShowFill = async (send: SendCommand, filled: FilledDocuments) => {
+export const mayShowFill = async (send: SendCommand, filled: ReadonlySet<string>) => {
   const { frameTree } = (await send("Page.getFrameTree")) as {
-    readonly frameTree: {
-      readonly frame: { readonly id: string; readonly loaderId: string; readonly url: string };
-    };
+    readonly frameTree: { readonly frame: { readonly id: string; readonly loaderId: string } };
   };
-  const { id, loaderId, url } = frameTree.frame;
-  if (filled.documents.has(loaderId)) return true;
-  if (!filled.urls.has(withoutFragment(url))) return false;
+  const { id, loaderId } = frameTree.frame;
+  if (filled.has(loaderId)) return true;
   // Read in an isolated world, where the page cannot answer for itself.
   const { executionContextId } = (await send("Page.createIsolatedWorld", {
     frameId: id,

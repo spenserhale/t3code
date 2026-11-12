@@ -1,6 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Playwright callbacks run outside the Effect runtime.
 import type { PreviewLoginField } from "@t3tools/contracts";
-import { type FilledDocuments, withoutFragment } from "@t3tools/shared/browserLoginExposure";
 import * as NodeCrypto from "node:crypto";
 import type { CDPSession, Frame, Locator, Page } from "playwright-core";
 
@@ -348,17 +347,14 @@ export const makeDocumentMarks = () => {
     {
       /** Documents the agent ran script in, where it could have hooked a later fill. */
       readonly scripted: Set<string>;
-      /** Documents a login was filled into, and every address they showed. */
-      readonly filled: { readonly documents: Set<string>; readonly urls: Set<string> };
+      /** Documents a login was filled into. */
+      readonly filled: Set<string>;
     }
   >();
   const marksOf = (tab: string) => {
     const existing = tabs.get(tab);
     if (existing) return existing;
-    const created = {
-      scripted: new Set<string>(),
-      filled: { documents: new Set<string>(), urls: new Set<string>() },
-    };
+    const created = { scripted: new Set<string>(), filled: new Set<string>() };
     tabs.set(tab, created);
     return created;
   };
@@ -367,21 +363,11 @@ export const makeDocumentMarks = () => {
       for (const id of documentIds) marksOf(tab).scripted.add(id);
     },
     wasScripted: (tab: string, id: string) => tabs.get(tab)?.scripted.has(id) === true,
-    markFilled: (tab: string, id: string, url: string) => {
-      const { filled } = marksOf(tab);
-      filled.documents.add(id);
-      filled.urls.add(withoutFragment(url));
-    },
-    /** Keeps a later address of a filled document, such as one `pushState` gave it. */
-    noteAddress: (tab: string, id: string, url: string) => {
+    markFilled: (tab: string, id: string) => void marksOf(tab).filled.add(id),
+    /** The documents a login was filled into, for a tab that has had one. */
+    filled: (tab: string): ReadonlySet<string> | undefined => {
       const filled = tabs.get(tab)?.filled;
-      if (!filled?.documents.has(id)) return false;
-      filled.urls.add(withoutFragment(url));
-      return true;
-    },
-    filled: (tab: string): FilledDocuments | undefined => {
-      const filled = tabs.get(tab)?.filled;
-      return filled !== undefined && filled.documents.size > 0 ? filled : undefined;
+      return filled !== undefined && filled.size > 0 ? filled : undefined;
     },
     forget: (tab: string) => void tabs.delete(tab),
   };

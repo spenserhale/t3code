@@ -76,14 +76,10 @@ export class DesktopBrowserChannel extends Context.Service<
       prompt: DesktopLoginPrompt,
     ) => Effect.Effect<boolean>;
     /**
-     * Tells the desktop a login was filled into a document, or that one showed another address.
-     * Written before anything sent after it, the fill's own page commands included. Never fails.
+     * Tells the desktop a login is about to be filled into a document. Written before anything
+     * sent after it, the fill's own page commands included. Never fails.
      */
-    readonly loginFilled: (
-      key: DesktopTabKey,
-      document: string,
-      url: string,
-    ) => Effect.Effect<void>;
+    readonly loginFilled: (key: DesktopTabKey, document: string) => Effect.Effect<void>;
   }
 >()("t3/preview/DesktopBrowserChannel") {}
 
@@ -343,8 +339,8 @@ const make = Effect.gen(function* () {
         );
       },
     ),
-    loginFilled: Effect.fn("DesktopBrowserChannel.loginFilled")(function (key, document, url) {
-      return command({ type: "loginFilled", ...key, document, url });
+    loginFilled: Effect.fn("DesktopBrowserChannel.loginFilled")(function (key, document) {
+      return command({ type: "loginFilled", ...key, document });
     }),
   });
 });

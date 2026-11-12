@@ -6,7 +6,7 @@ import {
   type DesktopBrowserEvent as DesktopBrowserEventType,
   type PreviewAutomationLoadError,
 } from "@t3tools/contracts";
-import { mayShowFill, withoutFragment } from "@t3tools/shared/browserLoginExposure";
+import { mayShowFill } from "@t3tools/shared/browserLoginExposure";
 import * as Context from "effect/Context";
 import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
@@ -227,8 +227,8 @@ export const make = Effect.gen(function* () {
   const shownTabs = new Map<string, boolean>();
   const drawnTabs = new Set<string>();
   const drawWaiters = new Map<string, Set<() => void>>();
-  /** Documents a login was filled into, and the addresses they showed, by tab; kept past detaching. */
-  const fills = new Map<string, { readonly documents: Set<string>; readonly urls: Set<string> }>();
+  /** Documents a login was filled into, by tab; kept past detaching. */
+  const fills = new Map<string, Set<string>>();
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
   const loginApproval = yield* Effect.serviceOption(LoginApprovalDialog.LoginApprovalDialog);
 
@@ -832,10 +832,7 @@ export const make = Effect.gen(function* () {
       }
       if (command.value.type === "loginFilled") {
         const id = keyOf(command.value);
-        const filled = fills.get(id) ?? { documents: new Set<string>(), urls: new Set<string>() };
-        filled.documents.add(command.value.document);
-        filled.urls.add(withoutFragment(command.value.url));
-        fills.set(id, filled);
+        fills.set(id, (fills.get(id) ?? new Set<string>()).add(command.value.document));
         return;
       }
       const tab = tabs.get(keyOf(command.value));

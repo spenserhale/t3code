@@ -4745,7 +4745,13 @@ it.live("a page's title change without navigation reaches its session", () =>
 const loginKind = SecretProviderKind.make("fake_vault");
 const loginProvider = SecretProviderId.make("work");
 const LOGIN_PAGE = `<title>Sign in</title><input id="user" autocomplete="username"><input id="password" type="password" oninput="document.title = this.value">`;
-/** Pages other than the login page, by path. */
+// A framework draws the code field again, without the attribute the fill set on it.
+const CODE_FIELD = `<input id="otp" autocomplete="one-time-code" oninput="
+    const fresh = document.createElement('input');
+    fresh.value = this.value;
+    this.replaceWith(fresh);
+  ">`;
+/** Pages other than the login page, by the first part of their path. */
 const LOGIN_SITE: Partial<Record<string, string>> = {
   "/first": "<title>password-1</title>",
   // Copies the password into its log and text near their length limits, then clears the field.
@@ -4755,13 +4761,11 @@ const LOGIN_SITE: Partial<Record<string, string>> = {
     setTimeout(() => { this.value = ''; document.body.append('x'.repeat(19995) + value); });
   ">`,
   "/long": `<title>${"x".repeat(508)}password-value</title>`,
-  // A framework draws the code field again, without the attribute the fill set on it.
-  "/otp": `<input id="otp" autocomplete="one-time-code" oninput="
-    const fresh = document.createElement('input');
-    fresh.value = this.value;
-    this.replaceWith(fresh);
-  "><a href="/next">next</a>`,
+  "/otp": `${CODE_FIELD}<a href="/next">next</a>`,
+  // The same, in an app that gives itself a new address each time it loads.
+  "/moves": `<script>history.replaceState({}, "", "/moves/" + Math.random())</script>${CODE_FIELD}`,
   "/next": "<p>next</p>",
+  "/other": "<p>other</p>",
   // Logs the password as JSON and names a button with it, then clears the field.
   "/quote": `<input id="user" autocomplete="username"><input id="password" type="password" oninput="
     console.log(JSON.stringify({ password: this.value }));
@@ -4778,7 +4782,7 @@ const realLoginBrowser = Effect.acquireRelease(
     await context.route("https://good.test/**", (route) =>
       route.fulfill({
         contentType: "text/html",
-        body: LOGIN_SITE[new URL(route.request().url()).pathname] ?? LOGIN_PAGE,
+        body: LOGIN_SITE[`/${new URL(route.request().url()).pathname.split("/")[1]}`] ?? LOGIN_PAGE,
       }),
     );
     realContext = context;
@@ -4892,7 +4896,7 @@ it.live(
           });
           for (const operation of ["evaluate", "recordingStart"] as const) {
             const refused = yield* invoke(operation, { expression: "1" }).pipe(Effect.flip);
-            expect(refused.message).toContain("filled a login in this page");
+            expect(refused.message).toContain("filled a login in this tab");
           }
           // The page copied the password into its title.
           const status = yield* invoke<PreviewAutomationStatus>("status");
@@ -5018,15 +5022,94 @@ it.live("scrubs a filled password in the escaped forms a log or snapshot writes 
 });
 
 /** Fills a code into a field the page draws again, then leaves for another page. */
-const fillCodeAndLeave = (invoke: Effect.Success<typeof openLoginTab>["invoke"]) =>
+const fillCodeAndLeave = (
+  invoke: Effect.Success<typeof openLoginTab>["invoke"],
+  path: "/otp" | "/moves" = "/otp",
+) =>
   Effect.gen(function* () {
-    yield* invoke("navigate", { url: "https://good.test/otp" });
+    yield* invoke("navigate", { url: `https://good.test${path}` });
     yield* invoke("fillLogin", { fields: ["totp"] });
     yield* invoke("navigate", { url: "https://good.test/next" });
   });
 
+const codeField = (page: Page) => Effect.promise(() => page.locator("#otp").inputValue());
+
 it.live(
-  "a page Back restores at an address that held a fill takes no images, script or recording",
+  "a page Back restores a filled code into takes no images, script or recording, whatever its address",
+  () => {
+    const server = loginServer("never", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          const withheld = Effect.gen(function* () {
+            const snapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+            expect(snapshot.screenshot).toBeUndefined();
+            expect(snapshot.imagesOff).toContain("Back or Forward");
+            expect(snapshot.imagesOff).toContain("preview_navigate");
+          });
+          yield* fillCodeAndLeave(invoke);
+          // Back, as pressed in a viewer or the desktop: Chromium refills the field drawn afresh.
+          const page = context.pages()[0]!;
+          yield* Effect.promise(() => page.goBack());
+          expect(yield* codeField(page)).toBe("totp-value");
+          yield* withheld;
+          for (const operation of ["evaluate", "recordingStart"] as const) {
+            const refused = yield* invoke(operation, { expression: "1" }).pipe(Effect.flip);
+            expect(refused.message).toContain("Back or Forward");
+          }
+          // The page moves to an address no filled page showed, still holding the code.
+          for (const change of ["pushState", "replaceState"] as const) {
+            yield* Effect.promise(() =>
+              page.evaluate(`history.${change}({}, "", "/otp/${change}")`),
+            );
+            expect(yield* codeField(page)).toBe("totp-value");
+            yield* withheld;
+          }
+          // Back to the entry the page pushed loads it again, with the code.
+          yield* invoke("navigate", { url: "https://good.test/next" });
+          yield* Effect.promise(() => page.goBack());
+          expect(page.url()).toBe("https://good.test/otp/replaceState");
+          expect(yield* codeField(page)).toBe("totp-value");
+          yield* withheld;
+          // A reload refills nothing, so it is the way out.
+          yield* Effect.promise(() => page.reload());
+          expect(yield* codeField(page)).toBe("");
+          const reloaded = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(reloaded.screenshot?.mimeType).toBe("image/png");
+          expect(reloaded.imagesOff).toBeUndefined();
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live("a restored page that gives itself a new address as it loads takes no images", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* fillCodeAndLeave(invoke, "/moves");
+        const page = context.pages()[0]!;
+        const filledAt = yield* Effect.promise(() =>
+          page.evaluate<string>("navigation.entries().at(-2).url"),
+        );
+        yield* Effect.promise(() => page.goBack());
+        // Its script ran before anything could ask where it is.
+        expect(page.url()).not.toBe(filledAt);
+        expect(yield* codeField(page)).toBe("totp-value");
+        const restored = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        expect(restored.screenshot).toBeUndefined();
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live(
+  "after a fill, any page Back reaches runs no script and shows no images until it is reloaded",
   () => {
     const server = loginServer("never", DesktopChannel.layer);
     return Effect.scoped(
@@ -5035,26 +5118,43 @@ it.live(
         yield* Effect.gen(function* () {
           const { invoke } = yield* openLoginTab;
           yield* fillCodeAndLeave(invoke);
-          // Back, as pressed in a viewer or the desktop: Chromium refills the field drawn afresh.
+          yield* invoke("navigate", { url: "https://good.test/other" });
           const page = context.pages()[0]!;
+          // Back to a page that never held a fill, at an address no filled page showed.
           yield* Effect.promise(() => page.goBack());
-          expect(yield* Effect.promise(() => page.locator("#otp").inputValue())).toBe("totp-value");
-          const restored = yield* invoke<PreviewAutomationSnapshot>("snapshot");
-          expect(restored.screenshot).toBeUndefined();
-          expect(restored.imagesOff).toContain("preview_navigate");
-          for (const operation of ["evaluate", "recordingStart"] as const) {
-            const refused = yield* invoke(operation, { expression: "1" }).pipe(Effect.flip);
-            expect(refused.message).toContain("filled a login in this page");
-          }
-          // A fresh visit to the same address restores nothing.
-          yield* invoke("navigate", { url: "https://good.test/otp" });
-          const fresh = yield* invoke<PreviewAutomationSnapshot>("snapshot");
-          expect(fresh.screenshot?.mimeType).toBe("image/png");
+          expect(page.url()).toBe("https://good.test/next");
+          const refused = yield* invoke("evaluate", { expression: "1" }).pipe(Effect.flip);
+          expect(refused.message).toContain("Back or Forward");
+          expect(refused.message).toContain("preview_navigate");
+          const reached = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(reached.screenshot).toBeUndefined();
+          yield* Effect.promise(() => page.reload());
+          expect(yield* invoke("evaluate", { expression: "1 + 1" })).toBe(2);
+          const reloaded = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(reloaded.screenshot?.mimeType).toBe("image/png");
         }).pipe(Effect.provide(server.layer));
       }),
     );
   },
 );
+
+it.live("a tab no login was filled in keeps its images and script after Back", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* invoke("navigate", { url: "https://good.test/next" });
+        yield* Effect.promise(() => context.pages()[0]!.goBack());
+        const back = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        expect(back.screenshot?.mimeType).toBe("image/png");
+        expect(back.imagesOff).toBeUndefined();
+        expect(yield* invoke("evaluate", { expression: "1 + 1" })).toBe(2);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
 
 it.live("a running recording takes no frame of a page Back restores where a fill was", () => {
   const server = loginServer("never", DesktopChannel.layer);
