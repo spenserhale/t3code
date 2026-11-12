@@ -3000,6 +3000,8 @@ const make = Effect.gen(function* () {
   const filledPageError = () =>
     ServerBrowserLogin.loginError(offForFill("Script and recording are", "them"));
   const IMAGES_OFF = offForFill("Images are", "images");
+  const IMAGE_LEFT_OUT =
+    "The page loaded another document while this snapshot was taken. The password manager filled a login in this tab, so the image was left out: a page showing that login may have been on screen in between. Take the snapshot again.";
 
   const loginStep = <A>(effect: Effect.Effect<A, BrowserLogins.BrowserLoginError>) =>
     runPromise(
@@ -3272,14 +3274,21 @@ const make = Effect.gen(function* () {
         }
         // Text is scrubbed, but pixels of a filled page can show a revealed password or code.
         const shows = () => exposed(tab).catch(() => true);
+        const loads = tab.documentLoads;
         const before = await shows();
         const snapshot = await withScreencastsPaused(tab, () =>
           ServerBrowserPage.snapshot({ ...rendering, images: !before }),
         );
         // Another agent's fill, or Back, can come while an observer's snapshot runs.
-        if (!before && !(await shows())) return withLoadError(snapshot);
+        const after = before || (await shows());
+        // A page Back restored can be gone again by now. The answer above came after the event
+        // for every document loaded before it.
+        const moved =
+          tab.documentLoads !== loads &&
+          documentMarks.filled(tabKey(tab.threadId, tab.tabId)) !== undefined;
+        if (!after && !moved) return withLoadError(snapshot);
         const { screenshot: _withheld, fullScreenshot: _withheldFull, ...text } = snapshot;
-        return withLoadError({ ...text, imagesOff: IMAGES_OFF });
+        return withLoadError({ ...text, imagesOff: after ? IMAGES_OFF : IMAGE_LEFT_OUT });
       }
       case "click": {
         // Time spent queued behind other work on this tab counts against the broker's deadline.
