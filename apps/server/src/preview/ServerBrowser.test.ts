@@ -2593,12 +2593,21 @@ const realLoginBrowser = Effect.acquireRelease(
   Effect.promise(async () => {
     const browser = await chromium.launch({ headless: true });
     const context = await browser.newContext();
-    await context.route("https://good.test/**", (route) =>
-      route.fulfill({
+    await context.route("https://good.test/**", (route) => {
+      const path = `/${new URL(route.request().url()).pathname.split("/")[1]}`;
+      return route.fulfill({
         contentType: "text/html",
-        body: LOGIN_SITE[`/${new URL(route.request().url()).pathname.split("/")[1]}`] ?? LOGIN_PAGE,
-      }),
-    );
+        // A policy that forbids pages to run text as script.
+        ...(path === "/strict"
+          ? {
+              headers: {
+                "content-security-policy": "script-src 'self'; require-trusted-types-for 'script'",
+              },
+            }
+          : {}),
+        body: LOGIN_SITE[path] ?? LOGIN_PAGE,
+      });
+    });
     // Another site, which no login is saved for.
     await context.route("https://other.test/**", (route) =>
       route.fulfill({ contentType: "text/html", body: "<p>another site</p>" }),
@@ -3182,6 +3191,80 @@ it.live(
     );
   },
 );
+
+it.live("preview_evaluate never runs in a page Back brought up after its page was checked", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      const hold = holdCommands(context);
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* invoke("navigate", { url: "https://good.test/otp" });
+        yield* invoke("fillLogin", { fields: ["totp"] });
+        // Another site, where script may run.
+        yield* invoke("navigate", { url: "https://other.test/" });
+        hold.at = (_page, _method, params) => params.includes("otp");
+        const reading = yield* invoke<string>("evaluate", {
+          expression: 'btoa(document.getElementById("otp")?.value ?? "")',
+        }).pipe(Effect.result, Effect.forkScoped);
+        // Back lands once the page is found clear, right before its script is sent.
+        yield* Effect.promise(() => hold.reached.promise);
+        const page = context.pages()[0]!;
+        yield* Effect.promise(() => page.goBack());
+        expect(yield* codeField(page)).toBe("totp-value");
+        hold.release.resolve();
+        const read = yield* Fiber.join(reading);
+        expect(read._tag === "Success" && read.success).not.toBe(btoa("totp-value"));
+        expect(read._tag === "Failure" && read.failure.message).toContain(
+          "loaded another document before the script ran",
+        );
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("preview_evaluate answers as before where logins can be filled", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const invoke = onTab(broker, tabId);
+        const run = (expression: string, options: object = {}) =>
+          invoke<unknown>("evaluate", { expression, ...options });
+        // A page whose policy forbids its own script to run text.
+        yield* invoke("navigate", { url: "https://good.test/strict" });
+        expect(yield* run("1 + 1")).toBe(2);
+        expect(yield* run("const two = 2; two * 3")).toBe(6);
+        expect(yield* run("var kept = 4; function later() { return kept + 1 }")).toBeNull();
+        expect(yield* run("later()")).toBe(5);
+        expect(yield* run("Promise.resolve({ seven: 7 })")).toEqual({ seven: 7 });
+        expect(yield* run("this === window && document.title")).toBe("Sign in");
+        // A page may use the name `origin` for something of its own.
+        expect(yield* run("var origin = 5; origin")).toBe(5);
+        expect(yield* run("origin + 1")).toBe(6);
+        expect(yield* run("document.body", { returnByValue: false })).toBe("body");
+        const fails = (expression: string) => invoke("evaluate", { expression }).pipe(Effect.flip);
+        expect((yield* fails("throw new Error('boom')")).message).toContain("Error: boom");
+        expect((yield* fails("not script")).message).toContain("SyntaxError");
+        const stopped = yield* broker
+          .invoke<void>({
+            scope,
+            tabId,
+            operation: "evaluate",
+            input: { expression: "for (;;) {}" },
+            timeoutMs: 300,
+          })
+          .pipe(Effect.flip);
+        // The caller's own time limit can answer first; the script is stopped either way.
+        expect(stopped.message).toMatch(/did not finish|timed out/);
+        expect(yield* run("1 + 1")).toBe(2);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
 
 it.live("a restored page that gives itself a new address as it loads takes no images", () => {
   const server = loginServer("never", DesktopChannel.layer);
