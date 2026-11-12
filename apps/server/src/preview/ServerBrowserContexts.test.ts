@@ -70,6 +70,10 @@ const options = () => ({
   chrome: { version: "157.0.8103.78", platform: "linux" as NodeJS.Platform },
 });
 
+// Back must load a page again, never bring it back whole: the rules that keep filled logins out
+// of captures were checked against that.
+const BACK_RELOADS = expect.arrayContaining(["--disable-features=BackForwardCache"]);
+
 const withLauncher = () => {
   const release = vi.fn(async () => {});
   return {
@@ -164,7 +168,7 @@ describe("ServerBrowserContexts", () => {
     expect(a).toBe(reused);
     expect(new Set([a, b, privateContext]).size).toBe(3);
     expect(launches.launch).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ executablePath: "/test/chromium-launcher" }),
+      expect.objectContaining({ executablePath: "/test/chromium-launcher", args: BACK_RELOADS }),
     );
     expect(launches.persistent).not.toHaveBeenCalled();
     expect(browser.newContext).toHaveBeenCalledWith({
@@ -188,7 +192,11 @@ describe("ServerBrowserContexts", () => {
     expect(await pool.contextFor("work/team", "agent")).not.toBe(persistent);
     expect(launches.persistent).toHaveBeenCalledExactlyOnceWith(
       "/test/profiles/work%2Fteam",
-      expect.objectContaining({ chromiumSandbox: true, executablePath: "/test/chromium-launcher" }),
+      expect.objectContaining({
+        chromiumSandbox: true,
+        executablePath: "/test/chromium-launcher",
+        args: BACK_RELOADS,
+      }),
     );
     expect(release).toHaveBeenCalledTimes(2);
     expect(launches.mkdir).toHaveBeenCalledWith("/test/profiles/work%2Fteam", { recursive: true });

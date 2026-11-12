@@ -6,6 +6,7 @@ import {
   restoreEarlyLinuxDeviceScaleFactor,
   resolveEarlyLinuxPasswordStorePreference,
   resolveLinuxDisableFeaturesSwitch,
+  withBackForwardCacheDisabled,
 } from "./DesktopEarlyElectronStartup.ts";
 
 describe("DesktopEarlyElectronStartup", () => {
@@ -128,6 +129,25 @@ describe("DesktopEarlyElectronStartup", () => {
         }),
       );
     });
+  });
+});
+
+describe("withBackForwardCacheDisabled", () => {
+  it.each([
+    { label: "nothing disabled yet", current: null, merged: "BackForwardCache" },
+    { label: "other features", current: "Vulkan, Foo", merged: "Vulkan, Foo,BackForwardCache" },
+    {
+      label: "the cache already disabled",
+      current: "Foo,BackForwardCache",
+      merged: "Foo,BackForwardCache",
+    },
+    {
+      label: "the cache named with a trial",
+      current: "BackForwardCache<Study",
+      merged: "BackForwardCache<Study",
+    },
+  ])("keeps $label and names the cache once", ({ current, merged }) => {
+    assert.equal(withBackForwardCacheDisabled(current), merged);
   });
 });
 
