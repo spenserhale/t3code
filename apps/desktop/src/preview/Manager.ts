@@ -1638,6 +1638,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     };
     // Popups inherit Electron's unrestricted window handler; block nested popups to bound the chain.
     const windowCreated = (window: Electron.BrowserWindow): void => {
+      browserHost.windowOpened(wc, window);
       window.webContents.setIgnoreMenuShortcuts(true);
       window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       window.webContents.on("before-input-event", (_event, input) => {
