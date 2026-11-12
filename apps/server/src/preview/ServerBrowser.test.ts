@@ -6991,16 +6991,14 @@ it.live("a desktop that draws the tab is told of a login before it is written th
       pointer: () => Effect.void,
       turn: () => Effect.void,
       approveLogin: () => Effect.succeed(false),
-      // What the password field holds as the desktop hears of the fill; the page may then reload.
-      loginFilled: (key) =>
-        passwordField(realContext!).pipe(
-          Effect.map(({ value }) => void told.push({ key, written: value })),
-          Effect.andThen(
-            Effect.promise(async () => {
-              if (reloads) await realContext!.pages()[0]!.reload();
-            }),
-          ),
-        ),
+      // What the page shows and holds as the desktop hears of the fill; the page may then reload.
+      loginFilled: (key, document) =>
+        Effect.gen(function* () {
+          const shown = yield* shownDocument(realContext!);
+          const { value } = yield* passwordField(realContext!);
+          told.push({ key, document, shown, written: value });
+          if (reloads) yield* Effect.promise(() => realContext!.pages()[0]!.reload());
+        }),
     }),
     { unattended: true },
   );
@@ -7009,15 +7007,20 @@ it.live("a desktop that draws the tab is told of a login before it is written th
       const { context } = yield* realLoginBrowser;
       yield* Effect.gen(function* () {
         const { tabId, invoke } = yield* openLoginTab;
+        const key = { threadId: scope.thread.threadId, tabId };
+        const first = yield* shownDocument(context);
         yield* invoke("fillLogin");
-        expect(told).toEqual([{ key: { threadId: scope.thread.threadId, tabId }, written: "" }]);
+        expect(told).toEqual([{ key, document: first, shown: first, written: "" }]);
         expect((yield* passwordField(context)).value).toBe("password-value");
 
         // The page the desktop was told of is the only one written: its reload takes nothing.
         yield* invoke("navigate", { url: "https://good.test/login" });
+        const second = yield* shownDocument(context);
         reloads = true;
         const moved = yield* invoke("fillLogin").pipe(Effect.flip);
         expect(moved.message).toContain("The page loaded another document");
+        expect(told.slice(1)).toEqual([{ key, document: second, shown: second, written: "" }]);
+        expect(yield* shownDocument(context)).not.toBe(second);
         expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
       }).pipe(Effect.provide(server.layer));
     }),
