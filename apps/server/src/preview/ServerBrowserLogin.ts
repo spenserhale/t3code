@@ -330,11 +330,25 @@ export const fillCovered = async (input: {
   }
 };
 
-/** The page's current main document; a navigation to a new document changes it. */
+/** The origin of an address, or none when it has none of its own, as a blank page's has. */
+const originsOf = (url: string) => {
+  const origin = URL.canParse(url) ? new URL(url).origin : "null";
+  return origin === "null" ? [] : [origin];
+};
+
+/**
+ * Names the page a fill is checked against: its main document, then the origins its frames are
+ * on. A new main document changes the name, and so does a frame that comes onto another origin.
+ * So a write that finds the name unchanged lands on an origin the fill has checked and marked.
+ */
 export const documentId = async (cdp: CDPSession): Promise<string> => {
   const { frameTree } = await cdp.send("Page.getFrameTree");
-  return frameTree.frame.loaderId;
+  const origins = new Set(flattenFrames(frameTree).flatMap((frame) => originsOf(frame.url)));
+  return [frameTree.frame.loaderId, ...[...origins].toSorted()].join(" ");
 };
+
+/** The main document in a name `documentId` gave, as the browser itself names it. */
+const mainDocument = (document: string) => document.split(" ", 1)[0] ?? document;
 
 /** `tab` names the tab the login was filled in, as the agent would. */
 export const scriptOff = (origin: string, tab: string) =>
@@ -346,12 +360,6 @@ const fillOff = (origin: string) =>
     `preview_evaluate has run on this site (${origin}) in this browser, so the password manager will not fill a login into a page that is on it or frames it. Close this browser's tabs, open the page again, and call preview_fill_login before any preview_evaluate.`,
   );
 const TAB_CLOSED = "The tab closed.";
-
-/** The origin of an address, or none when it has none of its own, as a blank page's has. */
-const originsOf = (url: string) => {
-  const origin = URL.canParse(url) ? new URL(url).origin : "null";
-  return origin === "null" ? [] : [origin];
-};
 
 /**
  * The origins of the frames now in a page, by their addresses. A frame without one of its own,
@@ -514,19 +522,22 @@ export const makeDocumentMarks = () => {
       const scripted = profiles.get(tabs.get(tab)?.profile ?? {})?.scripted;
       for (const origin of origins) scripted?.add(origin);
     },
-    /** Throws where agent script has run on the origin of a frame now in the tab's page. */
-    wasScripted: (tab: string, _document: string): boolean => {
+    /**
+     * Throws where agent script has run on the origin of a frame in the tab's page, as
+     * `documentId` named the page and as it is now.
+     */
+    wasScripted: (tab: string, document: string): boolean => {
       const { profile, origins } = known(tab);
-      refuseScripted(profile, origins());
+      refuseScripted(profile, [...document.split(" ").slice(1), ...origins()]);
       return false;
     },
     /** Checks the same again, and in the same step marks those origins filled by this tab. */
     markFilled: (tab: string, document: string) => {
       const marks = known(tab);
-      const origins = marks.origins();
+      const origins = [...document.split(" ").slice(1), ...marks.origins()];
       refuseScripted(marks.profile, origins);
       for (const origin of origins) marks.filled.add(origin);
-      marks.documents.add(document);
+      marks.documents.add(mainDocument(document));
     },
     /** The documents a login was filled into, for a tab that has had one. */
     filled: (tab: string): ReadonlySet<string> | undefined => {
