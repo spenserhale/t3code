@@ -450,12 +450,8 @@ interface Recording {
   readonly session: CDPSession;
   readonly startedAt: string;
   readonly framesInFlight: Set<Promise<void>>;
-}
-
-/** A recording takes frames while its page is known not to show a filled login, and never after. */
-interface RecordingGate {
-  state: "open" | "checking" | "shut";
-  check: number;
+  /** The tab's `restores` from before its page was found clear of filled logins. */
+  readonly restores: number;
 }
 
 interface ServerTab {
@@ -533,10 +529,10 @@ interface ServerTab {
   } | null;
 
   recordingStart: Promise<Recording> | null;
-  /** Kept only while browser logins are on. */
-  recordingGate: RecordingGate | null;
   /** Main documents loaded, counted only while browser logins are on. */
   documentLoads: number;
+  /** Those of them that Back, Forward or anything else able to refill a field loaded. */
+  restores: number;
   captureLock: Promise<void>;
   capturing: number;
 }
@@ -568,6 +564,17 @@ const PAGE_CLOSE_GRACE_MS = 5_000;
 const DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024;
 
 const tabKey = (threadId: string, tabId: string) => `${threadId}\u0000${tabId}`;
+
+/** How CDP names a navigation that refills no form field: a fresh visit or a reload. */
+const FRESH_LOADS: ReadonlySet<string> = new Set([
+  "differentDocument",
+  "reload",
+  "reloadBypassingCache",
+]);
+/** Navigations under way whose kind is remembered, counting those of frames inside the page. */
+const NAVIGATIONS_KEPT = 64;
+const RECORDING_DISCARDED =
+  "The recording was discarded. After the password manager filled a login in this tab, the tab loaded a page with Back or Forward while it recorded, and such a page can show the login again. Record again without Back or Forward, or reload the page first.";
 
 const pushBounded = <A>(
   buffer: Array<A>,
@@ -1245,25 +1252,22 @@ const make = Effect.gen(function* () {
     }
   };
 
-  /** Checks the page a recording now shows; one that may show a filled login shuts it for good. */
-  const checkGate = async (tab: ServerTab, gate: RecordingGate) => {
-    if (gate.state === "shut") return;
-    const check = ++gate.check;
-    gate.state = "checking";
-    const shows = await exposed(tab).catch(() => true);
-    if (gate.check === check && gate.state === "checking") gate.state = shows ? "shut" : "open";
-  };
-
   /**
-   * Follows the main document over CDP, whose events come in order: a recording stops taking
-   * frames as each new document loads.
+   * Counts the main documents a tab loads. Chromium says how a navigation loads when it starts
+   * and names its document once that has loaded; one whose start was not seen, or was dropped
+   * here, counts as able to refill a field.
    */
   const watchDocuments = async (tab: ServerTab) => {
-    const key = tabKey(tab.threadId, tab.tabId);
+    const starting = new Map<string, string>();
+    tab.cdp.on("Page.frameStartedNavigating", ({ loaderId, navigationType }) => {
+      starting.set(loaderId, navigationType);
+      if (starting.size > NAVIGATIONS_KEPT) starting.delete(starting.keys().next().value!);
+    });
     tab.cdp.on("Page.frameNavigated", ({ frame }) => {
       if (frame.parentId !== undefined) return;
       tab.documentLoads += 1;
-      if (tab.recordingGate && documentMarks.filled(key)) void checkGate(tab, tab.recordingGate);
+      if (!FRESH_LOADS.has(starting.get(frame.loaderId) ?? "")) tab.restores += 1;
+      starting.delete(frame.loaderId);
     });
     await tab.cdp.send("Page.enable");
   };
@@ -1374,8 +1378,8 @@ const make = Effect.gen(function* () {
       closing: false,
       recording: null,
       recordingStart: null,
-      recordingGate: null,
       documentLoads: 0,
+      restores: 0,
       initialNavigation: null,
       pendingInitialRequestUrl: null,
       navigationGeneration: 0,
@@ -2427,17 +2431,12 @@ const make = Effect.gen(function* () {
     return run;
   };
 
-  /** `loadsBefore` is `documentLoads` from before the caller checked the page. */
-  const startRecording = (tab: ServerTab, loadsBefore: number): Promise<Recording> => {
+  /** `restores` is the tab's count from before the caller found the page clear. */
+  const startRecording = (tab: ServerTab, restores: number): Promise<Recording> => {
     const started = withCaptureLock(tab, async () => {
       if (tab.recording) return tab.recording;
       const encoder = await contexts.scratchPage();
       let session: CDPSession | null = null;
-      const gate: RecordingGate | null = Option.isSome(browserLogins)
-        ? { state: "open", check: 0 }
-        : null;
-      tab.recordingGate = gate;
-      if (gate && tab.documentLoads !== loadsBefore) void checkGate(tab, gate);
       try {
         await encoder.evaluate(ServerBrowserPage.recordingEncoderScript(recordingFrameRate));
         // Seed idle pages before returning so an immediate stop has a frame to encode.
@@ -2445,13 +2444,6 @@ const make = Effect.gen(function* () {
           format: "jpeg",
           quality: RECORDING_SCREENCAST.quality,
         });
-        // A new document loaded since the page was checked, and the seed may show it.
-        if (gate && gate.state !== "open") {
-          throw new ServerBrowserPage.ServerBrowserOperationError(
-            "PreviewAutomationExecutionError",
-            "The page loaded another document as the recording started. Start it again.",
-          );
-        }
         await encoder.evaluate(
           ([data, width]) =>
             (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
@@ -2484,7 +2476,6 @@ const make = Effect.gen(function* () {
           void opened
             .send("Page.screencastFrameAck", { sessionId: frame.sessionId })
             .catch(constVoid);
-          if (gate && gate.state !== "open") return;
           const cssWidth = tab.page.viewportSize()?.width ?? frame.metadata.deviceWidth;
           const delivering = framesInFlight.size > 0;
           pendingFrame = [frame.data, cssWidth];
@@ -2501,11 +2492,11 @@ const make = Effect.gen(function* () {
           session: opened,
           startedAt: new Date().toISOString(),
           framesInFlight,
+          restores,
         };
         tab.recording = recording;
         return recording;
       } catch (cause) {
-        if (tab.recordingGate === gate) tab.recordingGate = null;
         await encoder.close().catch(constVoid);
         await session?.detach().catch(constVoid);
         throw cause;
@@ -2539,6 +2530,15 @@ const make = Effect.gen(function* () {
       }
     });
 
+  /**
+   * Whether a stopped recording may show a filled login. No frame is judged: after a fill, one
+   * page loaded by Back or Forward at any time in the recording, or up at its end, is enough.
+   * The page's answer comes after the event for every document loaded before it.
+   */
+  const recordingMayShowFill = async (tab: ServerTab, recording: Recording) =>
+    documentMarks.filled(tabKey(tab.threadId, tab.tabId)) !== undefined &&
+    ((await exposed(tab).catch(() => true)) || tab.restores !== recording.restores);
+
   const stopRecording = (tab: ServerTab) =>
     withCaptureLock(tab, async () => {
       const recording = tab.recording;
@@ -2570,6 +2570,9 @@ const make = Effect.gen(function* () {
               )
               .catch(constVoid);
           }
+        }
+        if (await recordingMayShowFill(tab, recording)) {
+          throw ServerBrowserLogin.loginError(RECORDING_DISCARDED);
         }
         const { mimeType, count, bytes } = await recording.encoder.evaluate(() =>
           (globalThis as unknown as EncoderWindow).__t3Recorder.stop(),
@@ -2636,7 +2639,6 @@ const make = Effect.gen(function* () {
       } finally {
         await recording.encoder.close().catch(constVoid);
         tab.recording = null;
-        tab.recordingGate = null;
       }
     });
 
@@ -3357,9 +3359,9 @@ const make = Effect.gen(function* () {
       case "waitFor":
         return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
       case "recordingStart": {
-        const loads = tab.documentLoads;
+        const restores = tab.restores;
         if (await exposed(tab).catch(() => true)) throw filledPageError();
-        const recording = await startRecording(tab, loads);
+        const recording = await startRecording(tab, restores);
         return { tabId: tab.tabId, recording: true, startedAt: recording.startedAt };
       }
     }
