@@ -5015,19 +5015,37 @@ it.live(
 );
 
 it.live("refuses a password or code too short or too broken to keep out of results", () => {
-  const server = loginServer("never", DesktopChannel.layer, (field, read) =>
-    field === "password" ? (["abc", "pass\nword"][read - 1] ?? "") : `${field}-value`,
+  const unsafe = ["abc", "pass\nword"];
+  // Each read of a password gives the next of these; a new login's is read back after its save.
+  let given = 0;
+  const server = loginServer(
+    "never",
+    DesktopChannel.layer,
+    (field) => (field === "password" ? unsafe[given++ % unsafe.length]! : `${field}-value`),
+    undefined,
+    false,
   );
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
       yield* Effect.gen(function* () {
         const { invoke } = yield* openLoginTab;
-        for (const _attempt of [1, 2]) {
+        for (const _password of unsafe) {
           const refused = yield* invoke("fillLogin").pipe(Effect.flip);
           expect(refused.message).toContain("Ask the user to sign in in the tab");
         }
-        expect(server.reads).toEqual(["g1", "g1"]);
+        // A generated password is held to the same rule: its login is saved, and nothing is filled.
+        for (const _password of unsafe) {
+          const refused = yield* invoke("fillNewLogin", { username: "ada" }).pipe(Effect.flip);
+          expect(refused.message).toContain("so it was not filled. The login");
+        }
+        expect(server.reads).toEqual([
+          "g1",
+          "g1",
+          "create good.test https://good.test ada 24",
+          "n1",
+          "n1",
+        ]);
         expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
         // Nothing was filled, so script still runs here.
         yield* invoke("evaluate", { expression: "1" });
