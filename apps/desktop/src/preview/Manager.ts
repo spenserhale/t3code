@@ -704,6 +704,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     });
     const capture = Effect.gen(function* () {
       yield* requireCurrentGuest;
+      const loads = documentLoads.get(tabId);
       yield* requireNoFill(tabId, wc);
       const image = yield* Effect.tryPromise({
         try: (_signal) => wc.capturePage(),
@@ -718,6 +719,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       yield* requireCurrentGuest;
       // A fill or Back can come while Electron captures.
       yield* requireNoFill(tabId, wc);
+      // A page Back restored can be gone again by now, so after a fill any page loaded
+      // meanwhile counts.
+      const serverTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.serverTab;
+      if (
+        documentLoads.get(tabId) !== loads &&
+        serverTab !== undefined &&
+        browserHost.filledDocuments(serverTab) > 0
+      ) {
+        return yield* new PreviewCaptureWithheldError({ tabId });
+      }
       return image;
     });
     return yield* capture.pipe(
