@@ -899,11 +899,26 @@ export const scroll = async (page: Page, input: PreviewAutomationScrollInput) =>
   await locator.evaluate((element, [x, y]) => element.scrollBy(x, y), delta);
 };
 
+/** What CDP answers for a script it ran, by `Runtime.evaluate` or any other way. */
+export interface ScriptReply {
+  readonly result: { readonly value?: unknown; readonly description?: string };
+  readonly exceptionDetails?: {
+    readonly text: string;
+    readonly exception?: { readonly description?: string };
+  };
+}
+
 /** Terminate expired page scripts so a hung expression cannot block the tab's control queue. */
 export const evaluate = async (
   cdp: CDPSession,
   input: PreviewAutomationEvaluateInput,
   timeoutMs: number,
+  /** Sends the script some other way, within the same time limit. */
+  send?: (script: {
+    readonly expression: string;
+    readonly awaitPromise: boolean;
+    readonly returnByValue: boolean;
+  }) => Promise<ScriptReply>,
 ) => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
@@ -925,19 +940,22 @@ export const evaluate = async (
     awaitPromise: input.awaitPromise ?? true,
     returnByValue: input.returnByValue ?? true,
   };
+  // A caller's own send runs every script itself, so the retry below never goes around it.
   // The devtools console's replMode allows top-level await but returns a trailing promise unawaited,
   // so it only retries what the page's parser rejected. A parse error has a scriptId but no stack and
   // ran nothing; a browser-internal rejection has neither.
-  const evaluation = cdp.send("Runtime.evaluate", params).then((classic) => {
-    const failure = classic.exceptionDetails;
-    const unparsed =
-      failure?.exception?.className === "SyntaxError" &&
-      failure.scriptId !== undefined &&
-      failure.stackTrace === undefined;
-    return unparsed && !timedOut && input.expression.includes("await")
-      ? cdp.send("Runtime.evaluate", { ...params, replMode: true })
-      : classic;
-  });
+  const evaluation: Promise<ScriptReply> = send
+    ? send(params)
+    : cdp.send("Runtime.evaluate", params).then((classic) => {
+        const failure = classic.exceptionDetails;
+        const unparsed =
+          failure?.exception?.className === "SyntaxError" &&
+          failure.scriptId !== undefined &&
+          failure.stackTrace === undefined;
+        return unparsed && !timedOut && input.expression.includes("await")
+          ? cdp.send("Runtime.evaluate", { ...params, replMode: true })
+          : classic;
+      });
   void evaluation.catch(constVoid);
   const result = await Promise.race([evaluation, expired]).finally(() => clearTimeout(timer));
   if (result.exceptionDetails) {

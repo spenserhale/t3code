@@ -8,7 +8,7 @@ import {
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
 import { loginCoversPage } from "./BrowserLogins.ts";
-import { documentId, fillCovered } from "./ServerBrowserLogin.ts";
+import { documentId, fillCovered, makeDocumentMarks } from "./ServerBrowserLogin.ts";
 
 const frameCovered = (url: string) => loginCoversPage(["https://good.test"], url);
 const NO_DEADLINE = Number.MAX_SAFE_INTEGER;
@@ -292,5 +292,51 @@ describe("filling a saved login", () => {
     expect(await documentId(cdp)).toBe(first);
     await page.reload();
     expect(await documentId(cdp)).not.toBe(first);
+  });
+});
+
+describe("keeping agent script and filled logins apart, by browser profile", () => {
+  const SITE = "https://good.test";
+  const showing =
+    (...origins: ReadonlyArray<string>) =>
+    () =>
+      origins;
+
+  it("forgets where script ran only once the profile has no page left, tab or not", () => {
+    const marks = makeDocumentMarks();
+    const profile = {};
+    const popup = {};
+    marks.open("tab", profile, showing(SITE));
+    expect(marks.admitScript("tab", [SITE])).toBeUndefined();
+    // The tab opened a window, and closed before the window became a tab.
+    marks.hold(profile, popup);
+    marks.close("tab");
+    marks.open("popup", profile, showing("https://other.test", SITE));
+    expect(() => marks.wasScripted("popup", "document")).toThrow("has run on this site");
+    expect(() => marks.markFilled("popup", "document")).toThrow("has run on this site");
+    marks.close("popup");
+    marks.release(profile, popup);
+    marks.open("next", profile, showing(SITE));
+    expect(marks.wasScripted("next", "document")).toBe(false);
+    marks.markFilled("next", "document");
+    expect(marks.admitScript("next", [SITE])).toEqual({ origin: SITE, tab: "next" });
+  });
+
+  it("keeps a tab's fills while its connection is away, and apart from other profiles", () => {
+    const marks = makeDocumentMarks();
+    const desktop = {};
+    marks.open("tab", desktop, showing(SITE));
+    marks.markFilled("tab", "document");
+    // The same tab, connected again and showing another site by now.
+    marks.open("tab", desktop, showing("https://other.test"));
+    expect(marks.filled("tab")).toEqual(new Set(["document"]));
+    marks.open("second", desktop, showing(SITE));
+    expect(marks.admitScript("second", [SITE])).toEqual({ origin: SITE, tab: "tab" });
+    // Another browser has its own storage and windows.
+    marks.open("elsewhere", {}, showing(SITE));
+    expect(marks.admitScript("elsewhere", [SITE])).toBeUndefined();
+    marks.close("tab");
+    expect(marks.filled("tab")).toBeUndefined();
+    expect(marks.admitScript("second", [SITE])).toBeUndefined();
   });
 });

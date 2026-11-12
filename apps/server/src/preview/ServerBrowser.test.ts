@@ -10,6 +10,7 @@ import { it } from "@effect/vitest";
 import {
   type BrowserLoginApproval,
   type BrowserRecordingFrameRate,
+  DEFAULT_BROWSER_PROFILE_ID,
   EnvironmentId,
   PreviewTabId,
   ProviderInstanceId,
@@ -2573,6 +2574,12 @@ const LOGIN_SITE: Partial<Record<string, string>> = {
   </script>${CODE_FIELD}`,
   "/next": "<p>next</p>",
   "/other": "<p>other</p>",
+  // Opens the login page in a window of its own, which keeps this page as its opener.
+  "/opens": `<a id="open" href="/login" target="signin">open</a>`,
+  // The login page, with a link that opens another page of the site in a window of its own.
+  "/watched": `${LOGIN_PAGE}<a id="open" href="/next" target="side">open</a>`,
+  // The login page, whose own script can open a blank window. That window is on this site too.
+  "/blank": `${LOGIN_PAGE}<button id="blank" onclick="window.open('about:blank')">blank</button>`,
   // Logs the password as JSON and names a button with it, then clears the field.
   "/quote": `<input id="user" autocomplete="username"><input id="password" type="password" oninput="
     console.log(JSON.stringify({ password: this.value }));
@@ -2591,6 +2598,10 @@ const realLoginBrowser = Effect.acquireRelease(
         contentType: "text/html",
         body: LOGIN_SITE[`/${new URL(route.request().url()).pathname.split("/")[1]}`] ?? LOGIN_PAGE,
       }),
+    );
+    // Another site, which no login is saved for.
+    await context.route("https://other.test/**", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<p>another site</p>" }),
     );
     realContext = context;
     return { browser, context };
@@ -2649,13 +2660,43 @@ const loginServer = (
   };
 };
 
+type AutomationBroker = Broker.PreviewAutomationBroker["Service"];
+
+/** Runs operations on one of the thread's tabs. */
+const onTab =
+  (broker: AutomationBroker, tabId: PreviewTabId) =>
+  <A = void>(operation: PreviewAutomationOperation, input: object = {}) =>
+    broker.invoke<A>({ scope, tabId, operation, input });
+
 /** Opens an agent tab on the login page; with no desktop to draw it, it is headless. */
 const openLoginTab = Effect.gen(function* () {
   const { broker, tabId } = yield* ready;
-  const invoke = <A = void>(operation: PreviewAutomationOperation, input: object = {}) =>
-    broker.invoke<A>({ scope, tabId, operation, input });
+  const invoke = onTab(broker, tabId);
   yield* invoke("navigate", { url: "https://good.test/login" });
   return { tabId, invoke };
+});
+
+/** Opens an agent tab in the default profile, whose browser stays open when the tab closes. */
+const openProfileTab = Effect.gen(function* () {
+  yield* ServerBrowser.ServerBrowser;
+  const broker = yield* Broker.PreviewAutomationBroker;
+  yield* Effect.yieldNow;
+  const opened = yield* broker.invoke<PreviewAutomationStatus>({
+    scope,
+    operation: "open",
+    input: { reuseExistingTab: false, show: false, profileId: DEFAULT_BROWSER_PROFILE_ID },
+  });
+  return onTab(broker, PreviewTabId.make(opened.tabId!));
+});
+
+/** Yields the tab the server makes of the next window a page opens. Run it before the window opens. */
+const nextPopupTab = Effect.gen(function* () {
+  const broker = yield* Broker.PreviewAutomationBroker;
+  const events = yield* (yield* Manager.PreviewManager).subscribeEvents;
+  return PubSub.take(events).pipe(
+    Effect.repeat({ until: (event) => event.type === "opened" }),
+    Effect.map((event) => onTab(broker, PreviewTabId.make(event.tabId))),
+  );
 });
 
 const passwordField = (context: BrowserContext) =>
@@ -2684,11 +2725,6 @@ it.live(
         const { context } = yield* realLoginBrowser;
         yield* Effect.gen(function* () {
           const { invoke } = yield* openLoginTab;
-          yield* invoke("evaluate", { expression: "document.title" });
-          const scripted = yield* invoke("fillLogin").pipe(Effect.flip);
-          expect(scripted.message).toContain("preview_evaluate ran in this page");
-
-          yield* invoke("navigate", { url: "https://good.test/login" });
           const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
           expect(filled).toMatchObject({ status: "filled", filled: ["username", "password"] });
           // Nothing else about the login, such as its vault id, reaches the agent.
@@ -2701,10 +2737,12 @@ it.live(
             value: "password-value",
             security: "disc",
           });
-          for (const operation of ["evaluate", "recordingStart"] as const) {
-            const refused = yield* invoke(operation, { expression: "1" }).pipe(Effect.flip);
-            expect(refused.message).toContain("filled a login in this tab");
-          }
+          const scripted = yield* invoke("evaluate", { expression: "1" }).pipe(Effect.flip);
+          expect(scripted.message).toContain(
+            "filled a login on this site (https://good.test) in this browser, in this tab",
+          );
+          const recorded = yield* invoke("recordingStart").pipe(Effect.flip);
+          expect(recorded.message).toContain("filled a login in this tab");
           // The page copied the password into its title.
           const status = yield* invoke<PreviewAutomationStatus>("status");
           expect(status.title).toBe("[filled by password manager]");
@@ -2828,6 +2866,259 @@ it.live("scrubs a filled password in the escaped forms a log or snapshot writes 
   );
 });
 
+const READ_OPENER_PASSWORD = 'btoa(opener.document.getElementById("password").value)';
+
+it.live("a window the agent opened cannot read a login filled in its opener", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        const opened = yield* nextPopupTab;
+        // Script runs here, and the window it opens keeps this tab as its `opener`.
+        yield* invoke("evaluate", { expression: 'window.open("https://good.test/next"); 1' });
+        const popup = yield* opened;
+        yield* popup("waitFor", { text: "next" });
+        // A fresh document in the first tab, which no script ran in.
+        yield* invoke("navigate", { url: "https://good.test/login" });
+        const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+        expect(refused.message).toContain("has run on this site (https://good.test)");
+        expect(refused.message).toContain("Close this browser's tabs");
+        // Base64 would pass scrubbing, so the password must not be there to read.
+        expect(yield* popup("evaluate", { expression: READ_OPENER_PASSWORD })).toBe("");
+        expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+        expect(server.reads).toEqual([]);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a login is not filled while script left running in another window could read it", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        const opened = yield* nextPopupTab;
+        yield* invoke("navigate", { url: "https://good.test/watched" });
+        yield* invoke("click", { locator: "#open" });
+        const popup = yield* opened;
+        yield* popup("waitFor", { text: "next" });
+        // No script ran in the login tab. The window it opened watches it from a timer.
+        yield* popup("evaluate", {
+          expression: `setInterval(() => {
+            const seen = opener.document.getElementById("password").value;
+            if (seen) window.seen = seen;
+          }, 1); 1`,
+        });
+        const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+        expect(refused.message).toContain("has run on this site");
+        expect(yield* Effect.promise(() => context.pages()[1]!.evaluate("window.seen"))).toBe(
+          undefined,
+        );
+        expect(server.reads).toEqual([]);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a tab cannot read a login filled in a window it opened", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        const opened = yield* nextPopupTab;
+        yield* invoke("navigate", { url: "https://good.test/opens" });
+        yield* invoke("click", { locator: "#open" });
+        const popup = yield* opened;
+        yield* popup("waitFor", { locator: "#password" });
+        expect((yield* popup<PreviewAutomationFillLoginResult>("fillLogin")).status).toBe("filled");
+        const refused = yield* invoke("evaluate", {
+          expression: 'btoa(window.open("", "signin").document.getElementById("password").value)',
+        }).pipe(Effect.flip);
+        expect(refused.message).toContain("filled a login on this site");
+        expect(refused.message).toContain("Close that tab");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a blank window a filled site opened runs no script, being on that site", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        const opened = yield* nextPopupTab;
+        yield* invoke("navigate", { url: "https://good.test/blank" });
+        yield* invoke("click", { locator: "#blank" });
+        const popup = yield* opened;
+        expect((yield* invoke<PreviewAutomationFillLoginResult>("fillLogin")).status).toBe(
+          "filled",
+        );
+        expect((yield* popup<PreviewAutomationStatus>("status")).url).toBeNull();
+        const refused = yield* popup("evaluate", { expression: READ_OPENER_PASSWORD }).pipe(
+          Effect.flip,
+        );
+        expect(refused.message).toContain("filled a login on this site");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a site the agent ran script on takes no login until the browser's tabs are closed", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const invoke = yield* openProfileTab;
+        yield* invoke("navigate", { url: "https://good.test/login" });
+        yield* invoke("evaluate", { expression: "document.title" });
+        // In the page the script ran in, and in the one a reload loads.
+        for (const _page of ["scripted", "reloaded"]) {
+          const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(refused.message).toContain("has run on this site");
+          yield* invoke("navigate", { url: "https://good.test/login" });
+        }
+        expect(server.reads).toEqual([]);
+        // With every tab closed no page is left for script to live in.
+        yield* invoke("close");
+        const again = yield* openProfileTab;
+        yield* again("navigate", { url: "https://good.test/login" });
+        expect((yield* again<PreviewAutomationFillLoginResult>("fillLogin")).status).toBe("filled");
+        expect((yield* passwordField(context)).value).toBe("password-value");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live(
+  "a site a login was filled on runs no script until the tab it was filled in is closed",
+  () => {
+    const server = loginServer("never", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const invoke = yield* openProfileTab;
+          yield* invoke("navigate", { url: "https://good.test/login" });
+          yield* invoke("fillLogin");
+          const other = yield* openProfileTab;
+          yield* other("navigate", { url: "https://good.test/next" });
+          const refused = yield* other("evaluate", { expression: "1 + 1" }).pipe(Effect.flip);
+          expect(refused.message).toContain("filled a login on this site");
+          // Another site in the same browser is not held back.
+          yield* other("navigate", { url: "https://other.test/" });
+          expect(yield* other("evaluate", { expression: "1 + 1" })).toBe(2);
+          yield* other("navigate", { url: "https://good.test/next" });
+          expect(
+            (yield* other("evaluate", { expression: "1 + 1" }).pipe(Effect.flip)).message,
+          ).toContain("filled a login on this site");
+          // The filled value went with its tab and that tab's history.
+          yield* invoke("close");
+          expect(yield* other("evaluate", { expression: "1 + 1" })).toBe(2);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+/** Holds one tab's commands at a chosen one until released. */
+const holdCommands = (context: BrowserContext) => {
+  const hold = {
+    /** Whether a command, sent for the page at this index among the browser's, is the one. */
+    at: (_page: number, _method: string, _params: string) => false,
+    reached: Promise.withResolvers<void>(),
+    release: Promise.withResolvers<void>(),
+  };
+  const newCDPSession = context.newCDPSession.bind(context);
+  context.newCDPSession = async (target) => {
+    const session = await newCDPSession(target);
+    const send = session.send.bind(session) as (
+      method: string,
+      params?: object,
+    ) => Promise<unknown>;
+    Object.assign(session, {
+      send: async (method: string, params?: object) => {
+        const page = context.pages().indexOf(target as Page);
+        if (hold.at(page, method, JSON.stringify(params ?? {}))) {
+          hold.at = () => false;
+          hold.reached.resolve();
+          await hold.release.promise;
+        }
+        return send(method, params);
+      },
+    });
+    return session;
+  };
+  return hold;
+};
+
+it.live.each([
+  {
+    name: "the script runs between the fill's check and its mark",
+    held: "fill" as const,
+    at: (() => {
+      let trees = 0;
+      // The fill names its document, checks for script, and names the document again.
+      return (page: number, method: string) =>
+        page === 0 && method === "Page.getFrameTree" && ++trees === 2;
+    })(),
+    wins: "evaluate" as const,
+  },
+  {
+    name: "the fill runs between the script's check and its start",
+    held: "evaluate" as const,
+    at: (page: number, _method: string, params: string) => page === 1 && params.includes("racing"),
+    wins: "evaluate" as const,
+  },
+  {
+    name: "the script runs between the fill's mark and its write",
+    held: "fill" as const,
+    at: (page: number, method: string, params: string) =>
+      page === 0 && method === "Page.createIsolatedWorld" && params.includes("login-fill"),
+    wins: "fill" as const,
+  },
+])("a fill and a script racing on one site never both go through: $name", ({ held, at, wins }) => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      const hold = holdCommands(context);
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        const other = yield* openProfileTab;
+        yield* other("navigate", { url: "https://good.test/next" });
+        const fill = invoke<PreviewAutomationFillLoginResult>("fillLogin").pipe(Effect.result);
+        const evaluate = other<string>("evaluate", { expression: '"racing"' }).pipe(Effect.result);
+        hold.at = at;
+        const first = yield* (held === "fill" ? fill : evaluate).pipe(Effect.forkScoped);
+        yield* Effect.promise(() => hold.reached.promise);
+        const second = yield* held === "fill" ? evaluate : fill;
+        hold.release.resolve();
+        const outcomes = {
+          [held]: yield* Fiber.join(first),
+          [held === "fill" ? "evaluate" : "fill"]: second,
+        };
+        expect(outcomes[wins]?._tag).toBe("Success");
+        const lost = outcomes[wins === "fill" ? "evaluate" : "fill"];
+        expect(lost?._tag === "Failure" && lost.failure.message).toContain(
+          wins === "fill" ? "filled a login on this site" : "has run on this site",
+        );
+        // The script that lost never ran, and the one that won saw no password.
+        if (outcomes.evaluate?._tag === "Success") expect(outcomes.evaluate.success).toBe("racing");
+        expect((yield* passwordField(context)).value).toBe(wins === "fill" ? "password-value" : "");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
 /** Fills a code into a field the page draws again, then leaves for another page. */
 const fillCodeAndLeave = (
   invoke: Effect.Success<typeof openLoginTab>["invoke"],
@@ -2862,10 +3153,10 @@ it.live(
           yield* Effect.promise(() => page.goBack());
           expect(yield* codeField(page)).toBe("totp-value");
           yield* withheld;
-          for (const operation of ["evaluate", "recordingStart"] as const) {
-            const refused = yield* invoke(operation, { expression: "1" }).pipe(Effect.flip);
-            expect(refused.message).toContain("Back or Forward");
-          }
+          const scripted = yield* invoke("evaluate", { expression: "1" }).pipe(Effect.flip);
+          expect(scripted.message).toContain("filled a login on this site");
+          const recorded = yield* invoke("recordingStart").pipe(Effect.flip);
+          expect(recorded.message).toContain("Back or Forward");
           // The page moves to an address no filled page showed, still holding the code.
           for (const change of ["pushState", "replaceState"] as const) {
             yield* Effect.promise(() =>
@@ -2916,7 +3207,7 @@ it.live("a restored page that gives itself a new address as it loads takes no im
 });
 
 it.live(
-  "after a fill, any page Back reaches runs no script and shows no images until it is reloaded",
+  "after a fill, a page Back reaches shows no images until reloaded, and runs script only on another site",
   () => {
     const server = loginServer("never", DesktopChannel.layer);
     return Effect.scoped(
@@ -2924,21 +3215,36 @@ it.live(
         const { context } = yield* realLoginBrowser;
         yield* Effect.gen(function* () {
           const { invoke } = yield* openLoginTab;
+          yield* invoke("navigate", { url: "https://other.test/before" });
           yield* fillCodeAndLeave(invoke);
-          yield* invoke("navigate", { url: "https://good.test/other" });
           const page = context.pages()[0]!;
-          // Back to a page that never held a fill, at an address no filled page showed.
+          // Back past the filled page to another site. Its script can reach no page of the
+          // filled one, while its pixels came up the way a filled page's would.
           yield* Effect.promise(() => page.goBack());
+          expect(yield* codeField(page)).toBe("totp-value");
+          yield* Effect.promise(() => page.goBack());
+          expect(page.url()).toBe("https://other.test/before");
+          expect(yield* invoke("evaluate", { expression: "1 + 1" })).toBe(2);
+          const elsewhere = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(elsewhere.screenshot).toBeUndefined();
+          expect(elsewhere.imagesOff).toContain("Back or Forward");
+          // Forward to a page of the filled site that never held a fill.
+          yield* Effect.promise(() => page.goForward());
+          yield* Effect.promise(() => page.goForward());
           expect(page.url()).toBe("https://good.test/next");
-          const refused = yield* invoke("evaluate", { expression: "1" }).pipe(Effect.flip);
-          expect(refused.message).toContain("Back or Forward");
-          expect(refused.message).toContain("preview_navigate");
+          const refused = Effect.gen(function* () {
+            const scripted = yield* invoke("evaluate", { expression: "1" }).pipe(Effect.flip);
+            expect(scripted.message).toContain("filled a login on this site");
+          });
+          yield* refused;
           const reached = yield* invoke<PreviewAutomationSnapshot>("snapshot");
           expect(reached.screenshot).toBeUndefined();
+          expect(reached.imagesOff).toContain("preview_navigate");
           yield* Effect.promise(() => page.reload());
-          expect(yield* invoke("evaluate", { expression: "1 + 1" })).toBe(2);
           const reloaded = yield* invoke<PreviewAutomationSnapshot>("snapshot");
           expect(reloaded.screenshot?.mimeType).toBe("image/png");
+          // The site still has the login in this tab's history.
+          yield* refused;
         }).pipe(Effect.provide(server.layer));
       }),
     );
