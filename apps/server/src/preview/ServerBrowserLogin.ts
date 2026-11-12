@@ -361,18 +361,30 @@ export const frameOrigins = (page: Page): ReadonlyArray<string> => [
   ...new Set(page.frames().flatMap((frame) => originsOf(frame.url()))),
 ];
 
-// A blank page's address has no origin; `self.origin` is the one it inherited from its opener.
-const SCRIPT_ORIGINS = "[location.origin, self.origin]";
+// Each is called on a page's own global object. A blank page's address has no origin;
+// `origin` is the one it inherited from its opener, unless the page made that name its own.
+const SCRIPT_ORIGINS = `function () {
+  const own = this.origin;
+  return [location.origin, typeof own === "string" ? own : null];
+}`;
+// Runs the source as a script of the page, with its last value, as `Runtime.evaluate` does.
+const RUN_SCRIPT = "function (source) { return (0, eval)(source); }";
+const PAGE_MOVED =
+  "The page loaded another document before the script ran, so it did not run. Call preview_evaluate again.";
 
 const UNKNOWN_SITE =
   "This page does not say which site it is on, so preview_evaluate did not run. Load the page again with preview_navigate.";
 
 /** The origins a page's script runs on, from the page's answer to `SCRIPT_ORIGINS`. */
 const scriptOrigins = (answer: unknown): ReadonlyArray<string> => {
-  if (!Array.isArray(answer) || answer.length !== 2) throw loginError(UNKNOWN_SITE);
-  const origins = answer.filter((origin): origin is string => typeof origin === "string");
-  if (origins.length !== 2) throw loginError(UNKNOWN_SITE);
-  return [...new Set(origins)].filter((origin) => origin !== "null");
+  const [address, own] = Array.isArray(answer) ? (answer as ReadonlyArray<unknown>) : [];
+  // Only a page with an address of its own can do without the origin it would have inherited.
+  if (typeof address !== "string" || (typeof own !== "string" && address === "null")) {
+    throw loginError(UNKNOWN_SITE);
+  }
+  return [...new Set([address, own ?? address])].filter(
+    (origin): origin is string => typeof origin === "string" && origin !== "null",
+  );
 };
 
 /** The origin a page's main frame shows by its address, if that has one. */
@@ -381,7 +393,8 @@ export const pageOrigins = async (cdp: CDPSession): Promise<ReadonlyArray<string
 
 /**
  * Runs agent script in a page once `admit` has taken the origins it will run on. `admit` throws
- * to refuse them.
+ * to refuse them. The script runs in the page that was asked and nowhere else: an object's id
+ * dies with its document, so a page loaded in between fails the call.
  */
 export const evaluateAdmitted = (
   cdp: CDPSession,
@@ -389,13 +402,23 @@ export const evaluateAdmitted = (
   timeoutMs: number,
   admit: (origins: ReadonlyArray<string>) => void,
 ) =>
-  evaluate(cdp, input, timeoutMs, async (script) => {
-    const { result, exceptionDetails } = await cdp.send("Runtime.evaluate", {
-      expression: SCRIPT_ORIGINS,
-      returnByValue: true,
-    });
-    admit(scriptOrigins(exceptionDetails === undefined ? result.value : undefined));
-    return cdp.send("Runtime.evaluate", script);
+  evaluate(cdp, input, timeoutMs, async ({ expression, ...options }) => {
+    const { result: page } = await cdp.send("Runtime.evaluate", { expression: "this" });
+    const objectId = page.objectId;
+    if (objectId === undefined) throw loginError(UNKNOWN_SITE);
+    const onPage = (functionDeclaration: string, rest: object) =>
+      cdp
+        .send("Runtime.callFunctionOn", { objectId, functionDeclaration, ...rest })
+        .catch((cause: unknown) => {
+          throw String(cause).includes("Cannot find context") ? loginError(PAGE_MOVED) : cause;
+        });
+    try {
+      const { result, exceptionDetails } = await onPage(SCRIPT_ORIGINS, { returnByValue: true });
+      admit(scriptOrigins(exceptionDetails === undefined ? result.value : undefined));
+      return await onPage(RUN_SCRIPT, { arguments: [{ value: expression }], ...options });
+    } finally {
+      void cdp.send("Runtime.releaseObject", { objectId }).catch(() => undefined);
+    }
   });
 
 /**
