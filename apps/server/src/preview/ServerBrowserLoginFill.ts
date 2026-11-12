@@ -29,11 +29,15 @@ export interface LoginFillContext extends BrowserSecretAccess.SecretAccessContex
     | "recordApproval"
     | "check"
   >;
-  /** Whether the agent ran script in this document of the tab, where it could hook a fill. */
+  /**
+   * Refuses, by throwing, a page with a frame on a site the agent's script has run on in this
+   * browser, where it could hook a fill. `document` is the page as `documentId` named it.
+   */
   readonly wasScripted: (document: string) => boolean;
   /**
-   * Marks this document of the tab as holding a filled login: script, images and recording stay
-   * off there, and a desktop drawing the tab is told before any write.
+   * Refuses the same again and in that step marks the page as holding a filled login: script
+   * stays off its sites and images and recording off the page, and a desktop drawing the tab is
+   * told before any write.
    */
   readonly markFilled: (document: string) => Promise<void>;
   /** Adds filled values to what later results are scrubbed of. */
@@ -113,7 +117,7 @@ export const fillLogin = async (
       : `The login "${login.title}" has no ${absent.join(" or ")}.`;
   };
 
-  /** The document a fill may go into: no recording, and no agent script in it. */
+  /** The page a fill may go into, as named for it: no recording, no agent script on its sites. */
   const fillableDocument = async () => {
     if (tab.recording || tab.recordingStart) {
       throw loginError(
