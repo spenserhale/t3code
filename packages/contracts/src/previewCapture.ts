@@ -30,7 +30,7 @@ export class PreviewCaptureFailure extends Schema.TaggedError<PreviewCaptureFail
       case "login-filled":
         return this.stage === "recording-save"
           ? "The recording was not saved. The password manager filled a login in this tab while it recorded, or the tab went Back or Forward after one, and such a page can show the login. Record again without Back or Forward, or reload the page first."
-          : "The password manager filled a login in this tab, and this page holds it or was reached with Back or Forward, which can bring it back. It is not captured until it is reloaded.";
+          : "The password manager filled a login in this tab, and this page may show it: it holds the login, was reached with Back or Forward, or changed while it was captured. Reload the page and try again.";
     }
   }
 }
