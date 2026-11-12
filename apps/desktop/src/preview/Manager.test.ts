@@ -562,13 +562,14 @@ const makeTestPictureInPictureWindow = (loadURL: () => Promise<void> = async () 
 const makeServerGuest = () => {
   const page = { loaderId: "doc-1", loadedBy: "navigate", url: "https://good.test/login" };
   const listeners: Array<readonly [string, (...args: Array<unknown>) => void]> = [];
-  const capturePage = vi.fn(async () => ({
+  const image = {
     isEmpty: () => false,
     getSize: () => ({ width: 2000, height: 1200 }),
     toPNG: () => Buffer.from("png"),
     toJPEG: () => Buffer.from("jpeg"),
     toDataURL: () => "data:image/png;base64,full",
-  }));
+  };
+  const capturePage = vi.fn(async () => image);
   const sendCommand = vi.fn(async (method: string): Promise<unknown> => {
     if (method === "Page.getFrameTree") {
       return { frameTree: { frame: { id: "main", loaderId: page.loaderId } } };
@@ -596,6 +597,7 @@ const makeServerGuest = () => {
   return {
     guest,
     page,
+    image,
     capturePage,
     sendCommand,
     emit,
@@ -2097,6 +2099,60 @@ describe("PreviewManager", () => {
         expect((yield* Effect.flip(capture))._tag).toBe("PreviewCaptureWithheldError");
       }
       expect(capturePage).toHaveBeenCalledOnce();
+    }).pipe(Effect.provide(managerLayer()), Effect.scoped),
+  );
+
+  effectIt.effect("keeps no screenshot a filled login may have got into while it was taken", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.DesktopBrowserHost;
+      const serverTab = { threadId: "thread-1", tabId: "server-tab-1" };
+      const guest = makeServerGuest();
+      fromId.mockReturnValue(guest.guest);
+      const manager = yield* PreviewManager.PreviewManager;
+      yield* manager.createTab("tab_1", { serverTab });
+      yield* manager.registerWebview("tab_1", 42);
+      const fill = (document: string) =>
+        host.handleCommandLine(JSON.stringify({ type: "loginFilled", ...serverTab, document }));
+      /** Takes a screenshot during which `meanwhile` happens. */
+      const captureWhile = (meanwhile: Effect.Effect<void>) =>
+        Effect.gen(function* () {
+          const capturing = Promise.withResolvers<void>();
+          const captured = Promise.withResolvers<void>();
+          guest.capturePage.mockImplementationOnce(async () => {
+            capturing.resolve();
+            await captured.promise;
+            return guest.image;
+          });
+          const capture = yield* Effect.exit(manager.captureScreenshot("tab_1")).pipe(
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* Effect.promise(() => capturing.promise);
+          yield* meanwhile;
+          captured.resolve();
+          return yield* Fiber.join(capture);
+        });
+      const loads = (...pages: ReadonlyArray<readonly [loaderId: string, loadedBy: string]>) =>
+        Effect.sync(() => pages.forEach((page) => guest.load(...page)));
+      const withheld = (exit: Exit.Exit<unknown, PreviewManager.PreviewManagerError>) =>
+        expect(Exit.isFailure(exit) && Cause.findErrorOption(exit.cause)).toMatchObject({
+          value: { _tag: "PreviewCaptureWithheldError" },
+        });
+
+      // With no login filled in the tab, a page that loads meanwhile changes nothing.
+      expect(Exit.isSuccess(yield* captureWhile(loads(["doc-2", "navigate"])))).toBe(true);
+      expect(writeFile).toHaveBeenCalledOnce();
+
+      yield* fill("doc-0");
+      // Back brings up a page and it leaves again: clear before and clear after, but not between.
+      withheld(yield* captureWhile(loads(["doc-3", "back_forward"], ["doc-4", "navigate"])));
+      // A login is filled into the page as it is captured.
+      withheld(yield* captureWhile(fill("doc-4")));
+      expect(guest.capturePage).toHaveBeenCalledTimes(3);
+      expect(writeFile).toHaveBeenCalledOnce();
+
+      guest.load("doc-5", "navigate");
+      expect(Exit.isSuccess(yield* captureWhile(Effect.void))).toBe(true);
+      expect(writeFile).toHaveBeenCalledTimes(2);
     }).pipe(Effect.provide(managerLayer()), Effect.scoped),
   );
 
