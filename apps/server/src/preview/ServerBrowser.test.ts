@@ -4966,6 +4966,15 @@ const passwordField = (context: BrowserContext) =>
       }),
   );
 
+/** The main document the tab's page shows, as the browser names it. */
+const shownDocument = (context: BrowserContext) =>
+  Effect.promise(async () => {
+    const session = await context.newCDPSession(context.pages()[0]!);
+    const { frameTree } = await session.send("Page.getFrameTree");
+    await session.detach();
+    return frameTree.frame.loaderId;
+  });
+
 it.live(
   "a headless tab is filled without asking under Don't ask, behind the same page guards",
   () => {
@@ -6306,13 +6315,13 @@ it.live("a desktop that draws the tab is told of a new password before it is wri
       pointer: () => Effect.void,
       turn: () => Effect.void,
       approveLogin: () => Effect.succeed(false),
-      // What the page's fields hold as the desktop hears of the fill.
-      loginFilled: (key) =>
-        newPasswordFields(realContext!).pipe(
-          Effect.map((fields) => {
-            told.push({ key, written: fields.map((field) => field.value) });
-          }),
-        ),
+      // What the page shows and holds as the desktop hears of the fill.
+      loginFilled: (key, document) =>
+        Effect.gen(function* () {
+          const shown = yield* shownDocument(realContext!);
+          const fields = yield* newPasswordFields(realContext!);
+          told.push({ key, document, shown, written: fields.map((field) => field.value) });
+        }),
     }),
   );
   return Effect.scoped(
@@ -6325,11 +6334,11 @@ it.live("a desktop that draws the tab is told of a new password before it is wri
       );
       yield* Effect.gen(function* () {
         const { tabId, invoke } = yield* openLoginTab;
+        const key = { threadId: scope.thread.threadId, tabId };
         yield* invoke("navigate", { url: "https://www.good.test/signup" });
+        const first = yield* shownDocument(context);
         yield* invoke("fillNewLogin", { username: "ada@example.com" });
-        expect(told).toEqual([
-          { key: { threadId: scope.thread.threadId, tabId }, written: ["", ""] },
-        ]);
+        expect(told).toEqual([{ key, document: first, shown: first, written: ["", ""] }]);
         expect((yield* newPasswordFields(context)).map((field) => field.value)).toEqual([
           "generated-24",
           "generated-24",
