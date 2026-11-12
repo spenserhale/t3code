@@ -1306,7 +1306,7 @@ export interface DesktopPreviewBridge {
       tabId: string,
       mimeType: string,
       data: Uint8Array,
-    ) => Promise<DesktopPreviewRecordingArtifact>;
+    ) => Promise<DesktopPreviewRecordingArtifact | PreviewCaptureFailureEncoded>;
   };
   onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => () => void;
   onPointerEvent: (listener: (event: DesktopPreviewPointerEvent) => void) => () => void;

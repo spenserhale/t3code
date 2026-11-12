@@ -2100,6 +2100,119 @@ describe("PreviewManager", () => {
     }).pipe(Effect.provide(managerLayer()), Effect.scoped),
   );
 
+  effectIt.effect.each<{
+    readonly name: string;
+    readonly saved: boolean;
+    /** What happens to the tab while it records. */
+    readonly during: (tab: {
+      readonly guest: ReturnType<typeof makeServerGuest>;
+      readonly fill: (document: string) => Effect.Effect<void>;
+    }) => Effect.Effect<void>;
+  }>([
+    {
+      name: "keeps one across fresh visits and a reload",
+      saved: true,
+      during: ({ guest }) =>
+        Effect.gen(function* () {
+          guest.load("doc-2", "navigate");
+          yield* flushMicrotasks();
+          guest.load("doc-3", "reload");
+          yield* flushMicrotasks();
+        }),
+    },
+    {
+      name: "saves none a login was filled during",
+      saved: false,
+      during: ({ guest, fill }) =>
+        Effect.gen(function* () {
+          yield* fill("doc-1");
+          // The filled page is gone again by the time the recording is saved.
+          guest.load("doc-2", "navigate");
+          yield* flushMicrotasks();
+        }),
+    },
+    {
+      name: "saves none the tab went Back in, though a fresh page followed",
+      saved: false,
+      during: ({ guest }) =>
+        Effect.gen(function* () {
+          guest.load("doc-2", "back_forward");
+          yield* flushMicrotasks();
+          guest.load("doc-3", "navigate");
+          yield* flushMicrotasks();
+        }),
+    },
+    {
+      name: "saves none with a page that was gone before it could be asked",
+      saved: false,
+      during: ({ guest }) =>
+        Effect.gen(function* () {
+          const asked = Promise.withResolvers<unknown>();
+          guest.sendCommand.mockImplementationOnce(() => asked.promise);
+          guest.load("doc-2", "back_forward");
+          yield* flushMicrotasks();
+          // The next page loads first, so the answer describes it and not the one asked about.
+          guest.load("doc-3", "navigate");
+          asked.resolve({ frameTree: { frame: { id: "main", loaderId: "doc-3" } } });
+          yield* flushMicrotasks();
+        }),
+    },
+    {
+      name: "saves none that ends on a page that may show a fill, however it got there",
+      saved: false,
+      during: ({ guest }) =>
+        Effect.sync(() => void Object.assign(guest.page, { loadedBy: "back_forward" })),
+    },
+    {
+      name: "saves none with a page that could not be asked",
+      saved: false,
+      during: ({ guest }) =>
+        Effect.gen(function* () {
+          guest.sendCommand.mockRejectedValueOnce(new Error("No debugger attached."));
+          guest.load("doc-2", "navigate");
+          yield* flushMicrotasks();
+          guest.load("doc-3", "navigate");
+          yield* flushMicrotasks();
+        }),
+    },
+  ])("after a login was filled in a tab, $name", ({ saved, during }) =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.DesktopBrowserHost;
+      const serverTab = { threadId: "thread-1", tabId: "server-tab-1" };
+      const guest = makeServerGuest();
+      fromId.mockReturnValue(guest.guest);
+      const manager = yield* PreviewManager.PreviewManager;
+      yield* manager.createTab("tab_1", { serverTab });
+      yield* manager.registerWebview("tab_1", 42);
+      const fill = (document: string) =>
+        host.handleCommandLine(JSON.stringify({ type: "loginFilled", ...serverTab, document }));
+      // In an earlier page of the tab; the one it shows now is clear.
+      yield* fill("doc-0");
+
+      yield* manager.startRecording("tab_1");
+      yield* during({ guest, fill });
+      yield* manager.stopRecording("tab_1");
+      const save = yield* Effect.exit(
+        manager.saveRecording("tab_1", "video/webm", new Uint8Array([1, 2, 3])),
+      );
+      if (saved) {
+        expect(Exit.isSuccess(save)).toBe(true);
+        expect(writeFile).toHaveBeenCalledOnce();
+        return;
+      }
+      expect(Exit.isFailure(save) && Cause.findErrorOption(save.cause)).toMatchObject({
+        value: { _tag: "PreviewCaptureWithheldError" },
+      });
+      expect(writeFile).not.toHaveBeenCalled();
+      // The next recording is judged on its own.
+      guest.load("doc-9", "navigate");
+      yield* manager.startRecording("tab_1");
+      yield* manager.stopRecording("tab_1");
+      yield* manager.saveRecording("tab_1", "video/webm", new Uint8Array([1, 2, 3]));
+      expect(writeFile).toHaveBeenCalledOnce();
+    }).pipe(Effect.provide(managerLayer()), Effect.scoped),
+  );
+
   effectIt.effect(
     "asks the client to paint a navigated server tab while the agent captures it",
     () =>
