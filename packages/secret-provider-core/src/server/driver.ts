@@ -211,9 +211,7 @@ export const defineSecretProviderDriver = <Config>(driver: {
               ? {}
               : {
                   lookup: (config, reference) =>
-                    isConfig(config)
-                      ? lookupLogin(config, reference)
-                      : Effect.sync(() => undefined),
+                    isConfig(config) ? lookupLogin(config, reference) : Effect.undefined,
                 }),
             ...(create === undefined
               ? {}
@@ -240,9 +238,7 @@ export const defineSecretProviderDriver = <Config>(driver: {
               ? {}
               : {
                   lookup: (config, reference) =>
-                    isConfig(config)
-                      ? lookupIdentity(config, reference)
-                      : Effect.sync(() => undefined),
+                    isConfig(config) ? lookupIdentity(config, reference) : Effect.undefined,
                 }),
           },
         }),

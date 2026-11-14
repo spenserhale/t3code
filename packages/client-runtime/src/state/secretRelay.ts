@@ -19,10 +19,10 @@ import {
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FiberMap from "effect/FiberMap";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom, AtomRegistry } from "effect/reactivity";
@@ -105,7 +105,10 @@ export interface SecretRelayChannel<E, ResolveError, AnswerError> {
   readonly answer: (input: SecretRelayAnswerInput) => Effect.Effect<void, AnswerError>;
 }
 
-class SecretRelayResolveError extends Data.TaggedError("SecretRelayResolveError") {}
+class SecretRelayResolveError extends Schema.TaggedError<SecretRelayResolveError>()(
+  "SecretRelayResolveError",
+  {},
+) {}
 
 // Fixed, because a failure can quote what it was decoding, and that may be a value.
 const UNREACHABLE: SecretRelayAnswer = {
