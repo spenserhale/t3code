@@ -1,9 +1,9 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - rmdir refuses a folder with anything in it, and stat can give ids too big for a number; Effect's FileSystem offers neither.
 import * as NodeFSP from "node:fs/promises";
 
-import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 
 export type WorktreeRelease =
   | { readonly released: true }
@@ -20,11 +20,14 @@ export interface WorktreeReservation {
   readonly release: Effect.Effect<WorktreeRelease>;
 }
 
-class WorktreeReservationError extends Data.TaggedError("WorktreeReservationError")<{
-  /** The path was there already, empty or not. */
-  readonly taken: boolean;
-  readonly cause: unknown;
-}> {}
+class WorktreeReservationError extends Schema.TaggedError<WorktreeReservationError>()(
+  "WorktreeReservationError",
+  {
+    /** The path was there already, empty or not. */
+    taken: Schema.Boolean,
+    cause: Schema.Defect(),
+  },
+) {}
 
 interface FolderIoError {
   readonly code: string | undefined;
@@ -62,7 +65,11 @@ export const reserveWorktreeFolder = Effect.fn("WorktreeReservation.reserve")(fu
       new WorktreeReservationError({ taken: folderIoError(cause).code === "EEXIST", cause }),
   });
   const identity = yield* identityOf(folder).pipe(
-    Effect.tapError(() => Effect.tryPromise(() => NodeFSP.rmdir(folder)).pipe(Effect.ignore)),
+    Effect.tapError(() =>
+      Effect.tryPromise({ try: () => NodeFSP.rmdir(folder), catch: folderIoError }).pipe(
+        Effect.ignore,
+      ),
+    ),
     Effect.mapError((cause) => new WorktreeReservationError({ taken: false, cause })),
   );
 
