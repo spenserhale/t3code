@@ -14,12 +14,15 @@ import {
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
+import * as Schema from "effect/Schema";
 
 import type * as SecretRelay from "../secrets/SecretRelay.ts";
 import * as BrowserLogins from "./BrowserLogins.ts";
 import type * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import { loginError } from "./ServerBrowserLogin.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
+
+const isServerBrowserOperationError = Schema.is(ServerBrowserPage.ServerBrowserOperationError);
 
 export interface SecretAccessServices {
   readonly logins: Pick<
@@ -56,9 +59,7 @@ export const callRunners = (
     run(
       effect.pipe(
         Effect.mapError((error) =>
-          error.cause instanceof ServerBrowserPage.ServerBrowserOperationError
-            ? error.cause
-            : loginError(error.message),
+          isServerBrowserOperationError(error.cause) ? error.cause : loginError(error.message),
         ),
         Effect.catchDefect(() => Effect.fail(loginError("The password manager failed."))),
       ),
