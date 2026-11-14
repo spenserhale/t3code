@@ -3764,6 +3764,7 @@ const approvingDesktop = (
     detached: Stream.empty,
     attached: Stream.empty,
     isAttached: () => Effect.succeed(false),
+    isShown: () => false,
     endpoint: () => Effect.die("The desktop does not draw this tab."),
     pointer: () => Effect.void,
     turn: () => Effect.void,
