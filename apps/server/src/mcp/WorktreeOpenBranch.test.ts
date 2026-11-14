@@ -90,7 +90,7 @@ const failureOf = <A>(effect: Effect.Effect<A, OrchestratorMcpFailure>) =>
 const makeService = (repo: Repository) => {
   let made = 0;
   const gitWorkflow = Layer.mock(GitWorkflowService.GitWorkflowService)({
-    isRepository: () => Effect.succeed(true),
+    repositoryRoot: () => Effect.succeed(root),
     remoteExists: ({ remoteName }) => Effect.succeed(remoteName in repo.remotes),
     fetchWorktreeBaseCommit: ({ refName }) => {
       repo.log.push(`fetch ${refName}`);

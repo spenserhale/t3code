@@ -307,7 +307,10 @@ const make = Effect.gen(function* () {
     branch: string,
     input: WorktreeOpenBranchInput,
   ) {
-    if (!(yield* gitWorkflow.isRepository(cwd).pipe(Effect.orElseSucceed(() => false)))) {
+    const repositoryRoot = yield* gitWorkflow
+      .repositoryRoot(cwd)
+      .pipe(Effect.orElseSucceed(() => null));
+    if (repositoryRoot === null) {
       return yield* failure(
         "invalid_request",
         `Project workspace '${cwd}' is not a git repository.`,

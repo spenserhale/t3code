@@ -115,6 +115,21 @@ const postCheckout = (box: string, script: string) =>
 /** One that fails, as a project's own can. */
 const failOnCheckout = (box: string) => postCheckout(box, "exit 1");
 
+/** The folder the driver gives a worktree of `feature`, found by making one and taking it back. */
+const featureFolder = (box: string) =>
+  Effect.gen(function* () {
+    const git = yield* GitVcsDriver.GitVcsDriver;
+    const made = yield* git.createWorktree({
+      cwd: box,
+      refName: "origin/feature",
+      newRefName: "feature",
+      path: null,
+    });
+    yield* git.removeWorktree({ cwd: box, path: made.worktree.path });
+    yield* git.deleteLocalBranch({ cwd: box, refName: "feature", force: true });
+    return made.worktree.path;
+  });
+
 /** `between` runs once the opener has looked at the branches, and before it asks git for a worktree. */
 const open = (
   box: string,
@@ -137,7 +152,7 @@ const open = (
       Layer.succeed(GitVcsDriver.GitVcsDriver, git),
       // The driver is what GitWorkflowService hands these calls to.
       Layer.mock(GitWorkflowService.GitWorkflowService)({
-        isRepository: () => Effect.succeed(true),
+        repositoryRoot: () => Effect.succeed(box),
         remoteExists: (request) => git.remoteExists(request),
         fetchWorktreeBaseCommit: (request) => git.fetchWorktreeBaseCommit(request),
         listRefs: (request) => git.listRefs(request),
@@ -239,10 +254,9 @@ it.effect("does not fetch a branch the remote lacks, nor leave a stale one to be
 it.effect("takes back what a failed checkout made, and leaves what was there before", () =>
   Effect.gen(function* () {
     const { run, fileSystem, path, box } = yield* makeRepositories;
-    const { worktreesDir } = yield* ServerConfig.ServerConfig;
 
     // Someone's folder is where the worktree would go: git refuses, and the branch made for it goes.
-    const occupied = path.join(worktreesDir, "box", "feature");
+    const occupied = yield* featureFolder(box);
     yield* fileSystem.makeDirectory(occupied, { recursive: true });
     yield* fileSystem.writeFileString(path.join(occupied, "keep.txt"), "mine\n");
     const blocked = yield* open(box).pipe(Effect.flip);
@@ -298,14 +312,13 @@ it.effect(
 it.effect("leaves the worktree another operation made for the branch in the meantime", () =>
   Effect.gen(function* () {
     const { run, fileSystem, path, box } = yield* makeRepositories;
-    const { worktreesDir } = yield* ServerConfig.ServerConfig;
     const git = yield* GitVcsDriver.GitVcsDriver;
+    const theirs = yield* featureFolder(box);
     yield* run(box, "fetch", "origin");
     yield* run(box, "branch", "--track", "feature", "origin/feature");
 
     // The opener found `feature` without a worktree; then another checkout takes it, at the very
     // path the opener would use, and has work in it that is not committed.
-    const theirs = path.join(worktreesDir, "box", "feature");
     const takeBranch = git
       .createWorktree({ cwd: box, refName: "feature", path: null })
       .pipe(
@@ -324,11 +337,10 @@ it.effect("leaves the worktree another operation made for the branch in the mean
 it.effect("leaves the branch and worktree another operation made first", () =>
   Effect.gen(function* () {
     const { run, fileSystem, path, box } = yield* makeRepositories;
-    const { worktreesDir } = yield* ServerConfig.ServerConfig;
     const git = yield* GitVcsDriver.GitVcsDriver;
 
     // The project had no `feature`; another operation makes it, with its worktree, before the opener.
-    const theirs = path.join(worktreesDir, "box", "feature");
+    const theirs = yield* featureFolder(box);
     const takeBranch = git
       .createWorktree({ cwd: box, refName: "origin/feature", newRefName: "feature", path: null })
       .pipe(
@@ -350,7 +362,7 @@ it.effect(
     const gap = makeGap();
     return Effect.gen(function* () {
       const { run, fileSystem, path, box } = yield* makeRepositories;
-      const { worktreesDir } = yield* ServerConfig.ServerConfig;
+      const theirs = yield* featureFolder(box);
       yield* run(box, "fetch", "origin");
       yield* run(box, "branch", "--track", "feature", "origin/feature");
 
@@ -358,7 +370,6 @@ it.effect(
       // deletes the branch, puts a detached worktree with notes in the folder, and holds the
       // config lock, so that git, which must now make the branch again, fails (255) before it
       // adds anything.
-      const theirs = path.join(worktreesDir, "box", "feature");
       const lock = path.join(box, ".git", "config.lock");
       gap.set(
         Effect.gen(function* () {
@@ -381,12 +392,11 @@ it.effect("leaves a folder another operation puts where this call's was", () => 
   const gap = makeGap();
   return Effect.gen(function* () {
     const { run, fileSystem, path, box } = yield* makeRepositories;
-    const { worktreesDir } = yield* ServerConfig.ServerConfig;
 
     // Another operation's folder takes the place of the one settled on, and git, which accepts
     // an empty folder, checks the branch out into it. Its hook fails after leaving a note, as
     // that operation's own work in the folder could be there by then.
-    const theirs = path.join(worktreesDir, "box", "feature");
+    const theirs = yield* featureFolder(box);
     yield* postCheckout(box, "echo mine > notes.txt\nexit 1");
     gap.set(
       Effect.gen(function* () {
@@ -405,11 +415,10 @@ it.effect("leaves a folder another operation puts where this call's was", () => 
 
 it.effect("does not use a folder another operation made first, not even an empty one", () =>
   Effect.gen(function* () {
-    const { run, fileSystem, path, box } = yield* makeRepositories;
-    const { worktreesDir } = yield* ServerConfig.ServerConfig;
+    const { run, fileSystem, box } = yield* makeRepositories;
 
     // Git would take an empty folder, and the folder would then look like this call's own.
-    const theirs = path.join(worktreesDir, "box", "feature");
+    const theirs = yield* featureFolder(box);
     const made = fileSystem.makeDirectory(theirs, { recursive: true }).pipe(Effect.orDie);
     const failed = yield* open(box, {}, made).pipe(Effect.flip);
     expect(failed.message).toContain("left as it was");
@@ -422,11 +431,10 @@ it.effect("does not use a folder another operation made first, not even an empty
 it.effect("keeps a worktree its hook left changes in, with its branch, and says so", () =>
   Effect.gen(function* () {
     const { run, fileSystem, path, box } = yield* makeRepositories;
-    const { worktreesDir } = yield* ServerConfig.ServerConfig;
 
     // Git would not remove it without deleting the note, so neither does this call.
+    const theirs = yield* featureFolder(box);
     yield* postCheckout(box, "echo mine > notes.txt\nexit 1");
-    const theirs = path.join(worktreesDir, "box", "feature");
     const failed = yield* open(box).pipe(Effect.flip);
     expect(failed.message).toContain("Could not make a worktree on origin/feature");
     expect(failed.message).toContain(`${theirs} was left as it is`);
