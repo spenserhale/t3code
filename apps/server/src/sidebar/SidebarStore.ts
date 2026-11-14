@@ -12,6 +12,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import { ServerConfig } from "../config.ts";
 import { LEGACY_STEPS, SIDEBAR_SCHEMA_STEPS, type SidebarSchemaStep } from "./sidebarSchema.ts";
@@ -20,6 +21,15 @@ export class SidebarStore extends Context.Service<
   SidebarStore,
   { readonly database: Effect.Effect<Option.Option<NodeSqlite.DatabaseSync>> }
 >()("t3/sidebar/SidebarStore") {}
+
+class SidebarStoreOpenError extends Schema.TaggedError<SidebarStoreOpenError>()(
+  "SidebarStoreOpenError",
+  { filename: Schema.String, cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return `Failed to open the sidebar store at ${this.filename}.`;
+  }
+}
 
 const userVersion = (database: NodeSqlite.DatabaseSync) => {
   const row = database.prepare("PRAGMA user_version").get();
@@ -85,11 +95,14 @@ export const make = Effect.fn("SidebarStore.make")(function* (filename: string) 
   const database = Effect.suspend(() =>
     opened !== undefined
       ? Effect.succeed(opened)
-      : Effect.try(() => {
-          if (filename !== ":memory:") {
-            NodeFS.mkdirSync(NodePath.dirname(filename), { recursive: true });
-          }
-          return openSidebarDatabase(filename);
+      : Effect.try({
+          try: () => {
+            if (filename !== ":memory:") {
+              NodeFS.mkdirSync(NodePath.dirname(filename), { recursive: true });
+            }
+            return openSidebarDatabase(filename);
+          },
+          catch: (cause) => new SidebarStoreOpenError({ filename, cause }),
         }).pipe(
           Effect.asSome,
           Effect.tapError((error) =>
