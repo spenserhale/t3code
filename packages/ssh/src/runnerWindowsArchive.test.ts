@@ -10,11 +10,10 @@ import * as SshTunnel from "./tunnel.ts";
 
 const archiveVersion = "1.2.3-preview.20260911.4";
 
-// A Windows remote reached through Git Bash: `uname` reports MINGW, the
-// archive is a zip, and only the bsdtar in System32 can open one, not the
-// GNU tar on PATH. Shims stand in for that host so the real script runs
-// here. The "zip" is a gzip tarball: this pins which archive is asked for
-// and which tar opens it; reading a real zip is bsdtar's job.
+// A Windows remote reached through Git Bash: `uname` reports MINGW, the archive is
+// a zip, and only the bsdtar in System32 can open one, not the GNU tar on PATH.
+// Shims stand in for that host. The "zip" is a gzip tarball: this pins which
+// archive is asked for and which tar opens it.
 describe("archive runner script", () => {
   it.live.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     "installs the zip archive with the system tar on a Git Bash Windows host",
@@ -23,7 +22,7 @@ describe("archive runner script", () => {
         const fs = yield* FileSystem.FileSystem;
         const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
         const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-archive-runner-" });
-        const hostPath = process.env.PATH ?? "";
+        const hostPath = (yield* HostProcess.Environment).PATH ?? "";
         const stem = `t3-${archiveVersion}-win32-x64`;
         const stage = `${root}/stage/${stem}`;
         const release = `${root}/mirror/v${archiveVersion}`;
