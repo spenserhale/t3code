@@ -20,13 +20,13 @@ import {
   wouldCreateThreadWaitCycle,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as Schema from "effect/Schema";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -40,10 +40,10 @@ export type ThreadWaitThread = Pick<
   "id" | "archivedAt" | "deletedAt" | "settledOverride" | "snoozedUntil"
 >;
 
-class ThreadWaitRuntimeError extends Data.TaggedError("ThreadWaitRuntimeError")<{
-  readonly message: string;
-  readonly cause: unknown;
-}> {}
+class ThreadWaitRuntimeError extends Schema.TaggedError<ThreadWaitRuntimeError>()(
+  "ThreadWaitRuntimeError",
+  { message: Schema.String, cause: Schema.Defect() },
+) {}
 
 const runtimeError = (message: string) => (cause: unknown) =>
   new ThreadWaitRuntimeError({ message: `${message}: ${messageOf(cause)}`, cause });
