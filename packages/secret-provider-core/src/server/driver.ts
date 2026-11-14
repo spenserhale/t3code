@@ -186,15 +186,13 @@ export const defineSecretProviderDriver = <Config>(driver: {
               ? {}
               : {
                   create: (config, login) =>
-                    isConfig(config) ? create(config, login) : Effect.sync(() => undefined),
+                    isConfig(config) ? create(config, login) : Effect.undefined,
                 }),
             ...(regeneratePassword === undefined
               ? {}
               : {
                   regeneratePassword: (config, login, recipe) =>
-                    isConfig(config)
-                      ? regeneratePassword(config, login, recipe)
-                      : Effect.sync(() => undefined),
+                    isConfig(config) ? regeneratePassword(config, login, recipe) : Effect.undefined,
                 }),
           },
         }),
