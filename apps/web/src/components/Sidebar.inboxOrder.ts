@@ -24,6 +24,7 @@ const STATUS_RANK: Record<SidebarThreadStatus, number> = {
   request: 0,
   failed: 1,
   limited: 1,
+  preparing: 2,
   working: 2,
   waiting: 2,
   ready: 3,

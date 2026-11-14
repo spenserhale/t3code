@@ -1,8 +1,9 @@
 import { sortInboxThreadsByOrder } from "@t3tools/client-runtime/state/thread-order";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { projectSidebarInboxDrop } from "./Sidebar.inboxOrder";
+import { makeThreadFixture } from "../test-fixtures";
+import { projectSidebarInboxDrop, sortSidebarInboxThreads } from "./Sidebar.inboxOrder";
 
 const now = "2026-06-01T12:00:00.000Z";
 
@@ -57,5 +58,34 @@ describe("projectSidebarInboxDrop", () => {
         },
       ).map((entry) => entry.id),
     ).toEqual(["snoozed", "finished"]);
+  });
+});
+
+describe("sortSidebarInboxThreads", () => {
+  it("ranks a preparing thread with running work, between broken runs and idle threads", () => {
+    const make = (
+      id: string,
+      runtimeStatus: "failed" | "preparing" | null,
+      userMessageAt: string,
+    ) =>
+      makeThreadFixture({
+        id: ThreadId.make(id),
+        environmentId: shell.environmentId,
+        runtime: runtimeStatus && {
+          status: runtimeStatus,
+          activeRunId: null,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          providerName: null,
+          lastError: null,
+          updatedAt: userMessageAt,
+        },
+        latestUserMessageAt: userMessageAt,
+      });
+    const failed = make("failed", "failed", "2026-06-01T08:00:00.000Z");
+    const preparing = make("preparing", "preparing", "2026-06-01T07:00:00.000Z");
+    const idle = make("idle", null, "2026-06-01T11:00:00.000Z");
+    expect(
+      sortSidebarInboxThreads([idle, preparing, failed], "status", now).map((entry) => entry.id),
+    ).toEqual(["failed", "preparing", "idle"]);
   });
 });
