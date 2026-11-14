@@ -173,7 +173,7 @@ const setup = (
         }),
       ),
     unattended: ({ serviceAccountToken }) => serviceAccountToken !== undefined,
-    logins: { list: () => Effect.succeed([]), read: () => Effect.sync(() => undefined) },
+    logins: { list: () => Effect.succeed([]), read: () => Effect.undefined },
   });
   const settings = Settings.layerTest({
     secretProviders: {
@@ -199,6 +199,7 @@ const setup = (
     detached: Stream.empty,
     attached: Stream.empty,
     isAttached: () => Effect.succeed(false),
+    isShown: () => false,
     endpoint: () => Effect.die("No tab is drawn here."),
     pointer: () => Effect.void,
     turn: () => Effect.void,
