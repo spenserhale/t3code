@@ -35,6 +35,15 @@ const ERR_ABORTED = -3;
 /** How long a page gets to give way to a fresh document. The server waits 10 seconds for a tab. */
 const FRESH_LOAD_LIMIT = "8 seconds";
 
+class DesktopBrowserFrameTreeError extends Schema.TaggedError<DesktopBrowserFrameTreeError>()(
+  "DesktopBrowserFrameTreeError",
+  { cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return "The tab's frame tree could not be read.";
+  }
+}
+
 export interface DesktopBrowserTabKey {
   readonly threadId: string;
   readonly tabId: string;
@@ -453,12 +462,13 @@ export const make = Effect.gen(function* () {
   };
 
   const mainDocument = (tab: AttachedTab) =>
-    Effect.tryPromise(
-      () =>
+    Effect.tryPromise({
+      try: () =>
         tab.debuggee.debugger.sendCommand("Page.getFrameTree") as Promise<{
           readonly frameTree: { readonly frame: { readonly loaderId: string } };
         }>,
-    ).pipe(
+      catch: (cause) => new DesktopBrowserFrameTreeError({ cause }),
+    }).pipe(
       Effect.map((tree) => tree.frameTree.frame.loaderId),
       Effect.option,
     );

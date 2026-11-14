@@ -81,10 +81,9 @@ export const defineSecretProviderDriver = <Config>(driver: {
       ? {}
       : {
           logins: {
-            list: (config) =>
-              isConfig(config) ? logins.list(config) : Effect.sync(() => undefined),
+            list: (config) => (isConfig(config) ? logins.list(config) : Effect.undefined),
             read: (config, login, fields) =>
-              isConfig(config) ? logins.read(config, login, fields) : Effect.sync(() => undefined),
+              isConfig(config) ? logins.read(config, login, fields) : Effect.undefined,
           },
         }),
   };

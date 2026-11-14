@@ -38,11 +38,15 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { McpSchema, McpServer } from "effect/ai";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { beforeEach, expect, vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as McpHttpServer from "../mcp/McpHttpServer.ts";
+import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import * as McpToolAccessTestkit from "../mcp/McpToolAccess.testkit.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
 import * as Settings from "../serverSettings.ts";
 import * as BrowserLogins from "./BrowserLogins.ts";
@@ -3411,6 +3415,111 @@ it.live("a snapshot takes no image of a restored page that came and went as it r
     }),
   );
 });
+
+it.live(
+  "preview_snapshot save gets neither image, and saves nothing, of a page Back restored as it ran",
+  () => {
+    const server = loginServer("never", DesktopChannel.layer);
+    const mcpClient = McpSchema.McpServerClient.of({
+      clientId: 1,
+      clientCapabilities: {},
+      clientInfo: { name: "browser-test", version: "1.0.0" },
+      protocolVersion: "2025-06-18",
+      initializePayload: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "browser-test", version: "1.0.0" },
+      },
+      getClient: Effect.die("unused"),
+    });
+    const withMcp = McpHttpServer.layerPreviewToolkit.pipe(
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+      Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
+      Layer.provideMerge(server.layer),
+    );
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        // Back lands right after the page is found clear, so both images are taken of the page
+        // it restored, with the filled code back in its field.
+        let restore = false;
+        const newCDPSession = context.newCDPSession.bind(context);
+        context.newCDPSession = async (target) => {
+          const session = await newCDPSession(target);
+          const send = session.send.bind(session) as (
+            method: string,
+            params?: { readonly expression?: string },
+          ) => Promise<unknown>;
+          Object.assign(session, {
+            send: async (method: string, params?: Parameters<typeof send>[1]) => {
+              if (
+                !restore ||
+                method !== "Runtime.evaluate" ||
+                !params?.expression?.includes('getEntriesByType("navigation")')
+              ) {
+                return send(method, params);
+              }
+              restore = false;
+              const loadedBy = await send(method, params);
+              await context.pages()[0]!.goBack();
+              return loadedBy;
+            },
+          });
+          return session;
+        };
+        yield* Effect.gen(function* () {
+          const { tabId, invoke } = yield* openLoginTab;
+          const page = context.pages()[0]!;
+          const mcp = yield* McpServer.McpServer;
+          const { browserArtifactsDir } = yield* ServerConfig.ServerConfig;
+          const savedFiles = Effect.promise(() =>
+            NodeFSP.readdir(browserArtifactsDir).catch((): Array<string> => []),
+          );
+          const saveSnapshot = mcp
+            .callTool({ name: "preview_snapshot", arguments: { tabId, save: true } })
+            .pipe(
+              Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+              Effect.provideService(McpSchema.McpServerClient, mcpClient),
+            );
+          yield* fillCodeAndLeave(invoke);
+          restore = true;
+          // The input preview_snapshot sends when it saves.
+          const snapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot", {
+            fullScreenshot: true,
+          });
+          expect(restore).toBe(false);
+          expect(yield* codeField(page)).toBe("totp-value");
+          expect(snapshot.screenshot).toBeUndefined();
+          expect(snapshot.fullScreenshot).toBeUndefined();
+          expect(snapshot.imagesOff).toContain("Back or Forward");
+
+          yield* invoke("navigate", { url: "https://good.test/next" });
+          restore = true;
+          const saved = yield* saveSnapshot;
+          expect(restore).toBe(false);
+          expect(yield* codeField(page)).toBe("totp-value");
+          expect(saved.isError).toBe(false);
+          expect(saved.content.map((content) => content.type)).not.toContain("image");
+          expect(saved.structuredContent).toMatchObject({
+            imagesOff: expect.stringContaining("Back or Forward"),
+          });
+          expect(saved.structuredContent).not.toHaveProperty("screenshotPath");
+          expect(yield* savedFiles).toEqual([]);
+
+          // A reload brings no filled value back, so both images, and the saved file, return.
+          yield* Effect.promise(() => page.reload());
+          const fresh = yield* invoke<PreviewAutomationSnapshot>("snapshot", {
+            fullScreenshot: true,
+          });
+          expect(fresh.screenshot?.mimeType).toBe("image/png");
+          expect(fresh.fullScreenshot?.data).toBeTruthy();
+          expect((yield* saveSnapshot).structuredContent).toHaveProperty("screenshotPath");
+          expect(yield* savedFiles).toHaveLength(1);
+        }).pipe(Effect.provide(withMcp));
+      }),
+    );
+  },
+);
 
 /** The recordings the server has written for a thread to attach. */
 const savedRecordings = Effect.gen(function* () {
