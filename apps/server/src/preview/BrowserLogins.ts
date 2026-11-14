@@ -15,7 +15,6 @@ import {
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
-import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -29,10 +28,13 @@ const LIST_CACHE_MS = 5 * 60_000;
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const utf8 = new TextEncoder();
 
-export class BrowserLoginError extends Data.TaggedError("BrowserLoginError")<{
-  readonly reason: "not_configured" | "unreadable";
-  readonly message: string;
-}> {}
+export class BrowserLoginError extends Schema.TaggedError<BrowserLoginError>()(
+  "BrowserLoginError",
+  {
+    reason: Schema.Literals(["not_configured", "unreadable"]),
+    message: Schema.String,
+  },
+) {}
 
 /** A saved login offered for a page, without its secrets. */
 export interface BrowserLoginCandidate extends SecretProviderLogin {

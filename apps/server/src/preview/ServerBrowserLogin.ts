@@ -1,14 +1,16 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Playwright callbacks run outside the Effect runtime.
 import type { PreviewAutomationEvaluateInput, PreviewLoginField } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import * as NodeCrypto from "node:crypto";
 import type { CDPSession, Frame, Locator, Page } from "playwright-core";
 
 import { evaluate, ServerBrowserOperationError } from "./ServerBrowserPage.ts";
 
 const LOGIN_ERROR = "PreviewAutomationExecutionError";
+const isServerBrowserOperationError = Schema.is(ServerBrowserOperationError);
 
 export const loginError = (message: string) =>
-  new ServerBrowserOperationError(LOGIN_ERROR, message);
+  new ServerBrowserOperationError({ tag: LOGIN_ERROR, message });
 
 const FIELD_SELECTORS: Record<PreviewLoginField, ReadonlyArray<string>> = {
   username: [
@@ -298,7 +300,7 @@ export const fillCovered = async (input: {
         expired,
       ).catch((cause: unknown) => {
         // The node's world went with its document.
-        throw cause instanceof ServerBrowserOperationError ? cause : moved();
+        throw isServerBrowserOperationError(cause) ? cause : moved();
       });
       if (exceptionDetails !== undefined) {
         throw loginError(`The ${input.field} field could not be filled.`);

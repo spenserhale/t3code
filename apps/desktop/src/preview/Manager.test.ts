@@ -740,6 +740,8 @@ describe("PreviewManager", () => {
                 humanStartedDownload: () => true,
                 agentLedPage: () => false,
                 placeDownload: () => true,
+                filledDocuments: () => 0,
+                windowOpened: () => {},
               }),
               Layer.mock(PreviewPasskeys.PreviewPasskeys)({
                 bridgeEnabled: false,
