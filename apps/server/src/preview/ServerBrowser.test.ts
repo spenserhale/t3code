@@ -6315,6 +6315,7 @@ it.live("a desktop that draws the tab is told of a new password before it is wri
       detached: Stream.empty,
       attached: Stream.empty,
       isAttached: () => Effect.succeed(true),
+      isShown: () => true,
       endpoint: () => Effect.succeed("ws://desktop/tab"),
       pointer: () => Effect.void,
       turn: () => Effect.void,

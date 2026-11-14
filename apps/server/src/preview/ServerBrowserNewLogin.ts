@@ -219,10 +219,10 @@ export const fillNewLogin = async (
   } catch (cause) {
     // The login is saved by now; naming it lets a retry reuse it instead of saving another.
     const error = ServerBrowserPage.toOperationError(cause);
-    throw new ServerBrowserPage.ServerBrowserOperationError(
-      error.tag,
-      `${error.message} The login "${login.title}" was saved; call again with login "${login.id}" to fill it.`,
-      error.detail,
-    );
+    throw new ServerBrowserPage.ServerBrowserOperationError({
+      tag: error.tag,
+      message: `${error.message} The login "${login.title}" was saved; call again with login "${login.id}" to fill it.`,
+      detail: error.detail,
+    });
   }
 };
