@@ -3054,6 +3054,9 @@ it.live("a page the agent ran script in takes no login, and the page loaded next
         yield* invoke("evaluate", { expression: 'history.pushState({}, "", "/login/moved"); 1' });
         const refused = yield* invoke("fillLogin").pipe(Effect.flip);
         expect(refused.message).toContain("preview_evaluate ran in this page");
+        // A new login's generated password is kept out of it the same way.
+        const refusedNew = yield* invoke("fillNewLogin", { username: "ada" }).pipe(Effect.flip);
+        expect(refusedNew.message).toContain("preview_evaluate ran in this page");
         expect(server.reads).toEqual([]);
         // Script dies with its page, in a tab that opened no window for it to live on in.
         yield* invoke("navigate", { url: "https://good.test/login" });
@@ -3953,11 +3956,6 @@ it.live(
             requester: { threadTitle: "Sign up for hosting", provider: "codex" },
           };
           yield* invoke("navigate", signUp);
-          yield* invoke("evaluate", { expression: "document.title" });
-          const scripted = yield* invoke("fillNewLogin", input).pipe(Effect.flip);
-          expect(scripted.message).toContain("preview_evaluate ran in this page");
-
-          yield* invoke("navigate", signUp);
           const filled = yield* invoke<PreviewAutomationFillNewLoginResult>("fillNewLogin", input);
           expect(filled).toEqual({
             status: "filled",
@@ -3988,10 +3986,10 @@ it.live(
             { value: "generated-24", security: "disc" },
           ]);
           // The page holds a fill, and its copy of the password is scrubbed from what the agent reads.
-          for (const operation of ["evaluate", "recordingStart"] as const) {
-            const refused = yield* invoke(operation, { expression: "1" }).pipe(Effect.flip);
-            expect(refused.message).toContain("filled a login in this page");
-          }
+          const scripted = yield* invoke("evaluate", { expression: "1" }).pipe(Effect.flip);
+          expect(scripted.message).toContain("preview_evaluate is off on this page");
+          const recorded = yield* invoke("recordingStart").pipe(Effect.flip);
+          expect(recorded.message).toContain("filled a login in this tab");
           const status = yield* invoke<PreviewAutomationStatus>("status");
           expect(status.title).toBe("[filled by password manager]");
 
