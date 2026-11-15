@@ -31,6 +31,7 @@ import {
   formatModelSelectionEffort,
   isBackgroundWorkStopPending,
   presentPendingBackgroundWork,
+  backgroundProcessSummary,
   presentProviderGoal,
   presentRunStop,
   threadRuntimeHasInterruptibleRun,
@@ -635,6 +636,20 @@ describe("presentProviderGoal", () => {
 });
 
 describe("presentPendingBackgroundWork", () => {
+  it("summarizes only unawaited commands and monitors as background processes", () => {
+    const awaited = { taskId: "tests", kind: "command" as const, awaited: true as const };
+    const subagent = { taskId: "agent", kind: "subagent" as const };
+    const job = { taskId: "job", kind: "background_task" as const };
+    const command = { taskId: "server", kind: "command" as const };
+    const monitor = { taskId: "watchdog", kind: "monitor" as const };
+    expect(backgroundProcessSummary([])).toBeNull();
+    expect(backgroundProcessSummary([awaited, subagent, job])).toBeNull();
+    expect(backgroundProcessSummary([command])).toBe("1 background process running");
+    expect(backgroundProcessSummary([command, monitor, awaited, subagent, job])).toBe(
+      "2 background processes running",
+    );
+  });
+
   it("names a command by its script, not the shell that wraps it", () => {
     const presentation = presentPendingBackgroundWork([
       {

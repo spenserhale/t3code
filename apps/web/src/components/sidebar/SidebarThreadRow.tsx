@@ -1,5 +1,6 @@
 import { useAtomMount } from "@effect/atom-react";
 import { asLaunchingThread } from "@t3tools/client-runtime/state/thread-inbox";
+import { backgroundProcessSummary } from "@t3tools/client-runtime/state/thread-execution";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
 import { discardComposerDraft } from "../../lib/discardComposerDraft";
@@ -86,6 +87,7 @@ import {
   resolveSidebarRowAccessibility,
   type SidebarDropVerb,
   resolveSidebarThreadStatus,
+  resolveThreadStatusPill,
   resolveThreadLastVisitedAt,
   shouldRecedeSidebarThread,
   resolveWorkingStartedAt,
@@ -262,6 +264,7 @@ function SidebarThreadTooltip({
   terminalProcessCount: number;
 }) {
   const driverKind = providerEntry?.driverKind ?? null;
+  const backgroundSummary = backgroundProcessSummary(thread.pendingBackgroundTasks);
   const previousProviderNames = thread.providerInstanceHistory
     .filter((instanceId) => instanceId !== modelInstanceId)
     .map((instanceId) => providerEntryByInstanceId.get(instanceId)?.displayName ?? instanceId);
@@ -346,6 +349,12 @@ function SidebarThreadTooltip({
             <div className="min-w-0 truncate text-foreground/75">
               {terminalProcessLabel(terminalProcessCount)}
             </div>
+          </div>
+        ) : null}
+        {backgroundSummary !== null ? (
+          <div className="flex min-w-0 items-center gap-2">
+            <TerminalIcon aria-hidden className="size-3 shrink-0 stroke-muted-foreground" />
+            <div className="min-w-0 truncate text-foreground/75">{backgroundSummary}</div>
           </div>
         ) : null}
         {thread.runtime?.lastError ? (
@@ -527,6 +536,7 @@ const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
 
 const TOP_STATUS_ICONS = {
   working: CircleDashedIcon,
+  background: TerminalIcon,
   waiting: CircleDotDashedIcon,
   input: MessageCircleQuestionIcon,
   request: UserRoundIcon,
@@ -722,6 +732,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarThreadStatus(thread);
+  const backgroundSummary = backgroundProcessSummary(thread.pendingBackgroundTasks);
+  const showsBackground =
+    resolveThreadStatusPill({ thread: { ...thread, lastVisitedAt } })?.label === "Background";
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke =
@@ -795,7 +808,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           icon: "done" as const,
                           className: "text-success-foreground",
                         }
-                      : null;
+                      : showsBackground
+                        ? {
+                            label: "Background",
+                            icon: "background" as const,
+                            className: "text-muted-foreground",
+                          }
+                        : null;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -1018,7 +1037,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const accessibility = resolveSidebarRowAccessibility({
     title: thread.title,
-    statusLabel: topStatus?.label ?? null,
+    statusLabel: topStatus?.icon === "background" ? backgroundSummary : (topStatus?.label ?? null),
     projectDisplayName: props.projectDisplayName,
     isActive: props.isActive,
   });

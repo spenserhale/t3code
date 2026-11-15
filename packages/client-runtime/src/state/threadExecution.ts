@@ -565,6 +565,18 @@ export function isBackgroundWorkStopPending(
   return request.retryAt === null || tasks.some((task) => request.taskIds.includes(task.taskId));
 }
 
+export function backgroundProcessSummary(
+  tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
+): string | null {
+  let count = 0;
+  for (const task of tasks) {
+    if ((task.kind === "command" || task.kind === "monitor") && task.awaited !== true) count++;
+  }
+  return count === 0
+    ? null
+    : `${count} background ${count === 1 ? "process" : "processes"} running`;
+}
+
 export function presentPendingBackgroundWork(
   tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
 ): PendingBackgroundWorkPresentation | null {
@@ -601,10 +613,10 @@ export function presentPendingBackgroundWork(
     const noun = BACKGROUND_WORK_KINDS[only.kind].singular;
     const named = only.label !== noun;
     const title = named
-      ? `${waiting ? "Waiting" : "Running"} · ${only.label}`
+      ? `${waiting ? "Waiting" : "Background"} · ${only.label}`
       : waiting
         ? `Waiting on a ${noun}`
-        : `Running a ${noun}`;
+        : `Background ${noun}`;
     return { title, items, waiting };
   }
   const counts = new Map<BackgroundWorkKind, number>();
@@ -613,7 +625,11 @@ export function presentPendingBackgroundWork(
     const { singular, plural } = BACKGROUND_WORK_KINDS[kind];
     return `${count} ${count === 1 ? singular : plural}`;
   });
-  return { title: `${waiting ? "Waiting on" : "Running"} ${joinWithAnd(groups)}`, items, waiting };
+  return {
+    title: `${waiting ? "Waiting on" : "Background"} ${joinWithAnd(groups)}`,
+    items,
+    waiting,
+  };
 }
 
 export interface ProviderGoalPresentation {

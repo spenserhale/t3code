@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
+  backgroundProcessSummary,
   presentPendingBackgroundWork,
   type PendingBackgroundWorkItem,
 } from "@t3tools/client-runtime/state/thread-execution";
@@ -33,6 +34,7 @@ export function ThreadBackgroundWorkSheet({ route }: StaticScreenProps<Backgroun
     environmentThreadShells.threadShellAtom(scopeThreadRef(target.environmentId, target.threadId)),
   );
   const presentation = presentPendingBackgroundWork(thread?.pendingBackgroundTasks ?? []);
+  const backgroundSummary = backgroundProcessSummary(thread?.pendingBackgroundTasks ?? []);
   const openThread = (threadId: ThreadId) => {
     void Haptics.selectionAsync();
     // A thread replaces the leaf sheet so workspace back navigation still works.
@@ -48,6 +50,9 @@ export function ThreadBackgroundWorkSheet({ route }: StaticScreenProps<Backgroun
       contentContainerClassName="px-5 pb-6"
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
     >
+      {backgroundSummary !== null ? (
+        <Text className="pt-3 text-sm text-foreground-muted">{backgroundSummary}</Text>
+      ) : null}
       {presentation === null ? (
         <Text className="pt-6 text-center text-sm text-foreground-muted">
           Nothing running in the background.
