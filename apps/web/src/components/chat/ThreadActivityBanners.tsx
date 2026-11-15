@@ -254,7 +254,7 @@ export function backgroundWorkNowItem(
             </T>
           ) : (
             <T>
-              Running · <Var>{only.label}</Var>
+              Background · <Var>{only.label}</Var>
             </T>
           )}
         </>

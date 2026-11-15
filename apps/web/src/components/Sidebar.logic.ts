@@ -1,6 +1,7 @@
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import { backgroundProcessSummary } from "@t3tools/client-runtime/state/thread-execution";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
@@ -1283,6 +1284,21 @@ export function resolveThreadStatusPill(input: {
       label: msg("Completed"),
       colorClass: "text-emerald-600 dark:text-emerald-300/90",
       dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
+      pulse: false,
+    };
+  }
+
+  if (
+    resolveSidebarThreadStatus({
+      ...thread,
+      blockedOnThreadWait: thread.blockedOnThreadWait === true,
+    }) === "ready" &&
+    backgroundProcessSummary(thread.pendingBackgroundTasks ?? []) !== null
+  ) {
+    return {
+      label: "Background",
+      colorClass: "text-sidebar-muted-foreground",
+      dotClass: "bg-sidebar-muted-foreground",
       pulse: false,
     };
   }
