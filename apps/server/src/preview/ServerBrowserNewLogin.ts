@@ -35,11 +35,15 @@ export interface NewLoginContext {
   /** Runs a step of the login service; its failure becomes an operation error. */
   readonly step: <A>(effect: Effect.Effect<A, BrowserLogins.BrowserLoginError>) => Promise<A>;
   readonly runPromise: <A>(effect: Effect.Effect<A>) => Promise<A>;
-  /** Whether the agent ran script in this document of the tab, where it could hook a fill. */
+  /**
+   * Whether the agent ran script in this page, where it could hook a fill. Throws where script ran
+   * on a site of the page in tabs a window joins. `document` is the page as `documentId` named it.
+   */
   readonly wasScripted: (document: string) => boolean;
   /**
-   * Marks this document of the tab as holding a filled password, as a login fill does: script,
-   * images and recording stay off there, and a desktop drawing the tab is told before any write.
+   * Refuses the same again and in that step marks the page as holding a filled password, as a
+   * login fill does: script, images and recording stay off the page, and script off its sites in
+   * tabs a window joins. A desktop drawing the tab is told before any write.
    */
   readonly markFilled: (document: string) => Promise<void>;
   /** Adds filled values to what later results are scrubbed of. */
