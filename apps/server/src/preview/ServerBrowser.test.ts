@@ -5183,7 +5183,7 @@ it.live("scrubs a filled password in the escaped forms a log or snapshot writes 
 const READ_OPENER_PASSWORD = 'btoa(opener.document.getElementById("password").value)';
 
 it.live("a window the agent opened cannot read a login filled in its opener", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
@@ -5209,7 +5209,7 @@ it.live("a window the agent opened cannot read a login filled in its opener", ()
 });
 
 it.live("a window the agent's script opened counts from the moment it opens, tab or not", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   // Run in the window, it watches the tab that opened it for a password and keeps it.
   const watch = `setInterval(() => {
     const seen = opener.document.getElementById("password")?.value;
@@ -5235,7 +5235,7 @@ it.live("a window the agent's script opened counts from the moment it opens, tab
 });
 
 it.live("a login is not filled while script left running in another window could read it", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
@@ -5265,7 +5265,7 @@ it.live("a login is not filled while script left running in another window could
 });
 
 it.live("a tab cannot read a login filled in a window it opened", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       yield* realLoginBrowser;
@@ -5288,7 +5288,7 @@ it.live("a tab cannot read a login filled in a window it opened", () => {
 });
 
 it.live("a blank window a filled site opened runs no script, being on that site", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       yield* realLoginBrowser;
@@ -5312,7 +5312,7 @@ it.live("a blank window a filled site opened runs no script, being on that site"
 });
 
 it.live("a page the agent ran script in takes no login, and the page loaded next does", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
@@ -5340,7 +5340,7 @@ it.live("a page the agent ran script in takes no login, and the page loaded next
 it.live(
   "after a fill, script runs again in the page the tab loads next, with nothing left for Back to bring up",
   () => {
-    const server = loginServer("never", DesktopChannel.layer);
+    const server = loginServer(DesktopChannel.layer, { unattended: true });
     return Effect.scoped(
       Effect.gen(function* () {
         const { context } = yield* realLoginBrowser;
@@ -5433,7 +5433,7 @@ it.live.each([
 ])(
   "a fill and a script racing in tabs a window joins never both go through: $name",
   ({ held, at, wins }) => {
-    const server = loginServer("never", DesktopChannel.layer);
+    const server = loginServer(DesktopChannel.layer, { unattended: true });
     return Effect.scoped(
       Effect.gen(function* () {
         const { context } = yield* realLoginBrowser;
@@ -5575,7 +5575,7 @@ it.live("preview_evaluate never runs in a page Back brought up after its page wa
 });
 
 it.live("preview_evaluate never runs in a page loaded after the tab was looked at", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
@@ -5606,7 +5606,7 @@ it.live("preview_evaluate never runs in a page loaded after the tab was looked a
 });
 
 it.live("preview_evaluate answers as before where logins can be filled", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       yield* realLoginBrowser;
@@ -5648,7 +5648,7 @@ it.live("preview_evaluate answers as before where logins can be filled", () => {
 });
 
 it.live("a restored page that gives itself a new address as it loads takes no images", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
@@ -5673,7 +5673,7 @@ it.live("a restored page that gives itself a new address as it loads takes no im
 it.live(
   "after a fill, a page Back or Forward reaches takes no images or script until it is reloaded",
   () => {
-    const server = loginServer("never", DesktopChannel.layer);
+    const server = loginServer(DesktopChannel.layer, { unattended: true });
     return Effect.scoped(
       Effect.gen(function* () {
         const { context } = yield* realLoginBrowser;
@@ -5713,7 +5713,7 @@ it.live(
 );
 
 it.live("a tab no login was filled in keeps its images and script after Back", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
@@ -5731,7 +5731,7 @@ it.live("a tab no login was filled in keeps its images and script after Back", (
 });
 
 it.live("a snapshot takes no image of a restored page that came and went as it ran", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
@@ -5793,7 +5793,7 @@ it.live("a snapshot takes no image of a restored page that came and went as it r
 it.live(
   "preview_snapshot save gets neither image, and saves nothing, of a page Back restored as it ran",
   () => {
-    const server = loginServer("never", DesktopChannel.layer);
+    const server = loginServer(DesktopChannel.layer, { unattended: true });
     const mcpClient = McpSchema.McpServerClient.of({
       clientId: 1,
       clientCapabilities: {},
@@ -5904,7 +5904,7 @@ const savedRecordings = Effect.gen(function* () {
 });
 
 it.live("a recording during which the tab went Back after a fill is discarded whole", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
@@ -5935,7 +5935,7 @@ it.live("a recording during which the tab went Back after a fill is discarded wh
 });
 
 it.live("a recording is discarded when a restored page was up only for a moment", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
@@ -5957,7 +5957,7 @@ it.live("a recording is discarded when a restored page was up only for a moment"
 });
 
 it.live("a recording in a tab no login was filled in is kept across Back", () => {
-  const server = loginServer("never", DesktopChannel.layer);
+  const server = loginServer(DesktopChannel.layer, { unattended: true });
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
@@ -6139,7 +6139,7 @@ it.live(
             security: "disc",
           });
           const refused = yield* invoke("evaluate", { expression: "1" }).pipe(Effect.flip);
-          expect(refused.message).toContain("filled a login in this page");
+          expect(refused.message).toContain("preview_evaluate is off on this page");
           const status = yield* invoke<PreviewAutomationStatus>("status");
           expect(status.title).toBe("[filled by password manager]");
           // This server's own password manager was never read, and no log holds the value.
