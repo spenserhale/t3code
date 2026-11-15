@@ -719,9 +719,6 @@ const make = Effect.gen(function* () {
   const browserLogins = yield* Effect.serviceOption(BrowserLogins.BrowserLogins);
   const filledSecrets = ServerBrowserLogin.makeFilledSecrets();
   const documentMarks = ServerBrowserLogin.makeDocumentMarks();
-  // Each desktop tab has a connection, and so a Playwright context, of its own, whatever its
-  // pages share inside the app. So every tab the desktop draws counts as one browser profile.
-  const desktopProfile = {};
   /** Whether the tab's main document may show a filled password or code. */
   const exposed = async (tab: ServerTab) => {
     const filled = documentMarks.filled(tabKey(tab.threadId, tab.tabId));
@@ -1575,9 +1572,9 @@ const make = Effect.gen(function* () {
     page.on("crash", () => reopenCrashedTab(tab));
     if (Option.isSome(browserLogins)) {
       if (page.isClosed()) throw new Error("The page closed before it became a tab.");
-      documentMarks.open(key, desktop ? desktopProfile : page.context(), () =>
-        ServerBrowserLogin.frameOrigins(page),
-      );
+      documentMarks.open(key, () => ServerBrowserLogin.frameOrigins(page), adopted?.page);
+      // Chromium says so before the window exists, and before it answers any later command.
+      tab.cdp.on("Page.windowOpen", () => documentMarks.windowOpened(key));
       if (!desktop) page.once("close", () => documentMarks.close(key));
     }
     tabs.set(key, tab);
@@ -1912,9 +1909,8 @@ const make = Effect.gen(function* () {
   const adoptPopup = async (opener: ServerTab, popup: Page) => {
     // Its opener's script can already be in it, before it is a tab or if it never becomes one.
     if (Option.isSome(browserLogins) && !popup.isClosed()) {
-      const profile = popup.context();
-      documentMarks.hold(profile, popup);
-      popup.once("close", () => documentMarks.release(profile, popup));
+      documentMarks.hold(tabKey(opener.threadId, opener.tabId), popup);
+      popup.once("close", () => documentMarks.release(popup));
     }
     if (opener.closing) {
       await popup.close().catch(constVoid);
@@ -3360,25 +3356,36 @@ const make = Effect.gen(function* () {
         }
         const key = tabKey(tab.threadId, tab.tabId);
         let admitted = false;
+        const refuse = (refusal: ServerBrowserLogin.ScriptRefusal | undefined) => {
+          if (refusal === undefined) return;
+          if (refusal._tag === "shows") {
+            throw ServerBrowserLogin.loginError(offForFill("preview_evaluate is", "it"));
+          }
+          if (refusal._tag === "changed") {
+            throw ServerBrowserLogin.loginError(ServerBrowserLogin.FILL_CAME);
+          }
+          const [threadId, tabId] = refusal.tab.split("\u0000");
+          throw ServerBrowserLogin.scriptOff(
+            refusal.origin,
+            refusal.tab === key
+              ? "this tab"
+              : threadId === tab.threadId
+                ? `tab ${tabId}`
+                : "a tab of another thread",
+          );
+        };
         try {
           return await ServerBrowserLogin.evaluateAdmitted(
             tab.cdp,
             evaluateInput,
             request.timeoutMs,
-            (origins) => {
-              const filled = documentMarks.admitScript(key, origins);
-              if (filled !== undefined) {
-                const [threadId, tabId] = filled.tab.split("\u0000");
-                throw ServerBrowserLogin.scriptOff(
-                  filled.origin,
-                  filled.tab === key
-                    ? "this tab"
-                    : threadId === tab.threadId
-                      ? `tab ${tabId}`
-                      : "a tab of another thread",
-                );
-              }
-              admitted = true;
+            {
+              fills: () => documentMarks.fills(key),
+              check: (page) => refuse(documentMarks.scriptRefusal(key, page)),
+              admit: (page) => {
+                refuse(documentMarks.admitScript(key, page));
+                admitted = true;
+              },
             },
           );
         } finally {
@@ -3489,9 +3496,7 @@ const make = Effect.gen(function* () {
       const tab = tabs.get(key);
       if (event.type === "closed" && !tab && pendingTabs.has(key)) closedPendingTabs.add(key);
       // A desktop tab can close while its connection is away.
-      if (event.type === "closed" && !tab && documentMarks.profile(key) === desktopProfile) {
-        documentMarks.close(key);
-      }
+      if (event.type === "closed" && !tab) documentMarks.close(key);
       if (!tab) return;
       if (event.type === "closed") {
         closedSessions.add(key);
