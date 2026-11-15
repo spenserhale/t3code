@@ -4333,7 +4333,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       { concurrency: "unbounded" },
     );
     const checkoutWorkers = configuredCheckoutWorkers ?? "0";
-    const fastCheckout = checkoutCache !== undefined && options?.fastCheckout === true;
+    // The cache's fallback deletes and re-makes the folder, so a reserved one is no longer its own.
+    const fastCheckout =
+      checkoutCache !== undefined &&
+      options?.fastCheckout === true &&
+      progress?.onWorktreeReserved === undefined;
     const cacheGeneration = fastCheckout ? yield* checkoutCache.currentGeneration : 0;
     const stockCheckout = executeGitWithStableDiagnostics(
       "GitVcsDriver.createWorktree",
