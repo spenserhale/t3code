@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - the channel writes its commands to a raw file descriptor.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeStream from "@effect/platform-node/NodeStream";
 import { expect, it } from "@effect/vitest";
@@ -6,6 +7,8 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 import { vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
@@ -103,6 +106,51 @@ it.live("closes a tab's relay connection when the desktop detaches the tab", () 
         ),
       ),
     );
+  }).pipe(
+    Effect.provide(
+      ServerConfig.layerTest(process.cwd(), { prefix: "desktop-browser-channel-" }).pipe(
+        Layer.provide(NodeServices.layer),
+      ),
+    ),
+  ),
+);
+
+it.effect("tells the desktop which page a login is filled into by the browser's own id", () =>
+  Effect.gen(function* () {
+    vi.mocked(NodeStream.fromReadable).mockReturnValue(Stream.never);
+    const config = yield* ServerConfig.ServerConfig;
+    const commands = NodePath.join(config.baseDir, "desktop-commands");
+    const controlFd = yield* Effect.acquireRelease(
+      Effect.sync(() => NodeFS.openSync(commands, "w")),
+      (fd) => Effect.sync(() => NodeFS.closeSync(fd)),
+    );
+    yield* Effect.gen(function* () {
+      const channel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
+      // A fill names its page by the main document's id, then the origins of its frames.
+      yield* channel.loginFilled(
+        { threadId: "thread-1", tabId: "tab-1" },
+        "document-1 https://good.test https://frame.test",
+      );
+    }).pipe(
+      Effect.provide(
+        DesktopBrowserChannel.layer.pipe(
+          Layer.provide(
+            ServerConfig.layer({
+              ...config,
+              desktopBrowserFd: 41,
+              desktopBrowserControlFd: controlFd,
+            }),
+          ),
+        ),
+      ),
+    );
+    // The desktop compares it with the id its browser gives the page, and knows nothing more.
+    expect(JSON.parse(NodeFS.readFileSync(commands, "utf8"))).toEqual({
+      type: "loginFilled",
+      threadId: "thread-1",
+      tabId: "tab-1",
+      document: "document-1",
+    });
   }).pipe(
     Effect.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "desktop-browser-channel-" }).pipe(
