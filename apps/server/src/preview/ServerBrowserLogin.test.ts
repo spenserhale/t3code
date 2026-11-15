@@ -13,6 +13,14 @@ import { documentId, fillCovered, frameOrigins, makeDocumentMarks } from "./Serv
 const frameCovered = (url: string) => loginCoversPage(["https://good.test"], url);
 const NO_DEADLINE = Number.MAX_SAFE_INTEGER;
 
+/** A page script is about to run in, looked at while its tab had no fill. */
+const scriptIn = (document: string, ...origins: ReadonlyArray<string>) => ({
+  document,
+  origins,
+  fresh: undefined as boolean | undefined,
+  cleared: false,
+});
+
 const PAGES: Partial<Record<string, string>> = {
   "/": `<input id="otp" type="text"><iframe src="https://good.test/frame"></iframe>`,
   // Focusing the field hands focus to another site's frame, which focuses its own field.
@@ -207,11 +215,12 @@ describe("filling a saved login", () => {
 
   it("refuses a frame that moved to another origin of the login's site since the page was checked", async () => {
     const marks = makeDocumentMarks();
-    const profile = {};
-    // Script is alive on one origin of the site, in another window of the browser.
-    marks.open("watcher", profile, () => ["https://sub.good.test"]);
-    marks.admitScript("watcher", ["https://sub.good.test"]);
-    marks.open("tab", profile, () => frameOrigins(page));
+    const watcher = {};
+    // Script is alive on one origin of the site, in a window the tab opened.
+    marks.open("tab", () => frameOrigins(page));
+    marks.hold("tab", watcher);
+    marks.open("watcher", () => ["https://sub.good.test"], watcher);
+    marks.admitScript("watcher", scriptIn("watching", "https://sub.good.test"));
     const target = frameInput();
     await target.waitFor();
     // The fill finds the page clear of script, frame and all, and marks it.
@@ -332,48 +341,96 @@ describe("filling a saved login", () => {
   });
 });
 
-describe("keeping agent script and filled logins apart, by browser profile", () => {
+describe("keeping agent script and filled logins apart", () => {
   const SITE = "https://good.test";
   const showing =
     (...origins: ReadonlyArray<string>) =>
     () =>
       origins;
 
-  it("forgets where script ran only once the profile has no page left, tab or not", () => {
+  it("keeps them apart page by page in a tab that opened no window", () => {
     const marks = makeDocumentMarks();
-    const profile = {};
-    const popup = {};
-    marks.open("tab", profile, showing(SITE));
-    expect(marks.admitScript("tab", [SITE])).toBeUndefined();
-    // The tab opened a window, and closed before the window became a tab.
-    marks.hold(profile, popup);
-    marks.close("tab");
-    marks.open("popup", profile, showing("https://other.test", SITE));
-    expect(() => marks.wasScripted("popup", "document")).toThrow("has run on this site");
-    expect(() => marks.markFilled("popup", "document")).toThrow("has run on this site");
-    marks.close("popup");
-    marks.release(profile, popup);
-    marks.open("next", profile, showing(SITE));
-    expect(marks.wasScripted("next", "document")).toBe(false);
-    marks.markFilled("next", "document");
-    expect(marks.admitScript("next", [SITE])).toEqual({ origin: SITE, tab: "next" });
+    marks.open("tab", showing(SITE));
+    expect(marks.fills("tab")).toBe("none");
+    expect(marks.admitScript("tab", scriptIn("scripted", SITE))).toBeUndefined();
+    // No login goes into the page script ran in, and the next page takes one.
+    expect(marks.wasScripted("tab", "scripted")).toBe(true);
+    expect(() => marks.markFilled("tab", "scripted")).toThrow("ran in this page");
+    expect(marks.wasScripted("tab", "login")).toBe(false);
+    marks.markFilled("tab", "login");
+    expect(marks.fills("tab")).toBe("kept");
+    // The filled page, and one Back brought up, may show the value. A fresh page does not.
+    const fresh = { ...scriptIn("next", SITE), fresh: true };
+    expect(marks.scriptRefusal("tab", { ...fresh, document: "login" })?._tag).toBe("shows");
+    expect(marks.scriptRefusal("tab", { ...fresh, fresh: false })?._tag).toBe("shows");
+    expect(marks.scriptRefusal("tab", fresh)).toBeUndefined();
+    // A page looked at before the fill, or a history that still holds it, admits no script.
+    expect(marks.admitScript("tab", scriptIn("next", SITE))?._tag).toBe("changed");
+    expect(marks.admitScript("tab", fresh)?._tag).toBe("changed");
+    expect(marks.wasScripted("tab", "next")).toBe(false);
+    expect(marks.admitScript("tab", { ...fresh, cleared: true })).toBeUndefined();
+    expect(marks.fills("tab")).toBe("cleared");
+    expect(marks.admitScript("tab", fresh)).toBeUndefined();
+    // Script on the site in another tab reaches neither.
+    marks.open("other", showing(SITE));
+    expect(marks.admitScript("other", scriptIn("elsewhere", SITE))).toBeUndefined();
+    expect(marks.wasScripted("tab", "again")).toBe(false);
   });
 
-  it("keeps a tab's fills while its connection is away, and apart from other profiles", () => {
+  it("keeps them apart site by site once a page opened a window", () => {
     const marks = makeDocumentMarks();
-    const desktop = {};
-    marks.open("tab", desktop, showing(SITE));
+    const popup = {};
+    marks.open("tab", showing(SITE));
+    expect(marks.admitScript("tab", scriptIn("scripted", SITE))).toBeUndefined();
+    // The page opened a window, and the tab closed before the window became a tab.
+    marks.windowOpened("tab");
+    expect(() => marks.wasScripted("tab", "next")).toThrow("has run on this site");
+    marks.hold("tab", popup);
+    marks.close("tab");
+    marks.open("popup", showing("https://other.test", SITE), popup);
+    marks.release(popup);
+    expect(() => marks.wasScripted("popup", "document")).toThrow("has run on this site");
+    expect(() => marks.markFilled("popup", "document")).toThrow("has run on this site");
+    // A login filled on another site there keeps script off that site in every tab it joins.
+    marks.open("popup", showing("https://id.test"), popup);
+    marks.markFilled("popup", "signin");
+    const second = {};
+    marks.hold("popup", second);
+    marks.open("second", showing("https://id.test"), second);
+    const reading = { ...scriptIn("reader", "https://id.test"), fresh: true, cleared: true };
+    expect(marks.admitScript("second", reading)).toEqual({
+      _tag: "reached",
+      origin: "https://id.test",
+      tab: "popup",
+    });
+    expect(marks.admitScript("second", scriptIn("reader", "https://other.test"))).toBeUndefined();
+    // The filled value went with its tab and that tab's history.
+    marks.close("popup");
+    expect(marks.admitScript("second", reading)).toBeUndefined();
+    // A window Playwright reports joins its opener's tabs, even had Chromium's event been missed.
+    marks.open("lone", showing(SITE));
+    expect(marks.admitScript("lone", scriptIn("lonely", SITE))).toBeUndefined();
+    expect(marks.wasScripted("lone", "after")).toBe(false);
+    marks.hold("lone", {});
+    expect(() => marks.wasScripted("lone", "after")).toThrow("has run on this site");
+  });
+
+  it("keeps a tab's marks while its connection is away", () => {
+    const marks = makeDocumentMarks();
+    marks.open("tab", showing(SITE));
     marks.markFilled("tab", "document");
     // The same tab, connected again and showing another site by now.
-    marks.open("tab", desktop, showing("https://other.test"));
+    marks.open("tab", showing("https://other.test"));
     expect(marks.filled("tab")).toEqual(new Set(["document"]));
-    marks.open("second", desktop, showing(SITE));
-    expect(marks.admitScript("second", [SITE])).toEqual({ origin: SITE, tab: "tab" });
-    // Another browser has its own storage and windows.
-    marks.open("elsewhere", {}, showing(SITE));
-    expect(marks.admitScript("elsewhere", [SITE])).toBeUndefined();
+    expect(marks.fills("tab")).toBe("kept");
+    expect(
+      marks.admitScript("tab", { ...scriptIn("next", SITE), fresh: true, cleared: true }),
+    ).toBeUndefined();
+    expect(marks.wasScripted("tab", "later")).toBe(false);
+    // Script left in its page could have opened a window while nothing watched.
+    marks.open("tab", showing(SITE));
+    expect(() => marks.wasScripted("tab", "later")).toThrow("has run on this site");
     marks.close("tab");
     expect(marks.filled("tab")).toBeUndefined();
-    expect(marks.admitScript("second", [SITE])).toBeUndefined();
   });
 });

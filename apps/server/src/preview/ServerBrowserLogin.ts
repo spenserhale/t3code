@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Playwright callbacks run outside the Effect runtime.
 import type { PreviewAutomationEvaluateInput, PreviewLoginField } from "@t3tools/contracts";
+import { loadedFresh } from "@t3tools/shared/browserLoginExposure";
 import * as Schema from "effect/Schema";
 import * as NodeCrypto from "node:crypto";
 import type { CDPSession, Frame, Locator, Page } from "playwright-core";
@@ -355,12 +356,14 @@ const mainDocument = (document: string) => document.split(" ", 1)[0] ?? document
 /** `tab` names the tab the login was filled in, as the agent would. */
 export const scriptOff = (origin: string, tab: string) =>
   loginError(
-    `The password manager filled a login on this site (${origin}) in this browser, in ${tab}, so preview_evaluate is off here until that tab is closed. Close that tab and open the site in a new one, which stays signed in.`,
+    `The password manager filled a login on this site (${origin}) in ${tab}, and a window a page opened joins the tabs here, so script could reach that login. preview_evaluate stays off on this site in these tabs. Open the site in a new tab with preview_open: it stays signed in, and script runs there.`,
   );
 const fillOff = (origin: string) =>
   loginError(
-    `preview_evaluate has run on this site (${origin}) in this browser, so the password manager will not fill a login into a page that is on it or frames it. Close this browser's tabs, open the page again, and call preview_fill_login before any preview_evaluate.`,
+    `preview_evaluate has run on this site (${origin}) in this tab or one joined to it by a window a page opened, where script left running could read a login. So the password manager fills none into a page that is on this site or frames it. Open the page in a new tab with preview_open and fill it there, before any preview_evaluate.`,
   );
+const SCRIPTED_PAGE =
+  "preview_evaluate ran in this page, so no login is filled into it. Load the page again with preview_navigate, then fill it.";
 const TAB_CLOSED = "The tab closed.";
 
 /**
@@ -401,18 +404,55 @@ const scriptOrigins = (answer: unknown): ReadonlyArray<string> => {
 export const pageOrigins = async (cdp: CDPSession): Promise<ReadonlyArray<string>> =>
   originsOf((await cdp.send("Page.getFrameTree")).frameTree.frame.url);
 
+export const FILL_CAME =
+  "A login was filled in this tab as the script was about to run, so it did not run. Call preview_evaluate again.";
+const HISTORY_KEPT =
+  "This tab's history could not be cleared, so the script did not run: after a login is filled in a tab, script runs there only once Back can bring no filled value up. Call preview_evaluate again.";
+
+/** The page agent script is about to run in. */
+export interface ScriptPage {
+  /** Its main document, as the browser names it. */
+  readonly document: string;
+  readonly origins: ReadonlyArray<string>;
+  /** Whether it was loaded fresh. Not read for a tab no login had been filled in. */
+  readonly fresh: boolean | undefined;
+  /** Whether the tab's history was cleared for this script. */
+  readonly cleared: boolean;
+}
+
 /**
- * Runs agent script in a page once `admit` has taken the origins it will run on. `admit` throws
- * to refuse them. The script runs in the page that was asked and nowhere else: an object's id
- * dies with its document, so a page loaded in between fails the call.
+ * Why agent script may not run in a page: it may show a filled value, a login was filled in its
+ * tab while it was looked at, or a tab its windows reach holds a login on its site.
+ */
+export type ScriptRefusal =
+  | { readonly _tag: "shows" }
+  | { readonly _tag: "changed" }
+  | { readonly _tag: "reached"; readonly origin: string; readonly tab: string };
+
+/** Decides on agent script for one tab. `check` and `admit` throw to refuse the page. */
+export interface ScriptGate {
+  /** Whether a login was filled in the tab, and whether its history may still hold one. */
+  readonly fills: () => "none" | "cleared" | "kept";
+  readonly check: (page: ScriptPage) => void;
+  /** Checks again, and in the same step marks the page as one script ran in. */
+  readonly admit: (page: ScriptPage) => void;
+}
+
+/**
+ * Runs agent script in a page the gate admits, and nowhere else: the script is bound to the
+ * page's global object, whose id dies with its document, so a page loaded in between fails the
+ * call. Every question is asked between two readings of the tab's main document. Documents only
+ * follow one another, so two equal readings mean each answer was about that document.
  */
 export const evaluateAdmitted = (
   cdp: CDPSession,
   input: PreviewAutomationEvaluateInput,
   timeoutMs: number,
-  admit: (origins: ReadonlyArray<string>) => void,
+  gate: ScriptGate,
 ) =>
   evaluate(cdp, input, timeoutMs, async ({ expression, ...options }) => {
+    const mainFrame = async () => (await cdp.send("Page.getFrameTree")).frameTree.frame;
+    const { id: frameId, loaderId: document } = await mainFrame();
     const { result: page } = await cdp.send("Runtime.evaluate", { expression: "this" });
     const objectId = page.objectId;
     if (objectId === undefined) throw loginError(UNKNOWN_SITE);
@@ -424,54 +464,68 @@ export const evaluateAdmitted = (
         });
     try {
       const { result, exceptionDetails } = await onPage(SCRIPT_ORIGINS, { returnByValue: true });
-      admit(scriptOrigins(exceptionDetails === undefined ? result.value : undefined));
+      const origins = scriptOrigins(exceptionDetails === undefined ? result.value : undefined);
+      const fills = gate.fills();
+      const fresh =
+        fills === "none"
+          ? undefined
+          : await loadedFresh(
+              (method, params) => cdp.send(method as "Page.createIsolatedWorld", params as never),
+              frameId,
+            );
+      gate.check({ document, origins, fresh, cleared: false });
+      // Script can open a window that outlives its page and reads the tab's later ones. History
+      // is where a filled value outlives a page, so none is left for Back to bring up.
+      const cleared = fills === "kept";
+      if (cleared) {
+        await cdp.send("Page.resetNavigationHistory").catch(() => {
+          throw loginError(HISTORY_KEPT);
+        });
+      }
+      if ((await mainFrame()).loaderId !== document) throw loginError(PAGE_MOVED);
+      gate.admit({ document, origins, fresh, cleared });
       return await onPage(RUN_SCRIPT, { arguments: [{ value: expression }], ...options });
     } finally {
       void cdp.send("Runtime.releaseObject", { objectId }).catch(() => undefined);
     }
   });
 
+/** Tabs whose pages can hold each other's windows, because a page of one opened another. */
+interface Family {
+  /** Whether a page of a tab here ever opened a window. Alone, a tab's script dies with its page. */
+  joined: boolean;
+  /** Origins agent script has run on in these tabs. */
+  readonly scripted: Set<string>;
+}
+
 /**
- * Where agent script ran and where logins were filled, by browser profile: the pages that share
- * storage and can hold each other's windows. Script outlives its document in any window of its
- * origin that the document could reach, and dies with the last of them. So in one profile,
- * script and a filled login never meet on an origin.
+ * Keeps agent script and filled logins apart. A tab's script dies with its page, so there the
+ * two are kept apart page by page: no script where a filled value may show, no fill where script
+ * ran. Once a page opens a window, script can live on in it and read the tab's later pages, so
+ * tabs a window joins are kept apart site by site.
  */
 export const makeDocumentMarks = () => {
-  const profiles = new Map<
-    object,
-    {
-      /** The profile's pages still open. While there is one, script may be alive in it. */
-      readonly open: Set<unknown>;
-      /** Origins agent script has run on since the profile last had no page open. */
-      readonly scripted: Set<string>;
-    }
-  >();
+  /** Windows a page opened, which are no tab yet. */
+  const windows = new Map<unknown, Family>();
   const tabs = new Map<
     string,
     {
-      readonly profile: object;
+      readonly family: Family;
       readonly origins: () => ReadonlyArray<string>;
-      /** Documents a login was filled into. */
+      /** Main documents agent script ran in. */
+      readonly scripts: Set<string>;
+      /** Main documents a login was filled into. */
       readonly documents: Set<string>;
       /** Origins that had a frame in the tab's page when a login was filled into it. */
       readonly filled: Set<string>;
+      /** Whether a login was filled since the tab's history was last cleared. */
+      kept: boolean;
     }
   >();
-  const enter = (profile: object, page: unknown) => {
-    const existing = profiles.get(profile);
-    if (existing) return void existing.open.add(page);
-    profiles.set(profile, { open: new Set([page]), scripted: new Set() });
-  };
-  const leave = (profile: object, page: unknown) => {
-    const open = profiles.get(profile)?.open;
-    // Its last page gone, the profile has no document left for script to be alive in.
-    if (open?.delete(page) && open.size === 0) profiles.delete(profile);
-  };
-  /** Throws where agent script has run on one of the origins, since the profile last emptied. */
-  const refuseScripted = (profile: object, origins: ReadonlyArray<string>) => {
-    const scripted = profiles.get(profile)?.scripted;
-    const origin = origins.find((each) => scripted?.has(each));
+  /** Throws where agent script has run on one of the origins, in tabs a window joins. */
+  const refuseScripted = (family: Family, origins: ReadonlyArray<string>) => {
+    if (!family.joined) return;
+    const origin = origins.find((each) => family.scripted.has(each));
     if (origin !== undefined) throw fillOff(origin);
   };
   const known = (tab: string) => {
@@ -479,67 +533,107 @@ export const makeDocumentMarks = () => {
     if (marks === undefined) throw loginError(TAB_CLOSED);
     return marks;
   };
+  const scriptRefusal = (tab: string, page: ScriptPage): ScriptRefusal | undefined => {
+    const marks = known(tab);
+    if (marks.documents.size > 0) {
+      if (page.fresh === undefined) return { _tag: "changed" };
+      if (marks.documents.has(page.document) || !page.fresh) return { _tag: "shows" };
+    }
+    if (!marks.family.joined) return undefined;
+    for (const [other, each] of tabs) {
+      const origin = page.origins.find((found) => each.filled.has(found));
+      if (each.family === marks.family && origin !== undefined) {
+        return { _tag: "reached", origin, tab: other };
+      }
+    }
+    return undefined;
+  };
   return {
-    /** A page that is no tab yet, such as a window a page just opened, can already hold script. */
-    hold: enter,
-    release: leave,
-    /** A tab's page joins a profile. `origins` names the origins of the frames now in it. */
-    open: (tab: string, profile: object, origins: () => ReadonlyArray<string>) => {
+    /** A page of the tab opened a window, or is about to. */
+    windowOpened: (tab: string) => {
+      const marks = tabs.get(tab);
+      if (marks !== undefined) marks.family.joined = true;
+    },
+    /** A window a tab's page opened can hold that page's script before it is a tab itself. */
+    hold: (opener: string, window: unknown) => {
+      const family = tabs.get(opener)?.family;
+      if (family === undefined) return;
+      family.joined = true;
+      windows.set(window, family);
+    },
+    release: (window: unknown) => {
+      windows.delete(window);
+    },
+    /**
+     * A tab's page is known. `origins` names the origins of the frames now in it, and `window`
+     * is the page itself where another tab's page opened it.
+     */
+    open: (tab: string, origins: () => ReadonlyArray<string>, window?: unknown) => {
       // A desktop tab whose connection came back keeps what its page held.
       const held = tabs.get(tab);
-      if (held !== undefined && held.profile !== profile) leave(held.profile, tab);
-      enter(profile, tab);
+      const family = held?.family ??
+        windows.get(window) ?? { joined: false, scripted: new Set<string>() };
+      // While the connection was away, script left in the page could open a window unseen.
+      if (held !== undefined && held.scripts.size > 0) family.joined = true;
       tabs.set(tab, {
-        profile,
+        family,
         origins,
+        scripts: held?.scripts ?? new Set(),
         documents: held?.documents ?? new Set(),
         filled: held?.filled ?? new Set(),
+        kept: held?.kept ?? false,
       });
     },
     /** The tab's page is gone, and with it its history, where a filled value outlives a page. */
     close: (tab: string) => {
-      const marks = tabs.get(tab);
-      if (marks === undefined) return;
       tabs.delete(tab);
-      leave(marks.profile, tab);
     },
-    profile: (tab: string) => tabs.get(tab)?.profile,
+    /** Whether a login was filled in the tab, and whether its history may still hold one. */
+    fills: (tab: string) => {
+      const marks = tabs.get(tab);
+      if (marks === undefined || marks.documents.size === 0) return "none" as const;
+      return marks.kept ? ("kept" as const) : ("cleared" as const);
+    },
+    scriptRefusal,
     /**
-     * Marks the origins agent script is about to run on, in the same step as finding that no
-     * open tab of the profile filled a login on one. Otherwise marks nothing, and names the
-     * origin and that tab.
+     * Marks the page agent script is about to run in, in the same step as finding nothing
+     * against it. Otherwise marks nothing and says why.
      */
-    admitScript: (tab: string, origins: ReadonlyArray<string>) => {
-      const { profile } = known(tab);
-      for (const [other, marks] of tabs) {
-        const origin = origins.find((each) => marks.filled.has(each));
-        if (marks.profile === profile && origin !== undefined) return { origin, tab: other };
-      }
-      const scripted = profiles.get(profile)?.scripted;
-      for (const origin of origins) scripted?.add(origin);
+    admitScript: (tab: string, page: ScriptPage): ScriptRefusal | undefined => {
+      const refusal = scriptRefusal(tab, page);
+      if (refusal !== undefined) return refusal;
+      const marks = known(tab);
+      // A login filled since the history was looked at.
+      if (marks.kept && !page.cleared) return { _tag: "changed" };
+      marks.kept = false;
+      marks.scripts.add(page.document);
+      for (const origin of page.origins) marks.family.scripted.add(origin);
       return undefined;
     },
     /** Script that has run may have taken its page to these origins. */
     noteScript: (tab: string, origins: ReadonlyArray<string>) => {
-      const scripted = profiles.get(tabs.get(tab)?.profile ?? {})?.scripted;
+      const scripted = tabs.get(tab)?.family.scripted;
       for (const origin of origins) scripted?.add(origin);
     },
     /**
-     * Throws where agent script has run on the origin of a frame in the tab's page, as
-     * `documentId` named the page and as it is now.
+     * Whether agent script ran in the page, as `documentId` named it. Throws where script has run
+     * on the origin of a frame in the page, then or now, in tabs a window joins.
      */
     wasScripted: (tab: string, document: string): boolean => {
-      const { profile, origins } = known(tab);
-      refuseScripted(profile, [...document.split(" ").slice(1), ...origins()]);
+      const { family, origins, scripts } = known(tab);
+      if (scripts.has(mainDocument(document))) return true;
+      refuseScripted(family, [...document.split(" ").slice(1), ...origins()]);
       return false;
     },
-    /** Checks the same again, and in the same step marks those origins filled by this tab. */
+    /** Checks the same again, and in the same step marks the page and its origins filled. */
     markFilled: (tab: string, document: string) => {
       const marks = known(tab);
+      if (marks.scripts.has(mainDocument(document))) throw loginError(SCRIPTED_PAGE);
       const origins = [...document.split(" ").slice(1), ...marks.origins()];
-      refuseScripted(marks.profile, origins);
+      refuseScripted(marks.family, origins);
       for (const origin of origins) marks.filled.add(origin);
       marks.documents.add(mainDocument(document));
+      marks.kept = true;
     },
     /** The documents a login was filled into, for a tab that has had one. */
     filled: (tab: string): ReadonlySet<string> | undefined => {
