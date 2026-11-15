@@ -6721,8 +6721,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     );
     const checkoutWorkers = configuredCheckoutWorkers ?? "0";
     // The cache clones a full checkout, so a sparse worktree uses Git's own checkout.
+    // The cache's fallback deletes and re-makes the folder, so a reserved one is no longer its own.
     const fastCheckout =
-      checkoutCache !== undefined && options?.fastCheckout === true && sparsePatterns === null;
+      checkoutCache !== undefined &&
+      options?.fastCheckout === true &&
+      sparsePatterns === null &&
+      progress?.onWorktreeReserved === undefined;
     const cacheGeneration = fastCheckout ? yield* checkoutCache.currentGeneration : 0;
     const stockCheckout = executeGitWithStableDiagnostics(
       "GitVcsDriver.createWorktree",
