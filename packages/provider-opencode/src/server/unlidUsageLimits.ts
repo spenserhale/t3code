@@ -1,8 +1,4 @@
-import type {
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ServerProviderUsageBalance,
-} from "@t3tools/contracts";
+import type { ServerProviderUsageBalance } from "@t3tools/contracts";
 import { ForwardCompatibleOptional } from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
@@ -73,8 +69,6 @@ export type UnlidLimits = SubscriptionLimits & {
 };
 
 interface UnlidAccountInput {
-  readonly driver: ProviderDriverKind;
-  readonly instanceId: ProviderInstanceId;
   readonly enabled: boolean;
   readonly serverUrl: string;
   readonly environment: NodeJS.ProcessEnv;
