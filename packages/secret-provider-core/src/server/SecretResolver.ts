@@ -9,7 +9,11 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import type { SecretProviderDriver, SecretProviderDriverServices } from "./driver.ts";
+import {
+  type SecretProviderDriver,
+  type SecretProviderDriverServices,
+  withSecretProviderVaults,
+} from "./driver.ts";
 
 export class SecretResolver extends Context.Service<
   SecretResolver,
@@ -47,9 +51,18 @@ interface ReadablePlan {
   readonly configKey: string;
 }
 
+type VaultLimits = (provider: SecretReference["provider"]) => ReadonlyArray<string> | undefined;
+
+const EVERY_VAULT: Effect.Effect<VaultLimits> = Effect.succeed(() => undefined);
+
 export const make = Effect.fn("SecretResolver.make")(function* (options: {
   readonly drivers: ReadonlyArray<SecretProviderDriver>;
   readonly secretProviders: Effect.Effect<ServerSettings["secretProviders"]>;
+  /**
+   * The vault ids each provider may open, read with the providers; `undefined` opens every vault.
+   * Without it, every provider opens every vault.
+   */
+  readonly vaults?: Effect.Effect<VaultLimits>;
 }) {
   const context = yield* Effect.context<SecretProviderDriverServices>();
   const driversByKind = new Map(
@@ -65,6 +78,7 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
   // on the next read.
   const planFor = (
     providers: ServerSettings["secretProviders"],
+    vaults: VaultLimits,
     reference: SecretReference,
   ): ReadablePlan | undefined => {
     const provider = providers[reference.provider];
@@ -72,10 +86,11 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
     if (provider === undefined || entry === undefined) return undefined;
     const { driver, decodeConfig } = entry;
     if (!driver.definition.isReference(reference.reference)) return undefined;
-    const config = decodeConfig(provider.config);
-    return Option.isNone(config)
-      ? undefined
-      : { driver, config: config.value, configKey: JSON.stringify(config.value) };
+    const decoded = decodeConfig(provider.config);
+    if (Option.isNone(decoded)) return undefined;
+    // Limited after decoding, so a changed limit is a changed config and reads again.
+    const config = withSecretProviderVaults(decoded.value, vaults(reference.provider));
+    return { driver, config, configKey: JSON.stringify(config) };
   };
 
   const isCached = (reference: SecretReference, plan: ReadablePlan) =>
@@ -99,7 +114,8 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
   ) {
     const fresh = readOptions?.fresh === true;
     const providers = yield* options.secretProviders;
-    const plans = references.map((reference) => planFor(providers, reference));
+    const vaults = yield* options.vaults ?? EVERY_VAULT;
+    const plans = references.map((reference) => planFor(providers, vaults, reference));
     const isMissing = (reference: SecretReference, index: number) => {
       const plan = plans[index];
       return plan !== undefined && (fresh || !isCached(reference, plan));

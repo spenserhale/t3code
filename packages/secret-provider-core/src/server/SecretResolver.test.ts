@@ -33,7 +33,11 @@ function fakeDriver(
   answer: (account: string, reference: string) => string | undefined,
   wait: (references: ReadonlyArray<string>) => Effect.Effect<void> = () => Effect.void,
 ) {
-  const reads: Array<{ readonly account: string; readonly references: ReadonlyArray<string> }> = [];
+  const reads: Array<{
+    readonly account: string;
+    readonly references: ReadonlyArray<string>;
+    readonly vaults?: ReadonlyArray<string>;
+  }> = [];
   const driver = defineSecretProviderDriver({
     kind: FAKE_KIND,
     definition: defineSecretProvider({
@@ -44,11 +48,11 @@ function fakeDriver(
       referencePlaceholder: "fake://item",
       invalidReferenceMessage: "Use fake://item.",
     }),
-    read: ({ account }, references) =>
+    read: ({ account, vaults }, references) =>
       wait(references).pipe(
         Effect.andThen(
           Effect.sync(() => {
-            reads.push({ account, references });
+            reads.push({ account, references, ...(vaults === undefined ? {} : { vaults }) });
             return references.map((reference) => answer(account, reference));
           }),
         ),
@@ -60,10 +64,12 @@ function fakeDriver(
 const resolverLayer = (
   driver: ReturnType<typeof fakeDriver>["driver"],
   secretProviders: () => ServerSettings["secretProviders"] = () => ({ [personal]: fake("a") }),
+  vaults?: (provider: string) => ReadonlyArray<string> | undefined,
 ) =>
   SecretResolver.layer({
     drivers: [driver],
     secretProviders: Effect.sync(secretProviders),
+    ...(vaults === undefined ? {} : { vaults: Effect.sync(() => vaults) }),
   }).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 
 describe("SecretResolver", () => {
@@ -175,6 +181,40 @@ describe("SecretResolver", () => {
         ["a", "b"],
       );
     }).pipe(Effect.provide(resolverLayer(driver, () => ({ [personal]: fake(account) }))));
+  });
+
+  it.effect("gives the driver the provider's vault limit, and reads again when it changes", () => {
+    let limit: ReadonlyArray<string> | undefined = ["v1"];
+    const { driver, reads } = fakeDriver(() => "sk-live");
+    // A limit never comes from the stored config, whatever it holds.
+    const stored = { ...fake("a"), config: { account: "a", vaults: ["stored"] } };
+    return Effect.gen(function* () {
+      const resolver = yield* SecretResolver.SecretResolver;
+      const token = ref("fake://openai");
+
+      yield* resolver.read([token]);
+      yield* resolver.read([token]);
+      limit = [];
+      yield* resolver.read([token]);
+      limit = undefined;
+      yield* resolver.read([token]);
+      yield* resolver.read([ref("fake://openai", work)]);
+
+      assert.deepStrictEqual(reads, [
+        { account: "a", references: ["fake://openai"], vaults: ["v1"] },
+        { account: "a", references: ["fake://openai"], vaults: [] },
+        { account: "a", references: ["fake://openai"] },
+        { account: "b", references: ["fake://openai"], vaults: ["w1"] },
+      ]);
+    }).pipe(
+      Effect.provide(
+        resolverLayer(
+          driver,
+          () => ({ [personal]: stored, [work]: fake("b") }),
+          (provider) => (provider === work ? ["w1"] : limit),
+        ),
+      ),
+    );
   });
 
   it.effect("does not call a driver for what it cannot read, and reads it later", () => {
