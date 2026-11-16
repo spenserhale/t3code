@@ -1,4 +1,3 @@
-import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -16,8 +15,6 @@ import { readUnlidUsageLimits } from "./unlidUsageLimits.ts";
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const account = (key: string | null = "unlid-key", overrides: { readonly env?: object } = {}) => ({
-  driver: ProviderDriverKind.make("opencode"),
-  instanceId: ProviderInstanceId.make("opencode"),
   enabled: true,
   serverUrl: "",
   environment: {
@@ -106,6 +103,15 @@ describe("readUnlidUsageLimits", () => {
     }).pipe(Effect.provide(api.layer));
   });
 
+  it.effect("clamps an overdraft's negative amounts to zero", () => {
+    const api = unlidApi({ [ME]: { balance_usd: -3, held_usd: -0.5, month_spend_usd: -20 } });
+    return Effect.gen(function* () {
+      const limits = yield* readUnlidUsageLimits(account());
+      assert.deepStrictEqual(limits.balance, { balanceUsd: 0, heldUsd: 0, monthSpendUsd: 0 });
+      assert.isUndefined(limits.unavailable);
+    }).pipe(Effect.provide(api.layer));
+  });
+
   it.effect("keeps the fingerprint when the probe fails", () => {
     const api = unlidApi({ [ME]: 500 });
     return Effect.gen(function* () {
@@ -121,6 +127,7 @@ describe("readUnlidUsageLimits", () => {
       const limits = yield* readUnlidUsageLimits(account());
       assert.strictEqual(limits.unavailable?.reason, "unsupported");
       assert.strictEqual(limits.unavailable?.message, "Unlid rejected the key.");
+      assert.strictEqual(limits.credentialFingerprint, UNLID_KEY_FINGERPRINT);
       assert.notInclude(JSON.stringify(limits), "unlid-key");
     }).pipe(Effect.provide(api.layer));
   });
