@@ -463,6 +463,11 @@ import {
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import { AgentFeedbackAnswerInput, AgentFeedbackRequestError } from "./agentFeedback.ts";
 import {
+  ListSecretProviderVaultsInput,
+  ListSecretProviderVaultsResult,
+  SecretProviderVaultsError,
+} from "./secretProviderVaults.ts";
+import {
   SecretRelayAnswer,
   SecretRelayAnswerInput,
   SecretRelayResolveInput,
@@ -644,6 +649,7 @@ export const WS_METHODS = {
   serverRetryResourceTelemetry: "server.retryResourceTelemetry",
   serverCheckOtlpEndpoint: "server.checkOtlpEndpoint",
   serverListTextGeneratorModels: "server.listTextGeneratorModels",
+  serverListSecretProviderVaults: "server.listSecretProviderVaults",
   serverPrepareTriage: "server.prepareTriage",
   serverSignalProcess: "server.signalProcess",
   serverReportClientActivity: "server.reportClientActivity",
@@ -1193,6 +1199,12 @@ const WsServerListTextGeneratorModelsRpc = Rpc.make(WS_METHODS.serverListTextGen
   payload: ListTextGeneratorModelsInput,
   success: ListTextGeneratorModelsResult,
   error: Schema.Union([TextGeneratorError, EnvironmentAuthorizationError]),
+});
+
+const WsServerListSecretProviderVaultsRpc = Rpc.make(WS_METHODS.serverListSecretProviderVaults, {
+  payload: ListSecretProviderVaultsInput,
+  success: ListSecretProviderVaultsResult,
+  error: Schema.Union([SecretProviderVaultsError, EnvironmentAuthorizationError]),
 });
 
 const WsServerPrepareTriageRpc = Rpc.make(WS_METHODS.serverPrepareTriage, {
@@ -2605,6 +2617,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRetryResourceTelemetryRpc,
   WsServerCheckOtlpEndpointRpc,
   WsServerListTextGeneratorModelsRpc,
+  WsServerListSecretProviderVaultsRpc,
   WsServerPrepareTriageRpc,
   WsServerGetUsageSummaryRpc,
   WsServerRefreshUsageRatesRpc,

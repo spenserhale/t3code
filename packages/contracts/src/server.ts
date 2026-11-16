@@ -793,6 +793,11 @@ export const ServerConfig = Schema.Struct({
    * and this server can answer them for another one: the `secretRelay` RPC methods.
    */
   secretRelay: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Secret providers can be limited to chosen vaults, per environment and per project (the
+   * `secretProviderVaults` setting), and `server.listSecretProviderVaults` lists them.
+   */
+  secretProviderVaults: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**
