@@ -67,7 +67,8 @@ const KIND_ORDER = { session: 0, weekly: 1, monthly: 2, other: 3 } as const;
 function showInQuickView(account: LimitAccount, window: ServerProviderUsageWindow): boolean {
   return (
     window.id !== "zai_tools_monthly" &&
-    !(account.driver === "claudeAgent" && window.id === "monthly_spend")
+    !(account.driver === "claudeAgent" && window.id === "monthly_spend") &&
+    (account.driver !== "antigravity" || /^gemini-(5h|weekly|quota)$/.test(window.id))
   );
 }
 

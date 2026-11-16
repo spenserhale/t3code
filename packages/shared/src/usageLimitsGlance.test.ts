@@ -138,7 +138,7 @@ describe("collectLimitGlance", () => {
     ).toMatchObject([{ resetSinceChecked: true, pools: [] }]);
   });
 
-  it("pairs Antigravity windows by consumption identity, keeping shared and model-specific pools distinct", () => {
+  it("shows primary Gemini windows in Quick View and leaves peripheral quotas in the account for Details", () => {
     const ag = ProviderDriverKind.make("antigravity");
     const window = (id: string, label: string, kind: Window["kind"]): Window => ({
       id,
@@ -159,10 +159,16 @@ describe("collectLimitGlance", () => {
         label: "Gemini",
         windows: [{ id: "gemini-5h", resetsIn: null, pace: null }, { id: "gemini-weekly" }],
       },
-      { label: "Gemini 4 Argon", windows: [{ id: "gemini-argon-wtu-weekly" }] },
-      { label: "Claude & GPT (shared)", windows: [{ id: "3p-5h" }, { id: "3p-weekly" }] },
     ]);
+    expect(row?.pools).toHaveLength(1);
     expect(source.limits.windows).toHaveLength(5);
+    expect(
+      rows([
+        account({ key: "shared-only", driver: ag }, [
+          window("3p-weekly", "Claude & GPT (shared) · Weekly", "weekly"),
+        ]),
+      ]),
+    ).toEqual([]);
   });
 
   it("keeps legacy Gemini quota without inventing a reset period", () => {
