@@ -473,7 +473,10 @@ const readLogin = Effect.fn("OnePasswordDriver.readLogin")(function* (
   login: SecretProviderLogin,
   fields: ReadonlyArray<SecretProviderLoginField>,
 ) {
-  const args = itemGetArgs(login, true);
+  const args = itemGetArgs(
+    login,
+    fields.some((field) => field !== "username"),
+  );
   if (args === undefined) return undefined;
   const result = yield* runOnePassword(config, "item", args);
   const values = result.code === 0 ? parseLoginValues(result.stdout, fields) : undefined;

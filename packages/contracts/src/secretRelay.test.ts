@@ -75,5 +75,8 @@ describe("login choice wire compatibility", () => {
     expect(decodeAnswer(answer)).toEqual(answer);
     const { fillOrigin: _, ...legacyItem } = answer.item;
     expect(decodeAnswer({ ...answer, item: legacyItem })).toEqual({ ...answer, item: legacyItem });
+    const denied = { type: "denied", message: "The selected login has no totp." };
+    expect(decodeAnswer(denied)).toEqual(denied);
+    expect(decodeAnswer({ type: "denied" })).toEqual({ type: "denied" });
   });
 });

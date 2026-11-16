@@ -80,7 +80,7 @@ export const SecretRelayAnswer = Schema.Union([
     candidates: Schema.Array(PreviewLoginCandidate),
   }),
   Schema.Struct({ type: Schema.Literal("none") }),
-  Schema.Struct({ type: Schema.Literal("denied") }),
+  Schema.Struct({ type: Schema.Literal("denied"), message: Schema.optional(Schema.String) }),
   Schema.Struct({ type: Schema.Literal("unavailable"), message: Schema.String }),
 ]);
 export type SecretRelayAnswer = typeof SecretRelayAnswer.Type;

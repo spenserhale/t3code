@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import type { CDPSession, Page } from "playwright-core";
 
 import * as BrowserLogins from "./BrowserLogins.ts";
+import * as BrowserLoginChoice from "./BrowserLoginChoice.ts";
 import * as BrowserSecretAccess from "./BrowserSecretAccess.ts";
 import {
   documentId,
@@ -51,10 +52,22 @@ interface LoginTab {
   readonly cdp: CDPSession;
   readonly recording: object | null;
   readonly recordingStart: object | null;
+  readonly loginSourceUrl?: string | undefined;
+  loginSelection?: LoginSelection | undefined;
+}
+
+export interface LoginSelection {
+  readonly id: string;
+  readonly origin: string;
+  readonly revision: string;
+  /** Actual writing sites authorized by the successful fill. */
+  readonly urls: ReadonlyArray<string>;
+  readonly fillOrigin?: string | undefined;
 }
 
 interface FillableLogin extends BrowserSecretAccess.SecretItem {
   readonly urls: ReadonlyArray<string>;
+  readonly fillOrigin?: string | undefined;
 }
 
 const notForThisSite = (title: string) =>
@@ -90,8 +103,11 @@ export const fillLogin = async (
   const deadline = Date.now() + (deadlineMs - performance.now());
 
   /** The fields sought, in frames on the given site only. */
-  const findTargets = async (urls: ReadonlyArray<string>, sought = fields) => {
-    const frameCovered = (frameUrl: string) => BrowserLogins.loginCoversPage(urls, frameUrl);
+  const findTargets = async (urls: ReadonlyArray<string>, sought = fields, fillOrigin?: string) => {
+    const frameCovered = (frameUrl: string) =>
+      fillOrigin === undefined
+        ? BrowserLogins.loginCoversPage(urls, frameUrl)
+        : URL.canParse(frameUrl) && new URL(frameUrl).origin === fillOrigin;
     const { targets, missing } = await findLoginTargets({
       page: tab.page,
       fields: sought,
@@ -190,6 +206,13 @@ export const fillLogin = async (
         signal: context.signal,
       });
     }
+    tab.loginSelection = {
+      id: login.id,
+      origin,
+      revision,
+      urls: login.fillOrigin === origin ? [origin] : login.urls,
+      ...(login.fillOrigin === undefined ? {} : { fillOrigin: login.fillOrigin }),
+    };
     return {
       status: "filled",
       tabId: tab.tabId,
@@ -199,8 +222,44 @@ export const fillLogin = async (
   };
 
   let document: string | undefined;
+  const checkPage = BrowserSecretAccess.pageStep(async () => {
+    if (expired()) throw loginError("The call ended before the login was filled.");
+    if (
+      !URL.canParse(tab.page.url()) ||
+      new URL(tab.page.url()).origin !== origin ||
+      (document !== undefined && (await documentId(tab.cdp)) !== document)
+    ) {
+      throw loginError("The page changed before the login was filled. Try again.");
+    }
+  });
+  const ready = BrowserSecretAccess.pageStep(async () => {
+    if (document !== undefined) {
+      await step(checkPage);
+      return;
+    }
+    await checkLocators();
+    await findTargets(
+      [pageUrl],
+      fields.filter((field) => locators[field] === undefined),
+    );
+    document = await fillableDocument();
+  });
+  const currentRevision = (await step(logins.escalation)).revision;
+  const remembered =
+    input.reference === undefined &&
+    tab.loginSelection?.origin === origin &&
+    tab.loginSelection.revision === currentRevision &&
+    BrowserLogins.loginCoversPage(tab.loginSelection.urls, pageUrl)
+      ? tab.loginSelection
+      : undefined;
+  const changeAccount =
+    remembered !== undefined && input.login !== undefined && input.login !== remembered.id;
+  const previous = changeAccount || fields.includes("username") ? undefined : remembered;
   const access = await step(
-    BrowserSecretAccess.resolve(
+    BrowserSecretAccess.resolve<
+      BrowserLoginChoice.SelectedLogin,
+      Readonly<Partial<Record<PreviewLoginField, string>>>
+    >(
       context,
       {
         kind: "login",
@@ -208,36 +267,94 @@ export const fillLogin = async (
         ...requester,
         tabId: tab.tabId,
         origin,
-        item: input.login,
+        item: previous?.id,
         reference: input.reference,
         deadline,
         // Before anyone is asked or anything read; the login's own sites are checked once known.
-        ready: BrowserSecretAccess.pageStep(async () => {
-          await checkLocators();
-          // A field with no locator must be on the page's own site, whatever else has one.
-          await findTargets(
-            [pageUrl],
-            fields.filter((field) => locators[field] === undefined),
-          );
-          document = await fillableDocument();
-        }),
+        ready,
       },
       {
         what: `a login for ${origin}`,
-        find: (reach) =>
-          input.reference === undefined
-            ? logins.candidates(pageUrl, reach).pipe(Effect.map((found) => found.logins))
-            : logins
-                .lookupLogin(input.reference, reach)
-                .pipe(Effect.map(({ login }) => (login === undefined ? [] : [login]))),
-        read: (revision, login) => logins.read(revision, login, fields),
+        find: Effect.fn("ServerBrowserLoginFill.find")(function* (
+          reach: BrowserLogins.BrowserLoginReach,
+        ) {
+          const found =
+            input.reference === undefined
+              ? yield* logins.candidates(pageUrl, reach, tab.loginSourceUrl)
+              : yield* logins.lookupLogin(input.reference, reach).pipe(
+                  Effect.map(({ revision, login }) => ({
+                    revision,
+                    logins: login === undefined ? [] : [login],
+                  })),
+                );
+          const reused =
+            previous?.revision === found.revision
+              ? found.logins.find((candidate) => candidate.id === previous.id)
+              : undefined;
+          if (
+            reused !== undefined &&
+            (BrowserLogins.loginCoversPage(reused.urls, origin) || previous?.fillOrigin === origin)
+          ) {
+            return [
+              {
+                ...reused,
+                userChosen: true,
+                ...(previous?.fillOrigin === undefined ? {} : { fillOrigin: previous.fillOrigin }),
+              },
+            ];
+          }
+          const login = yield* BrowserLoginChoice.select(context, {
+            revision: found.revision,
+            candidates: found.logins,
+            threadId: tab.threadId,
+            tabId: tab.tabId,
+            ...requester,
+            origin,
+            deadline,
+            ready,
+            checkPage,
+            forceChoice: changeAccount,
+          });
+          return login === undefined ? [] : [login];
+        }),
+        read: Effect.fn("ServerBrowserLoginFill.read")(function* (
+          revision: string,
+          login: BrowserLoginChoice.SelectedLogin,
+        ) {
+          yield* checkPage;
+          const values = yield* logins.read(revision, login, fields).pipe(
+            Effect.mapError((error) =>
+              login.userChosen &&
+              (error.reason === "unreadable" || error.reason === "not_configured")
+                ? new BrowserLogins.BrowserLoginError({
+                    reason: "refused",
+                    message: `The selected login "${login.title}" could not be read. Unlock its password manager or choose another login, then try again.`,
+                  })
+                : error,
+            ),
+          );
+          const missing = login.userChosen ? lacks(login, values) : undefined;
+          if (missing !== undefined)
+            return yield* new BrowserLogins.BrowserLoginError({
+              reason: "refused",
+              message: `${missing} Choose another login or ask the user to sign in.`,
+            });
+          return values;
+        }),
         unusable: (login) =>
-          BrowserLogins.loginCoversPage(login.urls, pageUrl)
+          login.fillOrigin === origin || BrowserLogins.loginCoversPage(login.urls, pageUrl)
             ? undefined
             : notForThisSite(login.title),
         lacks,
         relay: {
-          ask: { kind: "login", threadId: tab.threadId, ...requester, origin, fields },
+          ask: {
+            kind: "login",
+            threadId: tab.threadId,
+            ...requester,
+            origin,
+            fields,
+            ...(tab.loginSourceUrl === undefined ? {} : { siteUrl: tab.loginSourceUrl }),
+          },
           values: (values) =>
             Object.fromEntries(
               fields.flatMap((field) =>
@@ -250,12 +367,22 @@ export const fillLogin = async (
   );
   if (access.status === "none") return { status: "no_login", tabId: tab.tabId, origin };
   if (access.status === "choose") {
-    return { status: "choose", tabId: tab.tabId, origin, candidates: [...access.candidates] };
+    throw loginError(
+      "Choosing this login needs an updated T3 Code desktop app on the user's device. Update it, then try again.",
+    );
   }
   const { item } = access;
-  if (!BrowserLogins.loginCoversPage(item.urls, tab.page.url())) {
+  await step(checkPage);
+  if (item.fillOrigin !== undefined && item.fillOrigin !== origin) {
+    throw loginError("The login choice was authorized for another origin. Try again.");
+  }
+  if (item.fillOrigin !== origin && !BrowserLogins.loginCoversPage(item.urls, tab.page.url())) {
     throw loginError(notForThisSite(item.title));
   }
-  const found = await findTargets(item.urls);
+  const found = await findTargets(
+    item.fillOrigin === origin ? [origin] : item.urls,
+    fields,
+    item.fillOrigin,
+  );
   return fill(item, found, document ?? (await fillableDocument()), access.values, access.revision);
 };
