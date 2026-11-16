@@ -29,6 +29,7 @@ import {
   SECRET_RELAY_KINDS,
   type SecretRelayCandidate,
   secretRelayEnvironmentIds,
+  secretRelayKinds,
   serveSecretRelay,
 } from "./secretRelay.ts";
 
@@ -96,6 +97,7 @@ const candidate = (
   overrides: Partial<{
     readonly connected: boolean;
     readonly secretRelay: boolean;
+    readonly secretRelayLoginChoice: boolean;
     readonly providers: ReadonlyArray<string>;
     readonly socketUrl: string;
     readonly session: AuthSessionState | null;
@@ -105,6 +107,9 @@ const candidate = (
   connected: overrides.connected ?? true,
   config: {
     ...(overrides.secretRelay === false ? {} : { secretRelay: true }),
+    ...(overrides.secretRelayLoginChoice === undefined
+      ? {}
+      : { secretRelayLoginChoice: overrides.secretRelayLoginChoice }),
     settings: {
       browserLogins: {
         approval: "thread",
@@ -148,6 +153,44 @@ describe("secretRelayEnvironmentIds", () => {
       },
     },
   ];
+
+  it("negotiates kinds from the primary's advertised capability and local password managers", () => {
+    const legacy = ["login", "identity", "secretReference"] as const;
+    for (const overrides of [{}, { secretRelayLoginChoice: false }] as const) {
+      assert.deepStrictEqual(secretRelayKinds(primary(overrides).config), legacy);
+      assert.deepStrictEqual(secretRelayKinds(primary({ providers: [], ...overrides }).config), []);
+    }
+    assert.deepStrictEqual(secretRelayKinds(primary({ secretRelayLoginChoice: true }).config), [
+      ...legacy,
+      "loginChoice",
+    ]);
+    assert.deepStrictEqual(
+      secretRelayKinds(primary({ providers: [], secretRelayLoginChoice: true }).config),
+      ["loginChoice"],
+    );
+    assert.deepStrictEqual(secretRelayKinds(primary({ secretRelay: false }).config), []);
+    assert.deepStrictEqual(secretRelayKinds(null), []);
+  });
+
+  it("can ask the native chooser without a local password manager when the primary supports it", () => {
+    assert.deepStrictEqual(
+      secretRelayEnvironmentIds({
+        primaryEnvironmentId: primaryId,
+        environments: [primary({ providers: [], secretRelayLoginChoice: true }), ...others],
+      }),
+      [EnvironmentId.make("tls"), EnvironmentId.make("tunnel")],
+    );
+    assert.deepStrictEqual(
+      secretRelayEnvironmentIds({
+        primaryEnvironmentId: primaryId,
+        environments: [
+          primary({ providers: [] }),
+          remote("newer", { secretRelayLoginChoice: true }),
+        ],
+      }),
+      [],
+    );
+  });
 
   it("answers encrypted environments that offer the relay while the primary can read logins", () => {
     assert.deepStrictEqual(

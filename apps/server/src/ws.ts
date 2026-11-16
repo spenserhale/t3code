@@ -1991,6 +1991,7 @@ export const layerWsRpc = (
           secretRequestReferences: true,
           secretProviderCredentials: true,
           secretRelay: true,
+          secretRelayLoginChoice: true,
           ...Option.match(scratchWorkspaceRoot, {
             onNone: () => ({}),
             onSome: (root) => ({ scratchWorkspaceRoot: root }),

@@ -658,6 +658,8 @@ export const ServerConfig = Schema.Struct({
    * and this server can answer them for another one: the `secretRelay` RPC methods.
    */
   secretRelay: Schema.optionalKey(Schema.Boolean),
+  /** The desktop can choose from a relayed list of saved logins. */
+  secretRelayLoginChoice: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**
