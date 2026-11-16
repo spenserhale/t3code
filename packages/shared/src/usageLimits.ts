@@ -13,6 +13,7 @@ import {
   type ServerProvider,
   type ServerProviderResetCredits,
   type ServerProviderUsageCredit,
+  type ServerProviderUsageBalance,
   type ServerProviderUsageLimits,
   type ServerProviderUsageWindow,
   type UsageLimitSourceSnapshots,
@@ -20,7 +21,11 @@ import {
 
 import * as DateTime from "effect/DateTime";
 
-import { accountsOnPlansOf, mergeSubscriptions } from "./usageLimitSubscriptions.ts";
+import {
+  accountsOnPlansOf,
+  hasDrawableLimits,
+  mergeSubscriptions,
+} from "./usageLimitSubscriptions.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -249,6 +254,8 @@ export interface LimitAccount {
   readonly subscription?: string | undefined;
   /** The credit pool of that subscription, when its plan has one. */
   readonly credit?: ServerProviderUsageCredit | undefined;
+  /** The prepaid pay-as-you-go balance of that subscription, when its plan reports one. */
+  readonly balance?: ServerProviderUsageBalance | undefined;
   readonly accentColor: string | undefined;
   readonly environments: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -331,6 +338,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
           : displayName,
       plan: planSources.get(key)?.plan ?? previous.plan ?? next.plan,
       subscription: previous.subscription ?? next.subscription,
+      balance: previous.balance ?? next.balance,
       credit: poolSources.get(key)?.credit,
       accentColor: previous.accentColor ?? next.accentColor,
       environments,
@@ -357,7 +365,8 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   for (const [environmentId, presentation] of presentations) {
     const label = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      if (!provider.usageLimits || limitsNotice(provider.usageLimits) !== null) continue;
+      const limits = provider.usageLimits;
+      if (!limits || limits.unavailable || !hasDrawableLimits(limits)) continue;
       if (mergeSubscriptions(merge, { environmentId, label }, provider, accountKey)) continue;
       merge(resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`, {
         key: `${environmentId}:${provider.instanceId}`,
@@ -380,7 +389,9 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         ? `${presentation.entry.target.label} · ${source.label}`
         : source.label;
       for (const account of source.accounts) {
-        if (limitsNotice(account.usageLimits) !== null) continue;
+        // A hub account draws windows and credits only, so a balance alone cannot show here.
+        if (!hasDrawableLimits(account.usageLimits) || limitsNotice(account.usageLimits) !== null)
+          continue;
         const key = `${source.id}:${account.id}${account.workspaceId ? `:${account.workspaceId}` : ""}`;
         merge(resolveKey(account) ?? key, {
           key,
@@ -641,7 +652,7 @@ export function limitsNotice(limits: ServerProviderUsageLimits): string | null {
   if (limits.unavailable?.reason === "probeFailed") {
     return limits.unavailable.message ?? "Could not read limits.";
   }
-  return limits.windows.length === 0 ? "No limits reported." : null;
+  return hasDrawableLimits(limits) ? null : "No limits reported.";
 }
 
 export function remainingPercent(window: ServerProviderUsageWindow): number {
