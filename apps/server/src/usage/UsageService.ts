@@ -39,8 +39,14 @@ import type {
   TranscriptUsageFormat,
   UsageRecord,
 } from "@t3tools/provider-core/server/usage";
+import { UnlidCatalogRates, type UnlidModelPrice } from "./UnlidCatalogRates.ts";
 import { canonicalModelFilter, resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
-import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
+import {
+  createOverrideRateTable,
+  parseRateTable,
+  type ModelRate,
+  type RateTable,
+} from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -1002,14 +1008,32 @@ export const make = Effect.gen(function* () {
     }
     // Unreadable settings still leave the published table to price with.
     const settings = yield* readSettings.pipe(Effect.option);
+    const priceOverrides: ServerSettingsValue["usagePriceOverrides"] = Option.match(settings, {
+      onNone: () => ({}),
+      onSome: (value) => value.usagePriceOverrides,
+    });
+    // A catalog entry prices an id only when nothing else does; filling nothing returns the
+    // published table as is so rate lookups keep their cache.
+    const unlidCatalogRates = yield* Effect.serviceOption(UnlidCatalogRates);
+    const catalog: Record<string, UnlidModelPrice> = Option.isSome(unlidCatalogRates)
+      ? yield* unlidCatalogRates.value.current
+      : {};
+    let fills: Map<string, ModelRate> | null = null;
+    for (const [id, price] of Object.entries(catalog)) {
+      const key = id.trim().toLowerCase();
+      if (key.length === 0 || rates.has(key) || priceOverrides[key] !== undefined) continue;
+      (fills ??= new Map(rates)).set(key, {
+        inputCostPerToken: price.inputUsdPerM / 1_000_000,
+        outputCostPerToken: price.outputUsdPerM / 1_000_000,
+        cacheReadCostPerToken: (price.cachedInputUsdPerM ?? price.inputUsdPerM) / 1_000_000,
+        cacheCreationCostPerToken: price.inputUsdPerM / 1_000_000,
+        fast: null,
+        ultrafast: null,
+      });
+    }
     return {
-      table: rates,
-      overrides: createOverrideRateTable(
-        Option.match(settings, {
-          onNone: () => ({}),
-          onSome: (value) => value.usagePriceOverrides,
-        }),
-      ),
+      table: fills ?? rates,
+      overrides: createOverrideRateTable(priceOverrides),
       aliases: resolveModelAliases(
         Option.match(settings, { onNone: () => ({}), onSome: (value) => value.usageModelAliases }),
       ),
