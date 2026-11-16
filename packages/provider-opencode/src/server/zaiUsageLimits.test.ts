@@ -21,6 +21,7 @@ import {
   consumeZaiResetCredit,
   keepLastGoodUsageLimits,
   readZaiCodingPlanUsageLimits,
+  type SubscriptionLimits,
 } from "./zaiUsageLimits.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -292,6 +293,7 @@ describe("combineUsageLimits", () => {
     label: "Z.ai",
     limits,
   });
+  const asUnlid = (limits: SubscriptionLimits) => ({ id: "unlid", label: "Unlid", limits });
 
   it.effect("shows the subscriptions that answered and keeps their reset credits", () =>
     Effect.gen(function* () {
@@ -518,6 +520,46 @@ describe("combineUsageLimits", () => {
         );
         assert.notProperty(
           yield* combineUsageLimits([asGo(unsupported), asZai(zai)]),
+          "subscriptions",
+        );
+      }).pipe(Effect.provide(nodeServices)),
+    );
+
+    it.effect("lists a subscription that has a balance but no windows", () =>
+      Effect.gen(function* () {
+        const unlid = {
+          ...makeUsageLimits({ checkedAt, windows: [] }),
+          credentialFingerprint: "unlid-fingerprint",
+          balance: { balanceUsd: 4.99 },
+        };
+        const combined = yield* combineUsageLimits([asGo(unsupported), asUnlid(unlid)]);
+        assert.deepStrictEqual(combined.subscriptions, [
+          {
+            id: "unlid",
+            label: "Unlid",
+            credentialFingerprint: "unlid-fingerprint",
+            checkedAt,
+            windowIds: [],
+            balance: { balanceUsd: 4.99 },
+          },
+        ]);
+        assert.deepStrictEqual(combined.windows, []);
+      }).pipe(Effect.provide(nodeServices)),
+    );
+
+    it.effect("drops a subscription with neither windows nor a balance", () =>
+      Effect.gen(function* () {
+        const empty = {
+          ...makeUsageLimits({ checkedAt, windows: [] }),
+          credentialFingerprint: "unlid-fingerprint",
+        };
+        const combined = yield* combineUsageLimits([asGo(go), asUnlid(empty)]);
+        assert.deepStrictEqual(
+          combined.subscriptions?.map((subscription) => subscription.id),
+          ["opencode-go"],
+        );
+        assert.notProperty(
+          yield* combineUsageLimits([asGo(unsupported), asUnlid(empty)]),
           "subscriptions",
         );
       }).pipe(Effect.provide(nodeServices)),

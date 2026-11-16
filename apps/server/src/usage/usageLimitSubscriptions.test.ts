@@ -68,6 +68,28 @@ describe("withoutUsageLimitSubscriptions", () => {
     const [, untouched] = withoutUsageLimitSubscriptions([listed, plain[1]!]);
     expect(untouched).toBe(plain[1]);
   });
+
+  it("drops a balance-only subscription whole, so a flag-less client never sees the balance", () => {
+    const balanceOnly = provider({
+      usageLimits: {
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        windows: [],
+        subscriptions: [
+          {
+            id: "unlid",
+            label: "Unlid",
+            credentialFingerprint: "unlid-key",
+            checkedAt: "2026-09-03T11:00:00.000Z",
+            windowIds: [],
+            balance: { balanceUsd: 4.99 },
+          },
+        ],
+      },
+    });
+    const [stripped] = withoutUsageLimitSubscriptions([balanceOnly]);
+    expect(stripped?.usageLimits).not.toHaveProperty("subscriptions");
+    expect(JSON.stringify(stripped)).not.toContain("balance");
+  });
 });
 
 describe("providersFor", () => {
