@@ -62,8 +62,11 @@ export interface LimitGlanceConsumption {
 
 const KIND_ORDER = { session: 0, weekly: 1, monthly: 2, other: 3 } as const;
 
-function showInQuickView(window: ServerProviderUsageWindow): boolean {
-  return window.id !== "zai_tools_monthly";
+function showInQuickView(account: LimitAccount, window: ServerProviderUsageWindow): boolean {
+  return (
+    window.id !== "zai_tools_monthly" &&
+    !(account.driver === "claudeAgent" && window.id === "monthly_spend")
+  );
 }
 
 function consumptionScope(account: LimitAccount, window: ServerProviderUsageWindow) {
@@ -198,7 +201,7 @@ export function collectLimitGlance(
       members: readonly LimitPoolMember[],
     ) => {
       for (const { account, window } of members) {
-        if (!showInQuickView(window)) continue;
+        if (!showInQuickView(account, window)) continue;
         const list = into.get(account.key);
         if (list) list.push(window);
         else into.set(account.key, [window]);
