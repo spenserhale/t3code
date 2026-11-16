@@ -169,7 +169,9 @@ with its reset time. Under a monthly credit, Limits also shows how much of the p
 used, what the plan costs, and any purchased credit. On a $60 Pro or $300 Max plan, when at least
 half of that usage was on models OpenRouter prices, it also shows what the usage would have cost at
 OpenRouter's zero-data-retention rates. Team and custom-sized pools skip that, because their balance
-can include other members' usage. Cursor reports
+can include other members' usage. An Unlid account — pay-as-you-go — shows its balance on Limits:
+what is left, what is held by open reservations, and what this month has spent. It has no reset
+and no usage chart; top up at Unlid's billing page. Cursor reports
 its monthly allowance, including separate Auto and API usage, for `CURSOR_AUTH_TOKEN` when it is set,
 otherwise for the account you signed in with in T3 or set as `CURSOR_API_KEY`.
 Sign-in and API keys report limits only with Cursor's default API endpoint. If you configure a custom

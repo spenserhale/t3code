@@ -42,6 +42,7 @@ import { OpenAI } from "../Icons";
 import { Alert, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { CreditLines } from "./UsageCreditLines";
+import { BalanceLines } from "./UsageBalanceLines";
 import { PaceIcon, ResetCreditDialog, barColor, usePaceMark, useResetCredit } from "./UsageLimits";
 
 function accountInitials(email: string): string {
@@ -602,6 +603,7 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
           />
         );
       })}
+      <BalanceLines accounts={pool.accounts} now={now} />
     </section>
   );
 }
