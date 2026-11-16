@@ -11,6 +11,7 @@ import type * as Path from "effect/Path";
 import type * as HttpClient from "effect/http/HttpClient";
 
 import { makeOllamaCloudUsageLimits } from "./ollamaCloudUsageLimits.ts";
+import { readUnlidUsageLimits } from "./unlidUsageLimits.ts";
 import {
   combineUsageLimits,
   consumeZaiResetCredit,
@@ -20,8 +21,9 @@ import {
 
 /**
  * Reads the subscriptions an OpenCode account can hold, OpenCode's own (`openCodeLimits`, Go or a
- * Console workspace), the Z.ai Coding Plan and Ollama Cloud, as the account's usage limits. Build
- * it once, with the provider: each subscription remembers its last good read between refreshes.
+ * Console workspace), the Z.ai Coding Plan, Ollama Cloud and Unlid's prepaid balance, as the
+ * account's usage limits. Build it once, with the provider: each subscription remembers its last
+ * good read between refreshes.
  */
 export const makeSubscriptionUsageLimits = Effect.fn("makeSubscriptionUsageLimits")(
   function* (input: {
@@ -40,19 +42,22 @@ export const makeSubscriptionUsageLimits = Effect.fn("makeSubscriptionUsageLimit
     const readOllamaLimits = yield* keepLastGoodUsageLimits(
       yield* makeOllamaCloudUsageLimits(input),
     );
+    const readUnlidLimits = yield* keepLastGoodUsageLimits(readUnlidUsageLimits(input));
     const usageLimits = Effect.all(
       {
         openCodeLimits: readOpenCodeLimits,
         zaiLimits: readZaiLimits,
         ollamaLimits: readOllamaLimits,
+        unlidLimits: readUnlidLimits,
       },
       { concurrency: "unbounded" },
     ).pipe(
-      Effect.flatMap(({ openCodeLimits, zaiLimits, ollamaLimits }) =>
+      Effect.flatMap(({ openCodeLimits, zaiLimits, ollamaLimits, unlidLimits }) =>
         combineUsageLimits([
           openCodeSubscription(openCodeLimits),
           { id: "zai-coding-plan", label: "Z.ai", limits: zaiLimits },
           { id: "ollama-cloud", label: "Ollama Cloud", limits: ollamaLimits },
+          { id: "unlid", label: "Unlid", limits: unlidLimits },
         ]),
       ),
       Effect.provide(services),

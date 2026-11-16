@@ -1,6 +1,7 @@
 import type {
   ProviderConsumeResetCreditOutcome,
   ServerProviderResetCredits,
+  ServerProviderUsageBalance,
   ServerProviderUsageCredit,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
@@ -321,12 +322,14 @@ export const consumeZaiResetCredit = Effect.fn("consumeZaiResetCredit")(function
 }, Effect.timeout("20 seconds"));
 
 /**
- * What a subscription probe reads: its limits, and its credit pool when the plan has one.
- * The credit travels with the limits so a failed read keeps both, and leaves them
- * together in `combineUsageLimits`, which lists it under the subscription only.
+ * What a subscription probe reads: its limits, its credit pool when the plan has
+ * one, and its prepaid balance when it is pay-as-you-go. Both travel with the
+ * limits so a failed read keeps them, and `combineUsageLimits` lists them under
+ * the subscription only.
  */
 export type SubscriptionLimits = ServerProviderUsageLimits & {
   readonly credit?: ServerProviderUsageCredit | undefined;
+  readonly balance?: ServerProviderUsageBalance | undefined;
 };
 
 /** What one subscription probe returned, with the plan it reads. */
@@ -364,7 +367,9 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
   ).checkedAt;
   // Listed one by one too, so a client can match each across environments by its own fingerprint.
   const subscriptions = probes.flatMap(({ id, label, limits: entry }) =>
-    entry.unavailable === undefined && entry.credentialFingerprint
+    entry.unavailable === undefined &&
+    entry.credentialFingerprint &&
+    (entry.windows.length > 0 || entry.balance !== undefined)
       ? [
           {
             id,
@@ -374,6 +379,7 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
             windowIds: entry.windows.map((window) => window.id),
             ...(entry.resetCredits ? { resetCredits: entry.resetCredits } : {}),
             ...(entry.credit ? { credit: entry.credit } : {}),
+            ...(entry.balance ? { balance: entry.balance } : {}),
           },
         ]
       : [],
