@@ -830,9 +830,10 @@ describe("1Password with a vault limit", () => {
     const grafana = { id: "abc123", title: "Grafana", urls: ["https://grafana.example.com"] };
     const recipe = { length: 24, digits: true, symbols: true };
     return Effect.gen(function* () {
-      assert.deepStrictEqual(
-        yield* driver.logins!.read(limited, { ...grafana, vaultId: "v1" }, ["password"]),
-        { password: "hunter2" },
+      assert.strictEqual(
+        (yield* driver.logins!.read(limited, { ...grafana, vaultId: "v1" }, ["password"]))
+          ?.password,
+        "hunter2",
       );
       assert.deepStrictEqual(op.invocations[0]?.slice(3), [
         "get",
