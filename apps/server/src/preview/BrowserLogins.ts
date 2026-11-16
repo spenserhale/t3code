@@ -10,13 +10,17 @@ import type {
   SecretProviderLogins,
   SecretProviderPasswordRecipe,
 } from "@t3tools/secret-provider-core/server/driver";
+import { withSecretProviderVaults } from "@t3tools/secret-provider-core/server/driver";
 import {
   browserLoginProviderIds,
   DEFAULT_BROWSER_SECRET_ESCALATION,
+  resolveSecretProviderVaults,
   type BrowserNewLoginSettings,
   type BrowserSecretEscalation,
   type SecretProviderId,
+  type SecretProviderVault,
   type ServerSettings,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -25,10 +29,12 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { BUILT_IN_SECRET_PROVIDER_DRIVER_LIST } from "../secrets/secretProviderDefinitions.ts";
 import * as Settings from "../serverSettings.ts";
 
@@ -90,7 +96,30 @@ export interface BrowserLoginProvider {
   /** Its name in Settings > Secrets. */
   readonly account: string;
   readonly unattended: boolean;
+  /** The names of the vaults it may open for these steps, when a vault limit applies. */
+  readonly vaults?: ReadonlyArray<string>;
 }
+
+/**
+ * Names the vaults each limited provider may open, for a refusal a vault limit may explain: a
+ * provider kept from an item passes the request on as one without it, so only the end can say.
+ */
+export const vaultLimitNote = (
+  providers: ReadonlyArray<Pick<BrowserLoginProvider, "account" | "vaults">>,
+) => {
+  const limited = providers.flatMap(({ account, vaults }) =>
+    vaults === undefined
+      ? []
+      : [
+          vaults.length === 0
+            ? `${account} may open no vault`
+            : `${account} may open only ${vaults.map((name) => `"${name}"`).join(", ")}`,
+        ],
+  );
+  return limited.length === 0
+    ? undefined
+    : `A vault limit applies here: ${limited.join("; ")}. The user can change it in Settings > Secrets.`;
+};
 
 /** Who "Allow for this thread" was given to. */
 export interface BrowserApprovalScope {
@@ -123,151 +152,161 @@ export interface BrowserSecret {
   readonly account: string;
 }
 
+/** The steps of a secret request, under one vault choice: the environment's or a thread's. */
+export interface BrowserLoginSteps {
+  /**
+   * Where requests no unattended provider answers go, the providers chosen, and the revision
+   * that names the settings now. Later steps given the revision fail once the settings change.
+   */
+  readonly escalation: Effect.Effect<
+    {
+      readonly revision: string;
+      readonly escalation: BrowserSecretEscalation;
+      readonly providers: ReadonlyArray<BrowserLoginProvider>;
+    },
+    BrowserLoginError
+  >;
+  /**
+   * Saved logins whose websites cover `pageUrl`, from the chosen providers of that reach that
+   * could list. With nothing chosen, unattended reach finds none and the others fail.
+   */
+  readonly candidates: (
+    pageUrl: string,
+    reach: BrowserLoginReach,
+  ) => Effect.Effect<
+    { readonly revision: string; readonly logins: ReadonlyArray<BrowserLoginCandidate> },
+    BrowserLoginError
+  >;
+  /** The login a reference such as `op://Vault/Item` names, from the first provider that has it. */
+  readonly lookupLogin: (
+    reference: string,
+    reach: BrowserLoginReach,
+  ) => Effect.Effect<
+    { readonly revision: string; readonly login: BrowserLoginCandidate | undefined },
+    BrowserLoginError
+  >;
+  readonly read: (
+    revision: string,
+    login: BrowserLoginCandidate,
+    fields: ReadonlyArray<SecretProviderLoginField>,
+  ) => Effect.Effect<SecretProviderLoginValues, BrowserLoginError>;
+  /** Saved identities from the chosen providers of that reach that could list. */
+  readonly identityCandidates: (reach: BrowserLoginReach) => Effect.Effect<
+    {
+      readonly revision: string;
+      readonly identities: ReadonlyArray<BrowserIdentityCandidate>;
+    },
+    BrowserLoginError
+  >;
+  readonly lookupIdentity: (
+    reference: string,
+    reach: BrowserLoginReach,
+  ) => Effect.Effect<
+    { readonly revision: string; readonly identity: BrowserIdentityCandidate | undefined },
+    BrowserLoginError
+  >;
+  readonly readIdentity: (
+    revision: string,
+    identity: BrowserIdentityCandidate,
+  ) => Effect.Effect<SecretProviderIdentityValues, BrowserLoginError>;
+  /**
+   * The chosen providers of that reach that take a secret reference such as
+   * `op://Vault/Item/field`, by their names in Settings > Secrets, found without reading it.
+   */
+  readonly secretSources: (
+    reference: string,
+    reach: BrowserLoginReach,
+  ) => Effect.Effect<
+    { readonly revision: string; readonly accounts: ReadonlyArray<string> },
+    BrowserLoginError
+  >;
+  /** What the reference names, from the first of those providers that returns it. */
+  readonly readSecret: (
+    revision: string,
+    reference: string,
+    reach: BrowserLoginReach,
+  ) => Effect.Effect<BrowserSecret, BrowserLoginError>;
+  /**
+   * Whether a person must approve this kind of step, from an attended provider, for this
+   * thread: false once they chose "Allow for this thread" under the current settings.
+   */
+  readonly needsApproval: (
+    revision: string,
+    scope: BrowserApprovalScope,
+    kind: BrowserApprovalKind,
+  ) => Effect.Effect<boolean, BrowserLoginError>;
+  /** Remembers "Allow for this thread" given under `revision`, never under a newer setting. */
+  readonly recordApproval: (
+    revision: string,
+    scope: BrowserApprovalScope,
+    kind: BrowserApprovalKind,
+  ) => Effect.Effect<void, BrowserLoginError>;
+  /** Fails if the settings changed since `revision`, for a last check before filling. */
+  readonly check: (revision: string) => Effect.Effect<void, BrowserLoginError>;
+  /** Forgets listed logins, for after one is saved; a listing begun earlier cannot refill them. */
+  readonly invalidate: Effect.Effect<void>;
+  /**
+   * Where a new login would be saved, for the approval prompt, and the earlier login a call
+   * continues: the one `loginId` names, or else one `createLogin` saved for this thread, site
+   * and username whose password never reached a page. Fails until the user chooses where new
+   * logins go.
+   */
+  readonly newLoginDestination: (request: {
+    readonly threadId: string;
+    readonly loginId: string | undefined;
+    readonly url: string;
+    readonly username: string;
+  }) => Effect.Effect<
+    {
+      readonly revision: string;
+      /** The provider's name in Settings > Secrets. */
+      readonly account: string;
+      readonly vault?: string;
+      readonly login?: BrowserLoginCandidate;
+      /** Whether that login's password has reached a page, which may then hold it. */
+      readonly filled?: boolean;
+      /** Saving there needs no one to approve it. */
+      readonly unattended: boolean;
+    },
+    BrowserLoginError
+  >;
+  /**
+   * Saves a new login whose password the password manager generates. The login belongs to the
+   * thread once saved, however the call ends; an error after that names it.
+   */
+  readonly createLogin: (
+    revision: string,
+    input: BrowserNewLogin,
+  ) => Effect.Effect<BrowserNewPassword, BrowserLoginError>;
+  /** Reads the password of a login `createLogin` made for this thread, for a retry. */
+  readonly readNewLogin: (
+    revision: string,
+    threadId: string,
+    loginId: string,
+  ) => Effect.Effect<BrowserNewPassword, BrowserLoginError>;
+  /** Notes that a new login's password went into a page, so only naming it renews it. */
+  readonly newLoginFilled: (threadId: string, loginId: string) => Effect.Effect<void>;
+  /**
+   * Gives a login `createLogin` made for this thread a newly generated password. Any other login
+   * is refused: its site may still expect the password it has.
+   */
+  readonly regeneratePassword: (
+    revision: string,
+    threadId: string,
+    loginId: string,
+    recipe: SecretProviderPasswordRecipe,
+  ) => Effect.Effect<BrowserNewPassword, BrowserLoginError>;
+}
+
 export class BrowserLogins extends Context.Service<
   BrowserLogins,
-  {
+  BrowserLoginSteps & {
     /**
-     * Where requests no unattended provider answers go, the providers chosen, and the revision
-     * that names the settings now. Later steps given the revision fail once the settings change.
+     * The same steps for one thread: each provider opens only the vaults the thread's project
+     * chose, else the environment's. Settings, approvals and the generation are shared. A thread
+     * whose project cannot be read fails each step that reads, never widening to the environment.
      */
-    readonly escalation: Effect.Effect<
-      {
-        readonly revision: string;
-        readonly escalation: BrowserSecretEscalation;
-        readonly providers: ReadonlyArray<BrowserLoginProvider>;
-      },
-      BrowserLoginError
-    >;
-    /**
-     * Saved logins whose websites cover `pageUrl`, from the chosen providers of that reach that
-     * could list. With nothing chosen, unattended reach finds none and the others fail.
-     */
-    readonly candidates: (
-      pageUrl: string,
-      reach: BrowserLoginReach,
-    ) => Effect.Effect<
-      { readonly revision: string; readonly logins: ReadonlyArray<BrowserLoginCandidate> },
-      BrowserLoginError
-    >;
-    /** The login a reference such as `op://Vault/Item` names, from the first provider that has it. */
-    readonly lookupLogin: (
-      reference: string,
-      reach: BrowserLoginReach,
-    ) => Effect.Effect<
-      { readonly revision: string; readonly login: BrowserLoginCandidate | undefined },
-      BrowserLoginError
-    >;
-    readonly read: (
-      revision: string,
-      login: BrowserLoginCandidate,
-      fields: ReadonlyArray<SecretProviderLoginField>,
-    ) => Effect.Effect<SecretProviderLoginValues, BrowserLoginError>;
-    /** Saved identities from the chosen providers of that reach that could list. */
-    readonly identityCandidates: (reach: BrowserLoginReach) => Effect.Effect<
-      {
-        readonly revision: string;
-        readonly identities: ReadonlyArray<BrowserIdentityCandidate>;
-      },
-      BrowserLoginError
-    >;
-    readonly lookupIdentity: (
-      reference: string,
-      reach: BrowserLoginReach,
-    ) => Effect.Effect<
-      { readonly revision: string; readonly identity: BrowserIdentityCandidate | undefined },
-      BrowserLoginError
-    >;
-    readonly readIdentity: (
-      revision: string,
-      identity: BrowserIdentityCandidate,
-    ) => Effect.Effect<SecretProviderIdentityValues, BrowserLoginError>;
-    /**
-     * The chosen providers of that reach that take a secret reference such as
-     * `op://Vault/Item/field`, by their names in Settings > Secrets, found without reading it.
-     */
-    readonly secretSources: (
-      reference: string,
-      reach: BrowserLoginReach,
-    ) => Effect.Effect<
-      { readonly revision: string; readonly accounts: ReadonlyArray<string> },
-      BrowserLoginError
-    >;
-    /** What the reference names, from the first of those providers that returns it. */
-    readonly readSecret: (
-      revision: string,
-      reference: string,
-      reach: BrowserLoginReach,
-    ) => Effect.Effect<BrowserSecret, BrowserLoginError>;
-    /**
-     * Whether a person must approve this kind of step, from an attended provider, for this
-     * thread: false once they chose "Allow for this thread" under the current settings.
-     */
-    readonly needsApproval: (
-      revision: string,
-      scope: BrowserApprovalScope,
-      kind: BrowserApprovalKind,
-    ) => Effect.Effect<boolean, BrowserLoginError>;
-    /** Remembers "Allow for this thread" given under `revision`, never under a newer setting. */
-    readonly recordApproval: (
-      revision: string,
-      scope: BrowserApprovalScope,
-      kind: BrowserApprovalKind,
-    ) => Effect.Effect<void, BrowserLoginError>;
-    /** Fails if the settings changed since `revision`, for a last check before filling. */
-    readonly check: (revision: string) => Effect.Effect<void, BrowserLoginError>;
-    /** Forgets listed logins, for after one is saved; a listing begun earlier cannot refill them. */
-    readonly invalidate: Effect.Effect<void>;
-    /**
-     * Where a new login would be saved, for the approval prompt, and the earlier login a call
-     * continues: the one `loginId` names, or else one `createLogin` saved for this thread, site
-     * and username whose password never reached a page. Fails until the user chooses where new
-     * logins go.
-     */
-    readonly newLoginDestination: (request: {
-      readonly threadId: string;
-      readonly loginId: string | undefined;
-      readonly url: string;
-      readonly username: string;
-    }) => Effect.Effect<
-      {
-        readonly revision: string;
-        /** The provider's name in Settings > Secrets. */
-        readonly account: string;
-        readonly vault?: string;
-        readonly login?: BrowserLoginCandidate;
-        /** Whether that login's password has reached a page, which may then hold it. */
-        readonly filled?: boolean;
-        /** Saving there needs no one to approve it. */
-        readonly unattended: boolean;
-      },
-      BrowserLoginError
-    >;
-    /**
-     * Saves a new login whose password the password manager generates. The login belongs to the
-     * thread once saved, however the call ends; an error after that names it.
-     */
-    readonly createLogin: (
-      revision: string,
-      input: BrowserNewLogin,
-    ) => Effect.Effect<BrowserNewPassword, BrowserLoginError>;
-    /** Reads the password of a login `createLogin` made for this thread, for a retry. */
-    readonly readNewLogin: (
-      revision: string,
-      threadId: string,
-      loginId: string,
-    ) => Effect.Effect<BrowserNewPassword, BrowserLoginError>;
-    /** Notes that a new login's password went into a page, so only naming it renews it. */
-    readonly newLoginFilled: (threadId: string, loginId: string) => Effect.Effect<void>;
-    /**
-     * Gives a login `createLogin` made for this thread a newly generated password. Any other login
-     * is refused: its site may still expect the password it has.
-     */
-    readonly regeneratePassword: (
-      revision: string,
-      threadId: string,
-      loginId: string,
-      recipe: SecretProviderPasswordRecipe,
-    ) => Effect.Effect<BrowserNewPassword, BrowserLoginError>;
+    readonly forThread: (threadId: ThreadId) => BrowserLoginSteps;
   }
 >()("t3/preview/BrowserLogins") {}
 
@@ -305,9 +344,15 @@ interface Source {
   readonly account: string;
   /** The driver's name, such as "1Password". */
   readonly label: string;
-  /** A digest of the provider and its config: a changed config, token included, lists again. */
+  /**
+   * A digest of the provider, its config and its vault limit: a changed config, token included,
+   * or another limit lists again.
+   */
   readonly key: string;
+  /** The saved config with the vault limit of these steps, never stored. */
   readonly config: unknown;
+  /** The vaults it may open, as settings name them; absent opens every vault. */
+  readonly vaults: ReadonlyArray<SecretProviderVault> | undefined;
   /** Reads without anyone present, such as with a service account token. */
   readonly unattended: boolean;
   readonly logins: SecretProviderLogins;
@@ -323,7 +368,12 @@ interface Resolved {
   readonly sources: ReadonlyArray<Source>;
   /** Why no provider at all can be used, for steps that need one. */
   readonly unconfigured: string | undefined;
+  /** Every source key settings name, a project's own vault choice's too: their listings stay. */
+  readonly keys: ReadonlySet<string>;
 }
+
+/** A vault as the user knows it: the name it had when chosen, else its id. */
+const vaultName = (vault: SecretProviderVault) => vault.name.trim() || vault.id;
 
 const inReach = (source: Source, reach: BrowserLoginReach) =>
   typeof reach === "object"
@@ -335,21 +385,44 @@ const resolve = Effect.fn("BrowserLogins.resolve")(function* (
   drivers: ReadonlyArray<SecretProviderDriver>,
   digest: Digest.Digest["Service"],
   settings: ServerSettings,
+  /** Whose vault choice applies: a thread's project, else the environment's (null). */
+  projectId: string | null,
 ): Effect.fn.Return<Resolved> {
   const ids = [...new Set(browserLoginProviderIds(settings.browserLogins))];
+  const choices = settings.secretProviderVaults;
+  const choiceOf = (id: SecretProviderId) => (Object.hasOwn(choices, id) ? choices[id] : undefined);
   const sources: Array<Source> = [];
+  const keys = new Set<string>();
+  const environmentKeys = new Map<string, string>();
   for (const id of ids) {
     const configured = settings.secretProviders[id];
     const driver = drivers.find((candidate) => candidate.kind === configured?.kind);
     if (configured === undefined || driver?.logins === undefined) continue;
-    const identity = encodeJson([id, configured.kind, configured.config ?? null]);
+    const limited = (project: string | null) => {
+      const vaults = resolveSecretProviderVaults(choices, id, project);
+      const vaultIds = vaults?.map((vault) => vault.id);
+      return { vaults, config: withSecretProviderVaults(configured.config, vaultIds) };
+    };
+    const keyOf = (config: unknown) =>
+      digest.digestHex(
+        Digest.sha256,
+        utf8.encode(encodeJson([id, configured.kind, config ?? null])),
+      );
+    for (const project of Object.keys(choiceOf(id)?.projects ?? {})) {
+      keys.add(yield* keyOf(limited(project).config));
+    }
+    const environmentKey = yield* keyOf(limited(null).config);
+    keys.add(environmentKey);
+    environmentKeys.set(id, environmentKey);
+    const { vaults, config } = limited(projectId);
     sources.push({
       id,
       account: configured.label,
       label: driver.definition.label,
-      key: yield* digest.digestHex(Digest.sha256, utf8.encode(identity)),
-      config: configured.config,
-      unattended: driver.unattended?.(configured.config) ?? false,
+      key: yield* keyOf(config),
+      config,
+      vaults,
+      unattended: driver.unattended?.(config) ?? false,
       logins: driver.logins,
       ...(driver.identities === undefined ? {} : { identities: driver.identities }),
       isReference: driver.definition.isReference,
@@ -372,11 +445,14 @@ const resolve = Effect.fn("BrowserLogins.resolve")(function* (
     newLogins,
     sources,
     unconfigured,
-    // Unusable ids count too, so one becoming usable starts a new generation.
+    keys,
+    // Unusable ids count too, so one becoming usable starts a new generation, as does any vault
+    // choice, the environment's or a project's.
     revision: encodeJson([
       escalation,
       newLogins ?? null,
-      ...ids.map((id) => sources.find((source) => source.id === id)?.key ?? id),
+      ...ids.map((id) => environmentKeys.get(id) ?? id),
+      ids.map((id) => choiceOf(id) ?? null),
     ]),
   };
 });
@@ -424,6 +500,8 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   const digest = yield* Digest.Digest;
   const driverServices = yield* Effect.context<SecretProviderDriverServices>();
   const scope = yield* Effect.scope;
+  // Optional, so a server without threads, as in tests, reads under the environment's vaults.
+  const threads = yield* Effect.serviceOption(ThreadManagementService.ThreadManagementService);
   const loginLists = itemLists<SecretProviderLogin>("logins");
   const identityLists = itemLists<SecretProviderIdentity>("identities");
   // "Allow for this thread" lasts for the server's life. Any change to the providers, their
@@ -440,33 +518,40 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     seenRevision = resolved.revision;
     for (const { cache } of [loginLists, identityLists]) {
       for (const key of cache.keys()) {
-        if (!resolved.sources.some((source) => source.key === key)) cache.delete(key);
+        if (!resolved.keys.has(key)) cache.delete(key);
       }
     }
   };
-  const observe = (settings: ServerSettings) =>
-    resolve(drivers, digest, settings).pipe(
+  const observe = (settings: ServerSettings, projectId: string | null) =>
+    resolve(drivers, digest, settings, projectId).pipe(
       Effect.tap((resolved) => Effect.sync(() => see(resolved))),
     );
   // Subscribed before the first read, so no change between the two is missed.
   const changes = yield* settingsService.subscribeChanges;
-  yield* settingsService.getSettings.pipe(Effect.flatMap(observe), Effect.ignore);
+  yield* settingsService.getSettings.pipe(
+    Effect.flatMap((settings) => observe(settings, null)),
+    Effect.ignore,
+  );
   yield* changes.pipe(
-    Stream.runForEach((settings) => Effect.ignore(observe(settings))),
+    Stream.runForEach((settings) => Effect.ignore(observe(settings, null))),
     Effect.forkScoped,
   );
 
-  const current = settingsService.getSettings.pipe(
-    Effect.mapError(
-      () => new BrowserLoginError({ reason: "unreadable", message: "Settings could not be read." }),
-    ),
-    Effect.flatMap(observe),
-  );
+  /** The settings now, with each provider limited to the vaults of the project `projectOf` names. */
+  const currentIn = (projectOf: Effect.Effect<string | null, BrowserLoginError>) =>
+    Effect.flatMap(projectOf, (projectId) =>
+      settingsService.getSettings.pipe(
+        Effect.mapError(
+          () =>
+            new BrowserLoginError({ reason: "unreadable", message: "Settings could not be read." }),
+        ),
+        Effect.flatMap((settings) => observe(settings, projectId)),
+      ),
+    );
+  const environment = currentIn(Effect.succeed(null));
 
-  const approvalKey = (kind: BrowserApprovalKind, scope: BrowserApprovalScope) =>
-    encodeJson([kind, scope.requester ?? null, scope.threadId]);
-
-  const currentAt = (revision: string) =>
+  /** Fails if the settings changed since `revision`, whichever vault choice the step reads under. */
+  const atRevision = (current: Effect.Effect<Resolved, BrowserLoginError>, revision: string) =>
     current.pipe(
       Effect.filterOrFail(
         () => String(generation) === revision,
@@ -477,6 +562,37 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
           }),
       ),
     );
+
+  /** A thread's project, whose vault choice its steps read under; none for a thread not found. */
+  const projectOfThread = (threadId: ThreadId): Effect.Effect<string | null, BrowserLoginError> =>
+    Option.match(threads, {
+      onNone: () => Effect.succeed(null),
+      onSome: (service) =>
+        service.getThreadShell(threadId).pipe(
+          Effect.map((shell) => shell?.projectId ?? null),
+          // The environment's vaults may be wider than the project's, so nothing is read instead.
+          Effect.mapError(
+            () =>
+              new BrowserLoginError({
+                reason: "refused",
+                message:
+                  "This thread's project could not be read, so the vaults it may use are unknown. Try again.",
+              }),
+          ),
+        ),
+    });
+
+  const approvalKey = (kind: BrowserApprovalKind, scope: BrowserApprovalScope) =>
+    encodeJson([kind, scope.requester ?? null, scope.threadId]);
+
+  /** For a refusal a source's vault limit may explain. */
+  const limitOf = ({ account, vaults }: Source) => {
+    const note =
+      vaults === undefined
+        ? undefined
+        : vaultLimitNote([{ account, vaults: vaults.map(vaultName) }]);
+    return note === undefined ? "" : ` ${note}`;
+  };
 
   const listOne = Effect.fn("BrowserLogins.listOne")(function* <A>(
     lists: ItemLists<A>,
@@ -560,155 +676,10 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     return source === undefined ? undefined : { source, itemId: id.slice(slash + 1) };
   };
 
-  /**
-   * The chosen sources of a reach. Only unattended reach may come up empty when nothing usable is
-   * chosen: it is tried first everywhere, and finding nothing there moves on to the user.
-   */
-  const reachable = Effect.fn("BrowserLogins.reachable")(function* (reach: BrowserLoginReach) {
-    const resolved = yield* current;
-    if (resolved.unconfigured !== undefined && reach !== "unattended") {
-      return yield* new BrowserLoginError({
-        reason: "not_configured",
-        message: resolved.unconfigured,
-      });
-    }
-    return {
-      revision: String(generation),
-      sources: resolved.sources.filter((source) => inReach(source, reach)),
-    };
-  });
-
   const candidate = <A extends { readonly id: string }>(source: Source, item: A) => ({
     ...item,
     id: `${source.id}/${item.id}`,
     account: source.account,
-  });
-
-  const candidates: BrowserLogins["Service"]["candidates"] = Effect.fn("BrowserLogins.candidates")(
-    function* (pageUrl, reach) {
-      const { revision, sources } = yield* reachable(reach);
-      const listed = yield* listAll(
-        loginLists,
-        sources.map((source) => ({ source, list: source.logins.list(source.config) })),
-      );
-      return {
-        revision,
-        logins: sources.flatMap((source, index) =>
-          (listed[index] ?? [])
-            .filter((login) => loginCoversPage(login.urls, pageUrl))
-            .map((login) => candidate(source, login)),
-        ),
-      };
-    },
-  );
-
-  /** The first source of a reach whose driver finds what the reference names. */
-  const lookup = Effect.fn("BrowserLogins.lookup")(function* <A extends { readonly id: string }>(
-    reach: BrowserLoginReach,
-    find: (
-      source: Source,
-    ) => Effect.Effect<A | undefined, never, SecretProviderDriverServices> | undefined,
-  ) {
-    const { revision, sources } = yield* reachable(reach);
-    for (const source of sources) {
-      const finding = find(source);
-      if (finding === undefined) continue;
-      const found = yield* finding.pipe(Effect.provideContext(driverServices));
-      if (found !== undefined) return { revision, found: candidate(source, found) };
-    }
-    return { revision, found: undefined };
-  });
-
-  const lookupLogin: BrowserLogins["Service"]["lookupLogin"] = Effect.fn(
-    "BrowserLogins.lookupLogin",
-  )(function* (reference, reach) {
-    const { revision, found } = yield* lookup(reach, (source) =>
-      source.logins.lookup?.(source.config, reference),
-    );
-    return { revision, login: found };
-  });
-
-  const lookupIdentity: BrowserLogins["Service"]["lookupIdentity"] = Effect.fn(
-    "BrowserLogins.lookupIdentity",
-  )(function* (reference, reach) {
-    const { revision, found } = yield* lookup(reach, (source) =>
-      source.identities?.lookup?.(source.config, reference),
-    );
-    return { revision, identity: found };
-  });
-
-  const read: BrowserLogins["Service"]["read"] = Effect.fn("BrowserLogins.read")(
-    function* (revision, login, fields) {
-      const found = sourceOf(yield* currentAt(revision), login.id);
-      if (found === undefined) {
-        return yield* new BrowserLoginError({
-          reason: "not_configured",
-          message: "That login is not from a password manager chosen for browser logins.",
-        });
-      }
-      const { source, itemId } = found;
-      const values = yield* source.logins
-        .read(source.config, { ...login, id: itemId }, fields)
-        .pipe(Effect.provideContext(driverServices));
-      if (values === undefined) {
-        return yield* new BrowserLoginError({
-          reason: "unreadable",
-          message: `${source.label} did not return the login. It may be locked, or the request was denied there.`,
-        });
-      }
-      // The read can wait on the password manager's own prompt; settings may change meanwhile.
-      yield* currentAt(revision);
-      return values;
-    },
-  );
-
-  const identityCandidates: BrowserLogins["Service"]["identityCandidates"] = Effect.fn(
-    "BrowserLogins.identityCandidates",
-  )(function* (reach) {
-    const { revision, sources: reached } = yield* reachable(reach);
-    const sources = reached.flatMap((source) =>
-      source.identities === undefined
-        ? []
-        : [{ source, list: source.identities.list(source.config) }],
-    );
-    if (sources.length === 0 && reached.length > 0 && reach !== "unattended") {
-      return yield* new BrowserLoginError({
-        reason: "not_configured",
-        message:
-          "None of the password managers chosen for browser logins can fill identities. The user can choose one in Settings > Browser.",
-      });
-    }
-    const listed = yield* listAll(identityLists, sources);
-    return {
-      revision,
-      identities: sources.flatMap(({ source }, index) =>
-        (listed[index] ?? []).map((identity) => candidate(source, identity)),
-      ),
-    };
-  });
-
-  const readIdentity: BrowserLogins["Service"]["readIdentity"] = Effect.fn(
-    "BrowserLogins.readIdentity",
-  )(function* (revision, identity) {
-    const found = sourceOf(yield* currentAt(revision), identity.id);
-    const identities = found?.source.identities;
-    if (found === undefined || identities === undefined) {
-      return yield* new BrowserLoginError({
-        reason: "not_configured",
-        message: "That identity is not from a password manager chosen for browser logins.",
-      });
-    }
-    const values = yield* identities
-      .read(found.source.config, { ...identity, id: found.itemId })
-      .pipe(Effect.provideContext(driverServices));
-    if (values === undefined) {
-      return yield* new BrowserLoginError({
-        reason: "unreadable",
-        message: `${found.source.label} did not return the identity. It may be locked, or the request was denied there.`,
-      });
-    }
-    yield* currentAt(revision);
-    return values;
   });
 
   const invalidate = Effect.sync(() => {
@@ -716,42 +687,6 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     loginLists.cache.clear();
     loginLists.running.clear();
   });
-
-  const secretSources: BrowserLogins["Service"]["secretSources"] = Effect.fn(
-    "BrowserLogins.secretSources",
-  )(function* (reference, reach) {
-    const { revision, sources } = yield* reachable(reach);
-    return {
-      revision,
-      accounts: sources
-        .filter((source) => source.isReference(reference))
-        .map((source) => source.account),
-    };
-  });
-
-  const readSecret: BrowserLogins["Service"]["readSecret"] = Effect.fn("BrowserLogins.readSecret")(
-    function* (revision, reference, reach) {
-      const sources = (yield* currentAt(revision)).sources.filter(
-        (source) => inReach(source, reach) && source.isReference(reference),
-      );
-      for (const source of sources) {
-        const [value] = yield* source
-          .read(source.config, [reference])
-          .pipe(Effect.provideContext(driverServices));
-        if (value === undefined) continue;
-        // The read can wait on the password manager's own prompt; settings may change meanwhile.
-        yield* currentAt(revision);
-        return { value: Redacted.make(value), account: source.account };
-      }
-      return yield* new BrowserLoginError({
-        reason: "unreadable",
-        message:
-          sources.length === 0
-            ? `No password manager chosen for browser logins reads ${reference}.`
-            : `${sources.map((source) => source.account).join(", ")} did not return ${reference}. It may be locked, the reference may be wrong, or the request was denied there.`,
-      });
-    },
-  );
 
   // Logins created here, by thread and id, for the server's life: only these get a new password.
   const createdLogins = new Map<
@@ -829,154 +764,365 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
     return { login, password };
   });
 
-  const newLoginDestination: BrowserLogins["Service"]["newLoginDestination"] = Effect.fn(
-    "BrowserLogins.newLoginDestination",
-  )(function* ({ threadId, loginId, url, username }) {
-    const resolved = yield* current;
-    const revision = String(generation);
-    const { source, vault } = yield* newLoginSource(resolved);
-    // A retry after a save whose password never reached a page continues that login.
-    const id =
-      loginId ??
-      [...createdLogins.values()].find(
-        (created) =>
-          created.threadId === threadId &&
-          !created.filled &&
-          created.url === url &&
-          created.username === username,
-      )?.login.id;
-    if (id === undefined) {
-      return { revision, account: source.account, vault, unattended: source.unattended };
-    }
-    const { created, source: saved } = yield* createdLogin(resolved, threadId, id);
-    const { login } = created;
-    return {
-      revision,
-      account: login.account,
-      ...(login.vault ? { vault: login.vault } : {}),
-      login,
-      filled: created.filled,
-      unattended: saved.unattended,
-    };
+  const newLoginFilled: BrowserLogins["Service"]["newLoginFilled"] = Effect.fn(
+    "BrowserLogins.newLoginFilled",
+  )((threadId, loginId) =>
+    Effect.sync(() => {
+      const created = createdLogins.get(createdKey(threadId, loginId));
+      if (created !== undefined) created.filled = true;
+    }),
+  );
+
+  const check: BrowserLogins["Service"]["check"] = Effect.fn("BrowserLogins.check")(
+    function* (revision) {
+      yield* atRevision(environment, revision);
+    },
+  );
+
+  const needsApproval: BrowserLogins["Service"]["needsApproval"] = Effect.fn(
+    "BrowserLogins.needsApproval",
+  )(function* (revision, scope, kind) {
+    yield* atRevision(environment, revision);
+    return !approvals.has(approvalKey(kind, scope));
   });
 
-  const createLogin: BrowserLogins["Service"]["createLogin"] = Effect.fn(
-    "BrowserLogins.createLogin",
-  )(function* (revision, input) {
-    const { source, vault, create } = yield* newLoginSource(yield* currentAt(revision));
-    const today = DateTime.formatIsoDateUtc(yield* DateTime.now);
-    const created = yield* create(source.config, {
-      vault,
-      title: input.title,
-      url: input.url,
-      username: input.username,
-      recipe: input.recipe,
-      notes: newLoginNotes(input, today),
-    }).pipe(Effect.provideContext(driverServices));
-    if (created === undefined) {
-      return yield* new BrowserLoginError({
-        reason: "unreadable",
-        message: `${source.label} did not save the new login. It may be locked, the vault "${vault}" may not exist, or the account may not be allowed to write to it.`,
-      });
-    }
-    const login: BrowserLoginCandidate = {
-      ...created.login,
-      id: `${source.id}/${created.login.id}`,
-      account: source.account,
-    };
-    // Kept for the thread before its password is read, so a retry finds it however this ends.
-    createdLogins.set(createdKey(input.threadId, login.id), {
-      threadId: input.threadId,
-      login,
-      url: input.url,
-      username: input.username,
-      filled: false,
-    });
-    // Listed again on the next lookup, so preview_fill_login finds it at once.
-    yield* invalidate;
-    return yield* passwordOf(source, login, created.login.id, created.password);
+  const recordApproval: BrowserLogins["Service"]["recordApproval"] = Effect.fn(
+    "BrowserLogins.recordApproval",
+  )(function* (revision, scope, kind) {
+    yield* atRevision(environment, revision);
+    approvals.add(approvalKey(kind, scope));
   });
 
-  const readNewLogin: BrowserLogins["Service"]["readNewLogin"] = Effect.fn(
-    "BrowserLogins.readNewLogin",
-  )(function* (revision, threadId, loginId) {
-    const resolved = yield* currentAt(revision);
-    yield* newLoginSource(resolved);
-    const { created, source, itemId } = yield* createdLogin(resolved, threadId, loginId);
-    return yield* passwordOf(source, created.login, itemId, undefined);
-  });
+  /** The steps under the vault choice of the project `projectOf` names, else the environment's. */
+  const stepsIn = (
+    projectOf: Effect.Effect<string | null, BrowserLoginError>,
+  ): BrowserLoginSteps => {
+    const current = currentIn(projectOf);
+    const currentAt = (revision: string) => atRevision(current, revision);
 
-  const regeneratePassword: BrowserLogins["Service"]["regeneratePassword"] = Effect.fn(
-    "BrowserLogins.regeneratePassword",
-  )(function* (revision, threadId, loginId, recipe) {
-    const resolved = yield* currentAt(revision);
-    yield* newLoginSource(resolved);
-    const { created, source, itemId } = yield* createdLogin(resolved, threadId, loginId);
-    const regenerate = source.logins.regeneratePassword;
-    if (regenerate === undefined) {
-      return yield* newLoginsError(
-        "The password manager that saved this login cannot give it a new password now. Omit `login` to create a new one.",
-      );
-    }
-    const { login } = created;
-    const changed = yield* regenerate(source.config, { ...login, id: itemId }, recipe).pipe(
-      Effect.provideContext(driverServices),
-    );
-    if (changed === undefined) {
-      return yield* new BrowserLoginError({
-        reason: "unreadable",
-        message: `${source.label} did not give the login a new password. It may be locked, or the account may not be allowed to change it.`,
-      });
-    }
-    // No page has the new password yet, so a retry reads it rather than replacing it again.
-    created.filled = false;
-    yield* invalidate;
-    return yield* passwordOf(source, login, itemId, changed.password);
-  });
-
-  return BrowserLogins.of({
-    escalation: Effect.gen(function* () {
+    /**
+     * The chosen sources of a reach. Only unattended reach may come up empty when nothing usable is
+     * chosen: it is tried first everywhere, and finding nothing there moves on to the user.
+     */
+    const reachable = Effect.fn("BrowserLogins.reachable")(function* (reach: BrowserLoginReach) {
       const resolved = yield* current;
+      if (resolved.unconfigured !== undefined && reach !== "unattended") {
+        return yield* new BrowserLoginError({
+          reason: "not_configured",
+          message: resolved.unconfigured,
+        });
+      }
       return {
         revision: String(generation),
-        escalation: resolved.escalation,
-        providers: resolved.sources.map(({ id, account, unattended }) => ({
-          id,
-          account,
-          unattended,
-        })),
+        sources: resolved.sources.filter((source) => inReach(source, reach)),
       };
-    }).pipe(Effect.withSpan("BrowserLogins.escalation")),
-    candidates,
-    lookupLogin,
-    read,
-    identityCandidates,
-    lookupIdentity,
-    readIdentity,
-    secretSources,
-    readSecret,
-    newLoginDestination,
-    createLogin,
-    readNewLogin,
-    newLoginFilled: Effect.fn("BrowserLogins.newLoginFilled")((threadId, loginId) =>
-      Effect.sync(() => {
-        const created = createdLogins.get(createdKey(threadId, loginId));
-        if (created !== undefined) created.filled = true;
-      }),
-    ),
-    regeneratePassword,
-    check: Effect.fn("BrowserLogins.check")(function* (revision) {
+    });
+
+    const candidates: BrowserLogins["Service"]["candidates"] = Effect.fn(
+      "BrowserLogins.candidates",
+    )(function* (pageUrl, reach) {
+      const { revision, sources } = yield* reachable(reach);
+      const listed = yield* listAll(
+        loginLists,
+        sources.map((source) => ({ source, list: source.logins.list(source.config) })),
+      );
+      return {
+        revision,
+        logins: sources.flatMap((source, index) =>
+          (listed[index] ?? [])
+            .filter((login) => loginCoversPage(login.urls, pageUrl))
+            .map((login) => candidate(source, login)),
+        ),
+      };
+    });
+
+    /** The first source of a reach whose driver finds what the reference names. */
+    const lookup = Effect.fn("BrowserLogins.lookup")(function* <A extends { readonly id: string }>(
+      reach: BrowserLoginReach,
+      find: (
+        source: Source,
+      ) => Effect.Effect<A | undefined, never, SecretProviderDriverServices> | undefined,
+    ) {
+      const { revision, sources } = yield* reachable(reach);
+      for (const source of sources) {
+        const finding = find(source);
+        if (finding === undefined) continue;
+        const found = yield* finding.pipe(Effect.provideContext(driverServices));
+        if (found !== undefined) return { revision, found: candidate(source, found) };
+      }
+      return { revision, found: undefined };
+    });
+
+    const lookupLogin: BrowserLogins["Service"]["lookupLogin"] = Effect.fn(
+      "BrowserLogins.lookupLogin",
+    )(function* (reference, reach) {
+      const { revision, found } = yield* lookup(reach, (source) =>
+        source.logins.lookup?.(source.config, reference),
+      );
+      return { revision, login: found };
+    });
+
+    const lookupIdentity: BrowserLogins["Service"]["lookupIdentity"] = Effect.fn(
+      "BrowserLogins.lookupIdentity",
+    )(function* (reference, reach) {
+      const { revision, found } = yield* lookup(reach, (source) =>
+        source.identities?.lookup?.(source.config, reference),
+      );
+      return { revision, identity: found };
+    });
+
+    const read: BrowserLogins["Service"]["read"] = Effect.fn("BrowserLogins.read")(
+      function* (revision, login, fields) {
+        const found = sourceOf(yield* currentAt(revision), login.id);
+        if (found === undefined) {
+          return yield* new BrowserLoginError({
+            reason: "not_configured",
+            message: "That login is not from a password manager chosen for browser logins.",
+          });
+        }
+        const { source, itemId } = found;
+        const values = yield* source.logins
+          .read(source.config, { ...login, id: itemId }, fields)
+          .pipe(Effect.provideContext(driverServices));
+        if (values === undefined) {
+          return yield* new BrowserLoginError({
+            reason: "unreadable",
+            message: `${source.label} did not return the login. It may be locked, or the request was denied there.`,
+          });
+        }
+        // The read can wait on the password manager's own prompt; settings may change meanwhile.
+        yield* currentAt(revision);
+        return values;
+      },
+    );
+
+    const identityCandidates: BrowserLogins["Service"]["identityCandidates"] = Effect.fn(
+      "BrowserLogins.identityCandidates",
+    )(function* (reach) {
+      const { revision, sources: reached } = yield* reachable(reach);
+      const sources = reached.flatMap((source) =>
+        source.identities === undefined
+          ? []
+          : [{ source, list: source.identities.list(source.config) }],
+      );
+      if (sources.length === 0 && reached.length > 0 && reach !== "unattended") {
+        return yield* new BrowserLoginError({
+          reason: "not_configured",
+          message:
+            "None of the password managers chosen for browser logins can fill identities. The user can choose one in Settings > Browser.",
+        });
+      }
+      const listed = yield* listAll(identityLists, sources);
+      return {
+        revision,
+        identities: sources.flatMap(({ source }, index) =>
+          (listed[index] ?? []).map((identity) => candidate(source, identity)),
+        ),
+      };
+    });
+
+    const readIdentity: BrowserLogins["Service"]["readIdentity"] = Effect.fn(
+      "BrowserLogins.readIdentity",
+    )(function* (revision, identity) {
+      const found = sourceOf(yield* currentAt(revision), identity.id);
+      const identities = found?.source.identities;
+      if (found === undefined || identities === undefined) {
+        return yield* new BrowserLoginError({
+          reason: "not_configured",
+          message: "That identity is not from a password manager chosen for browser logins.",
+        });
+      }
+      const values = yield* identities
+        .read(found.source.config, { ...identity, id: found.itemId })
+        .pipe(Effect.provideContext(driverServices));
+      if (values === undefined) {
+        return yield* new BrowserLoginError({
+          reason: "unreadable",
+          message: `${found.source.label} did not return the identity. It may be locked, or the request was denied there.`,
+        });
+      }
       yield* currentAt(revision);
-    }),
-    invalidate,
-    needsApproval: Effect.fn("BrowserLogins.needsApproval")(function* (revision, scope, kind) {
-      yield* currentAt(revision);
-      return !approvals.has(approvalKey(kind, scope));
-    }),
-    recordApproval: Effect.fn("BrowserLogins.recordApproval")(function* (revision, scope, kind) {
-      yield* currentAt(revision);
-      approvals.add(approvalKey(kind, scope));
-    }),
+      return values;
+    });
+
+    const secretSources: BrowserLogins["Service"]["secretSources"] = Effect.fn(
+      "BrowserLogins.secretSources",
+    )(function* (reference, reach) {
+      const { revision, sources } = yield* reachable(reach);
+      return {
+        revision,
+        accounts: sources
+          .filter((source) => source.isReference(reference))
+          .map((source) => source.account),
+      };
+    });
+
+    const readSecret: BrowserLogins["Service"]["readSecret"] = Effect.fn(
+      "BrowserLogins.readSecret",
+    )(function* (revision, reference, reach) {
+      const sources = (yield* currentAt(revision)).sources.filter(
+        (source) => inReach(source, reach) && source.isReference(reference),
+      );
+      for (const source of sources) {
+        const [value] = yield* source
+          .read(source.config, [reference])
+          .pipe(Effect.provideContext(driverServices));
+        if (value === undefined) continue;
+        // The read can wait on the password manager's own prompt; settings may change meanwhile.
+        yield* currentAt(revision);
+        return { value: Redacted.make(value), account: source.account };
+      }
+      return yield* new BrowserLoginError({
+        reason: "unreadable",
+        message:
+          sources.length === 0
+            ? `No password manager chosen for browser logins reads ${reference}.`
+            : `${sources.map((source) => source.account).join(", ")} did not return ${reference}. It may be locked, the reference may be wrong, or the request was denied there.`,
+      });
+    });
+
+    const newLoginDestination: BrowserLogins["Service"]["newLoginDestination"] = Effect.fn(
+      "BrowserLogins.newLoginDestination",
+    )(function* ({ threadId, loginId, url, username }) {
+      const resolved = yield* current;
+      const revision = String(generation);
+      const { source, vault } = yield* newLoginSource(resolved);
+      // A retry after a save whose password never reached a page continues that login.
+      const id =
+        loginId ??
+        [...createdLogins.values()].find(
+          (created) =>
+            created.threadId === threadId &&
+            !created.filled &&
+            created.url === url &&
+            created.username === username,
+        )?.login.id;
+      if (id === undefined) {
+        return { revision, account: source.account, vault, unattended: source.unattended };
+      }
+      const { created, source: saved } = yield* createdLogin(resolved, threadId, id);
+      const { login } = created;
+      return {
+        revision,
+        account: login.account,
+        ...(login.vault ? { vault: login.vault } : {}),
+        login,
+        filled: created.filled,
+        unattended: saved.unattended,
+      };
+    });
+
+    const createLogin: BrowserLogins["Service"]["createLogin"] = Effect.fn(
+      "BrowserLogins.createLogin",
+    )(function* (revision, input) {
+      const { source, vault, create } = yield* newLoginSource(yield* currentAt(revision));
+      const today = DateTime.formatIsoDateUtc(yield* DateTime.now);
+      const created = yield* create(source.config, {
+        vault,
+        title: input.title,
+        url: input.url,
+        username: input.username,
+        recipe: input.recipe,
+        notes: newLoginNotes(input, today),
+      }).pipe(Effect.provideContext(driverServices));
+      if (created === undefined) {
+        return yield* new BrowserLoginError({
+          reason: "unreadable",
+          message: `${source.label} did not save the new login. It may be locked, the vault "${vault}" may not exist, or the account may not be allowed to write to it.${limitOf(source)}`,
+        });
+      }
+      const login: BrowserLoginCandidate = {
+        ...created.login,
+        id: `${source.id}/${created.login.id}`,
+        account: source.account,
+      };
+      // Kept for the thread before its password is read, so a retry finds it however this ends.
+      createdLogins.set(createdKey(input.threadId, login.id), {
+        threadId: input.threadId,
+        login,
+        url: input.url,
+        username: input.username,
+        filled: false,
+      });
+      // Listed again on the next lookup, so preview_fill_login finds it at once.
+      yield* invalidate;
+      return yield* passwordOf(source, login, created.login.id, created.password);
+    });
+
+    const readNewLogin: BrowserLogins["Service"]["readNewLogin"] = Effect.fn(
+      "BrowserLogins.readNewLogin",
+    )(function* (revision, threadId, loginId) {
+      const resolved = yield* currentAt(revision);
+      yield* newLoginSource(resolved);
+      const { created, source, itemId } = yield* createdLogin(resolved, threadId, loginId);
+      return yield* passwordOf(source, created.login, itemId, undefined);
+    });
+
+    const regeneratePassword: BrowserLogins["Service"]["regeneratePassword"] = Effect.fn(
+      "BrowserLogins.regeneratePassword",
+    )(function* (revision, threadId, loginId, recipe) {
+      const resolved = yield* currentAt(revision);
+      yield* newLoginSource(resolved);
+      const { created, source, itemId } = yield* createdLogin(resolved, threadId, loginId);
+      const regenerate = source.logins.regeneratePassword;
+      if (regenerate === undefined) {
+        return yield* newLoginsError(
+          "The password manager that saved this login cannot give it a new password now. Omit `login` to create a new one.",
+        );
+      }
+      const { login } = created;
+      const changed = yield* regenerate(source.config, { ...login, id: itemId }, recipe).pipe(
+        Effect.provideContext(driverServices),
+      );
+      if (changed === undefined) {
+        return yield* new BrowserLoginError({
+          reason: "unreadable",
+          message: `${source.label} did not give the login a new password. It may be locked, or the account may not be allowed to change it.${limitOf(source)}`,
+        });
+      }
+      // No page has the new password yet, so a retry reads it rather than replacing it again.
+      created.filled = false;
+      yield* invalidate;
+      return yield* passwordOf(source, login, itemId, changed.password);
+    });
+
+    return {
+      escalation: Effect.gen(function* () {
+        const resolved = yield* current;
+        return {
+          revision: String(generation),
+          escalation: resolved.escalation,
+          providers: resolved.sources.map(({ id, account, unattended, vaults }) => ({
+            id,
+            account,
+            unattended,
+            ...(vaults === undefined ? {} : { vaults: vaults.map(vaultName) }),
+          })),
+        };
+      }).pipe(Effect.withSpan("BrowserLogins.escalation")),
+      candidates,
+      lookupLogin,
+      read,
+      identityCandidates,
+      lookupIdentity,
+      readIdentity,
+      secretSources,
+      readSecret,
+      newLoginDestination,
+      createLogin,
+      readNewLogin,
+      newLoginFilled,
+      regeneratePassword,
+      check,
+      invalidate,
+      needsApproval,
+      recordApproval,
+    };
+  };
+
+  return BrowserLogins.of({
+    ...stepsIn(Effect.succeed(null)),
+    forThread: (threadId) => stepsIn(projectOfThread(threadId)),
   });
 });
 

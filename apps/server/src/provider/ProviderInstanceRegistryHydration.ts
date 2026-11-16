@@ -4,6 +4,7 @@ import {
   ProviderInstanceId,
   providerInstanceConfigEnabledFlag,
   resolveProviderInstanceEnabled,
+  resolveSecretProviderVaults,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
   ServerSettings,
@@ -127,9 +128,17 @@ export const seedDevReplayInstance = Effect.fn(
   });
 });
 
-// A label is display-only, so only kind and config can change what a vault returns.
+// A label is display-only, so only kind, config and the vaults the environment lets it open can
+// change what a vault returns. Provider variables are read for the environment, never a project.
 const vaultConfigs = (settings: ServerSettings) =>
-  Object.entries(settings.secretProviders).map(([id, { kind, config }]) => [id, kind, config]);
+  Object.entries(settings.secretProviders).map(([id, { kind, config }]) => [
+    id,
+    kind,
+    config,
+    resolveSecretProviderVaults(settings.secretProviderVaults, id, null)?.map(
+      (vault) => vault.id,
+    ) ?? null,
+  ]);
 
 // A host built earlier (for the ACP registry) lacks PortDiscovery; build this one fresh.
 export const providerHostLayer = Layer.fresh(ProviderHostLive.layer);

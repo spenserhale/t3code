@@ -5,14 +5,18 @@ import {
   type BrowserLoginSettings,
   type BrowserNewLoginSettings,
   EnvironmentId,
+  ProjectId,
   type SecretRelayAnswer,
   type SecretRelayRequest,
   SecretProviderId,
   SecretProviderKind,
+  type ServerSettings,
+  ThreadId,
 } from "@t3tools/contracts";
 import {
   defineSecretProviderDriver,
   type SecretProviderIdentity,
+  type SecretProviderLogin,
 } from "@t3tools/secret-provider-core/server/driver";
 import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
 import * as Deferred from "effect/Deferred";
@@ -24,6 +28,8 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as Settings from "../serverSettings.ts";
 import * as BrowserLogins from "./BrowserLogins.ts";
 import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
@@ -137,11 +143,18 @@ const makeService = (
   gate?: Deferred.Deferred<void>,
   /** Accounts with a service account token, used without asking anyone. */
   unattended: ReadonlyArray<string> = [],
+  /** The vaults chosen, and each thread's project as a thread service knows it. */
+  vaults: {
+    readonly secretProviderVaults?: ServerSettings["secretProviderVaults"];
+    readonly threads?: Readonly<Record<string, string>>;
+  } = {},
 ) => {
   const config = (account: string) =>
     unattended.includes(account) ? { account, serviceAccountToken: `ops_${account}` } : { account };
   const calls = {
     list: 0,
+    /** Each listing's account and the vaults it was limited to, `*` for every one. */
+    listedWith: [] as Array<string>,
     read: [] as Array<string>,
     identityList: 0,
     lookup: 0,
@@ -164,6 +177,9 @@ const makeService = (
     readGate: undefined as Deferred.Deferred<void> | undefined,
     reading: Deferred.makeUnsafe<void>(),
   };
+  // A limited config holds only the items of its vaults, as the 1Password driver keeps to them.
+  const allowed = (limit: ReadonlyArray<string> | undefined, vaultId: string | undefined) =>
+    limit === undefined || (vaultId !== undefined && limit.includes(vaultId));
   const driver = defineSecretProviderDriver({
     kind,
     definition: defineSecretProvider({
@@ -189,14 +205,15 @@ const makeService = (
     unattended: ({ serviceAccountToken }) => serviceAccountToken !== undefined,
     logins: {
       // `op://<account>/<id>` names a login of that account.
-      lookup: ({ account }, reference) =>
+      lookup: ({ account, vaults: limit }, reference) =>
         Effect.sync(() => {
           calls.lookup++;
           return (listed[account] ?? []).find(
-            (login) => reference === `op://${account}/${login.id}`,
+            (login: SecretProviderLogin) =>
+              reference === `op://${account}/${login.id}` && allowed(limit, login.vaultId),
           );
         }),
-      list: ({ account }) =>
+      list: ({ account, vaults: limit }) =>
         Effect.gen(function* () {
           // What the account holds when the listing starts, as with a real provider.
           const own = listed[account];
@@ -204,12 +221,17 @@ const makeService = (
             entry.account === account ? [entry.login] : [],
           );
           calls.list++;
+          calls.listedWith.push(`${account}:${limit?.join(",") ?? "*"}`);
           Deferred.doneUnsafe(calls.listing, Effect.void);
           if (gate !== undefined) yield* Deferred.await(gate);
-          return own && [...own, ...saved];
+          return (
+            own &&
+            [...own, ...saved].filter((login: SecretProviderLogin) => allowed(limit, login.vaultId))
+          );
         }),
-      read: ({ account }, login, fields) =>
+      read: ({ account, vaults: limit }, login, fields) =>
         Effect.gen(function* () {
+          if (!allowed(limit, login.vaultId)) return undefined;
           calls.read.push(`${account}:${login.id}@${login.vaultId ?? ""}`);
           if (!created.some((entry) => entry.login.id === login.id)) {
             // No login here has a one-time code.
@@ -226,8 +248,9 @@ const makeService = (
           const renewals = renewed.filter((entry) => entry.includes(`:${login.id}@`)).length;
           return { password: renewals === 0 ? `generated-${login.id}` : `renewed-${login.id}` };
         }),
-      create: ({ account }, { title, vault, url, notes }) =>
+      create: ({ account, vaults: limit }, { title, vault, url, notes }) =>
         Effect.sync(() => {
+          if (!allowed(limit, "v-new")) return undefined;
           const login = {
             id: `n${created.length + 1}`,
             title,
@@ -267,6 +290,7 @@ const makeService = (
         }),
     },
   });
+  const threads = vaults.threads;
   const layer = Layer.effect(BrowserLogins.BrowserLogins, BrowserLogins.make([driver])).pipe(
     Layer.provideMerge(
       Settings.layerTest({
@@ -275,7 +299,23 @@ const makeService = (
           [personal]: { kind, label: "Personal", config: config("personal") },
         },
         browserLogins,
+        ...(vaults.secretProviderVaults === undefined
+          ? {}
+          : { secretProviderVaults: vaults.secretProviderVaults }),
       }),
+    ),
+    Layer.provide(
+      threads === undefined
+        ? Layer.empty
+        : Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadShell: (threadId) => {
+              const projectId = threads[threadId];
+              if (projectId === "unreadable") {
+                return Effect.fail(new Orchestrator.OrchestratorProjectionError({ threadId }));
+              }
+              return Effect.succeed(projectId === undefined ? null : ({ projectId } as never));
+            },
+          }),
     ),
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
@@ -576,6 +616,15 @@ describe("BrowserLogins", () => {
       yield* logins.check(again.revision).pipe(Effect.flip);
       const widened = yield* logins.candidates("https://github.com/", "all");
       assert.isTrue(yield* logins.needsApproval(widened.revision, threadA, "login"));
+
+      // So does any vault choice, a project's as much as the environment's.
+      yield* logins.recordApproval(widened.revision, threadA, "login");
+      yield* settings.updateSettings({
+        secretProviderVaults: { [work]: { projects: { [ProjectId.make("project-a")]: [] } } },
+      });
+      yield* logins.check(widened.revision).pipe(Effect.flip);
+      const limited = yield* logins.candidates("https://github.com/", "all");
+      assert.isTrue(yield* logins.needsApproval(limited.revision, threadA, "login"));
     }).pipe(Effect.provide(layer));
   });
 
@@ -628,6 +677,110 @@ describe("BrowserLogins", () => {
       }).pipe(Effect.provide(layer));
     },
   );
+});
+
+describe("BrowserLogins vault choices", () => {
+  const page = "https://grafana.example.com/login";
+  const urls = ["https://grafana.example.com"];
+  const inWork = { id: "g1", title: "Grafana", vaultId: "v1", urls };
+  const inPersonal = { id: "g9", title: "Grafana (personal)", vaultId: "v9", urls };
+  const projectA = ProjectId.make("project-a");
+  const projectB = ProjectId.make("project-b");
+  const vaults = {
+    secretProviderVaults: {
+      [work]: {
+        vaults: [{ id: "v1", name: "Work" }],
+        projects: { [projectA]: [{ id: "v9", name: "Personal" }], [projectB]: null },
+      },
+    },
+    threads: {
+      "thread-a": projectA,
+      "thread-b": projectB,
+      "thread-c": "project-c",
+      "thread-broken": "unreadable",
+    },
+  };
+  const ids = (steps: BrowserLogins.BrowserLoginSteps) =>
+    steps
+      .candidates(page, "all")
+      .pipe(Effect.map((found) => found.logins.map((login) => login.id)));
+
+  it.effect("reads under the thread's project choice, else the environment's", () => {
+    const { layer, calls } = makeService(
+      { work: [inWork, inPersonal] },
+      undefined,
+      {},
+      undefined,
+      [],
+      vaults,
+    );
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const thread = (id: string) => logins.forThread(ThreadId.make(id));
+      assert.deepStrictEqual(yield* ids(logins), ["work/g1"]);
+      assert.deepStrictEqual(yield* ids(thread("thread-a")), ["work/g9"]);
+      // A project's choice replaces the environment's, wider as well as narrower.
+      assert.deepStrictEqual(yield* ids(thread("thread-b")), ["work/g1", "work/g9"]);
+      // A project without a choice of its own, and a thread not found, take the environment's.
+      assert.deepStrictEqual(yield* ids(thread("thread-c")), ["work/g1"]);
+      assert.deepStrictEqual(yield* ids(thread("thread-gone")), ["work/g1"]);
+      // Each choice is listed apart, and a project's list outlives the environment's steps.
+      assert.deepStrictEqual(yield* ids(thread("thread-a")), ["work/g9"]);
+      assert.deepStrictEqual(calls.listedWith, ["work:v1", "work:v9", "work:*"]);
+
+      // A read keeps to the vaults of the steps it is taken in.
+      const found = yield* thread("thread-a").candidates(page, "all");
+      const [login] = found.logins;
+      assert.deepStrictEqual(yield* thread("thread-a").read(found.revision, login!, ["password"]), {
+        password: "password-work",
+      });
+      yield* logins.read(found.revision, login!, ["password"]).pipe(Effect.flip);
+      assert.deepStrictEqual(calls.read, ["work:g9@v9"]);
+
+      // The limit, named as settings name it, for a refusal it may explain.
+      const providers = (steps: BrowserLogins.BrowserLoginSteps) =>
+        steps.escalation.pipe(Effect.map((escalation) => escalation.providers));
+      assert.deepStrictEqual(yield* providers(thread("thread-a")), [
+        { id: work, account: "Work", unattended: false, vaults: ["Personal"] },
+      ]);
+      assert.deepStrictEqual(yield* providers(thread("thread-b")), [
+        { id: work, account: "Work", unattended: false },
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("fails a thread's steps when its project cannot be read, opening nothing", () => {
+    const { layer, calls } = makeService({ work: [inWork] }, undefined, {}, undefined, [], vaults);
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const broken = logins.forThread(ThreadId.make("thread-broken"));
+      const { revision } = yield* logins.candidates(page, "all");
+      const failures = yield* Effect.all([
+        Effect.flip(broken.escalation),
+        Effect.flip(broken.candidates(page, "all")),
+        Effect.flip(broken.lookupLogin("op://work/g1", "all")),
+        Effect.flip(broken.identityCandidates("all")),
+        Effect.flip(broken.readSecret(revision, "op://work/key", "all")),
+        Effect.flip(
+          broken.newLoginDestination({
+            threadId: "thread-broken",
+            loginId: undefined,
+            url: page,
+            username: "ada",
+          }),
+        ),
+      ]);
+      // Never the environment's vaults, which may be wider than the project's.
+      assert.deepStrictEqual(
+        failures.map((error) => error.reason),
+        ["refused", "refused", "refused", "refused", "refused", "refused"],
+      );
+      assert.deepStrictEqual(
+        { listedWith: calls.listedWith, lookup: calls.lookup, read: calls.read },
+        { listedWith: ["work:v1"], lookup: 0, read: [] },
+      );
+    }).pipe(Effect.provide(layer));
+  });
 });
 
 describe("BrowserLogins identities", () => {
@@ -873,6 +1026,36 @@ describe("BrowserLogins new logins", () => {
         "generated-n1",
       );
       assert.strictEqual(created.length, 1);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("saves a new login only where the vault limit allows, naming it otherwise", () => {
+    const { layer, created } = makeService(
+      { work: [grafana] },
+      savingTo(signUps),
+      {},
+      undefined,
+      [],
+      {
+        secretProviderVaults: { [work]: { vaults: [{ id: "v1", name: "Work" }] } },
+      },
+    );
+    return Effect.gen(function* () {
+      const settings = yield* Settings.ServerSettingsService;
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const outside = yield* logins.newLoginDestination(fresh);
+      const refused = yield* logins.createLogin(outside.revision, shop).pipe(Effect.flip);
+      assert.include(
+        refused.message,
+        'A vault limit applies here: Work may open only "Work". The user can change it in Settings > Secrets.',
+      );
+      assert.lengthOf(created, 0);
+
+      yield* settings.updateSettings({
+        secretProviderVaults: { [work]: { vaults: [{ id: "v-new", name: "Sign-ups" }] } },
+      });
+      const inside = yield* logins.newLoginDestination(fresh);
+      assert.strictEqual((yield* logins.createLogin(inside.revision, shop)).login.vaultId, "v-new");
     }).pipe(Effect.provide(layer));
   });
 

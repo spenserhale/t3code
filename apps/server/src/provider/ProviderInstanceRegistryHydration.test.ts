@@ -202,6 +202,22 @@ describe("layerSettingsWatcher", () => {
         // A label is not read by any vault, so renaming a provider retries nothing.
         yield* change(yield* settings.updateSettings({ secretProviders: provider("Renamed") }));
         expect(reloads()).toBe(1);
+
+        // The vaults the environment lets it open change what it returns; a project's do not,
+        // and neither does a vault's name.
+        const personal = SecretProviderId.make("personal");
+        const choose = (name: string, projects = {}) =>
+          settings.updateSettings({
+            secretProviderVaults: { [personal]: { vaults: [{ id: "v1", name }], projects } },
+          });
+        yield* change(yield* choose("Secode"));
+        expect(reloads()).toBe(2);
+        yield* change(yield* choose("Renamed", { [ProjectId.make("project-1")]: [] }));
+        expect(reloads()).toBe(2);
+        yield* change(
+          yield* settings.updateSettings({ secretProviderVaults: { [personal]: null } }),
+        );
+        expect(reloads()).toBe(3);
       }).pipe(Effect.scoped, Effect.provide(ServerSettingsService.layerTest())),
   );
 

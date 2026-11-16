@@ -108,6 +108,7 @@ import {
   ThreadId,
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
+  SecretProviderVaultsError,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -137,6 +138,7 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
+import * as SecretProviderVaults from "./secrets/SecretProviderVaults.ts";
 import * as SecretRelay from "./secrets/SecretRelay.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as FeedbackStore from "./feedback/FeedbackStore.ts";
@@ -1522,6 +1524,9 @@ export const layerWsRpc = (
       // Optional, so a socket built without the relay answers nothing and finds no device.
       const secretRelay = yield* Effect.serviceOption(SecretRelay.SecretRelay);
       const secretRelayDevice = yield* Effect.serviceOption(SecretRelayDevice.SecretRelayDevice);
+      const secretProviderVaults = yield* Effect.serviceOption(
+        SecretProviderVaults.SecretProviderVaults,
+      );
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const issues = yield* IssueService.IssueService;
@@ -1979,6 +1984,7 @@ export const layerWsRpc = (
             tanstackSource: featureFlags.tanstackSource,
           },
           secretProviderCredentials: true,
+          secretProviderVaults: true,
           secretRelay: true,
           ...Option.match(scratchWorkspaceRoot, {
             onNone: () => ({}),
@@ -2912,6 +2918,14 @@ export const layerWsRpc = (
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) => resourceTelemetry.retry,
         [WS_METHODS.serverCheckOtlpEndpoint]: (input) => otlpEndpointCheck.check(input),
         [WS_METHODS.serverListTextGeneratorModels]: (input) => textGenerators.listModels(input),
+        [WS_METHODS.serverListSecretProviderVaults]: (input) =>
+          Option.match(secretProviderVaults, {
+            onNone: () =>
+              Effect.fail(
+                new SecretProviderVaultsError({ message: "This server cannot list vaults." }),
+              ),
+            onSome: (vaults) => vaults.list(input.secretProviderId),
+          }),
         [WS_METHODS.serverPrepareTriage]: (input) => triage.prepare(input),
         [WS_METHODS.serverSignalProcess]: (input) => processDiagnostics.signal(input),
         [WS_METHODS.serverReportClientActivity]: (input, metadata) =>
