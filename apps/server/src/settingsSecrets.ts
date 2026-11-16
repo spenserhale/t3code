@@ -333,7 +333,8 @@ function mapSecretFieldGroups(
 
 /**
  * `next` with every secret reference to a secret provider that `current` has and `next` dropped
- * unset: a credential field becomes empty, and a provider variable holding one is removed.
+ * unset: a credential field becomes empty, and a provider variable holding one is removed. Its
+ * vault choice goes too, so a provider added later under that id starts from every vault.
  */
 export function withoutRemovedSecretProviderReferences(
   current: ServerSettings,
@@ -358,5 +359,8 @@ export function withoutRemovedSecretProviderReferences(
           : instance,
       ]),
     ),
+    secretProviderVaults: Object.fromEntries(
+      Object.entries(fields.secretProviderVaults).filter(([id]) => !removed.has(id)),
+    ) as ServerSettings["secretProviderVaults"],
   };
 }

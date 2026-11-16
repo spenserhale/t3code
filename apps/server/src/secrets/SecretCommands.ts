@@ -338,7 +338,7 @@ const make = Effect.gen(function* () {
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
   // Optional, as for the browser, so a server built without the relay refuses at once.
   const relay = Option.getOrUndefined(yield* Effect.serviceOption(SecretRelay.SecretRelay));
-  const access = { logins, desktopChannel, relay };
+  const access = { desktopChannel, relay };
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -363,14 +363,16 @@ const make = Effect.gen(function* () {
       ...(caller.agent ? { agent: caller.agent } : {}),
     };
     const empty = `${reference} came back without a value.`;
+    // Each password manager opens only the vaults the thread's project may.
+    const threadLogins = logins.forThread(caller.threadId);
     const found = yield* BrowserSecretAccess.resolve(
-      access,
+      { ...access, logins: threadLogins },
       { kind: "secretReference", threadId: caller.threadId, ...requester, reference, deadline },
       {
         what: reference,
         // Which providers take the reference is known without reading it.
         find: (reach) =>
-          logins
+          threadLogins
             .secretSources(reference, reach)
             .pipe(
               Effect.map(({ accounts }): ReadonlyArray<ReferenceItem> =>
@@ -378,7 +380,7 @@ const make = Effect.gen(function* () {
               ),
             ),
         read: (revision, item) =>
-          logins.readSecret(revision, reference, item.reach).pipe(
+          threadLogins.readSecret(revision, reference, item.reach).pipe(
             Effect.map((secret): Resolved | undefined => ({
               value: secret.value,
               source:

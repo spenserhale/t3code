@@ -53,6 +53,12 @@ describe("RPC authorization scopes", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.secretRelayResolve)).toBe(AuthAccessWriteScope);
   });
 
+  it("lists a secret provider's vaults, which opens its password manager, only for provider managers", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverListSecretProviderVaults)).toBe(
+      AuthProvidersManageScope,
+    );
+  });
+
   it("keeps triage, which seeds an agent that reads logs and the database, behind operate scope", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.serverPrepareTriage)).toBe(
       AuthOrchestrationOperateScope,
@@ -296,6 +302,12 @@ describe("settings mutation authorization", () => {
       expect(
         yield* client[WS_METHODS.serverUpdateSettings]({
           patch: { secretProviders: { [SecretProviderId.make("personal")]: null } },
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
+      // Nor widen the vaults one reads.
+      expect(
+        yield* client[WS_METHODS.serverUpdateSettings]({
+          patch: { secretProviderVaults: { [SecretProviderId.make("personal")]: null } },
         }).pipe(Effect.flip),
       ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
       expect(handled).toBe(false);

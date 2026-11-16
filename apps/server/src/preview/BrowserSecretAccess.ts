@@ -217,10 +217,15 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
   // Every later step runs under these settings; one that changed in between fails.
   const { revision, escalation, providers } = yield* logins.escalation;
   const what = request.reference ?? catalog.what;
+  // A vault limit passes the request on as a provider without the item would, so it may be why
+  // nobody answered: what ends a request for want of an answer names it.
+  const limit = BrowserLogins.vaultLimitNote(providers);
+  const unanswered = (message: string) =>
+    refused(limit === undefined ? message : `${message} ${limit}`);
   // What an item passed over lacked, which says more than any refusal once nobody else answers.
   let lacking: string | undefined;
   const refusal = () =>
-    refused(lacking ?? catalog.refusal?.(escalation) ?? refusalMessage(what, escalation));
+    unanswered(lacking ?? catalog.refusal?.(escalation) ?? refusalMessage(what, escalation));
 
   let readied = false;
   const ready = Effect.suspend(() => {
@@ -337,7 +342,9 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
       .find({ provider: provider.id })
       .pipe(Effect.catchIf(sourceFailed, () => Effect.succeed<ReadonlyArray<Item>>([])));
     const item = items.find((candidate) => candidate.id === named);
-    if (item === undefined) return yield* unreadable(named);
+    if (item === undefined) {
+      return yield* unreadable(named, BrowserLogins.vaultLimitNote([provider]));
+    }
     return yield* read(item).pipe(Effect.catchIf(sourceFailed, () => unreadable(named)));
   }
 
@@ -388,6 +395,9 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
   }
   // 6.
   if (lacking !== undefined) return yield* refusal();
-  if (none) return { status: "none" };
-  return yield* failure === undefined ? refusal() : refused(failure);
+  if (none) {
+    if (limit === undefined) return { status: "none" };
+    return yield* unanswered(`No password manager found ${what}.`);
+  }
+  return yield* failure === undefined ? refusal() : unanswered(failure);
 });

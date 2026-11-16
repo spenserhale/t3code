@@ -1,5 +1,5 @@
 import * as SecretResolverCore from "@t3tools/secret-provider-core/server/SecretResolver";
-import type { ServerSettings } from "@t3tools/contracts";
+import { resolveSecretProviderVaults, type ServerSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -14,6 +14,17 @@ export const layer = Layer.unwrap(
       secretProviders: serverSettings.getSettings.pipe(
         Effect.map((settings) => settings.secretProviders),
         Effect.orElseSucceed((): ServerSettings["secretProviders"] => ({})),
+      ),
+      // Settings secrets are read for the environment, so its vault choice applies. Settings that
+      // cannot be read open no vault.
+      vaults: serverSettings.getSettings.pipe(
+        Effect.map(
+          (settings) => (provider: string) =>
+            resolveSecretProviderVaults(settings.secretProviderVaults, provider, null)?.map(
+              (vault) => vault.id,
+            ),
+        ),
+        Effect.orElseSucceed(() => () => []),
       ),
     });
   }),
