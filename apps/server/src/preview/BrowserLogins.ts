@@ -563,21 +563,25 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
       ),
     );
 
-  /** A thread's project, whose vault choice its steps read under; none for a thread not found. */
+  const unknownProject = new BrowserLoginError({
+    reason: "refused",
+    message:
+      "This thread's project could not be read, so the vaults it may use are unknown. Try again.",
+  });
+
+  /** A thread's project, whose vault choice its steps read under. */
   const projectOfThread = (threadId: ThreadId): Effect.Effect<string | null, BrowserLoginError> =>
     Option.match(threads, {
       onNone: () => Effect.succeed(null),
+      // The environment's vaults may be wider than the project's, so a thread whose project is
+      // unknown, missing or unreadable, reads nothing.
       onSome: (service) =>
         service.getThreadShell(threadId).pipe(
-          Effect.map((shell) => shell?.projectId ?? null),
-          // The environment's vaults may be wider than the project's, so nothing is read instead.
-          Effect.mapError(
-            () =>
-              new BrowserLoginError({
-                reason: "refused",
-                message:
-                  "This thread's project could not be read, so the vaults it may use are unknown. Try again.",
-              }),
+          Effect.mapError(() => unknownProject),
+          Effect.flatMap((shell) =>
+            shell === null || shell === undefined
+              ? Effect.fail(unknownProject)
+              : Effect.succeed(shell.projectId),
           ),
         ),
     });
