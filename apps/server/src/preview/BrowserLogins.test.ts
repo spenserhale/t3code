@@ -1118,11 +1118,11 @@ describe("SecretRelayDevice", () => {
           const relay = yield* SecretRelayDevice.SecretRelayDevice;
           const answer = yield* relay.resolve({ request: request(), requester: linkMini });
           assert.strictEqual(answer.type === "values" && answer.item.id, "device:work/h1");
-          // The password manager a person unlocks is not named, listed or read, even when chosen.
+          // A named account outside this reach cannot silently become the service-account login.
           const chosen = request({ item: "device:personal/h1" });
           assert.strictEqual(
             (yield* relay.resolve({ request: chosen, requester: linkMini })).type,
-            "values",
+            "denied",
           );
           assert.deepStrictEqual(
             asksForWork.prompts.map((prompt) => prompt.providerLabel),
@@ -1132,6 +1132,7 @@ describe("SecretRelayDevice", () => {
             { list: mixed.calls.list, read: mixed.calls.read },
             { list: 1, read: ["work:h1@v9", "work:h1@v9"] },
           );
+          assert.deepStrictEqual(mixed.calls.readFields.at(-1)?.fields, ["username"]);
         }).pipe(Effect.provide(asksForWork.layer));
       });
     },
@@ -1325,6 +1326,17 @@ describe("SecretRelayDevice", () => {
         })).type,
         "values",
       );
+      held.work = [{ ...github, id: "second" }];
+      yield* (yield* BrowserLogins.BrowserLogins).invalidate;
+      const missing = yield* relay.resolve({
+        request: request({
+          item: "device:work/h1",
+          siteUrl: "https://github.com",
+          fields: ["password"],
+        }),
+        requester: linkMini,
+      });
+      assert.strictEqual(missing.type, "denied");
       held.work = [github, { ...github, id: "second" }];
       yield* (yield* BrowserLogins.BrowserLogins).invalidate;
       const changed = yield* relay.resolve({
@@ -1347,7 +1359,7 @@ describe("SecretRelayDevice", () => {
         requester: linkMini,
       });
       assert.strictEqual(expired.type, "denied");
-      assert.lengthOf(device.choices, 2);
+      assert.lengthOf(device.choices, 3);
       assert.strictEqual(
         service.calls.readFields.filter(({ fields }) => fields.includes("password")).length,
         1,
