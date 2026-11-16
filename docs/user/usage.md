@@ -174,17 +174,19 @@ lists every window that qualifies, soonest reset first, and mentions each window
 Choose when it comes (as windows come up, once a day for each group, in the app only, or off), how
 much left triggers it, and whether 5-hour session windows count. Reminders follow your notification
 settings and permission, and arrive only while T3 Code is open. The same windows are listed as
-**Use today** at the top of Limits and in the hover card on the sidebar's Usage button, which also
-shows a dot while there are any.
+**Use today** at the top of Limits. The sidebar's Usage button shows a dot while there are any.
 
 Opening Limits checks the selected connected environments automatically. Each client waits at
 least five minutes between automatic checks of an environment, including after a failed check.
 If a window still looks stale, refresh Limits to re-check every provider and hub.
 
 On web or desktop, hover over or tab to **Usage** in the sidebar for a quick look without opening
-the page. Each account shows the window with the least left and when it resets, under your groups
-when grouping is on. The summary uses the latest readings and does not start a new check, so an
-account whose limits have reset since then shows as reset until the next check.
+the page. Accounts are ordered by their next known reset within your groups. Each consumption
+pool keeps its own row, with short and weekly windows side by side and monthly allowances labeled
+separately. Bars show the percentage left; the tick marks expected remaining allowance by now,
+not a forecast of what will remain at reset. Early-exhaustion warnings identify windows that may
+run out before they refresh. The summary does not start a new check, so an account whose limits
+have reset since its last reading shows as reset until the next check.
 
 Pick `/usage-limits` from the composer's command menu, or send it as a message, to check the
 current model's limits without leaving the conversation. The result opens above the composer and

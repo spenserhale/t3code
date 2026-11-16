@@ -1,6 +1,6 @@
 /**
- * The Limits view cut down to what fits a glance: one row per subscription
- * account, showing the window it has least of left.
+ * Current windows grouped by consumption scope for each subscription, with a
+ * tightest-window summary retained for callers that need a single figure.
  *
  * @module usageLimitsGlance
  */
@@ -31,6 +31,7 @@ export interface LimitGlanceRow {
   readonly account: LimitAccount;
   /** As `nameOf` gave it, numbered when another row in the section shares it. */
   readonly name: string;
+  readonly pools: readonly LimitGlanceConsumption[];
   /**
    * True when every window the account reports has reset since it was read, so
    * there is no current figure to show; the other fields are then null.
@@ -43,6 +44,98 @@ export interface LimitGlanceRow {
   readonly resetsIn: string | null;
   /** How the window is pacing against the account's schedule; null when it cannot be judged. */
   readonly pace: WindowPace | null;
+}
+
+export interface LimitGlanceWindow {
+  readonly id: string;
+  readonly kind: ServerProviderUsageWindow["kind"];
+  readonly label: string;
+  readonly remainingPercent: number;
+  readonly resetsIn: string | null;
+  readonly resetsAt: number | null;
+  readonly pace: WindowPace | null;
+}
+
+export interface LimitGlanceConsumption {
+  readonly key: string;
+  readonly label: string | null;
+  readonly windows: readonly LimitGlanceWindow[];
+}
+
+const KIND_ORDER = { session: 0, weekly: 1, monthly: 2, other: 3 } as const;
+
+function consumptionScope(account: LimitAccount, window: ServerProviderUsageWindow) {
+  if (account.driver === "cursor") {
+    return { key: window.id, label: cursorUsageWindowDetails(window.id)?.label ?? window.label };
+  }
+  const parts = window.label.split(" · ");
+  if (account.driver === "antigravity") {
+    return {
+      key: window.id.replace(/-(5h|weekly|quota)$/, ""),
+      label: parts.length > 1 ? parts.slice(0, -1).join(" · ") : window.label,
+    };
+  }
+  if (account.driver === "claudeAgent" && window.id.startsWith("seven_day_")) {
+    return { key: window.id, label: parts.slice(1).join(" · ") || window.label };
+  }
+  if (window.kind === "other") return { key: window.id, label: window.label };
+  if (parts.length > 1) {
+    const scope = parts.slice(0, -1).join(" · ");
+    return { key: scope, label: scope === account.displayName ? null : scope };
+  }
+  return { key: "overall", label: null };
+}
+
+function periodLabel(window: ServerProviderUsageWindow) {
+  if (window.kind === "session") {
+    if (window.windowDurationMins && window.windowDurationMins % 60 === 0) {
+      return `${window.windowDurationMins / 60}-hour`;
+    }
+    return window.windowDurationMins
+      ? `${formatDuration(window.windowDurationMins * 60_000)} window`
+      : (window.label.match(/(?:^| · )(\d+)[- ]hours?$/i)?.[0].replace(/^ · /, "") ?? "Session");
+  }
+  if (window.kind === "weekly") return "Weekly";
+  if (window.kind === "monthly") return /credit/i.test(window.label) ? "Monthly credit" : "Monthly";
+  return "Quota";
+}
+
+function consumptionPools(
+  account: LimitAccount,
+  windows: readonly ServerProviderUsageWindow[],
+  paceOf: (window: ServerProviderUsageWindow) => WindowPace | null,
+  now: number,
+): readonly LimitGlanceConsumption[] {
+  const pools = new Map<
+    string,
+    { key: string; label: string | null; windows: LimitGlanceWindow[] }
+  >();
+  for (const window of windows) {
+    const scope = consumptionScope(account, window);
+    // Distinct ids of the same kind are separate quotas even if their display labels coincide.
+    const key = pools.get(scope.key)?.windows.some((entry) => entry.kind === window.kind)
+      ? `${scope.key}:${window.id}`
+      : scope.key;
+    const pool = pools.get(key) ?? { ...scope, key, windows: [] };
+    const at = window.resetsAt === undefined ? NaN : Date.parse(window.resetsAt);
+    pool.windows.push({
+      id: window.id,
+      kind: window.kind,
+      label: periodLabel(window),
+      remainingPercent: remainingPercent(window),
+      resetsIn: formatResetsIn(window, now),
+      resetsAt: Number.isFinite(at) ? at : null,
+      pace: paceOf(window),
+    });
+    pools.set(key, pool);
+  }
+  return [...pools.values()]
+    .sort((left, right) => Number(right.label === null) - Number(left.label === null))
+    .map((pool) => ({
+      ...pool,
+      label: pool.label ?? (pools.size > 1 ? "Overall" : null),
+      windows: pool.windows.sort((left, right) => KIND_ORDER[left.kind] - KIND_ORDER[right.kind]),
+    }));
 }
 
 export interface LimitGlanceSection {
@@ -77,10 +170,9 @@ function hasReset(window: ServerProviderUsageWindow, now: number): boolean {
 }
 
 /**
- * Accounts as rows, in the sections and provider order Limits uses: one list
- * when groups are off, one section per group when on. Each row shows the window
- * its account has least left of, among those Limits shows (Cursor's combined
- * figure is hidden or not by the whole pool) that have not reset since read.
+ * Sections follow Limits' account grouping, with subscriptions ordered by
+ * their soonest current reset. Cursor's combined allowance is hidden by the
+ * whole section, with a fallback when an account has no visible live window.
  */
 export function collectLimitGlance(
   accounts: readonly LimitAccount[],
@@ -123,44 +215,70 @@ export function collectLimitGlance(
       rows: labelLimitAccounts(
         pools.map((pool) => pool.accounts),
         nameOf,
-      ).flatMap(({ account, label }): LimitGlanceRow[] => {
-        if (!reported.has(account.key)) return [];
-        // A window Limits hides still counts when none it shows is left to read.
-        const window = tightest(shown.get(account.key)) ?? tightest(reported.get(account.key));
-        // Every window the account reports has reset since it was read.
-        if (!window) {
+      )
+        .flatMap(({ account, label }): LimitGlanceRow[] => {
+          if (!reported.has(account.key)) return [];
+          const schedule = resolveLimitSchedule(groups, account);
+          const live = (shown.get(account.key) ?? []).filter((entry) => !hasReset(entry, now));
+          const current =
+            live.length > 0
+              ? live
+              : (reported.get(account.key) ?? []).filter((entry) => !hasReset(entry, now));
+          const nested = consumptionPools(
+            account,
+            current,
+            (window) =>
+              windowPace(
+                window,
+                now,
+                schedule,
+                paceDetailFor({ account, window, schedule, now, ...extras }),
+              ),
+            now,
+          );
+          // A window Limits hides still counts when none it shows is left to read.
+          const window = tightest(shown.get(account.key)) ?? tightest(reported.get(account.key));
+          // Every window the account reports has reset since it was read.
+          if (!window) {
+            return [
+              {
+                account,
+                name: label,
+                pools: [],
+                resetSinceChecked: true,
+                windowLabel: null,
+                remainingPercent: null,
+                resetsIn: null,
+                pace: null,
+              },
+            ];
+          }
+          const details =
+            account.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
           return [
             {
               account,
               name: label,
-              resetSinceChecked: true,
-              windowLabel: null,
-              remainingPercent: null,
-              resetsIn: null,
-              pace: null,
+              pools: nested,
+              resetSinceChecked: false,
+              windowLabel: details?.label ?? window.label,
+              remainingPercent: remainingPercent(window),
+              resetsIn: formatResetsIn(window, now),
+              pace:
+                nested.flatMap((pool) => pool.windows).find((entry) => entry.id === window.id)
+                  ?.pace ?? null,
             },
           ];
-        }
-        const details =
-          account.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
-        const schedule = resolveLimitSchedule(groups, account);
-        return [
-          {
-            account,
-            name: label,
-            resetSinceChecked: false,
-            windowLabel: details?.label ?? window.label,
-            remainingPercent: remainingPercent(window),
-            resetsIn: formatResetsIn(window, now),
-            pace: windowPace(
-              window,
-              now,
-              schedule,
-              paceDetailFor({ account, window, schedule, now, ...extras }),
-            ),
-          },
-        ];
-      }),
+        })
+        .sort((left, right) => {
+          const nextReset = (row: LimitGlanceRow) =>
+            Math.min(
+              ...row.pools.flatMap((pool) =>
+                pool.windows.map((window) => window.resetsAt ?? Infinity),
+              ),
+            );
+          return nextReset(left) - nextReset(right);
+        }),
     };
   };
   const sections = (

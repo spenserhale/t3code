@@ -85,18 +85,3 @@ export function UseTodayCard() {
     </section>
   );
 }
-
-/** The same list, sized for the hover card in the sidebar. */
-export function UseTodayGlance() {
-  const { items, now } = useUseToday();
-  if (items.length === 0) return null;
-  return (
-    <section
-      aria-label="Use today"
-      className="flex shrink-0 flex-col gap-1 border-b border-border/60 pb-2"
-    >
-      <span className="text-2xs font-medium text-muted-foreground">Use today</span>
-      <UseTodayRows items={items} now={now} detailed={false} />
-    </section>
-  );
-}

@@ -127,6 +127,7 @@ export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) 
         </Tooltip>
         {showGlance ? (
           <PopoverPopup
+            className="w-[min(40rem,calc(100vw-1.5rem))]"
             align="start"
             aria-label="Limits"
             initialFocus={false}
@@ -142,7 +143,7 @@ export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) 
             ref={glancePopupRef}
             side="top"
             tooltipStyle
-            width="lg"
+            width="auto"
           >
             <UsageLimitsGlance accounts={accounts} onOpenLimits={openLimits} />
           </PopoverPopup>

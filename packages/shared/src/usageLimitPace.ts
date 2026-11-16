@@ -258,13 +258,6 @@ export function paceOutlook(pace: WindowPace): string | null {
     : `Runs out in ${formatDuration(outlook.inMs)}`;
 }
 
-/** One phrase for a crowded place: when the window runs out, else how it is pacing. */
-export function paceBrief(pace: WindowPace): string {
-  return pace.outlook?.kind === "runsOut"
-    ? (paceOutlook(pace) ?? paceLabel(pace))
-    : paceLabel(pace);
-}
-
 /** `Pace: 6% in reserve | Expected 47% used | Lasts until reset`. */
 export function paceSummary(pace: WindowPace): string {
   return ["Pace: " + paceLabel(pace), paceExpected(pace), paceOutlook(pace)]
