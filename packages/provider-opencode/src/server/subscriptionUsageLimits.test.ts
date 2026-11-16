@@ -63,6 +63,11 @@ describe("makeSubscriptionUsageLimits", () => {
         [{ id: "unlid", label: "Unlid", windowIds: [], balance: { balanceUsd: 4.99 } }],
       );
       assert.deepStrictEqual(combined.windows, []);
+      // The probe's billing link survives the combine.
+      assert.deepStrictEqual(combined.externalUsage, {
+        label: "Balance & billing",
+        url: "https://unlid.ai/account/billing",
+      });
       // Only Unlid holds a credential here, so only its probe called out.
       assert.deepStrictEqual(
         api.requests.map((request) => new URL(request.url).pathname),

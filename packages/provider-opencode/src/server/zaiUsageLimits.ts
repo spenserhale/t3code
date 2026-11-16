@@ -354,6 +354,7 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
     return limits.find((entry) => entry.unavailable?.reason === "probeFailed") ?? probes[0].limits;
   }
   const resetCredits = available.find((entry) => entry.resetCredits !== undefined)?.resetCredits;
+  const externalUsage = available.find((entry) => entry.externalUsage !== undefined)?.externalUsage;
   const fingerprints = [
     ...new Set(limits.flatMap((entry) => entry.credentialFingerprint ?? [])),
   ].toSorted();
@@ -389,6 +390,7 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
     }),
     ...(credentialFingerprint ? { credentialFingerprint } : {}),
     ...(resetCredits ? { resetCredits } : {}),
+    ...(externalUsage !== undefined ? { externalUsage } : {}),
     ...(subscriptions.length > 0 ? { subscriptions } : {}),
   };
 });
