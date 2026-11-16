@@ -106,15 +106,36 @@ describe("collectLimitGlance", () => {
 
   it("separates Claude's overall and scoped consumption limits", () => {
     const fable = { ...weekly(51), id: "seven_day_fable", label: "Weekly · Fable" };
-    expect(
-      rows([account({ key: "a", driver: claude }, [fable, weekly(33), session(10)])])[0]?.pools,
-    ).toMatchObject([
+    const spend: Window = {
+      id: "monthly_spend",
+      kind: "monthly",
+      label: "Monthly spend",
+      usedPercent: 0,
+    };
+    const source = account({ key: "a", driver: claude }, [fable, weekly(33), session(10), spend]);
+    const pools = rows([source])[0]?.pools;
+    expect(pools).toMatchObject([
       {
         label: "Overall",
         windows: [{ id: "five_hour" }, { id: "seven_day", remainingPercent: 67 }],
       },
       { label: "Fable", windows: [{ id: "seven_day_fable", remainingPercent: 49 }] },
     ]);
+    expect(pools?.flatMap((pool) => pool.windows.map((window) => window.id))).toEqual([
+      "five_hour",
+      "seven_day",
+      "seven_day_fable",
+    ]);
+    expect(source.limits.windows).toContain(spend);
+    expect(rows([account({ key: "spend-only", driver: claude }, [spend])])).toEqual([]);
+    expect(
+      rows([
+        account({ key: "stale", driver: claude }, [
+          { ...weekly(33), resetsAt: "2026-09-03T11:00:00.000Z" },
+          spend,
+        ]),
+      ]),
+    ).toMatchObject([{ resetSinceChecked: true, pools: [] }]);
   });
 
   it("pairs Antigravity windows by consumption identity, keeping shared and model-specific pools distinct", () => {

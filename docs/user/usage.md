@@ -187,8 +187,9 @@ separately. Bars show the percentage left; the tick marks expected remaining all
 not a forecast of what will remain at reset. Early-exhaustion warnings identify windows that may
 run out before they refresh. A dash beside the reset icon means the window has not started or
 its reset time is unavailable; a countdown appears when a reset time is reported.
-Monthly allowances read **Monthly** here; credit amounts and Z.ai's non-AI Tools allowance stay
-in the detailed Limits page. The summary does not start a new check, so an account whose limits
+Monthly allowances read **Monthly** here; credit amounts, Claude's spending budget, and Z.ai's
+non-AI Tools allowance stay in the detailed Limits page. The summary does not start a new check,
+so an account whose limits
 have reset since its last reading shows as reset until the next check.
 
 Pick `/usage-limits` from the composer's command menu, or send it as a message, to check the
