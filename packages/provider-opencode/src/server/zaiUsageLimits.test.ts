@@ -589,6 +589,40 @@ describe("combineUsageLimits", () => {
           },
         ]);
         assert.deepStrictEqual(combined.windows, []);
+        // A balance-only probe is an answered result: its older read still stamps the account.
+        assert.strictEqual(
+          (yield* combineUsageLimits([asGo(go), asUnlid({ ...unlid, checkedAt: older })]))
+            .checkedAt,
+          older,
+        );
+      }).pipe(Effect.provide(nodeServices)),
+    );
+
+    it.effect("carries a balance-only probe's external usage link to the account", () =>
+      Effect.gen(function* () {
+        const billing = { label: "Balance & billing", url: "https://unlid.ai/account/billing" };
+        const unlid = {
+          ...makeUsageLimits({ checkedAt, windows: [] }),
+          credentialFingerprint: "unlid-fingerprint",
+          balance: { balanceUsd: 4.99 },
+          externalUsage: billing,
+        };
+        assert.deepStrictEqual(
+          (yield* combineUsageLimits([asGo(unsupported), asUnlid(unlid)])).externalUsage,
+          billing,
+        );
+        // The link is the account's only when the probe that names it answered.
+        assert.notProperty(
+          yield* combineUsageLimits([
+            asGo(go),
+            asUnlid({
+              ...failed,
+              credentialFingerprint: "unlid-fingerprint",
+              externalUsage: billing,
+            }),
+          ]),
+          "externalUsage",
+        );
       }).pipe(Effect.provide(nodeServices)),
     );
 
