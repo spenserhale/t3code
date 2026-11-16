@@ -348,6 +348,8 @@ interface ServerTab {
   recording: Recording | null;
   initialNavigation: Promise<void> | null;
   navigationGeneration: number;
+  loginSourceUrl: string | undefined;
+  loginSelection: ServerBrowserLoginFill.LoginSelection | undefined;
 
   abortedNavigation: {
     readonly url: string;
@@ -969,6 +971,8 @@ const make = Effect.gen(function* () {
       restores: 0,
       initialNavigation: null,
       navigationGeneration: 0,
+      loginSourceUrl: "url" in snapshot.navStatus ? snapshot.navStatus.url : undefined,
+      loginSelection: undefined,
       abortedNavigation: null,
       captureLock: Promise.resolve(),
       capturing: 0,
@@ -1767,6 +1771,8 @@ const make = Effect.gen(function* () {
     readiness: "load" | "domContentLoaded" | "none",
     timeout: number,
   ) => {
+    tab.loginSourceUrl = url;
+    tab.loginSelection = undefined;
     const navigation = tab.page.goto(url, {
       timeout,
       waitUntil:
@@ -2786,10 +2792,14 @@ const make = Effect.gen(function* () {
       case "navigate":
         if (typeof message.url === "string") {
           const url = normalizePreviewUrl(message.url);
+          tab.loginSourceUrl = url;
+          tab.loginSelection = undefined;
           tab.control.trackUntilHandoff(tab.page.goto(url, VIEWER_NAVIGATION_OPTIONS));
         }
         return;
       case "history":
+        tab.loginSourceUrl = undefined;
+        tab.loginSelection = undefined;
         tab.control.trackUntilHandoff(
           num(message.delta) < 0
             ? tab.page.goBack(VIEWER_NAVIGATION_OPTIONS)
@@ -2797,6 +2807,8 @@ const make = Effect.gen(function* () {
         );
         return;
       case "reload":
+        tab.loginSourceUrl = tab.page.url();
+        tab.loginSelection = undefined;
         if (message.ignoreCache === true) {
           await session.send("Page.reload", { ignoreCache: true });
           return;
