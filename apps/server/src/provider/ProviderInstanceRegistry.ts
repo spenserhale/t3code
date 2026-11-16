@@ -366,7 +366,7 @@ const buildEntry = Effect.fn("ProviderInstanceRegistry.buildEntry")(function* <R
         instanceId,
         displayName: entry.displayName,
         accentColor: entry.accentColor,
-        reason: `Could not read ${unreadable.join(", ")} from its secret provider. Unlock it, then refresh.`,
+        reason: `Could not read ${unreadable.join(", ")} from its secret provider. Unlock it, or allow its vault in Settings > Secrets, then refresh.`,
       }),
     };
   }
@@ -634,6 +634,7 @@ export const makeProviderInstanceRegistry = Effect.fn(
     function* (
       select: (rawInstanceId: string, entry: ProviderInstanceConfig) => boolean,
       checked?: CheckedSecret,
+      narrowed?: ReadonlySet<string>,
     ) {
       const configMap = yield* Ref.get(configMapRef);
       const targets = yield* Effect.filter(Object.entries(configMap), ([rawInstanceId, entry]) =>
@@ -683,8 +684,13 @@ export const makeProviderInstanceRegistry = Effect.fn(
           driversById.get(entry.driver),
           entry,
         );
-        // A failed re-read keeps the working instance and the value it already holds.
-        if (unreadable.length === 0 && !Equal.equals(secrets, current.secrets)) {
+        // A failed re-read keeps the working instance and the value it already holds, unless
+        // its provider now opens fewer vaults and that value may come from one it lost.
+        const lostVault =
+          unreadable.length > 0 &&
+          narrowed !== undefined &&
+          secretReferencesOf(driversById, entry).some(({ provider }) => narrowed.has(provider));
+        if (lostVault || (unreadable.length === 0 && !Equal.equals(secrets, current.secrets))) {
           rebuild.add(current.instance.instanceId);
         }
       }
@@ -695,10 +701,11 @@ export const makeProviderInstanceRegistry = Effect.fn(
     Effect.provideContext(driverContext),
   );
   const reloadSecrets: ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutatorShape["reloadSecrets"] =
-    (instanceId) =>
+    (instanceId, narrowed) =>
       reloadWhere(
         (rawInstanceId) => instanceId === undefined || rawInstanceId === instanceId,
         undefined,
+        narrowed,
       ).pipe(Effect.asVoid);
   const rebuild: ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutatorShape["rebuild"] = (
     instanceIds,
