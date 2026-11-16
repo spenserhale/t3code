@@ -132,7 +132,7 @@ const make = Effect.gen(function* () {
           const { response } = yield* dialog.showMessageBox(
             {
               signal: AbortSignal.any([
-                AbortSignal.timeout(remaining),
+                AbortSignal.timeout(Math.floor(remaining)),
                 ...(cancelled === undefined ? [] : [cancelled]),
               ]),
               type: "question",
