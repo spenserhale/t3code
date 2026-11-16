@@ -54,40 +54,51 @@ const CATALOG = {
 
 /** Serves the catalog while `online`, once `gate` opens, and records every request. */
 function unlid(input: { readonly apiKey?: string; readonly authJson?: string } = {}) {
-  const dataHome = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "unlid-catalog-auth-"));
-  if (input.authJson !== undefined) {
-    NodeFS.mkdirSync(NodePath.join(dataHome, "opencode"), { recursive: true });
-    NodeFS.writeFileSync(NodePath.join(dataHome, "opencode", "auth.json"), input.authJson);
-  }
   const state = {
     online: true,
     document: DOCUMENT as unknown,
     gate: undefined as Deferred.Deferred<void> | undefined,
     requests: [] as HttpClientRequest.HttpClientRequest[],
   };
-  const layer = Layer.mergeAll(
-    Layer.succeed(HostProcess.Platform, "linux"),
-    Layer.succeed(HostProcess.Environment, {
-      HOME: dataHome,
-      XDG_DATA_HOME: dataHome,
-      ...(input.apiKey === undefined ? {} : { UNLID_API_KEY: input.apiKey }),
-    }),
-    Layer.succeed(
-      HttpClient.HttpClient,
-      HttpClient.make((request) =>
-        Effect.gen(function* () {
-          state.requests.push(request);
-          if (state.gate) yield* Deferred.await(state.gate);
-          return HttpClientResponse.fromWeb(
-            request,
-            state.online ? Response.json(state.document) : new Response(null, { status: 503 }),
-          );
+  const layer = Layer.unwrap(
+    Effect.gen(function* () {
+      const dataHome = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "unlid-catalog-auth-")),
+        ),
+        (home) => Effect.sync(() => NodeFS.rmSync(home, { recursive: true, force: true })),
+      );
+      if (input.authJson !== undefined) {
+        NodeFS.mkdirSync(NodePath.join(dataHome, "opencode"), { recursive: true });
+        NodeFS.writeFileSync(NodePath.join(dataHome, "opencode", "auth.json"), input.authJson);
+      }
+      return Layer.mergeAll(
+        Layer.succeed(HostProcess.Platform, "linux"),
+        Layer.succeed(HostProcess.Environment, {
+          HOME: dataHome,
+          XDG_DATA_HOME: dataHome,
+          ...(input.apiKey === undefined ? {} : { UNLID_API_KEY: input.apiKey }),
         }),
-      ),
-    ),
-  ).pipe(
-    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "unlid-catalog-test-" })),
-    Layer.provideMerge(NodeServices.layer),
+        Layer.succeed(
+          HttpClient.HttpClient,
+          HttpClient.make((request) =>
+            Effect.gen(function* () {
+              state.requests.push(request);
+              if (state.gate) yield* Deferred.await(state.gate);
+              return HttpClientResponse.fromWeb(
+                request,
+                state.online ? Response.json(state.document) : new Response(null, { status: 503 }),
+              );
+            }),
+          ),
+        ),
+      ).pipe(
+        Layer.provideMerge(
+          ServerConfig.layerTest(process.cwd(), { prefix: "unlid-catalog-test-" }),
+        ),
+        Layer.provideMerge(NodeServices.layer),
+      );
+    }),
   );
   return { state, layer };
 }

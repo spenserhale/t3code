@@ -79,6 +79,8 @@ neither do turns from before T3 Code kept usage per turn.
 Turns are priced with the same rates as the rest of Usage, including your custom model prices and
 model mappings. A price you add later applies to past turns too. A model with no known price shows
 its tokens but no cost until you add one. Fast and Ultrafast turns are estimated at standard rates.
+Models run through Unlid are priced at Unlid's published rates when no other price is known; a
+custom price still wins.
 
 A turn is priced under the model you selected for it. A provider's history sometimes records a
 longer ID for the same model, such as one ending in a date, and **Usage** lists that one. A custom
