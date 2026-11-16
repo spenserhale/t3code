@@ -36,11 +36,10 @@ function WindowMeter({
       ? Math.max(0, window.resetsAt - now - outlook.inMs)
       : null;
   const warning = early !== null || window.remainingPercent === 0;
-  const ready = window.remainingPercent === 100 && window.resetsAt === null;
   const description = [
     `${window.remainingPercent}% left`,
     expected === null ? null : `${Math.round(expected)}% expected left by now`,
-    ready ? "Ready. Reset time unreported" : (window.resetsIn ?? "Reset time unreported"),
+    window.resetsIn ?? "Reset time unreported",
     early === null ? null : `May run out ${formatDuration(early)} before reset`,
   ]
     .filter((part) => part !== null)
@@ -49,21 +48,21 @@ function WindowMeter({
     <div
       className={cn(
         "grid min-w-0 items-center gap-x-1.5 gap-y-1",
-        paired ? "grid-cols-[minmax(0,1fr)_auto]" : "grid-cols-[auto_minmax(0,1fr)_auto_auto]",
+        paired ? "grid-cols-[minmax(0,1fr)_auto_auto]" : "grid-cols-[auto_minmax(0,1fr)_auto_auto]",
       )}
     >
       <span
         className={cn(
           "col-start-1 row-start-1 text-2xs text-muted-foreground",
-          paired ? "wrap-anywhere" : "whitespace-nowrap",
+          paired ? "col-span-3 wrap-anywhere" : "whitespace-nowrap",
         )}
       >
         {paired && window.kind === "session" ? window.label.replace(/-hour$/, "h") : window.label}
       </span>
       <span
         className={cn(
-          "row-start-1 text-right font-medium whitespace-nowrap tabular-nums",
-          paired ? "col-start-2" : "col-start-3",
+          "text-right font-medium whitespace-nowrap tabular-nums",
+          paired ? "col-start-2 row-start-2" : "col-start-3 row-start-1",
           warning ? "text-warning-foreground" : "text-foreground",
         )}
       >
@@ -108,25 +107,19 @@ function WindowMeter({
       <div
         className={cn(
           "flex items-center justify-end gap-0.5 text-2xs whitespace-nowrap text-muted-foreground tabular-nums",
-          paired ? "col-start-2 row-start-2" : "col-start-4 row-start-1",
+          paired ? "col-start-3 row-start-2" : "col-start-4 row-start-1",
         )}
       >
-        {ready ? (
-          <span>Ready</span>
-        ) : (
-          <>
-            <RotateCcwIcon aria-hidden className="size-2.5 shrink-0" />
-            <span aria-label={window.resetsIn ?? "Reset time unreported"}>
-              {window.resetsIn?.replace("resets in ", "") ?? "–"}
-            </span>
-          </>
-        )}
+        <RotateCcwIcon aria-hidden className="size-2.5 shrink-0" />
+        <span aria-label={window.resetsIn ?? "Reset time unreported"}>
+          {window.resetsIn?.replace("resets in ", "") ?? "–"}
+        </span>
       </div>
       {early === null ? null : (
         <span
           className={cn(
             "flex items-center gap-1 text-2xs text-warning-foreground",
-            paired ? "col-span-2 row-start-3" : "col-span-3 col-start-2 row-start-2",
+            paired ? "col-span-3 row-start-3" : "col-span-3 col-start-2 row-start-2",
           )}
         >
           <AlertTriangleIcon aria-hidden className="size-2.5 shrink-0" />
@@ -245,15 +238,17 @@ export function UsageLimitsGlance({
                                 <div
                                   className={cn(
                                     "grid min-w-0 grid-cols-[var(--glance-columns)] gap-x-2.5 gap-y-1",
+                                    pool.windows.length > 1 &&
+                                      "@max-md:grid-cols-[minmax(6.25rem,1fr)_minmax(0,2fr)]",
                                     pool.windows.length > 2 &&
-                                      "@max-md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] @max-md:[&>:nth-child(n+3)]:col-span-full",
+                                      "@max-md:[&>:nth-child(n+3)]:col-span-full",
                                   )}
                                   style={
                                     {
                                       "--glance-columns": pool.windows
                                         .map((window) =>
                                           window.kind === "session"
-                                            ? "minmax(0,1fr)"
+                                            ? "minmax(6.25rem,1fr)"
                                             : "minmax(0,2fr)",
                                         )
                                         .join(" "),
@@ -291,7 +286,7 @@ export function UsageLimitsGlance({
           <span aria-hidden className="h-2.5 w-0.5 bg-foreground" />
           Expected left now
         </span>
-        <span>– unreported</span>
+        <span>– not started / unavailable</span>
         <InlineButton tone="muted" className="ml-auto" onClick={onOpenLimits}>
           Open limits
           <ArrowRightIcon aria-hidden className="size-3" />
