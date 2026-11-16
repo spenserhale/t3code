@@ -1984,7 +1984,7 @@ export const layerWsRpc = (
             tanstackSource: featureFlags.tanstackSource,
           },
           secretProviderCredentials: true,
-          secretProviderVaults: true,
+          secretProviderVaults: Option.isSome(secretProviderVaults),
           secretRelay: true,
           ...Option.match(scratchWorkspaceRoot, {
             onNone: () => ({}),
@@ -3867,6 +3867,9 @@ export const layer = Layer.unwrap(
     const peerClientPairing = yield* PeerClientPairing.PeerClientPairing;
     const secretRelay = yield* Effect.serviceOption(SecretRelay.SecretRelay);
     const secretRelayDevice = yield* Effect.serviceOption(SecretRelayDevice.SecretRelayDevice);
+    const secretProviderVaults = yield* Effect.serviceOption(
+      SecretProviderVaults.SecretProviderVaults,
+    );
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3986,6 +3989,14 @@ export const layer = Layer.unwrap(
                 Option.match(secretRelayDevice, {
                   onNone: () => Layer.empty,
                   onSome: (device) => Layer.succeed(SecretRelayDevice.SecretRelayDevice, device),
+                }),
+              ),
+              // A socket sees only what is handed to it here, not what the routes were built with.
+              Layer.provide(
+                Option.match(secretProviderVaults, {
+                  onNone: () => Layer.empty,
+                  onSome: (vaults) =>
+                    Layer.succeed(SecretProviderVaults.SecretProviderVaults, vaults),
                 }),
               ),
               Layer.provide(
