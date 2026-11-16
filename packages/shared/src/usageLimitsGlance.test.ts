@@ -62,6 +62,29 @@ const rows = (accounts: readonly LimitAccount[]) =>
   glance(accounts).sections.flatMap((section) => section.rows);
 
 describe("collectLimitGlance", () => {
+  it("keeps Z.ai tools out of Quick View, including the stale-window fallback", () => {
+    const tools: Window = {
+      id: "zai_tools_monthly",
+      kind: "monthly",
+      label: "Z.ai · Tools",
+      usedPercent: 95,
+    };
+    const source = account(
+      { key: "zai", displayName: "Z.ai", driver: ProviderDriverKind.make("opencode") },
+      [session(1), weekly(1), tools],
+    );
+    expect(
+      rows([source])[0]?.pools.flatMap((pool) => pool.windows.map((window) => window.id)),
+    ).toEqual(["five_hour", "seven_day"]);
+    expect(source.limits.windows).toContain(tools);
+    expect(rows([account({ key: "tools-only" }, [tools])])).toEqual([]);
+    expect(
+      rows([
+        account({ key: "stale" }, [{ ...session(1), resetsAt: "2026-09-03T11:00:00.000Z" }, tools]),
+      ]),
+    ).toMatchObject([{ resetSinceChecked: true, pools: [] }]);
+  });
+
   it("keeps every live reset window together without combining their balances", () => {
     const [row] = rows([account({ key: "a" }, [weekly(24), session(88)])]);
     expect(row?.pools).toMatchObject([
@@ -102,15 +125,14 @@ describe("collectLimitGlance", () => {
       kind,
       usedPercent: 0,
     });
-    const [row] = rows([
-      account({ key: "a", driver: ag }, [
-        window("3p-weekly", "Claude & GPT (shared) · Weekly", "weekly"),
-        window("gemini-argon-wtu-weekly", "Gemini 4 Argon · Weekly", "weekly"),
-        window("gemini-weekly", "Gemini · Weekly", "weekly"),
-        window("3p-5h", "Claude & GPT (shared) · 5-hour", "session"),
-        window("gemini-5h", "Gemini · 5-hour", "session"),
-      ]),
+    const source = account({ key: "a", driver: ag }, [
+      window("3p-weekly", "Claude & GPT (shared) · Weekly", "weekly"),
+      window("gemini-argon-wtu-weekly", "Gemini 4 Argon · Weekly", "weekly"),
+      window("gemini-weekly", "Gemini · Weekly", "weekly"),
+      window("3p-5h", "Claude & GPT (shared) · 5-hour", "session"),
+      window("gemini-5h", "Gemini · 5-hour", "session"),
     ]);
+    const [row] = rows([source]);
     expect(row?.pools).toMatchObject([
       {
         label: "Gemini",
@@ -118,6 +140,23 @@ describe("collectLimitGlance", () => {
       },
       { label: "Gemini 4 Argon", windows: [{ id: "gemini-argon-wtu-weekly" }] },
       { label: "Claude & GPT (shared)", windows: [{ id: "3p-5h" }, { id: "3p-weekly" }] },
+    ]);
+    expect(source.limits.windows).toHaveLength(5);
+  });
+
+  it("keeps legacy Gemini quota without inventing a reset period", () => {
+    const [row] = rows([
+      account({ key: "legacy", driver: ProviderDriverKind.make("antigravity") }, [
+        { id: "gemini-quota", kind: "other", label: "Gemini · Reported quota", usedPercent: 0 },
+      ]),
+    ]);
+    expect(row?.pools).toMatchObject([
+      {
+        label: "Gemini",
+        windows: [
+          { kind: "other", remainingPercent: 100, resetsAt: null, resetsIn: null, pace: null },
+        ],
+      },
     ]);
   });
 

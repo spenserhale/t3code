@@ -34,10 +34,11 @@ function WindowMeter({
       ? Math.max(0, window.resetsAt - now - outlook.inMs)
       : null;
   const warning = early !== null || window.remainingPercent === 0;
+  const ready = window.remainingPercent === 100 && window.resetsAt === null;
   const description = [
     `${window.remainingPercent}% left`,
     expected === null ? null : `${Math.round(expected)}% expected left by now`,
-    window.resetsIn ?? "Reset time unreported",
+    ready ? "Ready. Reset time unreported" : (window.resetsIn ?? "Reset time unreported"),
     early === null ? null : `May run out ${formatDuration(early)} before reset`,
   ]
     .filter((part) => part !== null)
@@ -95,10 +96,16 @@ function WindowMeter({
         <TooltipPopup side="top">{description}</TooltipPopup>
       </Tooltip>
       <div className="flex items-center justify-end gap-1 text-2xs text-muted-foreground tabular-nums">
-        <RotateCcwIcon aria-hidden className="size-2.5 shrink-0" />
-        <span aria-label={window.resetsIn ?? "Reset time unreported"}>
-          {window.resetsIn?.replace("resets in ", "") ?? "–"}
-        </span>
+        {ready ? (
+          <span>Ready</span>
+        ) : (
+          <>
+            <RotateCcwIcon aria-hidden className="size-2.5 shrink-0" />
+            <span aria-label={window.resetsIn ?? "Reset time unreported"}>
+              {window.resetsIn?.replace("resets in ", "") ?? "–"}
+            </span>
+          </>
+        )}
       </div>
       {early === null ? null : (
         <span className="mt-0.5 block text-end text-2xs text-warning-foreground">
