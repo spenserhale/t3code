@@ -7,7 +7,9 @@ import {
   DesktopBrowserEvent,
   type DesktopBrowserCommand as DesktopBrowserCommandType,
   type PreviewAutomationLoadError,
+  type PreviewLoginChoice,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -84,6 +86,11 @@ export class DesktopBrowserChannel extends Context.Service<
       timeoutMs: number,
       prompt: DesktopLoginPrompt,
     ) => Effect.Effect<DesktopApproval>;
+    readonly chooseLogin?: (
+      key: DesktopApprovalKey,
+      timeoutMs: number,
+      prompt: DesktopLoginPrompt & { readonly candidates: ReadonlyArray<PreviewLoginChoice> },
+    ) => Effect.Effect<string | undefined>;
     /**
      * Tells the desktop a login is about to be filled into a document. Written before anything
      * sent after it, the fill's own page commands included. Never fails.
@@ -133,12 +140,23 @@ const make = Effect.gen(function* () {
       approveLogin: Effect.fn("DesktopBrowserChannel.approveLogin")(function () {
         return Effect.succeed<DesktopApproval>(false);
       }),
+      chooseLogin: Effect.fn("DesktopBrowserChannel.chooseLogin")(function () {
+        return Effect.undefined;
+      }),
       loginFilled: Effect.fn("DesktopBrowserChannel.loginFilled")(function () {
         return Effect.void;
       }),
     });
   }
   const loginApprovals = new Map<string, Deferred.Deferred<DesktopApproval>>();
+  const loginChoices = new Map<
+    string,
+    {
+      readonly answer: Deferred.Deferred<string | undefined>;
+      readonly candidates: ReadonlySet<string>;
+      readonly expiresAt: number;
+    }
+  >();
 
   const command = (message: DesktopBrowserCommandType) =>
     writeLock.withPermits(1)(
@@ -166,6 +184,19 @@ const make = Effect.gen(function* () {
       if (Option.isNone(decoded)) return Effect.void;
       const event = decoded.value;
       if (event.type === "loginApproval") {
+        const choice = loginChoices.get(event.requestId);
+        if (choice !== undefined) {
+          return Effect.gen(function* () {
+            const selected =
+              event.approved === "once" &&
+              event.selected !== undefined &&
+              choice.candidates.has(event.selected) &&
+              (yield* Clock.currentTimeMillis) < choice.expiresAt
+                ? event.selected
+                : undefined;
+            yield* Deferred.succeed(choice.answer, selected);
+          });
+        }
         const pending = loginApprovals.get(event.requestId);
         return pending
           ? Deferred.succeed(pending, event.approved).pipe(Effect.asVoid)
@@ -350,6 +381,36 @@ const make = Effect.gen(function* () {
         );
       },
     ),
+    chooseLogin: Effect.fn("DesktopBrowserChannel.chooseLogin")(function* (key, timeoutMs, prompt) {
+      const timeout = Number.isFinite(timeoutMs)
+        ? Math.max(0, Math.min(timeoutMs, Duration.toMillis(LOGIN_APPROVAL_TIMEOUT)))
+        : 0;
+      if (timeout <= 0 || prompt.candidates.length === 0) return undefined;
+      const requestId = NodeCrypto.randomUUID();
+      const answer = yield* Deferred.make<string | undefined>();
+      loginChoices.set(requestId, {
+        answer,
+        candidates: new Set(prompt.candidates.map(({ id }) => id)),
+        expiresAt: (yield* Clock.currentTimeMillis) + timeout,
+      });
+      return yield* command({
+        type: "loginApproval",
+        ...key,
+        requestId,
+        ...prompt,
+        timeoutMs: timeout,
+      }).pipe(
+        Effect.andThen(Deferred.await(answer)),
+        Effect.timeoutOption(timeout),
+        Effect.map(Option.getOrUndefined),
+        Effect.ensuring(
+          Effect.gen(function* () {
+            loginChoices.delete(requestId);
+            yield* command({ type: "loginApprovalCancel", requestId });
+          }),
+        ),
+      );
+    }),
     loginFilled: Effect.fn("DesktopBrowserChannel.loginFilled")(function (key, document) {
       // The desktop knows a document by the browser's own id, which a fill's name for it leads.
       return command({ type: "loginFilled", ...key, document: document.split(" ", 1)[0]! });

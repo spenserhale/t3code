@@ -74,6 +74,7 @@ import * as LinuxBrowserSecret from "./preview/BrowserImport/LinuxBrowserSecret.
 import * as AppleSpeech from "./speech/AppleSpeech.ts";
 import * as BrowserSession from "./preview/BrowserSession.ts";
 import * as LoginApprovalDialog from "./preview/LoginApprovalDialog.ts";
+import * as LoginChoiceDialog from "./preview/LoginChoiceDialog.ts";
 import * as DesktopBrowserHost from "./preview/DesktopBrowserHost.ts";
 import * as LoopbackTunnel from "./preview/LoopbackTunnel.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -174,6 +175,7 @@ const layerDesktopPreview = PreviewManager.layer.pipe(
   Layer.provideMerge(LoopbackTunnel.layer),
   Layer.provideMerge(DesktopBrowserHost.layer),
   Layer.provideMerge(LoginApprovalDialog.layer),
+  Layer.provideMerge(LoginChoiceDialog.layer),
   // IPC needs both services on the same BrowserSession.
   Layer.provideMerge(BrowserImport.layer.pipe(Layer.provide(LinuxBrowserSecret.layer))),
   Layer.provideMerge(BrowserSession.layer),
