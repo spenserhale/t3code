@@ -17,6 +17,7 @@ export interface ElectronMenuContextInput {
   readonly window: Electron.BrowserWindow;
   readonly items: readonly ContextMenuItem[];
   readonly position: Option.Option<ElectronMenuPosition>;
+  readonly signal?: AbortSignal;
 }
 
 export interface ElectronMenuTemplateInput {
@@ -227,22 +228,29 @@ export const make = Effect.gen(function* () {
     showContextMenu: Effect.fn("ElectronMenu.showContextMenu")(function (input) {
       return Effect.callback<Option.Option<string>>((resume) => {
         const normalizedItems = normalizeContextMenuItems(input.items);
-        if (normalizedItems.length === 0) {
+        if (normalizedItems.length === 0 || input.signal?.aborted) {
           resume(Effect.succeedNone);
           return;
         }
 
         let completed = false;
+        let menu: Electron.Menu | undefined;
         const complete = (selectedItemId: Option.Option<string>) => {
           if (completed) {
             return;
           }
           completed = true;
+          input.signal?.removeEventListener("abort", cancel);
           resume(Effect.succeed(selectedItemId));
+        };
+        const cancel = () => {
+          if (completed) return;
+          complete(Option.none());
+          menu?.closePopup(input.window);
         };
 
         try {
-          const menu = Electron.Menu.buildFromTemplate(buildTemplate(normalizedItems, complete));
+          menu = Electron.Menu.buildFromTemplate(buildTemplate(normalizedItems, complete));
           const popupPosition = normalizePosition(
             input.position,
             input.window.webContents.getZoomFactor(),
@@ -259,12 +267,18 @@ export const make = Effect.gen(function* () {
               callback: () => complete(Option.none()),
             }),
           });
+          input.signal?.addEventListener("abort", cancel, { once: true });
+          if (input.signal?.aborted) {
+            cancel();
+            return;
+          }
           menu.popup(popupOptions);
         } catch (cause) {
           if (completed) {
             return;
           }
           completed = true;
+          input.signal?.removeEventListener("abort", cancel);
           resume(
             Effect.die(
               new ElectronMenuOperationError({
@@ -277,6 +291,7 @@ export const make = Effect.gen(function* () {
             ),
           );
         }
+        return Effect.sync(cancel);
       });
     }),
   });
