@@ -454,7 +454,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         : source.label;
       for (const account of source.accounts) {
         // A hub account draws windows and credits only, so a balance alone cannot show here.
-        if (!hasDrawableLimits(account.usageLimits) || limitsNotice(account.usageLimits) !== null)
+        if (account.usageLimits.windows.length === 0 || limitsNotice(account.usageLimits) !== null)
           continue;
         const resolved = resolveKey(account);
         // A resolved account already has an identity; its public key must stay distinct from others'.
