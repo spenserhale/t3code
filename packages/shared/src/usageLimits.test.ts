@@ -1581,6 +1581,42 @@ describe("limits notices", () => {
     expect(collectLimitNotices(presentation(balanceOnly))).toEqual([]);
     expect(collectLimitNotices(presentation(empty))).toEqual(["codex: No limits reported."]);
   });
+
+  it("keeps a balance alone from drawing a hub account", () => {
+    const presentations = new Map([
+      [
+        EnvironmentId.make("a"),
+        {
+          entry: { target: { label: "A" } },
+          serverConfig: {
+            providers: [],
+            usageLimitSources: [
+              {
+                id: UsageLimitSourceId.make("hub"),
+                kind: "cliproxy" as const,
+                label: "hub",
+                checkedAt: "2026-09-03T11:00:00.000Z",
+                accounts: [
+                  {
+                    id: "unlid-someone@example.com.json",
+                    driver: ProviderDriverKind.make("opencode"),
+                    email: "someone@example.com",
+                    usageLimits: {
+                      checkedAt: "2026-09-03T11:00:00.000Z",
+                      windows: [],
+                      subscriptions: [unlid],
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    expect(collectLimitAccounts(presentations)).toEqual([]);
+    expect(collectLimitNotices(presentations)).toEqual([]);
+  });
 });
 
 describe("ChatGPT sharing presentation", () => {
