@@ -146,6 +146,13 @@ export const PreviewLoginCandidate = Schema.Struct({
 });
 export type PreviewLoginCandidate = typeof PreviewLoginCandidate.Type;
 
+export const PreviewLoginChoice = Schema.Struct({
+  ...PreviewLoginCandidate.fields,
+  username: Schema.optional(Schema.String),
+  websites: Schema.Array(Schema.String),
+});
+export type PreviewLoginChoice = typeof PreviewLoginChoice.Type;
+
 export const PreviewAutomationFillLoginResult = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("filled"),

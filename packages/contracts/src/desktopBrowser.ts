@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { PreviewLoginChoice } from "./previewLogin.ts";
 
 const TabKey = {
   threadId: TrimmedNonEmptyString,
@@ -37,6 +38,7 @@ export const DesktopBrowserEvent = Schema.Union([
     requestId: TrimmedNonEmptyString,
     /** Allow once, allow for this thread, or false for Deny. */
     approved: Schema.Union([Schema.Literals(["once", "thread"]), Schema.Literal(false)]),
+    selected: Schema.optional(Schema.String),
   }),
 ]);
 export type DesktopBrowserEvent = typeof DesktopBrowserEvent.Type;
@@ -73,6 +75,7 @@ export const DesktopBrowserCommand = Schema.Union([
     providerLabel: Schema.String,
     /** The item's title, when known before anything is read, such as a new login's. */
     loginTitle: Schema.optional(Schema.String),
+    candidates: Schema.optional(Schema.Array(PreviewLoginChoice)),
     /** The item the agent named, such as `op://Vault/Item`, or the secret a command uses. */
     reference: Schema.optional(Schema.String),
     /** The command a secret is for, as the user reads it. */

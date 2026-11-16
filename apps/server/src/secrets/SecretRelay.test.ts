@@ -15,6 +15,32 @@ const loginAsk = {
   origin: "https://grafana.example.com",
 } as const;
 
+const choiceAsk = {
+  ...loginAsk,
+  kind: "loginChoice",
+  siteUrl: "https://app.example.com",
+  candidates: [
+    {
+      id: "work/g1",
+      title: "Grafana work",
+      username: "work@example.com",
+      websites: ["https://grafana.example.com"],
+    },
+    {
+      id: "personal/g2",
+      title: "Grafana personal",
+      username: "personal@example.com",
+      websites: ["https://app.example.com"],
+    },
+  ],
+} as const;
+
+const selected = (id = "personal/g2"): SecretRelay.SecretRelayValues => ({
+  type: "values",
+  item: { id, title: "Grafana personal", urls: [], fillOrigin: choiceAsk.origin },
+  values: {},
+});
+
 /** A device subscribing for `kinds`, collecting what arrives until it leaves. */
 const subscriber = (
   relay: SecretRelay.SecretRelay["Service"],
@@ -39,6 +65,71 @@ const takeRequest = (items: Queue.Queue<SecretRelayStreamItem>) =>
   );
 
 describe("SecretRelay", () => {
+  it.effect(
+    "sends login choices only to opted-in devices and preserves the selected member id",
+    () =>
+      Effect.gen(function* () {
+        const relay = yield* SecretRelay.SecretRelay;
+        const legacy = yield* subscriber(relay, ["login", "identity", "secretReference"], "older");
+        const laptop = yield* subscriber(relay, ["loginChoice"]);
+        const call = yield* relay.request(choiceAsk, 60_000).pipe(Effect.forkScoped);
+        const request = yield* takeRequest(laptop.items);
+        assert.deepStrictEqual(request, {
+          ...choiceAsk,
+          requestId: request.requestId,
+          expiresAt: 60_000,
+        });
+        yield* relay.answer(request.requestId, selected(), "laptop");
+        assert.deepStrictEqual(yield* Fiber.join(call), selected());
+        assert.strictEqual(yield* Queue.size(legacy.items), 0);
+      }).pipe(Effect.scoped, Effect.provide(SecretRelay.layer)),
+  );
+
+  it.effect.each(["absent", "wrong-kind", "disconnected"] as const)(
+    "ignores login choice answers from %s devices",
+    (outsider) =>
+      Effect.gen(function* () {
+        const relay = yield* SecretRelay.SecretRelay;
+        const laptop = yield* subscriber(relay, ["loginChoice"]);
+        if (outsider === "wrong-kind") yield* subscriber(relay, ["login"], "outsider");
+        if (outsider === "disconnected") {
+          const disconnected = yield* subscriber(relay, ["loginChoice"], "outsider");
+          yield* disconnected.leave;
+        }
+        const call = yield* relay.request(choiceAsk, 60_000).pipe(Effect.forkScoped);
+        const { requestId } = yield* takeRequest(laptop.items);
+        yield* relay.answer(requestId, { type: "denied" }, "outsider");
+        yield* relay.answer(requestId, selected(), "laptop");
+        assert.deepStrictEqual(yield* Fiber.join(call), selected());
+      }).pipe(Effect.scoped, Effect.provide(SecretRelay.layer)),
+  );
+
+  it.effect("never lets an unoffered choice or an unexpected answer beat a valid selection", () =>
+    Effect.gen(function* () {
+      const relay = yield* SecretRelay.SecretRelay;
+      const laptop = yield* subscriber(relay, ["loginChoice"]);
+      const desktop = yield* subscriber(relay, ["loginChoice"], "desktop");
+      const invalid: ReadonlyArray<SecretRelayAnswer> = [
+        selected("not-offered"),
+        { type: "choose", candidates: [{ id: "work/g1", title: "Grafana work" }] },
+        { ...selected("work/g1"), values: { password: Redacted.make("unexpected-secret") } },
+      ];
+      for (const answer of invalid) {
+        const call = yield* relay.request(choiceAsk, 60_000).pipe(Effect.forkScoped);
+        const [{ requestId }] = yield* Effect.all([
+          takeRequest(laptop.items),
+          takeRequest(desktop.items),
+        ]);
+        yield* relay.answer(requestId, answer, "laptop");
+        yield* relay.answer(requestId, selected(), "desktop");
+        assert.deepStrictEqual(yield* Fiber.join(call), selected());
+        for (const { items } of [laptop, desktop]) {
+          assert.deepStrictEqual(yield* Queue.take(items), { type: "ended", requestId });
+        }
+      }
+    }).pipe(Effect.scoped, Effect.provide(SecretRelay.layer)),
+  );
+
   it.effect("refuses at once when no subscriber answers that kind", () =>
     Effect.gen(function* () {
       const relay = yield* SecretRelay.SecretRelay;
