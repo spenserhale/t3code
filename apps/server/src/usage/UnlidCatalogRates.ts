@@ -138,7 +138,11 @@ export const make = Effect.gen(function* () {
   const isFresh = (now: number) =>
     fetchedAtMs !== null && now - fetchedAtMs >= 0 && now - fetchedAtMs < CATALOG_TTL_MS;
 
-  /** The key OpenCode stored for Unlid, else `UNLID_API_KEY`. Never logged, never in an error. */
+  /**
+   * The key OpenCode stored for Unlid, else `UNLID_API_KEY`. The auth.json contents may come
+   * from the `OPENCODE_AUTH_CONTENT` override, the same source the balance probe reads. Never
+   * logged, never in an error.
+   */
   const readApiKey = Effect.fn("UnlidCatalogRates.readApiKey")(function* () {
     const env = yield* HostProcess.Environment;
     const dataHome =
@@ -148,9 +152,11 @@ export const make = Effect.gen(function* () {
         ".local",
         "share",
       );
-    const contents = yield* fileSystem
-      .readFileString(path.join(dataHome, "opencode", "auth.json"))
-      .pipe(Effect.orElseSucceed(() => "{}"));
+    const contents =
+      env.OPENCODE_AUTH_CONTENT ||
+      (yield* fileSystem
+        .readFileString(path.join(dataHome, "opencode", "auth.json"))
+        .pipe(Effect.orElseSucceed(() => "{}")));
     const file = yield* decodeAuthFile(contents).pipe(Effect.orElseSucceed(() => emptyAuthFile));
     const apiAuth = decodeApiAuth(file.unlid);
     return (Option.isSome(apiAuth) ? apiAuth.value.key : env.UNLID_API_KEY)?.trim();
