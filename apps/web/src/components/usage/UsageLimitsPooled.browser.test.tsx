@@ -103,3 +103,89 @@ describe("UsageLimitsPooled next refill", () => {
     await expect.element(screen.getByText(/^↻ \+\d+%$/)).not.toBeInTheDocument();
   });
 });
+
+function opencodeProvider(usageLimits: NonNullable<ServerProvider["usageLimits"]>): ServerProvider {
+  return {
+    instanceId: ProviderInstanceId.make("opencode_unlid"),
+    driver: ProviderDriverKind.make("opencode"),
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt,
+    models: [],
+    slashCommands: [],
+    skills: [],
+    usageLimits,
+  };
+}
+
+const unlidSubscription = {
+  id: "unlid",
+  label: "Unlid",
+  credentialFingerprint: "unlid-key",
+  checkedAt,
+  windowIds: [],
+};
+
+function deskPresentation(providers: readonly ServerProvider[]) {
+  return new Map([
+    [
+      EnvironmentId.make("desk"),
+      { entry: { target: { label: "Desk" } }, serverConfig: { providers } },
+    ],
+  ]);
+}
+
+describe("UsageLimitsPooled pay-as-you-go balances", () => {
+  it("shows the balance lines for a windowless account, with no meter, beside a sibling bar", async () => {
+    const presentations = deskPresentation([
+      opencodeProvider({
+        checkedAt,
+        windows: [{ id: "go_5h", kind: "session", label: "Go", usedPercent: 40 }],
+        subscriptions: [
+          {
+            ...unlidSubscription,
+            balance: { balanceUsd: 4.99, heldUsd: 0.01, monthSpendUsd: 14.82 },
+          },
+          {
+            id: "opencode-go",
+            label: "OpenCode Go",
+            credentialFingerprint: "go-key",
+            checkedAt,
+            windowIds: ["go_5h"],
+          },
+        ],
+      }),
+    ]);
+    await using screen = await render(
+      <UsageLimitsPooled presentations={presentations} now={Date.parse(checkedAt)} />,
+    );
+
+    await expect.element(screen.getByText("$4.99 left")).toBeVisible();
+    await expect.element(screen.getByText("held $0.01 · $14.82 this month")).toBeVisible();
+    const balanceColumn = screen.getByText("$4.99 left").element().closest("div");
+    expect(balanceColumn?.querySelectorAll('[role="progressbar"]')).toHaveLength(0);
+    await expect
+      .element(screen.getByRole("button", { name: "OpenCode Go: 60% left" }))
+      .toBeVisible();
+  });
+
+  it("shows only the balance when the account reports nothing else", async () => {
+    const presentations = deskPresentation([
+      opencodeProvider({
+        checkedAt,
+        windows: [],
+        subscriptions: [{ ...unlidSubscription, balance: { balanceUsd: 12 } }],
+      }),
+    ]);
+    await using screen = await render(
+      <UsageLimitsPooled presentations={presentations} now={Date.parse(checkedAt)} />,
+    );
+
+    await expect.element(screen.getByText("$12.00 left")).toBeVisible();
+    expect(screen.container.textContent).not.toContain("held");
+    expect(screen.container.textContent).not.toContain("this month");
+  });
+});
