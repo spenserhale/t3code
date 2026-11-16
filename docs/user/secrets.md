@@ -23,6 +23,19 @@ To add one, open **Settings → Secrets**, select **Add provider**, and enter a 
 `op account list` shows. Secret providers belong to the environment you are connected to. Each
 environment keeps its own list.
 
+## Choose which vaults a provider reads
+
+By default a 1Password provider can read every vault its account can open. To limit it, open
+**Settings → Secrets**, select **Vaults** on the provider, and choose **Only these vaults**. T3 Code
+then lists the account's vaults, so 1Password on that machine may ask you to unlock. Allow only the
+vaults agents need, such as a vault set aside for them. Choosing none means the provider reads no
+vault.
+
+The choice belongs to the environment. A project can have its own: pick the project at the top of
+**Settings → Secrets**, then select **Vaults** to use **Same as** the environment, all vaults, or
+only some. Provider variables and requests relayed to another device always use the vaults of their
+environment.
+
 ## Use a secret reference
 
 Credential fields in Settings, such as provider environment variables and credentials, source
