@@ -100,7 +100,14 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const { choices, shown, revealed } = yield* setup;
-      const answer = yield* choices.choose(undefined, prompt).pipe(Effect.forkScoped);
+      const answer = yield* choices
+        .choose(undefined, {
+          ...prompt,
+          agent: "Codex",
+          threadTitle: "Monthly Budget",
+          machine: "LinkMini",
+        })
+        .pipe(Effect.forkScoped);
       const popup = yield* Queue.take(shown);
       const header = popup.input.items[0];
       expect(header).toMatchObject({
@@ -108,7 +115,11 @@ it.effect(
         label: "Choose a login for https://app.rocketmoney.com",
       });
       expect(header?.header).not.toBe(true);
-      const rows = popup.input.items.slice(1);
+      expect(popup.input.items[1]).toMatchObject({ disabled: true });
+      expect(popup.input.items[1]?.label).toContain("Codex");
+      expect(popup.input.items[1]?.label).toContain("Monthly Budget");
+      expect(popup.input.items[1]?.label).toContain("LinkMini");
+      const rows = popup.input.items.filter((row) => !row.disabled);
       expect(rows[0]?.label).toContain("Rocket Money");
       expect(rows[0]?.label).toContain("first@example.com");
       expect(rows[1]?.label).toContain("second@example.com");

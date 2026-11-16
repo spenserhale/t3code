@@ -58,12 +58,20 @@ const make = Effect.gen(function* () {
             hostWindow(guest) ?? Option.getOrUndefined(yield* windows.focusedMainOrFirst);
           if (owner === undefined) return undefined;
           yield* windows.reveal(owner);
+          const requester = [
+            prompt.agent,
+            ...(prompt.threadTitle ? [`Thread: ${prompt.threadTitle}`] : []),
+            ...(prompt.machine ? [`Machine: ${prompt.machine}`] : []),
+          ]
+            .filter(Boolean)
+            .join(" · ");
           const selected = yield* menus.showContextMenu({
             window: owner,
             position: Option.none(),
             ...(cancelled === undefined ? {} : { signal: cancelled }),
             items: [
               { id: "destination", label: `Choose a login for ${prompt.origin}`, disabled: true },
+              ...(requester ? [{ id: "requester", label: requester, disabled: true }] : []),
               ...prompt.candidates.map((candidate) => ({
                 id: candidate.id,
                 label: `${candidate.title}: ${candidate.username === undefined ? "Username unavailable" : candidate.username || "No username saved"}`,
