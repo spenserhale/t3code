@@ -3,11 +3,10 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 
-import * as ElectronMenu from "../electron/ElectronMenu.ts";
+import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as LoginChoiceDialog from "./LoginChoiceDialog.ts";
 
@@ -43,28 +42,40 @@ const prompt = {
 
 const setup = Effect.gen(function* () {
   const shown = yield* Queue.unbounded<{
-    readonly input: ElectronMenu.ElectronMenuContextInput;
-    readonly answer: (selection: Option.Option<string>) => void;
+    readonly options: Electron.MessageBoxOptions;
+    readonly owner: Electron.BrowserWindow | undefined;
+    readonly answer: (response: number) => void;
   }>();
   let closed = 0;
   let revealed = 0;
   let failed = false;
-  const menuLayer = Layer.succeed(ElectronMenu.ElectronMenu, {
-    setApplicationMenu: () => Effect.void,
-    popupTemplate: () => Effect.void,
-    showContextMenu: (input) =>
+  const dialogLayer = Layer.succeed(ElectronDialog.ElectronDialog, {
+    pickFolder: () => Effect.succeedNone,
+    pickFiles: () => Effect.succeed([]),
+    showErrorBox: () => Effect.void,
+    // Like Electron's, an aborted signal closes an open box as if Cancel were pressed.
+    showMessageBox: (options, window) =>
       failed
-        ? Effect.die(new Error("Native menu unavailable"))
+        ? Effect.die(new Error("Native dialog unavailable"))
         : Effect.callback((resume) => {
-            Queue.offerUnsafe(shown, {
-              input,
-              answer: (selection) => resume(Effect.succeed(selection)),
-            });
-            return Effect.sync(() => {
-              closed += 1;
-            });
+            let open = true;
+            const answer = (response: number) => {
+              if (!open) return;
+              open = false;
+              resume(Effect.succeed({ response, checkboxChecked: false }));
+            };
+            options.signal?.addEventListener(
+              "abort",
+              () => {
+                if (!open) return;
+                closed += 1;
+                answer(options.cancelId ?? 0);
+              },
+              { once: true },
+            );
+            Queue.offerUnsafe(shown, { options, owner: window, answer });
           }),
-  });
+  } satisfies ElectronDialog.ElectronDialog["Service"]);
   const windowLayer = Layer.succeed(ElectronWindow.ElectronWindow, {
     create: () => Effect.die("unexpected window creation"),
     main: Effect.succeedSome(owner),
@@ -82,7 +93,7 @@ const setup = Effect.gen(function* () {
     syncAllAppearance: () => Effect.void,
   });
   const choices = yield* LoginChoiceDialog.LoginChoiceDialog.pipe(
-    Effect.provide(LoginChoiceDialog.layer.pipe(Layer.provide([menuLayer, windowLayer]))),
+    Effect.provide(LoginChoiceDialog.layer.pipe(Layer.provide([dialogLayer, windowLayer]))),
   );
   return {
     choices,
@@ -96,7 +107,7 @@ const setup = Effect.gen(function* () {
 });
 
 it.effect(
-  "shows the destination and distinct username rows, then returns the second explicit choice",
+  "asks in a sheet on the window with the destination and distinct rows, then returns the second explicit choice",
   () =>
     Effect.gen(function* () {
       const { choices, shown, revealed } = yield* setup;
@@ -108,55 +119,56 @@ it.effect(
           machine: "LinkMini",
         })
         .pipe(Effect.forkScoped);
-      const popup = yield* Queue.take(shown);
-      const header = popup.input.items[0];
-      expect(header).toMatchObject({
-        disabled: true,
-        label: "Choose a login for https://app.rocketmoney.com",
-      });
-      expect(header?.header).not.toBe(true);
-      expect(popup.input.items[1]).toMatchObject({ disabled: true });
-      expect(popup.input.items[1]?.label).toContain("Codex");
-      expect(popup.input.items[1]?.label).toContain("Monthly Budget");
-      expect(popup.input.items[1]?.label).toContain("LinkMini");
-      const rows = popup.input.items.filter((row) => !row.disabled);
-      expect(rows[0]?.label).toContain("Rocket Money");
-      expect(rows[0]?.label).toContain("first@example.com");
-      expect(rows[1]?.label).toContain("second@example.com");
-      expect(rows[1]?.detail).toContain("Account: Family");
-      expect(rows[1]?.detail).toContain("Vault: Shared");
-      expect(rows[1]?.detail).toContain("https://rocketmoney.com");
-      expect(rows[0]?.detail).not.toContain("from=home");
-      expect(rows[0]?.detail).toContain("https://rocketaccount.com");
-      expect(rows[2]?.label).toContain("No username saved");
-      expect(rows[3]?.label).toContain("Username unavailable");
-      expect(rows.every((row) => row.checked === undefined)).toBe(true);
+      const box = yield* Queue.take(shown);
+      expect(box.owner).toBe(owner);
       expect(revealed()).toBe(1);
-      popup.answer(Option.some("second"));
+      expect(box.options).toMatchObject({
+        message: "Choose a login for https://app.rocketmoney.com",
+        buttons: [
+          "Cancel",
+          "1. Rocket Money: first@example.com",
+          "2. Rocket Money: second@example.com",
+          "3. No username: No username saved",
+          "4. Unknown username: Username unavailable",
+        ],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      const [requester, first, second] = box.options.detail?.split("\n\n") ?? [];
+      expect(requester).toContain("Codex");
+      expect(requester).toContain("Monthly Budget");
+      expect(requester).toContain("LinkMini");
+      expect(first).toContain("https://rocketaccount.com");
+      expect(first).not.toContain("from=home");
+      expect(second).toContain("Account: Family");
+      expect(second).toContain("Vault: Shared");
+      expect(second).toContain("https://rocketmoney.com");
+      box.answer(2);
       expect(yield* Fiber.join(answer)).toBe("second");
     }).pipe(Effect.scoped),
 );
 
 it.effect(
-  "returns no selection on dismissal, unknown rows, cancellation, and deadline expiry",
+  "returns no selection on Cancel, unknown buttons, cancellation, deadline expiry, and failure",
   () => {
     const cancelled = new AbortController();
     return Effect.gen(function* () {
       const { choices, shown, closed, fail } = yield* setup;
-      for (const result of [Option.none<string>(), Option.some("unknown")]) {
+      for (const response of [0, 9]) {
         const answer = yield* choices.choose(undefined, prompt).pipe(Effect.forkScoped);
-        const popup = yield* Queue.take(shown);
-        popup.answer(result);
+        const box = yield* Queue.take(shown);
+        box.answer(response);
         expect(yield* Fiber.join(answer)).toBeUndefined();
       }
+      expect(closed()).toBe(0);
       const aborted = yield* choices
         .choose(undefined, prompt, cancelled.signal)
         .pipe(Effect.forkScoped);
-      const popup = yield* Queue.take(shown);
+      const box = yield* Queue.take(shown);
       cancelled.abort();
       expect(yield* Fiber.join(aborted)).toBeUndefined();
       expect(closed()).toBe(1);
-      popup.answer(Option.some("second"));
+      box.answer(2);
 
       const expired = yield* choices
         .choose(undefined, { ...prompt, timeoutMs: 10.75 })
@@ -165,7 +177,7 @@ it.effect(
       yield* TestClock.adjust(11);
       expect(yield* Fiber.join(expired)).toBeUndefined();
       expect(closed()).toBe(2);
-      late.answer(Option.some("second"));
+      late.answer(2);
       fail();
       expect(yield* Effect.exit(choices.choose(undefined, prompt))).toEqual(
         Exit.succeed(undefined),
@@ -179,14 +191,14 @@ it.effect("serializes requests and removes an aborted queued choice without open
   return Effect.gen(function* () {
     const { choices, shown } = yield* setup;
     const first = yield* choices.choose(undefined, prompt).pipe(Effect.forkScoped);
-    const firstPopup = yield* Queue.take(shown);
+    const firstBox = yield* Queue.take(shown);
     const second = yield* choices
       .choose(undefined, prompt, cancelled.signal)
       .pipe(Effect.forkScoped);
     cancelled.abort();
     expect(yield* Fiber.join(second)).toBeUndefined();
     expect(yield* Queue.size(shown)).toBe(0);
-    firstPopup.answer(Option.some("first"));
+    firstBox.answer(1);
     expect(yield* Fiber.join(first)).toBe("first");
   }).pipe(Effect.scoped);
 });

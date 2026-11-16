@@ -7,7 +7,7 @@ import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 import { BrowserWindow, type WebContents } from "electron";
 
-import * as ElectronMenu from "../electron/ElectronMenu.ts";
+import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 
 type LoginChoicePrompt = Extract<DesktopBrowserCommand, { readonly type: "loginApproval" }> & {
@@ -44,7 +44,7 @@ const websiteOrigins = (websites: ReadonlyArray<string>) => {
 };
 
 const make = Effect.gen(function* () {
-  const menus = yield* ElectronMenu.ElectronMenu;
+  const dialog = yield* ElectronDialog.ElectronDialog;
   const windows = yield* ElectronWindow.ElectronWindow;
   const oneAtATime = yield* Semaphore.make(1);
   return LoginChoiceDialog.of({
@@ -65,29 +65,43 @@ const make = Effect.gen(function* () {
           ]
             .filter(Boolean)
             .join(" · ");
-          const selected = yield* menus.showContextMenu({
-            window: owner,
-            position: Option.none(),
-            ...(cancelled === undefined ? {} : { signal: cancelled }),
-            items: [
-              { id: "destination", label: `Choose a login for ${prompt.origin}`, disabled: true },
-              ...(requester ? [{ id: "requester", label: requester, disabled: true }] : []),
-              ...prompt.candidates.map((candidate) => ({
-                id: candidate.id,
-                label: `${candidate.title}: ${candidate.username === undefined ? "Username unavailable" : candidate.username || "No username saved"}`,
+          // Numbered, so two items with the same title and username stay distinguishable.
+          const rows = prompt.candidates.map(
+            (candidate, index) =>
+              `${index + 1}. ${candidate.title}: ${candidate.username === undefined ? "Username unavailable" : candidate.username || "No username saved"}`,
+          );
+          // A window sheet, not a pointer menu: an unprompted menu opens wherever the pointer is
+          // and any click elsewhere closes it as no choice.
+          const { response } = yield* Effect.gen(function* () {
+            const close = yield* Effect.abortSignal;
+            return yield* dialog.showMessageBox(
+              {
+                signal: cancelled === undefined ? close : AbortSignal.any([close, cancelled]),
+                type: "question",
+                buttons: ["Cancel", ...rows],
+                // Cancel by default, so an Enter typed into the page cannot pick a login.
+                defaultId: 0,
+                cancelId: 0,
+                message: `Choose a login for ${prompt.origin}`,
                 detail: [
-                  `Account: ${candidate.account ?? "Unavailable"}`,
-                  `Vault: ${candidate.vault ?? "Unavailable"}`,
-                  `Websites: ${websiteOrigins(candidate.websites)}`,
-                ].join(" · "),
-              })),
-            ],
-          });
+                  ...(requester ? [requester] : []),
+                  ...prompt.candidates.map((candidate, index) =>
+                    [
+                      rows[index],
+                      [
+                        `Account: ${candidate.account ?? "Unavailable"}`,
+                        `Vault: ${candidate.vault ?? "Unavailable"}`,
+                        `Websites: ${websiteOrigins(candidate.websites)}`,
+                      ].join(" · "),
+                    ].join("\n"),
+                  ),
+                ].join("\n\n"),
+              },
+              owner,
+            );
+          }).pipe(Effect.scoped);
           if ((yield* Clock.currentTimeMillis) >= expiresAt || cancelled?.aborted) return undefined;
-          return Option.isSome(selected) &&
-            prompt.candidates.some(({ id }) => id === selected.value)
-            ? selected.value
-            : undefined;
+          return response > 0 ? prompt.candidates[response - 1]?.id : undefined;
         }),
       );
       const abort =
