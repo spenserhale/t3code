@@ -21,6 +21,7 @@ import {
   collectLimitPools,
   elapsedShare,
   exhaustedUsageWindow,
+  limitsNotice,
   paceOf,
   paceRemainingPercent,
   usesChatGptSharing,
@@ -2016,6 +2017,47 @@ describe("external usage settings", () => {
     ).toEqual([
       "Desktop · hub · claude-tg@example.com: The provider refused the hub request (HTTP 429).",
     ]);
+  });
+});
+
+describe("limits notices", () => {
+  const balance = { balanceUsd: 4.99, heldUsd: 0.01, monthSpendUsd: 14.82 };
+  const unlid = {
+    id: "unlid",
+    label: "Unlid",
+    credentialFingerprint: "unlid-key",
+    checkedAt: "2026-09-03T11:00:00.000Z",
+    windowIds: [],
+    balance,
+  };
+  const presentation = (provider: ServerProvider) =>
+    new Map([
+      [
+        EnvironmentId.make("a"),
+        { entry: { target: { label: "A" } }, serverConfig: { providers: [provider] } },
+      ],
+    ]);
+
+  it("stays quiet when a balance is the only holding, loud when nothing reports", () => {
+    expect(
+      limitsNotice({ checkedAt: "2026-09-03T11:00:00.000Z", windows: [], subscriptions: [unlid] }),
+    ).toBeNull();
+    expect(limitsNotice({ checkedAt: "2026-09-03T11:00:00.000Z", windows: [] })).toBe(
+      "No limits reported.",
+    );
+  });
+
+  it("collects no notice for a balance-only provider, and one for a truly empty provider", () => {
+    const balanceOnly = provider({
+      instanceId: ProviderInstanceId.make("unlid"),
+      driver: ProviderDriverKind.make("opencode"),
+      usageLimits: { checkedAt: "2026-09-03T11:00:00.000Z", windows: [], subscriptions: [unlid] },
+    });
+    const empty = provider({
+      usageLimits: { checkedAt: "2026-09-03T11:00:00.000Z", windows: [] },
+    });
+    expect(collectLimitNotices(presentation(balanceOnly))).toEqual([]);
+    expect(collectLimitNotices(presentation(empty))).toEqual(["codex: No limits reported."]);
   });
 });
 

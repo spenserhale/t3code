@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import { mergeSubscriptions } from "./usageLimitSubscriptions.ts";
 import { type LimitAccount, collectLimitAccounts, collectLimitPools } from "./usageLimits.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
@@ -423,6 +424,141 @@ describe("subscriptions of one provider account", () => {
       zai_five_hour: ["Z.ai"],
       go_rolling: ["both", null],
       go_weekly: ["both", "weekly"],
+    });
+  });
+
+  describe("balance-only subscriptions", () => {
+    const balance = { balanceUsd: 4.99, heldUsd: 0.01, monthSpendUsd: 14.82 };
+    const unlid = {
+      id: "unlid",
+      label: "Unlid",
+      credentialFingerprint: "fp1",
+      checkedAt: earlier,
+      windowIds: [],
+    };
+    const merged = (subscriptions: NonNullable<ServerProvider["usageLimits"]>["subscriptions"]) => {
+      const entries: Array<readonly [string, LimitAccount]> = [];
+      mergeSubscriptions(
+        (key, account) => entries.push([key, account]),
+        { environmentId: EnvironmentId.make("A"), label: "A" },
+        provider({ ...instance, usageLimits: { checkedAt: earlier, windows: [], subscriptions } }),
+        () => null,
+      );
+      return entries;
+    };
+
+    it("shows a subscription whose balance is its only holding", () => {
+      expect(
+        merged([{ ...unlid, balance }]).map(([key, { balance: accountBalance, limits }]) => [
+          key,
+          accountBalance,
+          limits.windows,
+        ]),
+      ).toEqual([["opencode:credential:fp1", balance, []]]);
+    });
+
+    it("still drops a subscription with neither window nor balance", () => {
+      expect(merged([unlid])).toEqual([]);
+    });
+
+    it("merges the same balance-only credential of two environments into one account", () => {
+      const reads = (checkedAt: string) =>
+        provider({
+          ...instance,
+          usageLimits: {
+            checkedAt,
+            windows: [zaiWindow],
+            subscriptions: [zai, { ...unlid, checkedAt, balance }],
+          },
+        });
+      const accounts = collectLimitAccounts(environments({ A: reads(earlier), B: reads(later) }));
+      expect(
+        accounts.map(
+          ({ key, subscription, balance: accountBalance, limits }) =>
+            [key, subscription, accountBalance, limits.windows] as const,
+        ),
+      ).toEqual([
+        ["A:opencode:zai-key", "zai-coding-plan", undefined, [zaiWindow]],
+        ["A:opencode:fp1", "unlid", balance, []],
+      ]);
+    });
+
+    it("keeps a balance a fresher read does not report", () => {
+      const accounts = collectLimitAccounts(
+        environments({
+          A: provider({
+            ...instance,
+            usageLimits: {
+              checkedAt: earlier,
+              windows: [zaiWindow],
+              subscriptions: [zai, { ...unlid, balance }],
+            },
+          }),
+          B: provider({
+            ...instance,
+            usageLimits: {
+              checkedAt: later,
+              windows: [zaiWindow],
+              subscriptions: [zai, { ...unlid, checkedAt: later }],
+            },
+          }),
+        }),
+      );
+      expect(accounts.map(({ key, balance: accountBalance }) => [key, accountBalance])).toEqual([
+        ["A:opencode:zai-key", undefined],
+        ["A:opencode:fp1", balance],
+      ]);
+    });
+
+    it("changes no pooled percentage, for a balance adds no window", () => {
+      const withoutIt = collectLimitAccounts(environments({ A: opencode({}) }));
+      const withIt = collectLimitAccounts(
+        environments({ A: opencode({ subscriptions: [zai, ollama, { ...unlid, balance }] }) }),
+      );
+      expect(collectLimitPools(withIt, now)[0]!.windows).toEqual(
+        collectLimitPools(withoutIt, now)[0]!.windows,
+      );
+    });
+
+    it("reaches a fully windowless provider's balance through the provider gate", () => {
+      const accounts = collectLimitAccounts(
+        environments({
+          A: provider({
+            ...instance,
+            usageLimits: {
+              checkedAt: earlier,
+              windows: [],
+              subscriptions: [{ ...unlid, balance }],
+            },
+          }),
+        }),
+      );
+      expect(accounts.map((account) => account.key)).toEqual(["A:opencode:fp1"]);
+      expect(accounts[0]?.subscription).toBe("unlid");
+      expect(accounts[0]?.balance?.balanceUsd).toBe(4.99);
+      expect(accounts[0]?.limits.windows).toEqual([]);
+    });
+
+    it.each([
+      ["no subscriptions at all", { checkedAt: earlier, windows: [] }],
+      [
+        "a subscription with neither window nor balance",
+        { checkedAt: earlier, windows: [], subscriptions: [unlid] },
+      ],
+      [
+        "a subscription with reset credits but no drawable window",
+        {
+          checkedAt: earlier,
+          windows: [],
+          subscriptions: [
+            { ...unlid, resetCredits: { availableCount: 1, nextCreditId: "WEEK:22" } },
+          ],
+        },
+      ],
+    ] as const)("still yields nothing for %s", (_name, usageLimits) => {
+      expect(
+        collectLimitAccounts(environments({ A: provider({ ...instance, usageLimits }) })),
+      ).toEqual([]);
     });
   });
 });
