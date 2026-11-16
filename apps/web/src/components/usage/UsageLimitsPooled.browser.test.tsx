@@ -126,7 +126,10 @@ describe("UsageLimitsPooled pay-as-you-go balances", () => {
     await expect.element(screen.getByText("$4.99 left")).toBeVisible();
     await expect.element(screen.getByText("held $0.01 · $14.82 this month")).toBeVisible();
     const balanceColumn = screen.getByText("$4.99 left").element().closest("div");
-    expect(balanceColumn?.querySelectorAll('[role="progressbar"]')).toHaveLength(0);
+    // The column is text only; segment buttons, meter images, and progressbars are all quota shapes.
+    expect(
+      balanceColumn?.querySelectorAll("button, [role='img'], [role='progressbar']"),
+    ).toHaveLength(0);
     await expect
       .element(screen.getByRole("button", { name: "OpenCode Go: 60% left" }))
       .toBeVisible();
@@ -147,5 +150,25 @@ describe("UsageLimitsPooled pay-as-you-go balances", () => {
     await expect.element(screen.getByText("$12.00 left")).toBeVisible();
     expect(screen.container.textContent).not.toContain("held");
     expect(screen.container.textContent).not.toContain("this month");
+    // Nothing else in the pool reports windows, so no meter may mount anywhere.
+    expect(screen.container.querySelectorAll("button, [role='progressbar']")).toHaveLength(0);
+  });
+
+  it("renders an all-zero balance honestly", async () => {
+    const presentations = deskPresentation([
+      opencodeProvider({
+        checkedAt,
+        windows: [],
+        subscriptions: [
+          { ...unlidSubscription, balance: { balanceUsd: 0, heldUsd: 0, monthSpendUsd: 0 } },
+        ],
+      }),
+    ]);
+    await using screen = await render(
+      <UsageLimitsPooled presentations={presentations} now={Date.parse(checkedAt)} />,
+    );
+
+    await expect.element(screen.getByText("$0.00 left")).toBeVisible();
+    await expect.element(screen.getByText("held $0.00 · $0.00 this month")).toBeVisible();
   });
 });
