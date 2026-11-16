@@ -53,7 +53,13 @@ const CATALOG = {
 };
 
 /** Serves the catalog while `online`, once `gate` opens, and records every request. */
-function unlid(input: { readonly apiKey?: string; readonly authJson?: string } = {}) {
+function unlid(
+  input: {
+    readonly apiKey?: string;
+    readonly authJson?: string;
+    readonly env?: NodeJS.ProcessEnv;
+  } = {},
+) {
   const state = {
     online: true,
     document: DOCUMENT as unknown,
@@ -78,6 +84,7 @@ function unlid(input: { readonly apiKey?: string; readonly authJson?: string } =
           HOME: dataHome,
           XDG_DATA_HOME: dataHome,
           ...(input.apiKey === undefined ? {} : { UNLID_API_KEY: input.apiKey }),
+          ...input.env,
         }),
         Layer.succeed(
           HttpClient.HttpClient,
@@ -147,7 +154,23 @@ describe("UnlidCatalogRates", () => {
     return Effect.gen(function* () {
       const rates = yield* UnlidCatalogRates.make;
       yield* rates.refresh;
+      assert.strictEqual(state.requests.length, 1);
       assert.strictEqual(state.requests[0]?.headers.authorization, "Bearer stored-key");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("honors a key supplied only through OPENCODE_AUTH_CONTENT", () => {
+    const { state, layer } = unlid({
+      env: {
+        OPENCODE_AUTH_CONTENT: JSON.stringify({ unlid: { type: "api", key: "env-content-key" } }),
+      },
+    });
+    return Effect.gen(function* () {
+      const rates = yield* UnlidCatalogRates.make;
+      yield* rates.refresh;
+      assert.deepStrictEqual(yield* rates.current, CATALOG);
+      assert.strictEqual(state.requests.length, 1);
+      assert.strictEqual(state.requests[0]?.headers.authorization, "Bearer env-content-key");
     }).pipe(Effect.provide(layer));
   });
 

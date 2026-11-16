@@ -199,6 +199,7 @@ import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsag
 import * as ThreadUsage from "./usage/ThreadUsage.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as CodexUsageHistory from "./usage/CodexUsageHistory.ts";
+import { layer as UnlidCatalogRatesLayer } from "./usage/UnlidCatalogRates.ts";
 import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
@@ -291,7 +292,8 @@ const layerBackground = BackgroundPolicy.layer.pipe(
   Layer.provideMerge(layerServerSettings),
 );
 
-const layerUsage = UsageService.layer.pipe(
+// Exported for the usage wiring test, which asserts this stack provides the catalog service.
+export const layerUsage = UsageService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       AntigravityUsage.layer,
@@ -301,6 +303,9 @@ const layerUsage = UsageService.layer.pipe(
     ).pipe(Layer.provide(ProviderHostLive.layer.pipe(Layer.provide(ServerSecretStore.layer)))),
   ),
   Layer.provide(layerServerSettings),
+  // Rates are read at call time from the ambient context, so the catalog rides the layer's
+  // output the way UsageLimitSources does, not just into the service's build.
+  Layer.provideMerge(UnlidCatalogRatesLayer),
 );
 
 // Prices the provider turns orchestration projects with the usage service's rates.
