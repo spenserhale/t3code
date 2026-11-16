@@ -721,9 +721,8 @@ describe("BrowserLogins vault choices", () => {
       assert.deepStrictEqual(yield* ids(thread("thread-a")), ["work/g9"]);
       // A project's choice replaces the environment's, wider as well as narrower.
       assert.deepStrictEqual(yield* ids(thread("thread-b")), ["work/g1", "work/g9"]);
-      // A project without a choice of its own, and a thread not found, take the environment's.
+      // A project without a choice of its own takes the environment's.
       assert.deepStrictEqual(yield* ids(thread("thread-c")), ["work/g1"]);
-      assert.deepStrictEqual(yield* ids(thread("thread-gone")), ["work/g1"]);
       // Each choice is listed apart, and a project's list outlives the environment's steps.
       assert.deepStrictEqual(yield* ids(thread("thread-a")), ["work/g9"]);
       assert.deepStrictEqual(calls.listedWith, ["work:v1", "work:v9", "work:*"]);
@@ -749,38 +748,48 @@ describe("BrowserLogins vault choices", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("fails a thread's steps when its project cannot be read, opening nothing", () => {
-    const { layer, calls } = makeService({ work: [inWork] }, undefined, {}, undefined, [], vaults);
-    return Effect.gen(function* () {
-      const logins = yield* BrowserLogins.BrowserLogins;
-      const broken = logins.forThread(ThreadId.make("thread-broken"));
-      const { revision } = yield* logins.candidates(page, "all");
-      const failures = yield* Effect.all([
-        Effect.flip(broken.escalation),
-        Effect.flip(broken.candidates(page, "all")),
-        Effect.flip(broken.lookupLogin("op://work/g1", "all")),
-        Effect.flip(broken.identityCandidates("all")),
-        Effect.flip(broken.readSecret(revision, "op://work/key", "all")),
-        Effect.flip(
-          broken.newLoginDestination({
-            threadId: "thread-broken",
-            loginId: undefined,
-            url: page,
-            username: "ada",
-          }),
-        ),
-      ]);
-      // Never the environment's vaults, which may be wider than the project's.
-      assert.deepStrictEqual(
-        failures.map((error) => error.reason),
-        ["refused", "refused", "refused", "refused", "refused", "refused"],
+  it.effect.each(["thread-broken", "thread-gone"])(
+    "fails the steps of %s, whose project is unknown, opening nothing",
+    (threadId) => {
+      const { layer, calls } = makeService(
+        { work: [inWork] },
+        undefined,
+        {},
+        undefined,
+        [],
+        vaults,
       );
-      assert.deepStrictEqual(
-        { listedWith: calls.listedWith, lookup: calls.lookup, read: calls.read },
-        { listedWith: ["work:v1"], lookup: 0, read: [] },
-      );
-    }).pipe(Effect.provide(layer));
-  });
+      return Effect.gen(function* () {
+        const logins = yield* BrowserLogins.BrowserLogins;
+        const broken = logins.forThread(ThreadId.make(threadId));
+        const { revision } = yield* logins.candidates(page, "all");
+        const failures = yield* Effect.all([
+          Effect.flip(broken.escalation),
+          Effect.flip(broken.candidates(page, "all")),
+          Effect.flip(broken.lookupLogin("op://work/g1", "all")),
+          Effect.flip(broken.identityCandidates("all")),
+          Effect.flip(broken.readSecret(revision, "op://work/key", "all")),
+          Effect.flip(
+            broken.newLoginDestination({
+              threadId,
+              loginId: undefined,
+              url: page,
+              username: "ada",
+            }),
+          ),
+        ]);
+        // Never the environment's vaults, which may be wider than the project's.
+        assert.deepStrictEqual(
+          failures.map((error) => error.reason),
+          ["refused", "refused", "refused", "refused", "refused", "refused"],
+        );
+        assert.deepStrictEqual(
+          { listedWith: calls.listedWith, lookup: calls.lookup, read: calls.read },
+          { listedWith: ["work:v1"], lookup: 0, read: [] },
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
 });
 
 describe("BrowserLogins identities", () => {
