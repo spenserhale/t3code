@@ -1,4 +1,4 @@
-import type { SecretProviderKind } from "@t3tools/contracts";
+import type { SecretProviderKind, SecretProviderVault } from "@t3tools/contracts";
 import type * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
@@ -12,6 +12,26 @@ export type SecretProviderDriverServices =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
   | SecureRandom.SecureRandom;
+
+/**
+ * The vaults a driver may open, by the provider's own vault ids. The server adds it to a config
+ * for each use and never stores it: absent opens every vault the config can, empty opens none.
+ */
+export interface SecretProviderVaultLimit {
+  readonly vaults?: ReadonlyArray<string>;
+}
+
+/** A copy of a plain-object config limited to these vault ids, or with no limit when undefined. */
+export const withSecretProviderVaults = (
+  config: unknown,
+  vaults: ReadonlyArray<string> | undefined,
+): unknown => {
+  if (config === null || typeof config !== "object" || Array.isArray(config)) return config;
+  const { vaults: _stored, ...rest } = config as Readonly<Record<string, unknown>>;
+  return vaults === undefined ? rest : { ...rest, vaults: [...vaults] };
+};
+
+const isVaultIds = Schema.is(Schema.Array(Schema.String));
 
 export type SecretProviderLoginField = "username" | "password" | "totp";
 
@@ -151,6 +171,18 @@ export interface SecretProviderIdentities<Config = unknown> {
   ) => Effect.Effect<SecretProviderIdentity | undefined, never, SecretProviderDriverServices>;
 }
 
+/** Optional: a provider whose config keeps to the vaults its `vaults` limit names. */
+export interface SecretProviderVaults<Config = unknown> {
+  /** Every vault the config can open, whatever limit it carries; `undefined` when it could not list. */
+  readonly list: (
+    config: Config,
+  ) => Effect.Effect<
+    ReadonlyArray<SecretProviderVault> | undefined,
+    never,
+    SecretProviderDriverServices
+  >;
+}
+
 export interface SecretProviderDriver {
   readonly kind: SecretProviderKind;
   readonly definition: SecretProviderDefinition;
@@ -169,20 +201,30 @@ export interface SecretProviderDriver {
    * token. Configuring one is the user's approval, so it is used without asking.
    */
   readonly unattended?: (config: unknown) => boolean;
+  readonly vaults?: SecretProviderVaults;
 }
 
+/** Every function gets the config with the vault limit the server added, if any. */
 export const defineSecretProviderDriver = <Config>(driver: {
   readonly kind: SecretProviderKind;
   readonly definition: SecretProviderDefinition<Config>;
   readonly read: (
-    config: Config,
+    config: Config & SecretProviderVaultLimit,
     references: ReadonlyArray<string>,
   ) => Effect.Effect<ReadonlyArray<string | undefined>, never, SecretProviderDriverServices>;
-  readonly logins?: SecretProviderLogins<Config>;
-  readonly identities?: SecretProviderIdentities<Config>;
-  readonly unattended?: (config: Config) => boolean;
+  readonly logins?: SecretProviderLogins<Config & SecretProviderVaultLimit>;
+  readonly identities?: SecretProviderIdentities<Config & SecretProviderVaultLimit>;
+  readonly unattended?: (config: Config & SecretProviderVaultLimit) => boolean;
+  readonly vaults?: SecretProviderVaults<Config>;
 }): SecretProviderDriver => {
-  const isConfig = Schema.is(driver.definition.configSchema);
+  const isStoredConfig = Schema.is(driver.definition.configSchema);
+  // The schema passes keys it does not name, so the limit is checked here: a malformed one reads
+  // nothing rather than every vault.
+  const isConfig = (config: unknown): config is Config & SecretProviderVaultLimit => {
+    if (!isStoredConfig(config)) return false;
+    const vaults = (config as SecretProviderVaultLimit).vaults;
+    return vaults === undefined || isVaultIds(vaults);
+  };
   const logins = driver.logins;
   const lookupLogin = logins?.lookup;
   const create = logins?.create;
@@ -190,6 +232,7 @@ export const defineSecretProviderDriver = <Config>(driver: {
   const identities = driver.identities;
   const lookupIdentity = identities?.lookup;
   const unattended = driver.unattended;
+  const vaults = driver.vaults;
   return {
     kind: driver.kind,
     definition: driver.definition,
@@ -200,6 +243,16 @@ export const defineSecretProviderDriver = <Config>(driver: {
     ...(unattended === undefined
       ? {}
       : { unattended: (config) => isConfig(config) && unattended(config) }),
+    ...(vaults === undefined
+      ? {}
+      : {
+          vaults: {
+            list: (config) => {
+              const unlimited = withSecretProviderVaults(config, undefined);
+              return isConfig(unlimited) ? vaults.list(unlimited) : Effect.undefined;
+            },
+          },
+        }),
     ...(logins === undefined
       ? {}
       : {
