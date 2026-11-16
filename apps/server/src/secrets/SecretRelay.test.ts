@@ -13,6 +13,7 @@ const loginAsk = {
   kind: "login",
   threadId: "thread-a",
   origin: "https://grafana.example.com",
+  tabId: "tab-a",
 } as const;
 
 const choiceAsk = {
@@ -165,6 +166,7 @@ describe("SecretRelay", () => {
           id: "device:work/g1",
           title: "Grafana",
           urls: ["https://grafana.example.com"],
+          hasTotp: true,
         };
         yield* relay.answer(asked.requestId, { type: "values", item, values }, "laptop");
         yield* relay.answer(asked.requestId, { type: "denied" }, "desktop");
