@@ -88,6 +88,12 @@ import {
 import { proxyConfig } from "../shared/proxy.ts";
 import { changeRequestsCreatedBy } from "../../apps/server/src/orchestration-v2/PullRequestSyncReactor.ts";
 import { type BackgroundWait, makeBackgroundWait } from "./backgroundWait.ts";
+import {
+  BrowserLoginExpect,
+  BrowserLoginScenario,
+  gradeBrowserLogin,
+  makeBrowserLogin,
+} from "./browser-login.ts";
 import { DeviceExpect, gradeDevice } from "./device-grading.ts";
 import { FileLinksExpect, gradeFileLinks } from "./file-link-grading.ts";
 import {
@@ -263,6 +269,7 @@ const McpToolUseExpect = Schema.Struct({
   linkedNumbers: Schema.optional(Schema.Array(Schema.Number)),
   /** Device manager checks: child briefs, simulator UI over the shell, failures, recordings. */
   device: Schema.optional(DeviceExpect),
+  browserLogin: Schema.optional(BrowserLoginExpect),
   /**
    * Secret checks: chat asks in text and question tools, where fixture values went, and how the
    * files request_secret returned were read. See `SecretExpect` in secret-grading.ts.
@@ -284,6 +291,7 @@ const McpToolUseWorld = Schema.StructWithRest(
     remote: Schema.optional(Schema.String),
     /** The branch has commits but no upstream: T3's pull_request_create refuses until a push. */
     unpushed: Schema.optional(Schema.Boolean),
+    browserLogin: Schema.optional(BrowserLoginScenario),
     branch: Schema.optional(Schema.String),
     /** `git status --short` lines. */
     status: Schema.optional(Schema.String),
@@ -1030,6 +1038,7 @@ type Sample = {
   backgroundWait?: BackgroundWait;
   /** Calls so far per mocked tool, for mocks that answer in sequence. */
   readonly mockCalls: Map<string, number>;
+  readonly browserLogin?: ReturnType<typeof makeBrowserLogin>;
 };
 
 const SHELL_TOOLS = new Set(["Bash", "Read", "Edit", "Write", "WebFetch"]);
@@ -1088,6 +1097,9 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
     priorResults: new Map(),
     priorErrors: new Set(),
     mockCalls: new Map(),
+    ...(testCase.setup.world?.browserLogin
+      ? { browserLogin: makeBrowserLogin(testCase.setup.world.browserLogin) }
+      : {}),
   };
 };
 
@@ -2279,6 +2291,8 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
       '`fields` values are saved as files. Leave out `value` and `delivery: "secretRef"`.',
     );
   }
+  const browserResult = sample.browserLogin?.(name, input);
+  if (browserResult !== undefined) return toolResult(call.id, browserResult);
   const mock = nextMock(sample, name, testCase.setup.mocks?.[name]);
   if (isT3Name(call.name) && PREVIEW_TOOLS.has(name)) {
     if (testCase.setup.world?.browserAgentAccess === false)
@@ -2643,6 +2657,7 @@ export const gradeSample = (
     add("linkedNumbers", exact === valueText(expect.linkedNumbers.toSorted((a, b) => a - b)));
   }
   checks.push(...gradeDevice(expect.device, run));
+  checks.push(...gradeBrowserLogin(expect.browserLogin, run));
   checks.push(
     ...gradeFileLinks(
       expect.fileLinks,

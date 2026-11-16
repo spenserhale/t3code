@@ -209,7 +209,7 @@ const PreviewEvaluateTool = browserTool(
 const PreviewFillLoginTool = browserTool(
   Tool.make("preview_fill_login", {
     description:
-      "On a login page, fill the user's saved login instead of asking for a password. You never see the password or code. A login outside this machine's service accounts may wait for the user's Touch ID. `choose`: call again with a `login` id. `no_login`: ask the user. Then submit the form yourself.",
+      "Fill a saved login without seeing credentials or codes. The person chooses among matches and may approve with Touch ID. For sign-in, submit, then snapshot the next page. On an authenticator-code challenge, reuse returned `login.id` with `fields: ['totp']` unless `hasTotp` is false; submit and snapshot to verify signed in. Respect explicit stop-before-submit. If no saved code, SMS/push approval or CAPTCHA is needed, report the block. `no_login`: ask the user.",
     parameters: PreviewAutomationFillLoginInput,
     success: Schema.Union(
       PreviewAutomationFillLoginResult.members.map((member) =>

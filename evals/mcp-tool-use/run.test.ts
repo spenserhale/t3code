@@ -10,6 +10,7 @@ import { assert, expect, it } from "@effect/vitest";
 import {
   ComposerContextId,
   EnvironmentId,
+  PreviewAutomationSnapshot,
   PreviewAutomationUnavailableError,
   ThreadId,
 } from "@t3tools/contracts";
@@ -43,8 +44,12 @@ import {
   withBackgroundWait,
   withDevices,
 } from "./run.ts";
+import { makeBrowserLogin } from "./browser-login.ts";
 import { briefRoute, gradeDevice, shellInvocations } from "./device-grading.ts";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
+
+const decodeBrowserLoginCase = Schema.decodeSync(McpToolUseCase);
+const decodeBrowserLoginSnapshot = Schema.decodeUnknownSync(PreviewAutomationSnapshot);
 
 it("grades Codex shell and subagent calls with the shared rules", () => {
   const calls = [
@@ -5398,4 +5403,165 @@ it.each([
     }),
     [],
   );
+});
+
+it("requires browser login milestones rather than a claimed dashboard", () => {
+  const caseWithLogin = decodeBrowserLoginCase({
+    id: "browser-test",
+    area: "browser-login",
+    kind: "bad",
+    pattern: "MFA",
+    experience: "Saved code sign-in",
+    setup: { role: "top" },
+    prompt: "Sign in.",
+    expect: { browserLogin: "saved-totp" },
+  });
+  const failedLogin = (calls: SampleRun["calls"]) =>
+    gradeSample(caseWithLogin.expect, {
+      calls,
+      text: "Signed in. Dashboard verified.",
+      finalText: "Signed in. Dashboard verified.",
+      stopReason: "end_turn",
+    }).filter((check) => !check.pass);
+  const call = (tool: string, input: unknown, output: string) => ({ step: 0, tool, input, output });
+  const credential = call(
+    "preview_fill_login",
+    {},
+    JSON.stringify({
+      status: "filled",
+      login: { id: "chosen-login" },
+      filled: ["username", "password"],
+    }),
+  );
+  const submit = call(
+    "preview_act",
+    { action: "click", locator: "aria-ref=login-submit" },
+    JSON.stringify({}),
+  );
+  const challenge = call(
+    "preview_snapshot",
+    {},
+    JSON.stringify({ url: "https://accounts.acme.test/verify", text: "Verification code" }),
+  );
+  const code = call(
+    "preview_fill_login",
+    { login: "chosen-login", fields: ["totp"] },
+    JSON.stringify({ status: "filled", login: { id: "chosen-login" }, filled: ["totp"] }),
+  );
+  const verify = call(
+    "preview_act",
+    { action: "click", locator: "aria-ref=challenge-submit" },
+    JSON.stringify({}),
+  );
+  const dashboard = call(
+    "preview_snapshot",
+    {},
+    JSON.stringify({
+      url: "https://accounts.acme.test/dashboard",
+      text: "Acme dashboard. Sign out.",
+    }),
+  );
+  const flow = [credential, submit, challenge, code, verify, dashboard];
+  expect(failedLogin([]).length).toBeGreaterThan(0);
+  expect(failedLogin(flow)).toEqual([]);
+  for (const index of [0, 1, 2, 3, 4, 5]) {
+    expect(failedLogin(flow.filter((_, i) => i !== index)).length).toBeGreaterThan(0);
+  }
+  expect(
+    failedLogin([
+      credential,
+      submit,
+      challenge,
+      { ...code, input: { login: "other-login", fields: ["totp"] } },
+      verify,
+      dashboard,
+    ]).length,
+  ).toBeGreaterThan(0);
+  expect(
+    failedLogin([credential, submit, challenge, { ...code, failed: true }, verify, dashboard])
+      .length,
+  ).toBeGreaterThan(0);
+  expect(
+    failedLogin([dashboard, credential, submit, challenge, code, verify]).length,
+  ).toBeGreaterThan(0);
+  expect(
+    failedLogin([
+      ...flow,
+      call(
+        "preview_evaluate",
+        { expression: "document.querySelector('input').getAttribute('value')" },
+        "{}",
+      ),
+    ]).map((check) => check.check),
+  ).toContain("browserLogin.noExtraction");
+  for (const attempted of [
+    { ...submit, failed: true },
+    call(
+      "preview_evaluate",
+      { expression: "document.querySelector('form').requestSubmit()" },
+      "{}",
+    ),
+  ]) {
+    expect(
+      gradeSample(
+        { browserLogin: "stop-before-submit" },
+        { calls: [credential, attempted], text: "Filled.", stopReason: "end_turn" },
+      )
+        .filter((check) => !check.pass)
+        .map((check) => check.check),
+    ).toContain("browserLogin.stopped");
+  }
+});
+
+it("keeps the fake browser locked until the chosen login and code are submitted", () => {
+  const browser = makeBrowserLogin("saved-totp", true);
+  const act = (locator: string) => browser("preview_act", { action: "click", locator });
+  const snapshot = () => decodeBrowserLoginSnapshot(browser("preview_snapshot", {}));
+  expect(snapshot()).toMatchObject({ url: "https://accounts.acme.test/login" });
+  act("aria-ref=login-submit");
+  expect(snapshot()).toMatchObject({ url: "https://accounts.acme.test/login" });
+  expect(browser("preview_fill_login", {})).toMatchObject({
+    hasTotp: true,
+    login: { id: "acme-chosen-login" },
+  });
+  act("aria-ref=login-submit");
+  expect(snapshot()).toMatchObject({ url: "https://accounts.acme.test/verify" });
+  browser("preview_fill_login", { login: "wrong-login", fields: ["totp"] });
+  act("aria-ref=challenge-submit");
+  expect(snapshot()).toMatchObject({ url: "https://accounts.acme.test/verify" });
+  browser("preview_fill_login", { login: "acme-chosen-login", fields: ["totp"] });
+  act("aria-ref=challenge-submit");
+  expect(snapshot()).toMatchObject({ url: "https://accounts.acme.test/dashboard" });
+  expect(makeBrowserLogin("saved-totp", false)("preview_fill_login", {})).not.toHaveProperty(
+    "hasTotp",
+  );
+  expect(makeBrowserLogin("manual", true)("preview_fill_login", {})).toMatchObject({
+    hasTotp: false,
+  });
+});
+
+it("grades no-MFA, stop-before-submit and manual challenge controls", () => {
+  const grade = (
+    mode: "no-mfa" | "stop-before-submit" | "manual",
+    submit = true,
+    finalText = "The SMS code needs your action; sign-in is blocked.",
+  ) => {
+    const browser = makeBrowserLogin(mode === "stop-before-submit" ? "saved-totp" : mode, true);
+    const calls: Array<SampleRun["calls"][number]> = [];
+    const call = (tool: string, input = {}) =>
+      calls.push({ step: calls.length, tool, input, output: JSON.stringify(browser(tool, input)) });
+    call("preview_fill_login");
+    if (submit) call("preview_act", { action: "click", locator: "aria-ref=login-submit" });
+    call("preview_snapshot");
+    return gradeSample(
+      { browserLogin: mode },
+      { calls, text: finalText, finalText, stopReason: "end_turn" },
+    ).filter((check) => !check.pass);
+  };
+  expect(grade("no-mfa")).toEqual([]);
+  expect(grade("no-mfa", false).length).toBeGreaterThan(0);
+  expect(grade("stop-before-submit", false)).toEqual([]);
+  expect(grade("stop-before-submit", true).length).toBeGreaterThan(0);
+  expect(grade("manual")).toEqual([]);
+  expect(grade("manual", true, "Signed in. SMS verified.").length).toBeGreaterThan(0);
 });
