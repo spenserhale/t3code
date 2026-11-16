@@ -365,6 +365,7 @@ describe("1Password logins", () => {
     return Effect.gen(function* () {
       assert.deepStrictEqual(yield* driver.logins!.read({ account }, grafana, ["username"]), {
         username: "ops@example.com",
+        hasTotp: true,
       });
       assert.deepStrictEqual(op.invocations, [
         ["--cache=false", "item", "--account=my.1password.com", "get", "abc123", "--format=json"],
@@ -415,6 +416,7 @@ describe("1Password logins", () => {
         ]);
         assert.deepStrictEqual(yield* driver.logins!.read(config, logins![0]!, ["password"]), {
           password: "hunter2",
+          hasTotp: true,
         });
 
         const [vaultList, ...rest] = op.invocations;
@@ -537,10 +539,11 @@ describe("1Password logins", () => {
     return Effect.gen(function* () {
       assert.deepStrictEqual(yield* driver.logins!.read({ account }, grafana, ["password"]), {
         password: "hunter2",
+        hasTotp: true,
       });
       assert.deepStrictEqual(
         yield* driver.logins!.read({ account }, grafana, ["username", "password", "totp"]),
-        { username: "ops@example.com", password: "hunter2", totp: "123456" },
+        { username: "ops@example.com", password: "hunter2", totp: "123456", hasTotp: true },
       );
       assert.deepStrictEqual(op.invocations[0], [
         "--cache=false",
@@ -553,6 +556,52 @@ describe("1Password logins", () => {
       ]);
     }).pipe(Effect.provide(op.layer));
   });
+
+  it.effect.each([
+    {
+      name: "saved code",
+      otp: [{ type: "OTP", value: "otpauth://totp/x?secret=ABC", totp: "123456" }],
+      hasTotp: true,
+    },
+    { name: "concealed saved code", otp: [{ type: "OTP", value: "[concealed]" }], hasTotp: true },
+    { name: "generated code only", otp: [{ type: "OTP", totp: "123456" }], hasTotp: true },
+    { name: "empty saved code", otp: [{ type: "OTP", value: "", totp: "" }], hasTotp: false },
+    { name: "no saved code", otp: [], hasTotp: false },
+  ])("reports $name metadata without returning unrequested secrets", ({ otp, hasTotp }) => {
+    const op = fakeOp(() => ({
+      stdout: JSON.stringify({
+        fields: [
+          { purpose: "USERNAME", value: "alex" },
+          { purpose: "PASSWORD", value: "pw" },
+          ...otp,
+        ],
+      }),
+    }));
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(
+        yield* driver.logins!.read({ account }, grafana, ["username", "password"]),
+        {
+          username: "alex",
+          password: "pw",
+          hasTotp,
+        },
+      );
+      assert.strictEqual(op.invocations.length, 1);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect.each(["not json", '{"fields":{}}'])(
+    "keeps malformed login reads unavailable: %s",
+    (stdout) => {
+      const op = fakeOp(() => ({ stdout }));
+      return Effect.gen(function* () {
+        assert.strictEqual(
+          yield* driver.logins!.read({ account }, grafana, ["password"]),
+          undefined,
+        );
+      }).pipe(Effect.provide(op.layer));
+    },
+  );
 
   it.effect("looks up the item a reference names, by category, without revealing it", () => {
     const referenced = (category: string) =>

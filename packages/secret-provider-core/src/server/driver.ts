@@ -26,7 +26,9 @@ export interface SecretProviderLogin {
   readonly urls: ReadonlyArray<string>;
 }
 
-export type SecretProviderLoginValues = Partial<Record<SecretProviderLoginField, string>>;
+export type SecretProviderLoginValues = Partial<Record<SecretProviderLoginField, string>> & {
+  readonly hasTotp?: boolean;
+};
 
 /** What the provider's generator makes: letters always, digits and symbols when asked. */
 export interface SecretProviderPasswordRecipe {
