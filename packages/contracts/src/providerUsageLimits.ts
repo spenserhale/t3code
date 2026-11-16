@@ -62,6 +62,14 @@ export const ServerProviderUsageCredit = Schema.Struct({
 });
 export type ServerProviderUsageCredit = typeof ServerProviderUsageCredit.Type;
 
+/** A pay-as-you-go account's prepaid balance (`balanceUsd`; `heldUsd` = open reservations; `monthSpendUsd` = spend this month) — it is never a usage window. */
+export const ServerProviderUsageBalance = Schema.Struct({
+  balanceUsd: Usd,
+  heldUsd: Schema.optional(Usd),
+  monthSpendUsd: Schema.optional(Usd),
+});
+export type ServerProviderUsageBalance = typeof ServerProviderUsageBalance.Type;
+
 /**
  * One of the subscriptions a provider account holds, e.g. a Z.ai plan beside OpenCode Go.
  * `windowIds` names which of the account's `windows` are this subscription's; a window belongs
@@ -77,6 +85,7 @@ export const ServerProviderUsageSubscription = Schema.Struct({
   resetCredits: Schema.optional(ServerProviderResetCredits),
   /** An unreadable credit drops itself, not the subscription it belongs to. */
   credit: ForwardCompatibleOptional(ServerProviderUsageCredit),
+  balance: ForwardCompatibleOptional(ServerProviderUsageBalance),
 });
 export type ServerProviderUsageSubscription = typeof ServerProviderUsageSubscription.Type;
 
