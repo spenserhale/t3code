@@ -227,6 +227,7 @@ const make = Effect.gen(function* () {
                   threadId: request.threadId,
                   origin: page,
                   deadline: request.expiresAt,
+                  forceChoice: request.item !== undefined,
                   machine: requester.label,
                   ...(request.threadTitle ? { threadTitle: request.threadTitle } : {}),
                   ...(request.agent ? { agent: request.agent } : {}),
