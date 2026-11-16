@@ -217,6 +217,50 @@ describe("SecretResolver", () => {
     );
   });
 
+  it.effect("returns nothing a narrowed vault limit took away while a read waited", () =>
+    Effect.gen(function* () {
+      let limit: ReadonlyArray<string> = ["v1"];
+      let planned: Deferred.Deferred<void> | undefined;
+      const started = yield* Deferred.make<void>();
+      const unlock = yield* Deferred.make<void>();
+      const { driver, reads } = fakeDriver(
+        () => "sk-live",
+        (references) =>
+          references.includes("fake://slow")
+            ? Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(unlock)))
+            : Effect.void,
+      );
+      const layer = SecretResolver.layer({
+        drivers: [driver],
+        // Signals once the queued read has planned, so the limit narrows while it waits.
+        secretProviders: Effect.suspend(() =>
+          planned === undefined ? Effect.void : Deferred.succeed(planned, undefined),
+        ).pipe(Effect.as({ [personal]: fake("a") })),
+        vaults: Effect.sync(() => () => limit),
+      }).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
+      yield* Effect.gen(function* () {
+        const resolver = yield* SecretResolver.SecretResolver;
+        const slow = yield* Effect.forkChild(resolver.read([ref("fake://slow")]));
+        yield* Deferred.await(started);
+        planned = yield* Deferred.make<void>();
+        const queued = yield* Effect.forkChild(resolver.read([ref("fake://queued")]));
+        yield* Deferred.await(planned);
+        limit = [];
+        yield* Deferred.succeed(unlock, undefined);
+
+        assert.deepStrictEqual(yield* Fiber.join(slow), [undefined]);
+        yield* Fiber.join(queued);
+        assert.deepStrictEqual(
+          reads.map(({ references, vaults }) => ({ references, vaults })),
+          [
+            { references: ["fake://slow"], vaults: ["v1"] },
+            { references: ["fake://queued"], vaults: [] },
+          ],
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
   it.effect("does not call a driver for what it cannot read, and reads it later", () => {
     const { driver, reads } = fakeDriver(() => "sk-live");
     const providers: ServerSettings["secretProviders"] = {
