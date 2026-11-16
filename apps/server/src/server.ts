@@ -842,7 +842,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(PreviewAgentActivity.layer),
     ),
   ),
-  // Optional in ws.ts, so without it here Settings cannot list a provider's vaults.
+  // ws.ts hands it to each socket, for Settings to list a provider's vaults.
   Layer.provide(SecretProviderVaults.layer),
   Layer.provide(PreviewBrowser.layer),
   // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).

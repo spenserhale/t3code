@@ -1995,7 +1995,7 @@ export const layerWsRpc = (
           secretReferences: true,
           secretRequestReferences: true,
           secretProviderCredentials: true,
-          secretProviderVaults: true,
+          secretProviderVaults: Option.isSome(secretProviderVaults),
           secretRelay: true,
           ...Option.match(scratchWorkspaceRoot, {
             onNone: () => ({}),
@@ -3579,6 +3579,7 @@ export const layer = Layer.unwrap(
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const secretRelay = yield* SecretRelay.SecretRelay;
     const secretRelayDevice = yield* SecretRelayDevice.SecretRelayDevice;
+    const secretProviderVaults = yield* SecretProviderVaults.SecretProviderVaults;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3671,6 +3672,10 @@ export const layer = Layer.unwrap(
               // Server-wide, so a device's answer reaches the call waiting on another socket.
               Layer.provide(Layer.succeed(SecretRelay.SecretRelay, secretRelay)),
               Layer.provide(Layer.succeed(SecretRelayDevice.SecretRelayDevice, secretRelayDevice)),
+              // A socket sees only what is handed to it here, not what the routes were built with.
+              Layer.provide(
+                Layer.succeed(SecretProviderVaults.SecretProviderVaults, secretProviderVaults),
+              ),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(
