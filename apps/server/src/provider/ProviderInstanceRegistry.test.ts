@@ -1007,6 +1007,25 @@ describe("ProviderInstanceRegistry secret environment", () => {
     }).pipe(Effect.scoped);
   });
 
+  it.effect("stops an instance whose provider lost vaults when its secret no longer reads", () => {
+    const fixture = setup({ [secret.reference]: "sk-live" });
+    return Effect.gen(function* () {
+      const { registry, mutator } = yield* fixture.make;
+
+      // Another provider narrowing keeps it, as any failed re-read does.
+      fixture.vault.delete(secret.reference);
+      yield* mutator.reloadSecrets(undefined, new Set(["work"]));
+      expect(yield* registry.getInstance(instanceId)).toBeDefined();
+
+      yield* mutator.reloadSecrets(undefined, new Set([secret.provider]));
+      expect(yield* registry.getInstance(instanceId)).toBeUndefined();
+      const [unavailable] = yield* registry.listUnavailable;
+      expect(unavailable?.instanceId).toBe(instanceId);
+      expect(unavailable?.unavailableReason).toContain("OPENAI_API_KEY");
+      expect(fixture.created).toHaveLength(1);
+    }).pipe(Effect.scoped);
+  });
+
   it.effect("starts without waiting for secrets to be read", () => {
     const fixture = setup({ [secret.reference]: "sk-live" });
     return Effect.gen(function* () {

@@ -128,14 +128,31 @@ export const seedDevReplayInstance = Effect.fn(
 // A label is display-only, so only kind, config and the vaults the environment lets it open can
 // change what a vault returns. Provider variables are read for the environment, never a project.
 const vaultConfigs = (settings: ServerSettings) =>
-  Object.entries(settings.secretProviders).map(([id, { kind, config }]) => [
+  Object.entries(settings.secretProviders).map(([id, { kind, config }]) => ({
     id,
     kind,
     config,
-    resolveSecretProviderVaults(settings.secretProviderVaults, id, null)?.map(
-      (vault) => vault.id,
-    ) ?? null,
-  ]);
+    // Null opens every vault.
+    vaults:
+      resolveSecretProviderVaults(settings.secretProviderVaults, id, null)?.map(
+        (vault) => vault.id,
+      ) ?? null,
+  }));
+
+/** Providers that now open fewer vaults, so a secret read before may come from one they lost. */
+const narrowedProviders = (
+  previous: ReadonlyArray<ReturnType<typeof vaultConfigs>[number]> | undefined,
+  next: ReturnType<typeof vaultConfigs>,
+) => {
+  const before = new Map(previous?.map(({ id, vaults }) => [id, vaults]));
+  return new Set(
+    next.flatMap(({ id, vaults }) => {
+      const was = before.get(id);
+      if (was === undefined || vaults === null) return [];
+      return was === null || was.some((vault) => !vaults.includes(vault)) ? [id] : [];
+    }),
+  );
+};
 
 export const layerSettingsWatcher = (
   settingsChanges: Stream.Stream<ServerSettings>,
@@ -159,8 +176,9 @@ export const layerSettingsWatcher = (
                 // and a corrected secret provider is what can make them readable.
                 const next = vaultConfigs(current);
                 if (!NodeUtil.isDeepStrictEqual(secretProviders, next)) {
+                  const narrowed = narrowedProviders(secretProviders, next);
                   secretProviders = next;
-                  yield* mutator.reloadSecrets();
+                  yield* mutator.reloadSecrets(undefined, narrowed);
                 }
               }),
             ),

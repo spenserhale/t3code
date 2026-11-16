@@ -161,16 +161,19 @@ describe("layerSettingsWatcher", () => {
     Effect.gen(function* () {
       const changes = yield* Queue.unbounded<ServerSettings>();
       const reconciled = yield* Queue.unbounded<void>();
-      let reloads = 0;
+      // Each reload, as the providers it names as having lost vaults.
+      const reloads: Array<ReadonlyArray<string>> = [];
       const mutator = Layer.succeed(ProviderInstanceRegistryMutator, {
         reconcile: () => Queue.offer(reconciled, undefined),
-        reloadSecrets: () => Effect.sync(() => void reloads++),
+        reloadSecrets: (_instanceId, narrowed) =>
+          Effect.sync(() => void reloads.push([...(narrowed ?? [])])),
       });
       yield* Layer.build(
         layerSettingsWatcher(Stream.fromQueue(changes), initial).pipe(Layer.provide(mutator)),
       );
       return {
-        reloads: () => reloads,
+        reloads: () => reloads.length,
+        narrowed: () => reloads.at(-1),
         // Changes run one at a time, so the repeat's reconcile means the first one's reload decision is done.
         change: (settings: ServerSettings) =>
           Queue.offerAll(changes, [settings, settings]).pipe(
@@ -185,10 +188,11 @@ describe("layerSettingsWatcher", () => {
     () =>
       Effect.gen(function* () {
         const settings = yield* ServerSettingsService;
-        const { reloads, change } = yield* watch(yield* settings.getSettings);
+        const { reloads, narrowed, change } = yield* watch(yield* settings.getSettings);
 
         yield* change(yield* settings.updateSettings({ secretProviders: provider("Personal") }));
         expect(reloads()).toBe(1);
+        expect(narrowed()).toEqual([]);
 
         // A label is not read by any vault, so renaming a provider retries nothing.
         yield* change(yield* settings.updateSettings({ secretProviders: provider("Renamed") }));
@@ -203,12 +207,44 @@ describe("layerSettingsWatcher", () => {
           });
         yield* change(yield* choose("Secode"));
         expect(reloads()).toBe(2);
+        // From every vault to one: what it read before may come from a vault it lost.
+        expect(narrowed()).toEqual(["personal"]);
         yield* change(yield* choose("Renamed", { [ProjectId.make("project-1")]: [] }));
         expect(reloads()).toBe(2);
         yield* change(
           yield* settings.updateSettings({ secretProviderVaults: { [personal]: null } }),
         );
         expect(reloads()).toBe(3);
+        expect(narrowed()).toEqual([]);
+        yield* change(
+          yield* settings.updateSettings({
+            secretProviderVaults: {
+              [personal]: {
+                vaults: [
+                  { id: "v1", name: "Secode" },
+                  { id: "v2", name: "AWS" },
+                ],
+              },
+            },
+          }),
+        );
+        expect(narrowed()).toEqual(["personal"]);
+        yield* change(yield* choose("Secode"));
+        expect(narrowed()).toEqual(["personal"]);
+        yield* change(
+          yield* settings.updateSettings({
+            secretProviderVaults: {
+              [personal]: {
+                vaults: [
+                  { id: "v1", name: "Secode" },
+                  { id: "v3", name: "Infra" },
+                ],
+              },
+            },
+          }),
+        );
+        // A vault added and none lost is no narrowing.
+        expect(narrowed()).toEqual([]);
       }).pipe(Effect.scoped, Effect.provide(ServerSettingsService.layerTest())),
   );
 
