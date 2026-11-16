@@ -102,12 +102,12 @@ export const PreviewAutomationFillLoginInput = Schema.Struct({
   tabId: Schema.optional(PreviewTabId),
   login: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))).annotate({
     description:
-      "Login id from an earlier `choose` result. Omit to use the only login saved for this site.",
+      "Login id from a prior successful fill, reused on later password or one-time-code pages. Multiple matches are chosen by the person. Omit to start a new sign-in.",
   }),
   reference: ItemReference,
   fields: Schema.optional(Schema.Array(PreviewLoginField).check(Schema.isMaxLength(3))).annotate({
     description:
-      "Default username and password. On a sign-in split over pages, fill what this page shows. `totp` fills a one-time code.",
+      "Default username and password. On a sign-in split over pages, fill what this page shows. On a code challenge, request `totp` for a fresh saved one-time code using the login id from the successful fill.",
   }),
   locators: Schema.optional(
     Schema.Struct({
@@ -159,6 +159,7 @@ export const PreviewAutomationFillLoginResult = Schema.Union([
     tabId: PreviewTabId,
     login: PreviewLoginCandidate,
     filled: Schema.Array(PreviewLoginField),
+    hasTotp: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     status: Schema.Literal("choose"),

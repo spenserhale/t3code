@@ -32,6 +32,14 @@ it.effect.each([120_000, 119_992.40869140625])(
           shown = true;
           assert.ok(options.signal);
           assert.equal(options.signal.aborted, false);
+          assert.include(
+            options.detail,
+            "Allow once includes the password and saved one-time code",
+          );
+          assert.include(
+            options.detail,
+            "for this sign-in in the same tab and site for five minutes.",
+          );
           return { response: 1, checkboxChecked: false };
         }),
       showErrorBox: () => Effect.void,
