@@ -11,6 +11,19 @@ Install and sign in to the [1Password CLI](https://developer.1password.com/docs/
 1. Open **Settings → Secrets → Add provider** (configured per environment).
 2. Enter a name and the 1Password account shorthand, sign-in address (without `https://`), or ID from `op account list`.
 
+## Choose which vaults a provider reads
+
+By default a 1Password provider can read every vault its account can open. To limit it, open
+**Settings → Secrets**, select **Vaults** on the provider, and choose **Only these vaults**. T3 Code
+then lists the account's vaults, so 1Password on that machine may ask you to unlock. Allow only the
+vaults agents need, such as a vault set aside for them. Choosing none means the provider reads no
+vault.
+
+The choice belongs to the environment. A project can have its own: pick the project at the top of
+**Settings → Secrets**, then select **Vaults** to use **Same as** the environment, all vaults, or
+only some. Provider variables and requests relayed to another device always use the vaults of their
+environment.
+
 ## Use secret references
 
 Credential fields in Settings (provider env vars, source control tokens, usage keys, device host tokens) include a source picker: choose **Value** for a literal value or select your 1Password provider and paste a reference like `op://vault/item/field`.

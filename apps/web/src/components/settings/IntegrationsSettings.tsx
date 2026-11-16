@@ -42,6 +42,7 @@ import {
   type BrowserImportSource,
   type PreviewAppearancePreference,
   type PreviewViewportSetting,
+  resolveSecretProviderVaults,
   type SecretProviderId,
 } from "@t3tools/contracts";
 import { usePrimaryManagedPolicy } from "~/state/managedPolicy";
@@ -129,6 +130,7 @@ import {
 import { useSearchableSetting } from "./settingsSearch";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { commitNumberFieldOnEnter } from "./commitNumberFieldOnEnter";
+import { vaultChoiceExcludes } from "./SecretProviderVaultsDialog.logic";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { BrowserImportWizard, type WizardTarget } from "./BrowserImportWizard";
 import type { ImportOutcome } from "./browserImportWizard.logic";
@@ -1747,7 +1749,7 @@ export function BrowserLoginSettings() {
   const m = useMessages();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const { connectedEnvironments } = useSettingsScope();
+  const { connectedEnvironments, target } = useSettingsScope();
   const escalation = settings.browserLogins.escalation ?? DEFAULT_BROWSER_SECRET_ESCALATION;
   // An older server ignores `escalation` and keeps following the approval setting it reads.
   const outdated = connectedEnvironments.flatMap((environment) =>
@@ -1770,6 +1772,16 @@ export function BrowserLoginSettings() {
   ];
   const off = chosen.length === 0;
   const newLogins = settings.browserLogins.newLogins;
+  const newLoginVaultExcluded =
+    newLogins !== undefined &&
+    vaultChoiceExcludes(
+      resolveSecretProviderVaults(
+        settings.secretProviderVaults ?? {},
+        newLogins.secretProviderId,
+        target?.projectId ?? null,
+      ),
+      newLogins.vault,
+    );
   const save = (change: Parameters<typeof browserLoginsWrite>[1]) =>
     updateSettings({ browserLogins: browserLoginsWrite(settings.browserLogins, change) });
 
@@ -1903,7 +1915,11 @@ export function BrowserLoginSettings() {
             ? gt(
                 "This password manager is not chosen for logins above, so agents cannot create logins.",
               )
-            : undefined
+            : newLoginVaultExcluded
+              ? gt(
+                  "This vault is left out of the vaults this password manager may read, so agents cannot save new logins to it. Change it in Settings > Secrets.",
+                )
+              : undefined
         }
         resetAction={
           newLogins !== undefined ? (
