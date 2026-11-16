@@ -74,5 +74,6 @@ export * from "./secretCommand.ts";
 export * from "./secretRequest.ts";
 export * from "./secretRelay.ts";
 export * from "./secretReference.ts";
+export * from "./secretProviderVaults.ts";
 export * from "./settingsSecretValue.ts";
 export * from "./clientRpcPermissions.ts";

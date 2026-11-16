@@ -16,6 +16,7 @@ import {
   idleCompactionPatch,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   requiredScopesForProjectMutation,
+  requiredScopesForServerSettingsPatch,
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
@@ -23,6 +24,7 @@ import {
   ServerSettingsPatch,
   withIdleCompaction,
 } from "./settings.ts";
+import { resolveSecretProviderVaults } from "./secretProviderVaults.ts";
 
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
 const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
@@ -473,6 +475,57 @@ describe("resolveProjectProviderInstanceEnabled", () => {
       },
     };
     expect(resolveProjectProviderInstanceEnabled(settings, projectId, instanceId)).toBe(false);
+  });
+});
+
+describe("ServerSettings secret provider vaults", () => {
+  const secode = { id: "3qbxzelfnjhgtoqd47ipymi46m", name: "Secode" };
+  const aws = { id: "awsvaultid0000000000000000", name: "AWS Servers" };
+  const projectId = "project-1" as ProjectId;
+  const other = "project-2" as ProjectId;
+
+  it("resolves the project's own choice, then the environment's, then every vault", () => {
+    const { secretProviderVaults } = decodeServerSettings({
+      secretProviderVaults: {
+        personal: { vaults: [secode], projects: { [projectId]: [aws], [other]: null } },
+        work: { projects: { [projectId]: [] } },
+      },
+    });
+    expect(resolveSecretProviderVaults(secretProviderVaults, "personal", projectId)).toEqual([aws]);
+    expect(resolveSecretProviderVaults(secretProviderVaults, "personal", other)).toBeUndefined();
+    expect(resolveSecretProviderVaults(secretProviderVaults, "personal", null)).toEqual([secode]);
+    expect(
+      resolveSecretProviderVaults(secretProviderVaults, "personal", "project-3" as ProjectId),
+    ).toEqual([secode]);
+    expect(resolveSecretProviderVaults(secretProviderVaults, "work", projectId)).toEqual([]);
+    expect(resolveSecretProviderVaults(secretProviderVaults, "work", null)).toBeUndefined();
+    expect(resolveSecretProviderVaults(secretProviderVaults, "missing", projectId)).toBeUndefined();
+    expect(resolveSecretProviderVaults(secretProviderVaults, "toString", null)).toBeUndefined();
+  });
+
+  it("caps writes and takes null to remove a provider's entry", () => {
+    expect(
+      decodeServerSettingsPatch({
+        secretProviderVaults: { personal: { vaults: [secode] }, work: null },
+      }).secretProviderVaults,
+    ).toEqual({ personal: { vaults: [secode] }, work: null });
+    const tooMany = Array.from({ length: 101 }, (_, index) => ({ id: `v${index}`, name: "V" }));
+    expect(() =>
+      decodeServerSettingsPatch({ secretProviderVaults: { personal: { vaults: tooMany } } }),
+    ).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({
+        secretProviderVaults: { personal: { vaults: [{ id: " ", name: "Blank" }] } },
+      }),
+    ).toThrow();
+  });
+
+  it("needs the provider-managing scope, like the providers themselves", () => {
+    expect(
+      requiredScopesForServerSettingsPatch(
+        decodeServerSettingsPatch({ secretProviderVaults: { personal: { vaults: [secode] } } }),
+      ),
+    ).toEqual(["providers:manage"]);
   });
 });
 
