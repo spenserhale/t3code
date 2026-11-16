@@ -62,6 +62,84 @@ const rows = (accounts: readonly LimitAccount[]) =>
   glance(accounts).sections.flatMap((section) => section.rows);
 
 describe("collectLimitGlance", () => {
+  it("keeps every live reset window together without combining their balances", () => {
+    const [row] = rows([account({ key: "a" }, [weekly(24), session(88)])]);
+    expect(row?.pools).toMatchObject([
+      {
+        label: null,
+        windows: [
+          {
+            id: "five_hour",
+            kind: "session",
+            label: "5-hour",
+            remainingPercent: 12,
+            resetsIn: "resets in 1h 5m",
+          },
+          { id: "seven_day", kind: "weekly", label: "Weekly", remainingPercent: 76 },
+        ],
+      },
+    ]);
+  });
+
+  it("separates Claude's overall and scoped consumption limits", () => {
+    const fable = { ...weekly(51), id: "seven_day_fable", label: "Weekly · Fable" };
+    expect(
+      rows([account({ key: "a", driver: claude }, [fable, weekly(33), session(10)])])[0]?.pools,
+    ).toMatchObject([
+      {
+        label: "Overall",
+        windows: [{ id: "five_hour" }, { id: "seven_day", remainingPercent: 67 }],
+      },
+      { label: "Fable", windows: [{ id: "seven_day_fable", remainingPercent: 49 }] },
+    ]);
+  });
+
+  it("pairs Antigravity windows by consumption identity, keeping shared and model-specific pools distinct", () => {
+    const ag = ProviderDriverKind.make("antigravity");
+    const window = (id: string, label: string, kind: Window["kind"]): Window => ({
+      id,
+      label,
+      kind,
+      usedPercent: 0,
+    });
+    const [row] = rows([
+      account({ key: "a", driver: ag }, [
+        window("3p-weekly", "Claude & GPT (shared) · Weekly", "weekly"),
+        window("gemini-argon-wtu-weekly", "Gemini 4 Argon · Weekly", "weekly"),
+        window("gemini-weekly", "Gemini · Weekly", "weekly"),
+        window("3p-5h", "Claude & GPT (shared) · 5-hour", "session"),
+        window("gemini-5h", "Gemini · 5-hour", "session"),
+      ]),
+    ]);
+    expect(row?.pools).toMatchObject([
+      {
+        label: "Gemini",
+        windows: [{ id: "gemini-5h", resetsIn: null, pace: null }, { id: "gemini-weekly" }],
+      },
+      { label: "Gemini 4 Argon", windows: [{ id: "gemini-argon-wtu-weekly" }] },
+      { label: "Claude & GPT (shared)", windows: [{ id: "3p-5h" }, { id: "3p-weekly" }] },
+    ]);
+  });
+
+  it("orders subscriptions by their soonest current reset, leaving unknown resets last", () => {
+    const { resetsAt: _reset, ...unknown } = session(10);
+    expect(
+      rows([
+        account({ key: "unknown", driver: claude }, [unknown]),
+        account({ key: "later", email: "later@example.com" }, [weekly(20)]),
+        account({ key: "first", driver: cursor }, [session(30)]),
+      ]).map((row) => row.account.key),
+    ).toEqual(["first", "later", "unknown"]);
+  });
+
+  it("drops expired nested windows without dropping live sibling allowances", () => {
+    const expired = { ...session(80), resetsAt: "2026-09-03T11:00:00.000Z" };
+    expect(rows([account({ key: "a" }, [expired, weekly(30)])])[0]?.pools).toMatchObject([
+      { windows: [{ id: "seven_day", remainingPercent: 70 }] },
+    ]);
+    expect(rows([account({ key: "a" }, [expired])])[0]?.pools).toEqual([]);
+  });
+
   it("shows the window an account has least of left", () => {
     expect(rows([account({ key: "a" }, [session(50), weekly(16)])])).toMatchObject([
       { name: "Codex", windowLabel: "Session", remainingPercent: 50, resetsIn: "resets in 1h 5m" },
@@ -94,6 +172,18 @@ describe("collectLimitGlance", () => {
 
     expect(rows([account({ key: "a", driver: cursor }, [total, auto, api])])).toMatchObject([
       { name: "Cursor", windowLabel: "Other Models", remainingPercent: 70 },
+    ]);
+    expect(
+      rows([account({ key: "a", driver: cursor }, [total, auto, api])])[0]?.pools,
+    ).toMatchObject([
+      {
+        label: "Cursor Models",
+        windows: [{ id: "autoPercentUsed", label: "Monthly", remainingPercent: 90 }],
+      },
+      {
+        label: "Other Models",
+        windows: [{ id: "apiPercentUsed", label: "Monthly", remainingPercent: 70 }],
+      },
     ]);
     expect(rows([account({ key: "a", driver: cursor }, [total, auto])])).toMatchObject([
       { windowLabel: "Overall", remainingPercent: 10 },
@@ -205,8 +295,8 @@ describe("collectLimitGlance", () => {
         row.resetSinceChecked,
       ]),
     ).toEqual([
-      ["a", true],
       ["b", false],
+      ["a", true],
     ]);
   });
 
@@ -258,7 +348,7 @@ describe("collectLimitGlance", () => {
     const monday = Date.parse("2026-09-07T12:00:00.000Z");
     const paced = (groups: Parameters<typeof collectLimitGlance>[1]) =>
       collectLimitGlance([account({ key: "a" }, [weekly(30)])], groups, monday, nameOf).sections[0]!
-        .rows[0]!.pace;
+        .rows[0]!.pools[0]!.windows[0]!.pace;
     expect(paceLabel(paced(NO_LIMIT_GROUPS)!)).toBe("32% in reserve");
     expect(
       paceLabel(
@@ -276,7 +366,7 @@ describe("collectLimitGlance", () => {
     const entry = account({ key: "a" }, [weekly(30)]);
     const withExtras = (extras: Parameters<typeof collectLimitGlance>[4]) =>
       collectLimitGlance([entry], NO_LIMIT_GROUPS, monday, nameOf, extras).sections[0]!.rows[0]!
-        .pace;
+        .pools[0]!.windows[0]!.pace;
     // A reset credit on Sunday noon: 30% in the day since is spending ahead of what remained.
     const credit = Date.parse("2026-09-06T12:00:00.000Z");
     const cleared = {
