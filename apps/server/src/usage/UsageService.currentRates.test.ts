@@ -158,6 +158,7 @@ it.effect("fills unpriced ids from the catalog and never reprices others", () =>
     assert.strictEqual(rates.table.get("x")?.inputCostPerToken, 0.24e-6);
     assert.strictEqual(rates.table.get("x")?.outputCostPerToken, 0.96e-6);
     assert.strictEqual(rates.table.get("x")?.fast, null);
+    assert.strictEqual(rates.table.get("x")?.ultrafast, null);
     // A catalog cache price maps to the cached-input rate; cache writes price at input.
     assert.strictEqual(rates.table.get("w")?.cacheReadCostPerToken, 0.5e-6);
     assert.strictEqual(rates.table.get("w")?.cacheCreationCostPerToken, 1e-6);
