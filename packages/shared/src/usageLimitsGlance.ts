@@ -64,6 +64,10 @@ export interface LimitGlanceConsumption {
 
 const KIND_ORDER = { session: 0, weekly: 1, monthly: 2, other: 3 } as const;
 
+function showInQuickView(window: ServerProviderUsageWindow): boolean {
+  return window.id !== "zai_tools_monthly";
+}
+
 function consumptionScope(account: LimitAccount, window: ServerProviderUsageWindow) {
   if (account.driver === "cursor") {
     return { key: window.id, label: cursorUsageWindowDetails(window.id)?.label ?? window.label };
@@ -96,7 +100,7 @@ function periodLabel(window: ServerProviderUsageWindow) {
       : (window.label.match(/(?:^| · )(\d+)[- ]hours?$/i)?.[0].replace(/^ · /, "") ?? "Session");
   }
   if (window.kind === "weekly") return "Weekly";
-  if (window.kind === "monthly") return /credit/i.test(window.label) ? "Monthly credit" : "Monthly";
+  if (window.kind === "monthly") return "Monthly";
   return "Quota";
 }
 
@@ -196,6 +200,7 @@ export function collectLimitGlance(
       members: readonly LimitPoolMember[],
     ) => {
       for (const { account, window } of members) {
+        if (!showInQuickView(window)) continue;
         const list = into.get(account.key);
         if (list) list.push(window);
         else into.set(account.key, [window]);
@@ -213,7 +218,7 @@ export function collectLimitGlance(
     return {
       group,
       rows: labelLimitAccounts(
-        pools.map((pool) => pool.accounts),
+        pools.map((pool) => pool.accounts.filter((account) => reported.has(account.key))),
         nameOf,
       )
         .flatMap(({ account, label }): LimitGlanceRow[] => {

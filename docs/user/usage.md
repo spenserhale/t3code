@@ -185,7 +185,10 @@ the page. Accounts are ordered by their next known reset within your groups. Eac
 pool keeps its own row, with short and weekly windows side by side and monthly allowances labeled
 separately. Bars show the percentage left; the tick marks expected remaining allowance by now,
 not a forecast of what will remain at reset. Early-exhaustion warnings identify windows that may
-run out before they refresh. The summary does not start a new check, so an account whose limits
+run out before they refresh. Full allowances with no reported reset read **Ready**; a countdown
+appears when a reset time is reported. This does not establish when a new window will start.
+Monthly allowances read **Monthly** here; credit amounts and Z.ai's non-AI Tools allowance stay
+in the detailed Limits page. The summary does not start a new check, so an account whose limits
 have reset since its last reading shows as reset until the next check.
 
 Pick `/usage-limits` from the composer's command menu, or send it as a message, to check the
