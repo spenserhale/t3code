@@ -1,12 +1,13 @@
 import type { LimitAccount, LimitPresentations } from "@t3tools/shared/usageLimits";
+import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import { formatDuration } from "@t3tools/shared/usageLimits";
 import {
   collectLimitGlance,
   formatCheckedAgo,
   type LimitGlanceWindow,
 } from "@t3tools/shared/usageLimitsGlance";
-import { ArrowRightIcon, RotateCcwIcon } from "lucide-react";
-import { useState } from "react";
+import { AlertTriangleIcon, ArrowRightIcon, RotateCcwIcon } from "lucide-react";
+import { type CSSProperties, useState } from "react";
 
 import { cn } from "../../lib/utils";
 import { providerClients } from "../settings/providerDriverMeta";
@@ -15,6 +16,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useDailyTokens } from "./usageLimitDailyTokens";
 import { useUsageLimitHistory } from "./usageLimitHistoryStore";
 import { LimitGroupName, useCarriedLimitGroups } from "./UsageLimitGroupSections";
+import { PROVIDER_PRESENTATION } from "./usageProviders";
 
 function WindowMeter({
   window,
@@ -44,29 +46,37 @@ function WindowMeter({
     .filter((part) => part !== null)
     .join(". ");
   return (
-    <div className="min-w-0">
-      <div
+    <div
+      className={cn(
+        "grid min-w-0 items-center gap-x-1.5 gap-y-1",
+        paired ? "grid-cols-[minmax(0,1fr)_auto]" : "grid-cols-[auto_minmax(0,1fr)_auto_auto]",
+      )}
+    >
+      <span
         className={cn(
-          "flex flex-wrap content-start items-baseline justify-between gap-x-1 gap-y-0.5",
-          paired && "min-h-8 @lg:min-h-0",
+          "col-start-1 row-start-1 text-2xs text-muted-foreground",
+          paired ? "wrap-anywhere" : "whitespace-nowrap",
         )}
       >
-        <span className="text-2xs text-muted-foreground">{window.label}</span>
-        <span
-          className={cn(
-            "ml-auto font-medium tabular-nums",
-            warning ? "text-warning-foreground" : "text-foreground",
-            window.kind === "session" && "text-2xs",
-          )}
-        >
-          {window.remainingPercent}%
-        </span>
-      </div>
+        {paired && window.kind === "session" ? window.label.replace(/-hour$/, "h") : window.label}
+      </span>
+      <span
+        className={cn(
+          "row-start-1 text-right font-medium whitespace-nowrap tabular-nums",
+          paired ? "col-start-2" : "col-start-3",
+          warning ? "text-warning-foreground" : "text-foreground",
+        )}
+      >
+        {window.remainingPercent}%
+      </span>
       <Tooltip>
         <TooltipTrigger
           render={
             <span
-              className="relative my-1.5 block"
+              className={cn(
+                "relative block min-w-3",
+                paired ? "col-start-1 row-start-2" : "col-start-2 row-start-1",
+              )}
               role="meter"
               aria-label={window.label}
               aria-valuemin={0}
@@ -76,7 +86,7 @@ function WindowMeter({
             />
           }
         >
-          <span className="block h-1.5 overflow-hidden rounded-full bg-muted">
+          <span className="block h-1 overflow-hidden rounded-full bg-muted">
             <span
               className={cn(
                 "block h-full rounded-full",
@@ -88,14 +98,19 @@ function WindowMeter({
           {expected === null ? null : (
             <span
               aria-hidden
-              className="pointer-events-none absolute -top-1 h-3.5 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
+              className="pointer-events-none absolute -top-0.5 h-2 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
               style={{ left: `${expected}%` }}
             />
           )}
         </TooltipTrigger>
         <TooltipPopup side="top">{description}</TooltipPopup>
       </Tooltip>
-      <div className="flex items-center justify-end gap-1 text-2xs text-muted-foreground tabular-nums">
+      <div
+        className={cn(
+          "flex items-center justify-end gap-0.5 text-2xs whitespace-nowrap text-muted-foreground tabular-nums",
+          paired ? "col-start-2 row-start-2" : "col-start-4 row-start-1",
+        )}
+      >
         {ready ? (
           <span>Ready</span>
         ) : (
@@ -108,7 +123,13 @@ function WindowMeter({
         )}
       </div>
       {early === null ? null : (
-        <span className="mt-0.5 block text-end text-2xs text-warning-foreground">
+        <span
+          className={cn(
+            "flex items-center gap-1 text-2xs text-warning-foreground",
+            paired ? "col-span-2 row-start-3" : "col-span-3 col-start-2 row-start-2",
+          )}
+        >
+          <AlertTriangleIcon aria-hidden className="size-2.5 shrink-0" />
           {formatDuration(early)} early
         </span>
       )}
@@ -140,77 +161,123 @@ export function UsageLimitsGlance({
   );
   const checked = checkedAt ? formatCheckedAgo(checkedAt, now) : null;
   return (
-    <div className="@container flex max-h-[calc(var(--available-height)-1rem)] min-h-0 flex-col gap-3 text-left text-xs">
+    <div className="@container flex max-h-[calc(var(--available-height)-1rem)] min-h-0 flex-col gap-2 text-left text-xs">
       <header className="flex shrink-0 items-baseline justify-between gap-3">
         <span className="text-sm font-medium text-foreground">Limits</span>
         {checked ? (
           <span className="text-2xs text-muted-foreground tabular-nums">{checked}</span>
         ) : null}
       </header>
-      <div className="min-h-0 space-y-4 overflow-y-auto">
+      <div className="min-h-0 space-y-2 overflow-y-auto">
         {sections.map(({ group, rows }) => (
           <section
             key={group?.key ?? "all"}
             aria-label={group?.kind === "email" ? "Account group" : (group?.name ?? "Accounts")}
           >
             {group ? (
-              <div className="mb-1.5 flex min-w-0 items-center gap-1.5 text-2xs font-medium text-muted-foreground">
+              <div className="mb-1 flex min-w-0 items-center gap-1.5 text-2xs font-medium text-muted-foreground">
                 <LimitGroupName group={group} />
               </div>
             ) : null}
             <div className="divide-y divide-border/60">
-              {rows.map((row) => (
-                <div
-                  key={row.account.key}
-                  className="grid grid-cols-1 gap-x-3 gap-y-2 py-2.5 first:pt-0 last:pb-0 @lg:grid-cols-[5.5rem_minmax(0,1fr)]"
-                >
-                  <span className="min-w-0 pt-0.5 font-medium wrap-anywhere text-foreground">
-                    {row.name}
-                  </span>
-                  {row.resetSinceChecked ? (
-                    <span className="text-2xs text-muted-foreground">Reset since checked</span>
-                  ) : (
-                    <div className="min-w-0 divide-y divide-border/60">
-                      {row.pools.map((pool) => (
-                        <div
-                          key={pool.key}
-                          className={cn(
-                            "grid min-w-0 gap-x-3 py-2 first:pt-0 last:pb-0",
-                            pool.label === null
-                              ? "grid-cols-1"
-                              : "grid-cols-[4.5rem_minmax(0,1fr)]",
-                          )}
-                        >
-                          {pool.label === null ? null : (
-                            <span className="self-center text-2xs wrap-anywhere text-muted-foreground">
-                              {pool.label}
-                            </span>
-                          )}
-                          <div
-                            className="grid min-w-0 gap-x-3 gap-y-2"
-                            style={{
-                              gridTemplateColumns: pool.windows
-                                .map((window) =>
-                                  window.kind === "session" ? "minmax(0,1fr)" : "minmax(0,2fr)",
-                                )
-                                .join(" "),
-                            }}
-                          >
-                            {pool.windows.map((window) => (
-                              <WindowMeter
-                                key={window.id}
-                                window={window}
-                                now={now}
-                                paired={pool.windows.length > 1}
-                              />
-                            ))}
-                          </div>
+              {rows.map((row) => {
+                const color =
+                  normalizeProviderAccentColor(row.account.accentColor) ??
+                  Object.values(PROVIDER_PRESENTATION).find(
+                    (presentation) => presentation.driverKind === row.account.driver,
+                  )?.color ??
+                  "var(--foreground)";
+                return (
+                  <div key={row.account.key} className="py-1 first:pt-0 last:pb-0">
+                    <div
+                      role="group"
+                      aria-label={row.name}
+                      className="min-w-0 border-l-2 pl-2.5"
+                      style={{ borderColor: color }}
+                    >
+                      {row.resetSinceChecked ? (
+                        <div className="grid grid-cols-1 items-center gap-x-2.5 gap-y-0.5 py-0.5 @lg:grid-cols-[8.25rem_minmax(0,1fr)]">
+                          <span className="font-medium wrap-anywhere text-foreground">
+                            {row.name}
+                          </span>
+                          <span className="text-2xs text-muted-foreground">
+                            Reset since checked
+                          </span>
                         </div>
-                      ))}
+                      ) : (
+                        <div className="min-w-0">
+                          {row.pools.map((pool, index) => {
+                            const scope = pool.label?.startsWith(`${row.name} `)
+                              ? pool.label.slice(row.name.length + 1)
+                              : pool.label;
+                            const showScope =
+                              scope !== null &&
+                              !(row.pools.length === 1 && row.name.includes(scope));
+                            return (
+                              <div
+                                key={pool.key}
+                                className="grid min-w-0 items-center gap-x-2.5 gap-y-0.5 py-0.5 @lg:grid-cols-[8.25rem_minmax(0,1fr)]"
+                              >
+                                <div
+                                  className={cn(
+                                    "flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5",
+                                    index > 0 && "pl-3",
+                                  )}
+                                >
+                                  {index === 0 ? (
+                                    <span className="font-medium wrap-anywhere text-foreground">
+                                      {row.name}
+                                    </span>
+                                  ) : (
+                                    <span
+                                      aria-hidden
+                                      className="size-1 shrink-0 self-center rounded-full"
+                                      style={{ backgroundColor: color }}
+                                    />
+                                  )}
+                                  {showScope ? (
+                                    <span className="text-2xs wrap-anywhere text-muted-foreground">
+                                      {index === 0 ? "· " : ""}
+                                      {scope}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div
+                                  className={cn(
+                                    "grid min-w-0 grid-cols-[var(--glance-columns)] gap-x-2.5 gap-y-1",
+                                    pool.windows.length > 2 &&
+                                      "@max-md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] @max-md:[&>:nth-child(n+3)]:col-span-full",
+                                  )}
+                                  style={
+                                    {
+                                      "--glance-columns": pool.windows
+                                        .map((window) =>
+                                          window.kind === "session"
+                                            ? "minmax(0,1fr)"
+                                            : "minmax(0,2fr)",
+                                        )
+                                        .join(" "),
+                                    } as CSSProperties
+                                  }
+                                >
+                                  {pool.windows.map((window) => (
+                                    <WindowMeter
+                                      key={window.id}
+                                      window={window}
+                                      now={now}
+                                      paired={pool.windows.length > 1}
+                                    />
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))}
+                  </div>
+                );
+              })}
             </div>
           </section>
         ))}
