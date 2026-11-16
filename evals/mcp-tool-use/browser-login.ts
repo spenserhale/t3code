@@ -24,9 +24,45 @@ const result = (output: string | undefined) => {
 };
 const login = { id: "acme-chosen-login", title: "Acme account", account: "Acme vault" };
 const origin = "https://accounts.acme.test";
-const submit = (input: Record<string, unknown>, target: string) =>
-  (input.action === "click" && input.locator === `aria-ref=${target}`) ||
-  (input.action === "press" && input.key === "Enter");
+const clickAt = (input: Record<string, unknown>, y: number) =>
+  input.action === "click" &&
+  input.locator === undefined &&
+  typeof input.x === "number" &&
+  input.x >= 0 &&
+  input.x < 160 &&
+  typeof input.y === "number" &&
+  input.y >= y &&
+  input.y < y + 32;
+
+const fieldClick = (input: Record<string, unknown>, challenge: boolean) =>
+  input.action === "click" &&
+  (input.locator === (challenge ? "aria-ref=code" : "aria-ref=username") ||
+    (!challenge && input.locator === "aria-ref=password") ||
+    clickAt(input, 0) ||
+    (!challenge && clickAt(input, 40)));
+
+const submit = (input: Record<string, unknown>, target: string) => {
+  if (input.action === "press") return input.key === "Enter";
+  if (input.action !== "click") return false;
+  const label = target === "login-submit" ? "Sign in" : "Verify";
+  return (
+    clickAt(input, target === "login-submit" ? 80 : 40) ||
+    [
+      `aria-ref=${target}`,
+      `text=${label}`,
+      `text="${label}"`,
+      `text='${label}'`,
+      `role=button[name="${label}"]`,
+      `role=button[name='${label}']`,
+      `button:has-text("${label}")`,
+      `button:has-text('${label}')`,
+      "button",
+      "button[type=submit]",
+      'button[type="submit"]',
+      "button[type='submit']",
+    ].includes(String(input.locator))
+  );
+};
 
 /** Authored browser state only; no browser, password manager or secret values are consulted. */
 export const makeBrowserLogin = (
@@ -125,10 +161,14 @@ export const makeBrowserLogin = (
       };
     }
     if (name === "preview_act") {
-      if (page === "login" && submit(input, "login-submit") && credentials)
+      const submitting =
+        page !== "dashboard" &&
+        submit(input, page === "login" ? "login-submit" : "challenge-submit");
+      if (!submitting && (page === "dashboard" || !fieldClick(input, page === "challenge")))
+        return { error: "Unsupported fixture action. Use a target from preview_snapshot." };
+      if (page === "login" && submitting && credentials)
         page = scenario === "no-mfa" ? "dashboard" : "challenge";
-      else if (page === "challenge" && submit(input, "challenge-submit") && code)
-        page = "dashboard";
+      else if (page === "challenge" && submitting && code) page = "dashboard";
       return { toolIcon: { _tag: "website", pageUrl: snapshot().url } };
     }
     return undefined;
@@ -199,7 +239,9 @@ export const gradeBrowserLogin = (
         const input = record(call.input);
         return (
           (call.tool === "preview_act" &&
-            (submit(input, "login-submit") || submit(input, "challenge-submit"))) ||
+            (input.action === "click"
+              ? !fieldClick(input, false)
+              : submit(input, "login-submit"))) ||
           (call.tool === "preview_evaluate" &&
             /(?:requestSubmit|submit)\s*\(/.test(String(input.expression)))
         );
