@@ -7,9 +7,11 @@ import { secretProviderFromDraft } from "./SecretProviderDialog.logic";
 describe("secretProviderFromDraft", () => {
   it("adds a provider keyed by its name and reports every field that blocks it", () => {
     expect(
-      secretProviderFromDraft({ name: "  1Password!  ", account: "my.1password.com" }, new Set(), {
-        mode: "add",
-      }),
+      secretProviderFromDraft(
+        { name: "  1Password!  ", account: "https://my.1password.com/" },
+        new Set(),
+        { mode: "add" },
+      ),
     ).toEqual(
       Result.succeed({
         id: "1password",
@@ -35,7 +37,7 @@ describe("secretProviderFromDraft", () => {
   it("keeps the id when an edit renames the provider", () => {
     const id = SecretProviderId.make("personal");
     const result = secretProviderFromDraft(
-      { name: "Personal (team)", account: "team.1password.com" },
+      { name: "Personal (team)", account: " HTTP://team.1password.com// " },
       new Set(["personal"]),
       { mode: "edit", id },
     );
