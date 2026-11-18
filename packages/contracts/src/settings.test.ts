@@ -610,6 +610,20 @@ describe("favorites with efforts and the effort slider", () => {
     expect(settings.projectSettingsOverrides[projectId]?.effortSlider).toHaveLength(long.length);
   });
 
+  it("keeps provider sliders optional and caps each slider edit", () => {
+    const driver = ProviderDriverKind.make("codex");
+    expect(decodeServerSettings({}).providerEffortSliders).toBeUndefined();
+    const edit = { driver, projectId, steps: steps(MAX_EFFORT_SLIDER_STEPS) };
+    expect(
+      decodeServerSettingsPatch({ setProviderEffortSliders: [edit] }).setProviderEffortSliders,
+    ).toEqual([edit]);
+    expect(() =>
+      decodeServerSettingsPatch({
+        setProviderEffortSliders: [{ ...edit, steps: steps(MAX_EFFORT_SLIDER_STEPS + 1) }],
+      }),
+    ).toThrow();
+  });
+
   it("carries a favorite's effort in a toggle but leaves hidden models as they were", () => {
     expect(
       decodeServerSettingsPatch({

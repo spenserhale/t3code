@@ -341,7 +341,9 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Effort slider",
     to: "/settings/threads",
     scope: "project-defaults",
-    searchTerms: ["model picker steps reasoning effort composer arrow keys favorites"],
+    searchTerms: [
+      "model picker steps reasoning effort composer arrow keys favorites provider harness",
+    ],
   },
   {
     id: "default-permissions",

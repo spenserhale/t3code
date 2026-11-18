@@ -39,6 +39,7 @@ export interface ComposerEffortSliderContext {
 export function resolveComposerEffortSteps(
   configured: ReadonlyArray<ModelSelection>,
   context: ComposerEffortSliderContext,
+  driver: ProviderDriverKind | null = null,
 ): ReadonlyArray<ComposerEffortStep> {
   const steps = configured.map((step): ComposerEffortStep => {
     const entry = context.instanceEntries.find(
@@ -56,11 +57,13 @@ export function resolveComposerEffortSteps(
     const unusableReason =
       !entry || !isProviderInstancePickerReady(entry)
         ? "This provider is not available"
-        : model === null
-          ? "This model is not available"
-          : lockedOut
-            ? `${entry.displayName} is unavailable in this thread`
-            : context.getModelDisabledReason(step.instanceId, model);
+        : driver !== null && entry.driverKind !== driver
+          ? "This model belongs to another provider"
+          : model === null
+            ? "This model is not available"
+            : lockedOut
+              ? `${entry.displayName} is unavailable in this thread`
+              : context.getModelDisabledReason(step.instanceId, model);
     const resolved = model ?? step.model;
     const selection = createModelSelection(step.instanceId, resolved, step.options);
     const effort = shownEffort(

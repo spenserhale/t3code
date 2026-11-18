@@ -199,10 +199,14 @@ function SettingsRouteLayout() {
           // Read at call time: subscribing would hand every scope consumer a new context value on
           // each click. A pending navigation's target wins over the page still on screen.
           to: router.state.location.pathname,
-          search: () => ({
+          search: (previous) => ({
             project: next.project,
             machine: next.machine,
             checkout: next.checkout,
+            ...(router.state.location.pathname === "/settings/threads" &&
+            "effortSliderProvider" in previous
+              ? { effortSliderProvider: previous.effortSliderProvider }
+              : {}),
           }),
           hash: "",
           resetScroll: false,

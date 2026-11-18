@@ -14,8 +14,11 @@ export function useOpenModelShortcutsSettings(target: EffortSliderActions["setti
   return () => {
     void navigate({
       to: "/settings/threads",
-      search: modelShortcutsSettingsSearch(target, groups),
-      hash: "model-shortcuts",
+      search: {
+        ...modelShortcutsSettingsSearch(target, groups),
+        ...(target.driver === null ? {} : { effortSliderProvider: target.driver }),
+      },
+      hash: "effort-slider",
     });
   };
 }

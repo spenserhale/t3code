@@ -11,7 +11,9 @@ import { msg } from "gt-react";
 import {
   DEFAULT_SERVER_SETTINGS,
   type EnvironmentId,
+  type ModelSelection,
   type ProjectScopedServerSettingKey,
+  type ProviderDriverKind,
   type ServerSettings,
   type UnifiedSettings,
 } from "@t3tools/contracts";
@@ -30,6 +32,7 @@ import {
   planProjectOverridesClear,
   planScopedSettingsClear,
   planScopedSettingsPatch,
+  planScopedProviderEffortSliderWrite,
   scopedSettingsAreMixed,
   scopedSettingsSource,
   settlePendingScopedWrites,
@@ -151,6 +154,13 @@ export function useUpdateScopedSettings() {
       (current) => planScopedSettingsPatch(scope, current, patch, { deviceOnly }),
       options?.onFailed,
     );
+}
+
+export function useUpdateScopedProviderEffortSlider() {
+  const { targets } = useSettingsScope();
+  const run = useRunScopedPlan();
+  return (driver: ProviderDriverKind, steps: readonly ModelSelection[] | null) =>
+    run(planScopedProviderEffortSliderWrite(targets, driver, steps));
 }
 
 export function useClearScopedSettings() {

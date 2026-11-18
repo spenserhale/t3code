@@ -36,6 +36,7 @@ import { shortcutLabelForCommand } from "../../keybindings";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
+import type { ComposerEffortSliderForTab, EffortSliderActions } from "./useComposerEffortSlider";
 
 /** Holds the page still behind the open picker; its lifetime is the popup element's. */
 function lockBackgroundScroll(popup: HTMLElement | null) {
@@ -89,7 +90,10 @@ function lockBackgroundScroll(popup: HTMLElement | null) {
 }
 
 /** What a docked effort column needs from its picker: the model it serves. */
-export const DockedPickerContext = createContext<{ modelLabel: string }>({ modelLabel: "" });
+export const DockedPickerContext = createContext<{
+  modelLabel: string;
+  sliderActions: EffortSliderActions | null;
+}>({ modelLabel: "", sliderActions: null });
 
 /** A pick that brings options along, such as a favorite's saved effort. */
 export interface ModelPick {
@@ -117,6 +121,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   terminalOpen?: boolean;
   open?: boolean;
   popupAlign?: "start" | "end";
+  preferActiveProvider?: boolean;
   triggerClassName?: string;
   triggerLabel?: string;
   triggerAriaLabel?: string;
@@ -130,7 +135,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
    * Steps along an effort slider above the search box. Left and Right in an empty search move
    * along it, and pressing or dragging a stop applies it, all without taking focus from the search.
    */
-  effortSlider?: ModelPickerEffortSlider;
+  effortSliderForTab?: ComposerEffortSliderForTab;
   /** Shown after the model name inside the same trigger, such as the effort level. */
   triggerSuffix?: ReactNode;
   /** Names the suffix for the tooltip and screen readers. */
@@ -237,9 +242,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       ?.click();
   };
 
-  // Several selected models have no one effort to slide, and stepping would discard them.
-  const slider = docked && props.selectedModels === undefined ? props.effortSlider : undefined;
-
   const handleInstanceModelChange = (
     instanceId: ProviderInstanceId,
     model: string,
@@ -249,13 +251,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     props.onInstanceModelChange(instanceId, model, pick);
     if (!docked) {
       setIsMenuOpen(false);
-      return;
     }
-    // With the slider up, the person is steering from the search box and keeps it. A favorite that
-    // brought its own effort has nothing left to choose in the column either.
-    if (pick || slider) return;
-    // The column renders the new model's levels on commit.
-    window.requestAnimationFrame(() => focusEffort("levels"));
   };
 
   const shortcutLabel = props.keybindings
@@ -315,6 +311,35 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     "data-chat-provider-model-picker-label": "true",
   } as const;
 
+  const renderDockedLayout = (
+    modelList: ReactNode,
+    slider: ModelPickerEffortSlider | null,
+    sliderActions: EffortSliderActions | null,
+  ) => (
+    <DockedPickerContext value={{ modelLabel: triggerTitle, sliderActions }}>
+      <div className="flex max-h-(--available-height) flex-col">
+        {slider ? <EffortSlider {...slider} /> : null}
+        <div className="flex h-86.5 min-h-0 max-sm:h-auto max-sm:flex-col">
+          {modelList}
+          <div
+            data-model-picker-effort
+            className="flex min-h-0 w-48 flex-col sm:shrink-0 border-l border-border/70 bg-muted/40 max-sm:h-64 max-sm:w-full max-sm:border-t max-sm:border-l-0"
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" || event.altKey || event.ctrlKey || event.metaKey)
+                return;
+              event.preventDefault();
+              event.stopPropagation();
+              searchInputRef.current?.focus();
+            }}
+          >
+            {props.effortColumn}
+          </div>
+        </div>
+        {props.footer}
+      </div>
+    </DockedPickerContext>
+  );
+
   const picker = (
     <ModelPickerContent
       searchInputRef={searchInputRef}
@@ -334,7 +359,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       lockedContinuationGroupKey={props.lockedContinuationGroupKey ?? null}
       instanceEntries={props.instanceEntries}
       {...(props.projectId !== undefined ? { projectId: props.projectId } : {})}
-      {...(slider ? { effortSlider: slider } : {})}
+      {...(props.preferActiveProvider ? { preferActiveProvider: true } : {})}
       {...(props.keybindings ? { keybindings: props.keybindings } : {})}
       modelOptionsByInstance={props.modelOptionsByInstance}
       terminalOpen={props.terminalOpen ?? false}
@@ -348,8 +373,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       onInstanceModelChange={handleInstanceModelChange}
       {...(docked
         ? {
-            docked,
+            renderDockedLayout,
             onFocusEffort: () => void focusEffort("any"),
+            onPickWithoutEffort: () => window.requestAnimationFrame(() => focusEffort("levels")),
+            ...(props.selectedModels === undefined && !props.disabled && props.effortSliderForTab
+              ? { effortSliderForTab: props.effortSliderForTab }
+              : {}),
             // Inside the fixed height, so switching to or from a ChatGPT plan never resizes it.
             ...(props.selectedModels === undefined
               ? { listFooter: <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} /> }
@@ -498,34 +527,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         padding="none"
         touchBackdrop
       >
-        {props.effortColumn ? (
-          <DockedPickerContext value={{ modelLabel: triggerTitle }}>
-            <div className="flex max-h-(--available-height) flex-col">
-              {slider ? <EffortSlider {...slider} /> : null}
-              {/* One fixed height, so a model with more options never resizes the popup. Short
-                  windows shrink it and keep the footer. */}
-              <div className="flex h-86.5 min-h-0 max-sm:h-auto max-sm:flex-col">
-                {picker}
-                <div
-                  data-model-picker-effort
-                  className="flex min-h-0 w-48 flex-col sm:shrink-0 border-l border-border/70 bg-muted/40 max-sm:h-64 max-sm:w-full max-sm:border-t max-sm:border-l-0"
-                  onKeyDown={(event) => {
-                    if (event.key !== "ArrowLeft" || event.altKey || event.ctrlKey || event.metaKey)
-                      return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    searchInputRef.current?.focus();
-                  }}
-                >
-                  {props.effortColumn}
-                </div>
-              </div>
-              {props.footer}
-            </div>
-          </DockedPickerContext>
-        ) : (
-          picker
-        )}
+        {picker}
         {props.selectedModels === undefined && !docked ? (
           <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} />
         ) : null}

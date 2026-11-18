@@ -6,18 +6,28 @@ import {
   stableListKeys,
 } from "@t3tools/client-runtime/effort-slider";
 import {
+  isProviderDriverKind,
   MAX_EFFORT_SLIDER_STEPS,
   type ModelSelection,
+  PROVIDER_DISPLAY_NAMES,
+  type ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { resolveProviderEffortSlider } from "@t3tools/shared/modelShortcuts";
+import { useNavigate, useSearch } from "@tanstack/react-router";
+import * as Equal from "effect/Equal";
 import { ArrowDownIcon, ArrowUpIcon, XIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
-import { providerInstanceEntriesFor, type ProviderInstanceEntry } from "../../providerInstances";
+import {
+  isProviderInstancePickerReady,
+  providerInstanceEntriesFor,
+  type ProviderInstanceEntry,
+} from "../../providerInstances";
 import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { getDisplayModelName } from "../chat/providerIconUtils";
@@ -47,10 +57,13 @@ import {
   useScopedSettings,
   useScopedSettingsMixed,
   useScopedSettingSource,
+  useScopedSettingsWriteAllowed,
+  useUpdateScopedProviderEffortSlider,
   useUpdateScopedSettings,
 } from "./useScopedSettings";
 
 const LAST_USED = "last-used";
+const FAVORITES_SLIDER = ":favorites";
 
 function IconButton(props: {
   label: string;
@@ -236,9 +249,11 @@ function ProjectListControl(props: {
 }
 
 export function ModelShortcutsSettings() {
-  const { scope, target, connectedEnvironments } = useSettingsScope();
+  const { scope, search, target, targets, connectedEnvironments } = useSettingsScope();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  const updateProviderSlider = useUpdateScopedProviderEffortSlider();
+  const canWrite = useScopedSettingsWriteAllowed();
   const clearOverrides = useClearScopedSettings();
   const { environments } = useEnvironments();
   const providersByEnvironment = useEnvironmentProviders();
@@ -259,6 +274,50 @@ export function ModelShortcutsSettings() {
     )
     .map((environment) => environment.label);
   const supportsEffortSlider = connectedEnvironments.length > 0 && unsupportedLabels.length === 0;
+  const supportsProviderSliders =
+    supportsEffortSlider &&
+    connectedEnvironments.every(
+      (environment) =>
+        environment.serverConfig?.environment.capabilities.providerEffortSliders === true,
+    );
+  const requestedDriver = useSearch({
+    strict: false,
+    select: (search) => search.effortSliderProvider,
+  });
+  const navigate = useNavigate();
+  const sliderDrivers = new Set(entries.map((entry) => entry.driverKind));
+  for (const { projectId, settings } of targets) {
+    const projectSliders =
+      projectId === null
+        ? undefined
+        : settings.projectSettingsOverrides[projectId]?.providerEffortSliders;
+    for (const key of [
+      ...Object.keys(settings.providerEffortSliders ?? {}),
+      ...Object.keys(projectSliders ?? {}),
+    ]) {
+      if (isProviderDriverKind(key)) sliderDrivers.add(key);
+    }
+  }
+  const driver =
+    supportsProviderSliders && requestedDriver !== undefined && sliderDrivers.has(requestedDriver)
+      ? requestedDriver
+      : null;
+  const driverLabel = driver === null ? "Favorites" : (PROVIDER_DISPLAY_NAMES[driver] ?? driver);
+  const providerSlider =
+    driver === null
+      ? null
+      : resolveProviderEffortSlider(settings, target?.projectId ?? null, driver);
+  const scopedProviderSliders =
+    driver === null
+      ? []
+      : targets.map((target) =>
+          resolveProviderEffortSlider(target.settings, target.projectId, driver),
+        );
+  const mixedProviderSlider = scopedProviderSliders.some(
+    (slider) =>
+      slider?.source !== providerSlider?.source ||
+      !Equal.equals(slider?.steps, providerSlider?.steps),
+  );
   const favoritesSource = useScopedSettingSource(["favorites"]);
   const sliderSource = useScopedSettingSource(["effortSlider"]);
   const mixedFavorites = useScopedSettingsMixed(["favorites"]);
@@ -269,9 +328,11 @@ export function ModelShortcutsSettings() {
   const favorites = settings.favorites;
   // Readers use the first six steps, so that is what is shown, and no write holds more.
   const steps =
-    settings.effortSlider.length > MAX_EFFORT_SLIDER_STEPS
-      ? settings.effortSlider.slice(0, MAX_EFFORT_SLIDER_STEPS)
-      : settings.effortSlider;
+    driver !== null
+      ? (providerSlider?.steps ?? [])
+      : settings.effortSlider.length > MAX_EFFORT_SLIDER_STEPS
+        ? settings.effortSlider.slice(0, MAX_EFFORT_SLIDER_STEPS)
+        : settings.effortSlider;
   // An environment scope has one destination, so that environment alone decides how it is written.
   const [onlyEnvironment] = connectedEnvironments;
   const destination = {
@@ -282,10 +343,15 @@ export function ModelShortcutsSettings() {
   // keep no efforts or slider keep no project lists either.
   const favoritesReadOnly =
     isProjectScope && (favoritesSource === "environment" || !supportsEffortSlider);
-  const sliderReadOnly = isProjectScope && sliderSource === "environment";
+  const inheritsProviderSlider = isProjectScope && providerSlider?.source === "environment";
+  const canResetProviderSlider = scopedProviderSliders.some(
+    (slider) => slider?.source === (isProjectScope ? "project" : "environment"),
+  );
+  const sliderReadOnly =
+    driver === null
+      ? isProjectScope && sliderSource === "environment"
+      : !canWrite || inheritsProviderSlider;
 
-  const firstEntry = entries.find((entry) => entry.enabled && entry.isAvailable);
-  const firstModel = firstEntry ? modelOptions.get(firstEntry.instanceId)?.[0] : undefined;
   const describe = (instanceId: ProviderInstanceId, slug: string) => {
     const entry = entries.find((candidate) => candidate.instanceId === instanceId);
     const option = modelOptions.get(instanceId)?.find((candidate) => candidate.slug === slug);
@@ -318,14 +384,26 @@ export function ModelShortcutsSettings() {
   const picker = (
     label: string,
     onPick: (instanceId: ProviderInstanceId, model: string) => void,
-  ) =>
-    firstEntry && firstModel ? (
+    onlyDriver: ProviderDriverKind | null = null,
+  ) => {
+    const pickerEntries =
+      onlyDriver === null ? entries : entries.filter((entry) => entry.driverKind === onlyDriver);
+    const firstEntry = pickerEntries.find(
+      (entry) =>
+        isProviderInstancePickerReady(entry) &&
+        modelOptions.get(entry.instanceId)?.some((option) => option.isUnavailable !== true),
+    );
+    const firstModel = firstEntry
+      ? modelOptions.get(firstEntry.instanceId)?.find((option) => option.isUnavailable !== true)
+      : undefined;
+    return firstEntry && firstModel ? (
       <ProviderModelPicker
         environmentId={representative?.environmentId ?? null}
         activeInstanceId={firstEntry.instanceId}
         model={firstModel.slug}
         lockedProvider={null}
-        instanceEntries={entries}
+        instanceEntries={pickerEntries}
+        preferActiveProvider={onlyDriver !== null}
         modelOptionsByInstance={modelOptions}
         triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
         triggerLabel={label}
@@ -341,9 +419,16 @@ export function ModelShortcutsSettings() {
         }}
       />
     ) : (
-      <span className="text-sm text-muted-foreground">No providers available</span>
+      <span className="text-sm text-muted-foreground">
+        {onlyDriver === null ? "No providers available" : `No ${driverLabel} models available`}
+      </span>
     );
+  };
 
+  const writeSteps = (next: readonly ModelSelection[]) => {
+    if (driver === null) updateSettings({ effortSlider: next });
+    else updateProviderSlider(driver, next.length === 0 ? null : next);
+  };
   const addStep = (instanceId: ProviderInstanceId, slug: string) => {
     const { model } = describe(instanceId, slug);
     const effort = selectedEffort(model, undefined);
@@ -357,7 +442,7 @@ export function ModelShortcutsSettings() {
       toastManager.add({ type: "warning", title: "Step not added", description: blocked });
       return;
     }
-    updateSettings({ effortSlider: [...steps, step] });
+    writeSteps([...steps, step]);
   };
 
   return (
@@ -455,27 +540,85 @@ export function ModelShortcutsSettings() {
       </SettingsRow>
 
       <SettingsRow
-        serverScoped
-        settingKeys={["effortSlider"]}
-        mixed={mixedSlider}
+        serverScoped={driver === null}
+        settingKeys={driver === null ? ["effortSlider"] : []}
+        mixed={driver === null ? mixedSlider : mixedProviderSlider}
         {...searchableSetting("effort-slider")}
         description={
-          supportsEffortSlider
-            ? `Up to ${MAX_EFFORT_SLIDER_STEPS} steps of model and effort, shown above the search in the composer's model picker. Left and Right in an empty search move along it. Fewer than two steps hide the slider.`
-            : "The effort slider needs a newer T3 Code on every selected environment."
+          !supportsEffortSlider
+            ? "The effort slider needs a newer T3 Code on every selected environment."
+            : driver === null
+              ? `Set up to ${MAX_EFFORT_SLIDER_STEPS} model and effort steps. Use Left and Right in an empty search to move through them.${supportsProviderSliders ? " Provider tabs use Favorites until you set up their own slider." : ""}`
+              : `Set up to ${MAX_EFFORT_SLIDER_STEPS} model and effort steps for the ${driverLabel} tab.`
         }
         control={
-          !supportsEffortSlider || sliderReadOnly
-            ? undefined
-            : picker(
-                steps.length >= MAX_EFFORT_SLIDER_STEPS ? "Slider is full" : "Add a step",
-                addStep,
-              )
+          !supportsEffortSlider || sliderReadOnly ? undefined : steps.length >=
+            MAX_EFFORT_SLIDER_STEPS ? (
+            <Button size="xs" variant="outline" disabled>
+              Slider is full
+            </Button>
+          ) : (
+            picker("Add a step", addStep, driver)
+          )
         }
       >
         {supportsEffortSlider ? (
           <>
-            {isProjectScope ? (
+            {supportsProviderSliders && sliderDrivers.size > 0 ? (
+              <div className="flex flex-wrap items-center gap-2 px-2 pb-2">
+                <Select
+                  value={driver ?? FAVORITES_SLIDER}
+                  onValueChange={(value) => {
+                    void navigate({
+                      to: "/settings/threads",
+                      search: {
+                        ...search,
+                        ...(isProviderDriverKind(value) ? { effortSliderProvider: value } : {}),
+                      },
+                      hash: true,
+                      replace: true,
+                      resetScroll: false,
+                    });
+                  }}
+                >
+                  <SelectTrigger aria-label="Slider to edit" size="sm">
+                    <SelectValue>{driverLabel}</SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup alignItemWithTrigger={false}>
+                    <SelectItem value={FAVORITES_SLIDER}>Favorites</SelectItem>
+                    {[...sliderDrivers].map((kind) => (
+                      <SelectItem key={kind} value={kind}>
+                        {PROVIDER_DISPLAY_NAMES[kind] ?? kind}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
+                {driver !== null && inheritsProviderSlider && canWrite ? (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    onClick={() => updateProviderSlider(driver, steps)}
+                  >
+                    Customize for this project
+                  </Button>
+                ) : null}
+                {driver !== null && canResetProviderSlider && canWrite ? (
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={() => updateProviderSlider(driver, null)}
+                  >
+                    {isProjectScope ? "Use the environment’s" : "Use Favorites slider"}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+            {driver !== null && inheritsProviderSlider ? (
+              <p className="px-2 pb-1 text-xs text-muted-foreground">
+                This project uses {environmentLabel}&apos;s {driverLabel} slider.
+              </p>
+            ) : null}
+            {driver === null && isProjectScope ? (
               <ProjectListControl
                 source={sliderSource}
                 environmentLabel={environmentLabel}
@@ -483,16 +626,19 @@ export function ModelShortcutsSettings() {
                 onInherit={() => clearOverrides(["effortSlider"])}
               />
             ) : null}
-            {mixedSlider ? (
+            {(driver === null ? mixedSlider : mixedProviderSlider) ? (
               <p className="px-2 pb-1 text-xs text-muted-foreground">
-                The selected environments keep different slider steps. Changing them replaces them
-                all.
+                The selected targets have different slider settings. Saving applies the displayed
+                list to each target.
               </p>
             ) : null}
             {steps.length === 0 ? (
               <p className="px-2 py-2 text-xs text-muted-foreground">
-                No steps yet. Add a model, or use Add to slider beside a model&apos;s effort in the
-                picker.
+                {driver === null
+                  ? "No steps yet. Add a model, or use Add to slider beside a model’s effort in the picker."
+                  : providerSlider === null
+                    ? `The ${driverLabel} tab uses the Favorites slider. Add a step to customize it.`
+                    : "No steps yet. Add two steps to show this slider."}
               </p>
             ) : (
               <ol aria-label="Effort slider steps" className="pb-2">
@@ -504,7 +650,7 @@ export function ModelShortcutsSettings() {
                       entry={entry}
                       instanceId={step.instanceId}
                       name={name}
-                      available={available}
+                      available={available && (driver === null || entry?.driverKind === driver)}
                       position={index + 1}
                       index={index}
                       count={steps.length}
@@ -531,18 +677,12 @@ export function ModelShortcutsSettings() {
                               });
                               return;
                             }
-                            updateSettings({
-                              effortSlider: setSliderStepOptions(steps, index, options),
-                            });
+                            writeSteps(setSliderStepOptions(steps, index, options));
                           }}
                         />
                       }
-                      onMove={(direction) =>
-                        updateSettings({ effortSlider: moveListItem(steps, index, direction) })
-                      }
-                      onRemove={() =>
-                        updateSettings({ effortSlider: removeListItem(steps, index) })
-                      }
+                      onMove={(direction) => writeSteps(moveListItem(steps, index, direction))}
+                      onRemove={() => writeSteps(removeListItem(steps, index))}
                     />
                   );
                 })}

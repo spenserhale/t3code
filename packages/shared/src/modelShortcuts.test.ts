@@ -2,6 +2,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   MAX_EFFORT_SLIDER_STEPS,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   type ModelFavorite,
   type ModelSelection,
@@ -14,6 +15,7 @@ import {
   planModelShortcutWrite,
   resolveFavoritePickOptions,
   resolveModelShortcuts,
+  resolveProviderEffortSlider,
 } from "./modelShortcuts.ts";
 import { applyServerSettingsPatch } from "./serverSettings.ts";
 
@@ -29,6 +31,8 @@ const environmentFavorites: ModelFavorite[] = [
 ];
 const environmentSteps = [step("luna", "low"), step("sol", "high")];
 const projectFavorites: ModelFavorite[] = [{ provider, model: "astra", options: effort("max") }];
+const codex = ProviderDriverKind.make("codex");
+const opencode = ProviderDriverKind.make("opencode");
 
 const settings: ServerSettings = {
   ...DEFAULT_SERVER_SETTINGS,
@@ -98,6 +102,68 @@ describe("resolveModelShortcuts", () => {
       resolveModelShortcuts({ ...DEFAULT_SERVER_SETTINGS, effortSlider: tooMany }, null)
         .effortSlider,
     ).toEqual(tooMany.slice(0, MAX_EFFORT_SLIDER_STEPS));
+  });
+});
+
+describe("provider effort sliders", () => {
+  it("inherits each provider independently and falls back to no override when none was saved", () => {
+    const projectSteps = [step("astra", "high")];
+    const openCodeSteps = [createModelSelection(ProviderInstanceId.make("opencode"), "model-a")];
+    const configured = applyServerSettingsPatch(settings, {
+      setProviderEffortSliders: [
+        { driver: codex, steps: environmentSteps },
+        { driver: opencode, steps: openCodeSteps },
+        { driver: codex, projectId, steps: projectSteps },
+      ],
+    });
+    expect(resolveProviderEffortSlider(configured, projectId, codex)).toEqual({
+      steps: projectSteps,
+      source: "project",
+    });
+    expect(resolveProviderEffortSlider(configured, projectId, opencode)).toEqual({
+      steps: openCodeSteps,
+      source: "environment",
+    });
+    expect(
+      resolveProviderEffortSlider(configured, projectId, ProviderDriverKind.make("cursor")),
+    ).toBeNull();
+    expect(resolveModelShortcuts(configured, projectId).effortSlider).toEqual(environmentSteps);
+
+    const cleared = applyServerSettingsPatch(configured, {
+      setProviderEffortSliders: [{ driver: codex, projectId, steps: null }],
+    });
+    expect(resolveProviderEffortSlider(cleared, projectId, codex)).toEqual({
+      steps: environmentSteps,
+      source: "environment",
+    });
+    expect(cleared.projectSettingsOverrides[projectId]).toEqual({ defaultAutoPull: true });
+  });
+
+  it("keeps changes from other writers when updating or removing one provider", () => {
+    const openCodeSteps = [createModelSelection(ProviderInstanceId.make("opencode"), "model-a")];
+    const configured = applyServerSettingsPatch(settings, {
+      setProviderEffortSliders: [
+        { driver: codex, steps: environmentSteps },
+        { driver: opencode, steps: openCodeSteps },
+        { driver: codex, projectId, steps: environmentSteps },
+      ],
+    });
+    const staleEntry = configured.projectSettingsOverrides[projectId];
+    const edited = applyServerSettingsPatch(configured, {
+      setProviderEffortSliders: [
+        { driver: codex, steps: null },
+        { driver: codex, projectId, steps: [] },
+        { driver: opencode, projectId, steps: openCodeSteps },
+      ],
+    });
+    const saved = applyServerSettingsPatch(edited, {
+      projectSettingsOverrides: { [projectId]: { ...staleEntry, defaultAutoPull: false } },
+    });
+    expect(resolveProviderEffortSlider(saved, null, codex)).toBeNull();
+    expect(resolveProviderEffortSlider(saved, null, opencode)?.steps).toEqual(openCodeSteps);
+    expect(resolveProviderEffortSlider(saved, projectId, codex)?.steps).toEqual([]);
+    expect(resolveProviderEffortSlider(saved, projectId, opencode)?.source).toBe("project");
+    expect(saved.projectSettingsOverrides[projectId]?.defaultAutoPull).toBe(false);
   });
 });
 

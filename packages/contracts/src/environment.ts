@@ -126,6 +126,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
    * favorite efforts, and write the whole favorites list, where it is absent.
    */
   effortSlider: Schema.optionalKey(Schema.Boolean),
+  providerEffortSliders: Schema.optionalKey(Schema.Boolean),
   threadRestartContinuation: Schema.optionalKey(Schema.Boolean),
   projectSettingsOverrides: Schema.optionalKey(Schema.Boolean),
   /** Hide the switch when absent; older servers silently drop per-project provider patches. */

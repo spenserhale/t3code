@@ -4,6 +4,7 @@ import {
   type ModelPreferences,
   type ModelSelection,
   type ProjectId,
+  type ProviderDriverKind,
   type ProviderOptionSelection,
   type ServerSettings,
   type ServerSettingsPatch,
@@ -22,6 +23,33 @@ export interface ModelShortcuts {
   readonly effortSliderSource: ModelShortcutSource;
 }
 
+function visibleSliderSteps(steps: ReadonlyArray<ModelSelection>) {
+  return steps.length > MAX_EFFORT_SLIDER_STEPS ? steps.slice(0, MAX_EFFORT_SLIDER_STEPS) : steps;
+}
+
+export function resolveProviderEffortSlider(
+  settings: Pick<ServerSettings, "providerEffortSliders" | "projectSettingsOverrides">,
+  projectId: ProjectId | null,
+  driver: ProviderDriverKind,
+): { readonly steps: ReadonlyArray<ModelSelection>; readonly source: ModelShortcutSource } | null {
+  const projectSliders =
+    projectId === null
+      ? undefined
+      : settings.projectSettingsOverrides[projectId]?.providerEffortSliders;
+  const projectSteps =
+    projectSliders && Object.hasOwn(projectSliders, driver) ? projectSliders[driver] : undefined;
+  if (projectSteps !== undefined)
+    return { steps: visibleSliderSteps(projectSteps), source: "project" };
+  const environmentSliders = settings.providerEffortSliders;
+  const environmentSteps =
+    environmentSliders && Object.hasOwn(environmentSliders, driver)
+      ? environmentSliders[driver]
+      : undefined;
+  return environmentSteps === undefined
+    ? null
+    : { steps: visibleSliderSteps(environmentSteps), source: "environment" };
+}
+
 /**
  * The favorites (in the user's order) and effort slider steps a project sees: its own override of
  * each list, else the environment's. An environment that never moved its favorites falls back to
@@ -36,10 +64,7 @@ export function resolveModelShortcuts(
   return {
     favorites: resolveModelPreferences(effective, legacy).favorites,
     favoritesSource: sources.favorites === "project" ? "project" : "environment",
-    effortSlider:
-      effective.effortSlider.length > MAX_EFFORT_SLIDER_STEPS
-        ? effective.effortSlider.slice(0, MAX_EFFORT_SLIDER_STEPS)
-        : effective.effortSlider,
+    effortSlider: visibleSliderSteps(effective.effortSlider),
     effortSliderSource: sources.effortSlider === "project" ? "project" : "environment",
   };
 }
