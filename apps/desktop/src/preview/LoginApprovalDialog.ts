@@ -1,13 +1,16 @@
-import type { DesktopBrowserCommand } from "@t3tools/contracts";
+import type {
+  DesktopBrowserCommand,
+  DesktopSecretApproval,
+  DesktopSecretApprovalAnswer,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Semaphore from "effect/Semaphore";
-import { BrowserWindow, type WebContents } from "electron";
+import { MessageChannelMain, type WebContents } from "electron";
 
-import * as ElectronDialog from "../electron/ElectronDialog.ts";
+import { SECRET_APPROVAL_CHANNEL } from "../ipc/channels.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 
 export type LoginApprovalPrompt = Extract<
@@ -16,7 +19,7 @@ export type LoginApprovalPrompt = Extract<
 >;
 
 /** Allow once, allow for this thread, or false for Deny. */
-export type LoginApprovalAnswer = "once" | "thread" | false;
+export type LoginApprovalAnswer = DesktopSecretApprovalAnswer;
 
 export class LoginApprovalDialog extends Context.Service<
   LoginApprovalDialog,
@@ -46,8 +49,6 @@ const THREAD_NOTE: Record<ApprovalKind, string> = {
   secretReference:
     "Allow for this thread lets it use any saved secret in its commands until the app restarts.",
 };
-
-const ANSWERS: ReadonlyArray<LoginApprovalAnswer> = [false, "once", "thread"];
 
 const wording = (prompt: LoginApprovalPrompt, who: string) => {
   const site = prompt.origin ?? "a website";
@@ -109,61 +110,65 @@ const wording = (prompt: LoginApprovalPrompt, who: string) => {
             ? `Use a secret from ${from} in a command?`
             : `Send a secret from ${from} to ${to}?`,
         detail: [
-          `${who} wants to use ${item ?? "a secret"} for: ${prompt.command ?? "a command"}`,
+          `${who} wants to use ${item ?? "a secret"} in a command.`,
           "The agent will not see it. The command gets it as input or in its environment, and its output comes back with it masked.",
         ],
       };
   }
 };
 
-const hostWindow = (guest: WebContents | undefined) => {
-  if (guest === undefined || guest.isDestroyed()) return undefined;
-  const host = guest.hostWebContents ?? guest;
-  return host.isDestroyed() ? undefined : (BrowserWindow.fromWebContents(host) ?? undefined);
-};
-
 const make = Effect.gen(function* () {
-  const dialog = yield* ElectronDialog.ElectronDialog;
   const windows = yield* ElectronWindow.ElectronWindow;
-  // Several threads may ask at once; one dialog at a time keeps each answer tied to its prompt.
-  const oneAtATime = yield* Semaphore.make(1);
   return LoginApprovalDialog.of({
-    ask: Effect.fn("LoginApprovalDialog.ask")(function* (guest, prompt, cancelled) {
-      const agent = [prompt.agent, prompt.threadTitle ? `"${prompt.threadTitle}"` : undefined]
-        .filter(Boolean)
-        .join(" in ");
-      const who = `${agent || "An agent"}${prompt.machine === undefined ? "" : ` on ${prompt.machine}`}`;
-      const { message, detail } = wording(prompt, who);
+    ask: Effect.fn("LoginApprovalDialog.ask")(function* (_guest, prompt, cancelled) {
       const expiresAt = (yield* Clock.currentTimeMillis) + prompt.timeoutMs;
-      // Prompts queue behind each other; one whose call has ended is never shown, and an open one
-      // closes as a Deny when the server stops waiting.
-      return yield* oneAtATime.withPermits(1)(
-        Effect.gen(function* () {
-          const remaining = expiresAt - (yield* Clock.currentTimeMillis);
-          if (remaining <= 0 || cancelled?.aborted) return false;
-          const owner =
-            hostWindow(guest) ?? Option.getOrUndefined(yield* windows.focusedMainOrFirst);
-          const { response } = yield* dialog.showMessageBox(
-            {
-              signal: AbortSignal.any([
-                AbortSignal.timeout(Math.floor(remaining)),
-                ...(cancelled === undefined ? [] : [cancelled]),
-              ]),
-              type: "question",
-              buttons: ["Deny", "Allow once", "Allow for this thread"],
-              // Deny by default, so an Enter typed into the page cannot approve.
-              defaultId: 0,
-              cancelId: 0,
-              noLink: true,
-              message,
-              detail: [...detail, THREAD_NOTE[prompt.kind ?? "login"]].join("\n\n"),
-            },
-            owner,
-          );
-          const late = (yield* Clock.currentTimeMillis) >= expiresAt || cancelled?.aborted;
-          return late ? false : (ANSWERS[response] ?? false);
-        }).pipe(Effect.orElseSucceed((): LoginApprovalAnswer => false)),
-      );
+      const owner = Option.getOrUndefined(yield* windows.main);
+      if (!owner || cancelled?.aborted || prompt.timeoutMs <= 0) return false;
+      const threadLabel = prompt.threadTitle || prompt.threadId;
+      const who = `${prompt.agent || "An agent"} in "${threadLabel}"${prompt.machine ? ` on ${prompt.machine}` : ""}`;
+      const card: DesktopSecretApproval = {
+        ...wording(prompt, who),
+        threadId: prompt.threadId,
+        threadLabel: prompt.machine ? `${threadLabel} on ${prompt.machine}` : threadLabel,
+        ...(prompt.kind === "secretReference" && prompt.command ? { command: prompt.command } : {}),
+        threadNote: THREAD_NOTE[prompt.kind ?? "login"],
+      };
+      // Transfer the reply port only to the app's main frame. Each port answers exactly one request.
+      const result = yield* Effect.acquireUseRelease(
+        Effect.sync(() => new MessageChannelMain()),
+        ({ port1, port2 }) =>
+          Effect.callback<LoginApprovalAnswer>((resume) => {
+            const finish = (answer: LoginApprovalAnswer) => {
+              cancelled?.removeEventListener("abort", deny);
+              resume(Effect.succeed(answer));
+            };
+            const deny = () => finish(false);
+            port1.once("message", ({ data }) =>
+              finish(data === "once" || data === "thread" ? data : false),
+            );
+            port1.once("close", deny);
+            port1.start();
+            if (cancelled?.aborted) {
+              deny();
+              return;
+            }
+            cancelled?.addEventListener("abort", deny, { once: true });
+            try {
+              owner.webContents.mainFrame.postMessage(SECRET_APPROVAL_CHANNEL, card, [port2]);
+            } catch {
+              deny();
+            }
+            return Effect.sync(() => cancelled?.removeEventListener("abort", deny));
+          }),
+        ({ port1 }) =>
+          Effect.sync(() => {
+            port1.postMessage("closed");
+            port1.close();
+          }),
+      ).pipe(Effect.timeoutOption(prompt.timeoutMs));
+      return cancelled?.aborted || (yield* Clock.currentTimeMillis) >= expiresAt
+        ? false
+        : Option.getOrElse(result, () => false as const);
     }),
   });
 });
