@@ -3,6 +3,7 @@ import {
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   type ModelSelection,
+  type DefaultModelSelection,
   type ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -16,6 +17,7 @@ import {
   readCustomModelEntries,
   resolveSelectableModel,
 } from "@t3tools/shared/model";
+import { resolveModelFamilyDefault } from "@t3tools/shared/modelFamilyDefault";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
 import { type ClientSettings, UnifiedSettings } from "@t3tools/contracts/settings";
 import { resolveModelPreferences } from "@t3tools/shared/serverSettings";
@@ -300,16 +302,17 @@ export function resolveAppModelSelectionForInstance(
 export function resolveEffectiveDefaultModelSelection(
   settings: UnifiedSettings,
   providers: ReadonlyArray<ServerProvider>,
-  selection: ModelSelection,
+  selection: DefaultModelSelection,
 ): ModelSelection {
+  const concrete = resolveModelFamilyDefault(selection, providers, settings);
   const model = resolveAppModelSelectionForInstance(
-    selection.instanceId,
+    concrete.instanceId,
     settings,
     providers,
-    selection.model,
+    concrete.model,
     { preserveUnavailableSelection: true },
   );
-  return model === null || model === selection.model ? selection : { ...selection, model };
+  return model === null || model === concrete.model ? concrete : { ...concrete, model };
 }
 
 export function defaultModelSelectionsAreMixed(

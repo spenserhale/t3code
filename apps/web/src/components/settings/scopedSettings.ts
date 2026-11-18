@@ -2,6 +2,7 @@ import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import {
   ClientSettingsSchema,
   type ClientSettingsPatch,
+  type DefaultModelSelection,
   type EnvironmentId,
   globalIdleCompaction,
   idleCompactionPatch,
@@ -252,7 +253,8 @@ function projectOverrideWrites(
     current: ProjectSettingsOverrides,
     settings: ServerSettings,
     projectId: ProjectId,
-  ) => ProjectSettingsOverrides | null,
+    environmentId: EnvironmentId,
+  ) => ProjectSettingsOverrides | null | undefined,
 ): ScopedServerWrite[] {
   const byId = new Map(environments.map((environment) => [environment.environmentId, environment]));
   const writes = new Map<EnvironmentId, ScopedServerWrite>();
@@ -262,7 +264,13 @@ function projectOverrideWrites(
       continue;
     }
     const settings = environment.serverConfig.settings;
-    const entry = update(settings.projectSettingsOverrides[member.id] ?? {}, settings, member.id);
+    const entry = update(
+      settings.projectSettingsOverrides[member.id] ?? {},
+      settings,
+      member.id,
+      member.environmentId,
+    );
+    if (entry === undefined) continue;
     const existing = writes.get(member.environmentId);
     writes.set(member.environmentId, {
       environmentId: member.environmentId,
@@ -416,6 +424,56 @@ export function planScopedSettingsPatch(
               ? m(msg("Connect {environment} to save this setting.", { environment: scope.label }))
               : m(msg("Connect an environment to save this setting."));
   return { clientPatch, hasClientWrite, serverWrites, unavailableReason };
+}
+
+/** Following or pinning in a shared scope keeps each checkout's version, instance and options. */
+export function planScopedModelDefaults(
+  scope: ResolvedSettingsScope,
+  environments: readonly ScopedSettingsEnvironment[],
+  defaults: readonly {
+    environmentId: EnvironmentId;
+    projectId: ProjectId | null;
+    selection: DefaultModelSelection;
+  }[],
+) {
+  const selectionFor = (environmentId: EnvironmentId, projectId: ProjectId | null) =>
+    defaults.find(
+      (target) => target.environmentId === environmentId && target.projectId === projectId,
+    )?.selection;
+  const serverWrites =
+    scope.kind === "project" || scope.kind === "checkout"
+      ? projectOverrideWrites(
+          scope,
+          environments,
+          (current, _settings, projectId, environmentId) => {
+            const selection = selectionFor(environmentId, projectId);
+            return selection ? { ...current, defaultModelSelection: selection } : undefined;
+          },
+        )
+      : selectScopedSettingsEnvironments(scope, environments, null).connectedEnvironments.flatMap(
+          (environment) => {
+            const selection = selectionFor(environment.environmentId, null);
+            const previous = environment.serverConfig?.settings;
+            return selection && previous
+              ? [
+                  {
+                    environmentId: environment.environmentId,
+                    label: environment.label,
+                    previous,
+                    patch: { defaultModelSelection: selection },
+                  },
+                ]
+              : [];
+          },
+        );
+  return {
+    clientPatch: {} as ClientSettingsPatch,
+    hasClientWrite: false,
+    serverWrites,
+    unavailableReason: serverWrites.length
+      ? null
+      : "Connect an environment to change its default model.",
+  };
 }
 
 export function planScopedSettingsClear(

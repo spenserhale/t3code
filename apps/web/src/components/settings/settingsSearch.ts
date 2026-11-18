@@ -319,7 +319,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Default model"),
     to: "/settings/threads",
     scope: "project-defaults",
-    searchTerms: [msg("new thread project provider reasoning effort")],
+    searchTerms: [msg("new thread project provider reasoning effort"), "follow latest model family"],
   },
   {
     id: "fallback-model",

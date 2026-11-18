@@ -29,6 +29,7 @@ import {
   pendingScopedWritesAtom,
   planProjectOverridesClear,
   planScopedSettingsClear,
+  planScopedModelDefaults,
   planScopedSettingsPatch,
   scopedSettingsAreMixed,
   scopedSettingsSource,
@@ -151,6 +152,13 @@ export function useUpdateScopedSettings() {
       (current) => planScopedSettingsPatch(scope, current, patch, { deviceOnly }),
       options?.onFailed,
     );
+}
+
+export function useUpdateScopedModelDefaults() {
+  const { scope, environments } = useSettingsScope();
+  const run = useRunScopedPlan();
+  return (defaults: Parameters<typeof planScopedModelDefaults>[2]) =>
+    run(planScopedModelDefaults(scope, environments, defaults));
 }
 
 export function useClearScopedSettings() {
