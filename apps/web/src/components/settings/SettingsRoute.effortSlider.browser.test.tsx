@@ -15,7 +15,9 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  Outlet,
   RouterProvider,
+  useLocation,
 } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -34,6 +36,7 @@ import {
 import { render } from "../../../test/render";
 import { ComposerEffortColumn } from "../chat/ComposerModelEffort";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
+import { isAppModalPage } from "../sidebar/mainAppLocation";
 import { SidebarProvider } from "../ui/sidebar";
 import { __setClientSettingsForTests } from "../../hooks/useSettings";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
@@ -233,9 +236,21 @@ function ModelPickerEntry() {
   );
 }
 
+function ChatLayout() {
+  const modalOpen = useLocation({ select: ({ pathname }) => isAppModalPage(pathname) });
+  return (
+    <>
+      <div inert={modalOpen}>
+        <ModelPickerEntry />
+      </div>
+      <Outlet />
+    </>
+  );
+}
+
 const root = createRootRoute();
-const chat = createRoute({ getParentRoute: () => root, id: "_chat" });
-const picker = createRoute({ getParentRoute: () => chat, path: "/", component: ModelPickerEntry });
+const chat = createRoute({ getParentRoute: () => root, id: "_chat", component: ChatLayout });
+const index = createRoute({ getParentRoute: () => chat, path: "/" });
 const settingsOptions = {
   ...SettingsRoute.options,
   id: "/settings",
@@ -250,7 +265,7 @@ const threadsOptions = {
 };
 const routeTree = root.addChildren([
   chat.addChildren([
-    picker,
+    index,
     SettingsRoute.update(settingsOptions).addChildren([ThreadsRoute.update(threadsOptions)]),
   ]),
 ]);
@@ -541,10 +556,14 @@ it.each([
   expect(state.writeSettings).not.toHaveBeenCalled();
 });
 
-it("opens the requested slider from the model picker and handles its scroll target once", async () => {
+it("dismisses the model picker and opens the requested slider at its scroll target", async () => {
   setup({ effortSlider: fiveSteps });
   await using screen = await mountSettings("/");
-  await userEvent.click(page.getByRole("button", { name: "Choose model" }));
+  const modelPicker = page.getByRole("button", { name: "Choose model" });
+  const modelPickerTrigger = modelPicker.element();
+  await userEvent.click(modelPicker);
+  const modelSearch = page.getByPlaceholder("Search models...");
+  await expect.element(modelSearch).toHaveFocus();
   const settings = page.getByRole("button", { name: "Effort slider settings" });
   await expect.element(settings).toBeVisible();
   using scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView");
@@ -557,6 +576,11 @@ it("opens the requested slider from the model picker and handles its scroll targ
     machine: primaryId,
     effortSliderProvider: codex,
   });
+  expect(modelPickerTrigger.isConnected).toBe(true);
+  await expect.element(modelSearch).not.toBeInTheDocument();
+  await expect
+    .element(page.elementLocator(document.getElementById("effort-slider")!))
+    .toHaveFocus();
   await vi.waitFor(() => {
     const editor = measureEditor();
     expect(editor.scrollTop).toBeGreaterThan(0);

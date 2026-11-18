@@ -86,11 +86,12 @@ function lockBackgroundScroll(popup: HTMLElement | null) {
   };
 }
 
-/** What a docked effort column needs from its picker: the model it serves. */
+/** Picker state and actions for the docked effort column. */
 export const DockedPickerContext = createContext<{
   modelLabel: string;
   sliderActions: EffortSliderActions | null;
-}>({ modelLabel: "", sliderActions: null });
+  onRequestClose: () => void;
+}>({ modelLabel: "", sliderActions: null, onRequestClose: () => {} });
 
 /** A pick that brings options along, such as a favorite's saved effort. */
 export interface ModelPick {
@@ -201,6 +202,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       setUncontrolledIsMenuOpen(open);
     }
   };
+  const onRequestClose = () => setIsMenuOpen(false);
 
   /**
    * Focuses the selected reasoning level, else the first level. With `rows: "any"` it falls back
@@ -300,7 +302,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     slider: ModelPickerEffortSlider | null,
     sliderActions: EffortSliderActions | null,
   ) => (
-    <DockedPickerContext value={{ modelLabel: triggerTitle, sliderActions }}>
+    <DockedPickerContext value={{ modelLabel: triggerTitle, sliderActions, onRequestClose }}>
       <div className="flex max-h-(--available-height) flex-col">
         {slider ? <EffortSlider {...slider} /> : null}
         <div className="flex h-86.5 min-h-0 max-sm:h-auto max-sm:flex-col">
@@ -346,7 +348,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       {...(props.keybindings ? { keybindings: props.keybindings } : {})}
       modelOptionsByInstance={props.modelOptionsByInstance}
       terminalOpen={props.terminalOpen ?? false}
-      onRequestClose={() => setIsMenuOpen(false)}
+      onRequestClose={onRequestClose}
       {...(props.onOpenProviderSetup ? { onOpenProviderSetup: props.onOpenProviderSetup } : {})}
       getModelDisabledReason={(instanceId, model) =>
         props.disabled
