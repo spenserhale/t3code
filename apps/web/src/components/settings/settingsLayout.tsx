@@ -640,6 +640,7 @@ export function SettingsPageContainer({
   const targetId = hash.replace(/^#/, "") || null;
   const clearTargetHash = () => {
     void navigate({
+      search: true,
       hash: "",
       replace: true,
       resetScroll: false,
