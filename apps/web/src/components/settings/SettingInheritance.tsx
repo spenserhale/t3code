@@ -85,7 +85,13 @@ function formatValue(key: keyof ServerSettings, value: unknown): string {
     if (key === "backgroundActivity" && "profile" in value && typeof value.profile === "string") {
       return BACKGROUND_ACTIVITY_PROFILE_LABELS[value.profile] ?? value.profile;
     }
-    if ("model" in value && typeof value.model === "string") return value.model;
+    if ("model" in value && typeof value.model === "string") {
+      return key === "defaultModelSelection" &&
+        "followLatest" in value &&
+        value.followLatest === true
+        ? `Follow latest (from ${value.model})`
+        : value.model;
+    }
     if ("mode" in value && typeof value.mode === "string") {
       if (key === "worktreeCleanup") return value.mode === "off" ? "Off" : "Custom";
       return key === "sourceControlWritingStyle"

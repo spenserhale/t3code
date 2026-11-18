@@ -23,6 +23,7 @@ import {
   persistScopedSettingsPatch,
   planProjectOverridesClear,
   planScopedSettingsClear,
+  planScopedModelDefaults,
   planScopedSettingsPatch,
   scopedSettingsAreMixed,
   scopedSettingsSource,
@@ -103,6 +104,13 @@ export function useUpdateScopedSettings() {
   /** `onFailed` runs when any target rejects or drops the patch, so a draft can fall back. */
   return (patch: ScopedSettingsPatch, options?: { readonly onFailed?: () => void }) =>
     run(planScopedSettingsPatch(scope, environments, patch), options?.onFailed);
+}
+
+export function useUpdateScopedModelDefaults() {
+  const { scope, environments } = useSettingsScope();
+  const run = useRunScopedPlan();
+  return (defaults: Parameters<typeof planScopedModelDefaults>[2]) =>
+    run(planScopedModelDefaults(scope, environments, defaults));
 }
 
 export function useClearScopedSettings() {
