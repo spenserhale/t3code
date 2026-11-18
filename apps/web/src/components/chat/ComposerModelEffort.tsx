@@ -549,6 +549,7 @@ function NoEffortRow() {
 /** Neither shortcut takes focus from the search box the picker opened on. */
 function EffortSliderShortcuts(props: { actions: EffortSliderActions }) {
   const { actions } = props;
+  const { onRequestClose } = use(DockedPickerContext);
   const openSettings = useOpenModelShortcutsSettings(actions.settingsTarget);
   return (
     <div className="flex shrink-0 items-center gap-1 border-t border-border/70 px-2 py-1.5">
@@ -579,7 +580,10 @@ function EffortSliderShortcuts(props: { actions: EffortSliderActions }) {
               className="ms-auto"
               aria-label="Effort slider settings"
               onMouseDown={(event) => event.preventDefault()}
-              onClick={openSettings}
+              onClick={() => {
+                onRequestClose();
+                openSettings();
+              }}
             />
           }
         >
