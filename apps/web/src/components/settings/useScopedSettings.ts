@@ -9,7 +9,9 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import {
   DEFAULT_SERVER_SETTINGS,
+  type ModelSelection,
   type ProjectScopedServerSettingKey,
+  type ProviderDriverKind,
   type ServerSettings,
   type UnifiedSettings,
 } from "@t3tools/contracts";
@@ -24,6 +26,7 @@ import {
   planProjectOverridesClear,
   planScopedSettingsClear,
   planScopedSettingsPatch,
+  planScopedProviderEffortSliderWrite,
   scopedSettingsAreMixed,
   scopedSettingsSource,
   type ProjectOverrideEntry,
@@ -103,6 +106,13 @@ export function useUpdateScopedSettings() {
   /** `onFailed` runs when any target rejects or drops the patch, so a draft can fall back. */
   return (patch: ScopedSettingsPatch, options?: { readonly onFailed?: () => void }) =>
     run(planScopedSettingsPatch(scope, environments, patch), options?.onFailed);
+}
+
+export function useUpdateScopedProviderEffortSlider() {
+  const { targets } = useSettingsScope();
+  const run = useRunScopedPlan();
+  return (driver: ProviderDriverKind, steps: readonly ModelSelection[] | null) =>
+    run(planScopedProviderEffortSliderWrite(targets, driver, steps));
 }
 
 export function useClearScopedSettings() {

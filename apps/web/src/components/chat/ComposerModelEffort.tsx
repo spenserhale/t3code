@@ -520,7 +520,7 @@ function EffortSliderShortcuts(props: { actions: EffortSliderActions }) {
           </Button>
         </TooltipTrigger>
         <TooltipPopup side="top">
-          {actions.addDisabledReason ?? "Add this model and effort to the effort slider"}
+          {actions.addDisabledReason ?? `Add this model and effort to the ${actions.sliderLabel}`}
         </TooltipPopup>
       </Tooltip>
       <Tooltip>
@@ -545,10 +545,7 @@ function EffortSliderShortcuts(props: { actions: EffortSliderActions }) {
 }
 
 /** The model picker's effort column: the selected model's levels and its other options. */
-export function ComposerEffortColumn(props: {
-  traits: TraitsSelectionInput | null;
-  sliderActions?: EffortSliderActions | null;
-}) {
+export function ComposerEffortColumn(props: { traits: TraitsSelectionInput | null }) {
   const picker = use(DockedPickerContext);
   const visibility = props.traits ? getTraitsSectionVisibility(props.traits) : null;
   const controls =
@@ -576,7 +573,7 @@ export function ComposerEffortColumn(props: {
       >
         {props.traits ? <EffortLevels traits={props.traits} /> : <NoEffortRow />}
       </div>
-      {props.sliderActions ? <EffortSliderShortcuts actions={props.sliderActions} /> : null}
+      {picker.sliderActions ? <EffortSliderShortcuts actions={picker.sliderActions} /> : null}
     </>
   );
 }

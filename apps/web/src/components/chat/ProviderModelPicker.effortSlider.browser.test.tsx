@@ -1,8 +1,12 @@
 import {
+  DEFAULT_SERVER_SETTINGS,
+  EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ModelFavorite,
+  type ModelSelection,
   type ProviderOptionSelection,
+  type ServerSettings,
 } from "@t3tools/contracts";
 import { useState } from "react";
 import { expect, it, vi } from "vite-plus/test";
@@ -14,24 +18,35 @@ import { render } from "../../../test/render";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import type { EffortSliderStop } from "./EffortSlider";
 import { ProviderModelPicker } from "./ProviderModelPicker";
+import { ComposerEffortColumn } from "./ComposerModelEffort";
+import { useComposerEffortSlider } from "./useComposerEffortSlider";
 
 const state = vi.hoisted(() => ({
   favorites: [] as ModelFavorite[],
   effortSliderSupported: true,
+  settings: null as ServerSettings | null,
+  addStep: vi.fn(),
 }));
 
 vi.mock("~/hooks/useModelShortcuts", () => ({
   useEnvironmentModelShortcuts: () => ({
-    settings: null,
+    settings: state.settings,
     favorites: state.favorites,
     effortSliderSupported: state.effortSliderSupported,
+    providerEffortSlidersSupported: state.settings !== null,
+    effortSlider: state.settings?.effortSlider ?? [],
+    effortSliderSource: "environment",
+    favoritesSource: "environment",
   }),
+  useAddEffortSliderStep: () => state.addStep,
   useToggleModelFavorite: () => vi.fn(),
 }));
 
 function setup() {
   state.favorites = [];
   state.effortSliderSupported = true;
+  state.settings = null;
+  state.addStep.mockReset();
 }
 
 const instanceId = ProviderInstanceId.make("codex");
@@ -121,17 +136,20 @@ function Picker(props: {
       {...(props.withoutSlider
         ? {}
         : {
-            effortSlider: {
-              stops,
-              activeIndex,
-              valueText: active
-                ? `${active.modelLabel}, ${active.effortLabel.toLowerCase()} effort`
-                : "None",
-              onSelect: (index: number) => {
-                props.onSelectStop?.(index);
-                setCurrent({ model: steps[index]!.model, effort: steps[index]!.effort });
+            effortSliderForTab: () => ({
+              actions: null,
+              slider: {
+                stops,
+                activeIndex,
+                valueText: active
+                  ? `${active.modelLabel}, ${active.effortLabel.toLowerCase()} effort`
+                  : "None",
+                onSelect: (index: number) => {
+                  props.onSelectStop?.(index);
+                  setCurrent({ model: steps[index]!.model, effort: steps[index]!.effort });
+                },
               },
-            },
+            }),
           })}
       onInstanceModelChange={(_, model, pick) => {
         if (pick) props.onFavoritePick?.(model, pick.options);
@@ -150,6 +168,116 @@ function Picker(props: {
 }
 
 const slider = () => page.getByRole("slider", { name: "Effort slider" });
+
+const openCodeDriver = ProviderDriverKind.make("opencode");
+const openCodeId = ProviderInstanceId.make("opencode");
+const codexDriver = ProviderDriverKind.make("codex");
+const openCodeModels = [withLevels("code-a", "Code A", ["low", "high"])];
+const providerEntries = [
+  ...entries,
+  ...deriveProviderInstanceEntries([
+    {
+      ...entries[0]!.snapshot,
+      instanceId: openCodeId,
+      driver: openCodeDriver,
+      models: openCodeModels,
+    },
+  ]),
+];
+const providerOptions = new Map([...options, [openCodeId, [{ slug: "code-a", name: "Code A" }]]]);
+const selection = (
+  instanceId: ProviderInstanceId,
+  model: string,
+  effort: string,
+): ModelSelection => ({
+  instanceId,
+  model,
+  options: [{ id: "reasoningEffort", value: effort }],
+});
+
+function ScopedPicker() {
+  const [current, setCurrent] = useState(() => selection(openCodeId, "code-a", "low"));
+  const onProviderModelSelect: Parameters<
+    typeof useComposerEffortSlider
+  >[0]["onProviderModelSelect"] = (instanceId, model, options) =>
+    setCurrent({
+      instanceId,
+      model,
+      ...(options?.modelOptions ? { options: options.modelOptions } : {}),
+    });
+  const effortSliderForTab = useComposerEffortSlider({
+    environmentId: EnvironmentId.make("local"),
+    projectId: null,
+    instanceEntries: providerEntries,
+    modelOptionsByInstance: providerOptions,
+    lockedProvider: null,
+    lockedContinuationGroupKey: null,
+    suspended: false,
+    selectedModelSelection: current,
+    reportedModelSelection: null,
+    getModelDisabledReason: () => null,
+    onProviderModelSelect,
+  });
+  return (
+    <ProviderModelPicker
+      environmentId={null}
+      activeInstanceId={current.instanceId}
+      model={current.model}
+      lockedProvider={null}
+      instanceEntries={providerEntries}
+      modelOptionsByInstance={providerOptions}
+      triggerAriaLabel="Choose model"
+      effortSliderForTab={effortSliderForTab}
+      effortColumn={<ComposerEffortColumn traits={null} />}
+      onInstanceModelChange={(instanceId, model) => onProviderModelSelect(instanceId, model)}
+    />
+  );
+}
+
+it("switches sliders with the provider rail and falls back to Favorites for unconfigured providers", async () => {
+  setup();
+  state.favorites = [{ provider: instanceId, model: "luna" }];
+  state.settings = {
+    ...DEFAULT_SERVER_SETTINGS,
+    effortSlider: [selection(instanceId, "luna", "low"), selection(openCodeId, "code-a", "high")],
+    providerEffortSliders: {
+      [codexDriver]: [selection(instanceId, "sol", "medium"), selection(instanceId, "sol", "high")],
+    },
+  };
+  await using screen = await render(<ScopedPicker />);
+  await screen.getByRole("button", { name: "Choose model" }).click();
+  const search = page.getByPlaceholder("Search models...");
+  await expect.element(slider().getByText("Code A")).toBeVisible();
+
+  await page.getByRole("button", { name: "Codex", exact: true }).click();
+  await expect.element(slider().getByText("Sol model", { exact: true }).first()).toBeVisible();
+  await expect.element(slider().getByText("Code A")).not.toBeInTheDocument();
+  await expect.element(page.getByRole("button", { name: "Add to slider" })).toBeDisabled();
+  await expect.element(search).toHaveFocus();
+  await userEvent.keyboard("{ArrowRight}");
+  await expect.element(slider()).toHaveAttribute("aria-valuetext", "Sol model, medium effort");
+
+  await page.getByRole("button", { name: "OpenCode", exact: true }).click();
+  await expect.element(slider().getByText("Code A")).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Add to slider" })).toBeEnabled();
+  await page.getByRole("button", { name: "Add to slider" }).click();
+  expect(state.addStep).toHaveBeenLastCalledWith(selection(instanceId, "sol", "medium"), null);
+
+  state.settings = {
+    ...state.settings,
+    providerEffortSliders: {
+      ...state.settings.providerEffortSliders,
+      [openCodeDriver]: [
+        selection(openCodeId, "code-a", "low"),
+        selection(openCodeId, "code-a", "high"),
+      ],
+    },
+  };
+  await screen.rerender(<ScopedPicker />);
+  await expect.element(slider().getByText("Code A", { exact: true }).nth(1)).toBeVisible();
+  await page.getByRole("button", { name: "Favorites", exact: true }).click();
+  await expect.element(slider().getByText("Luna model", { exact: true })).toBeVisible();
+});
 
 it("steps the slider with Left and Right in an empty search and keeps focus there", async () => {
   setup();

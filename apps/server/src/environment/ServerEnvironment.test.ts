@@ -120,6 +120,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
           worktreesDirectory: true,
           threadAutoSettlementScope: true,
           effortSlider: true,
+          providerEffortSliders: true,
         });
       }
     }),

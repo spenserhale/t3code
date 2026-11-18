@@ -5,10 +5,15 @@ import {
   MAX_EFFORT_SLIDER_STEPS,
   type ModelSelection,
   type ProjectId,
+  type ProviderDriverKind,
   type ProviderInstanceId,
   type ServerSettings,
 } from "@t3tools/contracts";
-import { planModelShortcutWrite, resolveModelShortcuts } from "@t3tools/shared/modelShortcuts";
+import {
+  planModelShortcutWrite,
+  resolveModelShortcuts,
+  resolveProviderEffortSlider,
+} from "@t3tools/shared/modelShortcuts";
 import { Atom } from "effect/reactivity";
 import { use } from "react";
 
@@ -21,13 +26,11 @@ import {
 } from "./useSettings";
 
 const noSettingsAtom = Atom.make<ServerSettings | null>(null);
-const noSupportAtom = Atom.make(false);
-const effortSliderSupportAtom = Atom.family((environmentId: EnvironmentId) =>
+const noCapabilitiesAtom = Atom.make<undefined>(undefined);
+const modelShortcutsCapabilitiesAtom = Atom.family((environmentId: EnvironmentId) =>
   Atom.make(
-    (get) =>
-      get(serverEnvironment.configValueAtom(environmentId))?.environment.capabilities
-        .effortSlider === true,
-  ).pipe(Atom.withLabel(`web-effort-slider-support:${environmentId}`)),
+    (get) => get(serverEnvironment.configValueAtom(environmentId))?.environment.capabilities,
+  ).pipe(Atom.withLabel(`web-model-shortcuts-capabilities:${environmentId}`)),
 );
 
 /**
@@ -41,13 +44,14 @@ export function useEnvironmentModelShortcuts(
   const settings = useAtomValue(
     environmentId ? serverEnvironment.settingsValueAtom(environmentId) : noSettingsAtom,
   );
-  const effortSliderSupported = useAtomValue(
-    environmentId ? effortSliderSupportAtom(environmentId) : noSupportAtom,
+  const capabilities = useAtomValue(
+    environmentId ? modelShortcutsCapabilitiesAtom(environmentId) : noCapabilitiesAtom,
   );
   const legacyFavorites = useClientSettings((client) => client.favorites);
   return {
     settings,
-    effortSliderSupported,
+    effortSliderSupported: capabilities?.effortSlider === true,
+    providerEffortSlidersSupported: capabilities?.providerEffortSliders === true,
     ...resolveModelShortcuts(settings ?? DEFAULT_SERVER_SETTINGS, projectId, {
       favorites: legacyFavorites,
     }),
@@ -94,18 +98,31 @@ export function useToggleModelFavorite(
   };
 }
 
-/** Appends a step to the slider, in the project's own list when it has one. */
 export function useAddEffortSliderStep(
   environmentId: EnvironmentId | null,
   projectId: ProjectId | null,
 ) {
   const registry = use(RegistryContext);
   const save = useUpdateEnvironmentModelPreferences(environmentId);
-  return async (step: ModelSelection) => {
+  return async (step: ModelSelection, driver: ProviderDriverKind | null) => {
     const settings = environmentId
       ? registry.get(serverEnvironment.settingsValueAtom(environmentId))
       : null;
     if (!settings) return;
+    if (driver !== null) {
+      const slider = resolveProviderEffortSlider(settings, projectId, driver);
+      if (!slider || slider.steps.length >= MAX_EFFORT_SLIDER_STEPS) return;
+      await save({
+        setProviderEffortSliders: [
+          {
+            driver,
+            ...(slider.source === "project" && projectId !== null ? { projectId } : {}),
+            steps: [...slider.steps, step],
+          },
+        ],
+      });
+      return;
+    }
     const { effortSlider } = resolveModelShortcuts(settings, projectId);
     if (effortSlider.length >= MAX_EFFORT_SLIDER_STEPS) return;
     await save(

@@ -155,10 +155,13 @@ function SettingsRouteLayout() {
         // Send every axis so retain middleware recognizes "all" as an explicit target.
         void navigate({
           to: pathname,
-          search: () => ({
+          search: (previous) => ({
             project: next.project,
             machine: next.machine,
             checkout: next.checkout,
+            ...(pathname === "/settings/threads" && "effortSliderProvider" in previous
+              ? { effortSliderProvider: previous.effortSliderProvider }
+              : {}),
           }),
           hash: "",
           resetScroll: false,

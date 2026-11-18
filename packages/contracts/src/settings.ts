@@ -373,6 +373,7 @@ const StoredEffortSliderSteps = Schema.Array(ModelSelection);
 export const EffortSliderSteps = StoredEffortSliderSteps.check(
   Schema.isMaxLength(MAX_EFFORT_SLIDER_STEPS),
 );
+const ProviderEffortSliders = Schema.Record(ProviderDriverKind, StoredEffortSliderSteps);
 export const ProviderModelPreferences = Schema.Record(
   ProviderInstanceId,
   Schema.Struct({
@@ -1237,10 +1238,14 @@ export const ProjectSettingsOverrides = Schema.Struct({
   speechProjectCustomWords: Schema.optionalKey(SpeechCustomWords),
   favorites: Schema.optionalKey(ModelFavorites),
   effortSlider: Schema.optionalKey(StoredEffortSliderSteps),
+  providerEffortSliders: Schema.optionalKey(ProviderEffortSliders),
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),
-} satisfies Record<ProjectScopedServerSettingKey | "providerInstances", unknown>);
+} satisfies Record<
+  ProjectScopedServerSettingKey | "providerInstances" | "providerEffortSliders",
+  unknown
+>);
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
 // Whole-entry writers must round-trip unknown keys; keep the type closed to catch misspellings.
@@ -1363,6 +1368,7 @@ export const ServerSettings = Schema.Struct({
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   effortSlider: StoredEffortSliderSteps.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  providerEffortSliders: Schema.optionalKey(ProviderEffortSliders),
   providerModelPreferences: Schema.NullOr(ProviderModelPreferences).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -1793,6 +1799,15 @@ export const ServerSettingsPatch = Schema.Struct({
   reorderModelFavorites: Schema.optionalKey(Schema.Array(ModelReference)),
   favorites: Schema.optionalKey(ModelFavorites),
   effortSlider: Schema.optionalKey(EffortSliderSteps),
+  setProviderEffortSliders: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        driver: ProviderDriverKind,
+        projectId: Schema.optionalKey(ProjectId),
+        steps: Schema.NullOr(EffortSliderSteps),
+      }),
+    ),
+  ),
   providerModelPreferences: Schema.optionalKey(ProviderModelPreferences),
   // Applied under the settings service's write lock, only while still unset.
   migrateModelPreferences: Schema.optionalKey(

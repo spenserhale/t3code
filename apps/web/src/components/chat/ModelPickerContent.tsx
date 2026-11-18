@@ -25,6 +25,7 @@ import {
   type RefObject,
 } from "react";
 import type { ModelPickerEffortSlider } from "./EffortSlider";
+import type { ComposerEffortSliderForTab, EffortSliderActions } from "./useComposerEffortSlider";
 import { ModelListRow } from "./ModelListRow";
 import type { ModelPick } from "./ProviderModelPicker";
 import { ModelPickerSidebar } from "./ModelPickerSidebar";
@@ -340,12 +341,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string, pick?: ModelPick) => void;
   /** Lists the favorites this project sees: its own override of them, else the environment's. */
   projectId?: ProjectId | null;
-  /** Left and Right in an empty search step along it. */
-  effortSlider?: ModelPickerEffortSlider;
+  preferActiveProvider?: boolean;
+  effortSliderForTab?: ComposerEffortSliderForTab;
   /** The owning popup moves focus here when it opens (its `initialFocus`). */
   searchInputRef: RefObject<HTMLInputElement | null>;
-  /** Sits beside an effort column: fills the shared row, and stacks above it on narrow screens. */
-  docked?: boolean;
+  renderDockedLayout?: (
+    modelList: ReactNode,
+    slider: ModelPickerEffortSlider | null,
+    sliderActions: EffortSliderActions | null,
+  ) => ReactNode;
+  onPickWithoutEffort?: () => void;
   /** Right at the end of the search text moves into the popup's effort column. */
   onFocusEffort?: () => void;
   /** Closes the list column, inside the popup's fixed height. */
@@ -362,6 +367,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     onRequestClose,
     onOpenProviderSetup,
   } = props;
+  const docked = props.renderDockedLayout !== undefined;
   const [searchQuery, setSearchQuery] = useState("");
   const modelListRef = useRef<LegendListRef | null>(null);
   const pickerContentRef = useRef<HTMLDivElement>(null);
@@ -418,6 +424,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | "favorites">(
     () => {
       if (
+        props.preferActiveProvider ||
         props.lockedProvider !== null ||
         activeInstanceHasSelectableUnavailableModel ||
         activeInstanceNeedsSetup
@@ -427,6 +434,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       return favorites.length > 0 ? "favorites" : props.activeInstanceId;
     },
   );
+  const tabDriver =
+    selectedInstanceId === "favorites"
+      ? null
+      : (instanceEntries.find((entry) => entry.instanceId === selectedInstanceId)?.driverKind ??
+        null);
+  const effort = props.effortSliderForTab?.(tabDriver);
+  const slider = effort?.slider ?? null;
   const favoritesSet = new Set(favorites.map((fav) => providerModelKey(fav.provider, fav.model)));
   const [expandedLegacyInstances, setExpandedLegacyInstances] = useState(
     () =>
@@ -498,7 +512,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     onInstanceModelChange(instanceId, resolvedModel, pick);
     // The search box keeps focus rather than the effort column when the pick brought its own
     // effort, and while the slider is up, since the person is steering from there.
-    if (pick || props.effortSlider) focusSearchInput();
+    if (pick || slider) focusSearchInput();
+    else props.onPickWithoutEffort?.();
     return resolvedModel;
   };
 
@@ -846,18 +861,22 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     announce(`Model: ${name ?? selectedSlug}`, "model-picker");
   };
 
-  return (
+  const renderLayout = (modelList: ReactNode) =>
+    props.renderDockedLayout
+      ? props.renderDockedLayout(modelList, slider, effort?.actions ?? null)
+      : modelList;
+  return renderLayout(
     <TooltipProvider delay={0}>
       <WindowKeyDownListener onKeyDown={onWindowKeyDown} />
       <div
         ref={pickerContentRef}
         className={cn(
           "relative flex w-screen max-w-90 flex-row overflow-hidden",
-          props.docked ? "max-sm:h-56 max-sm:w-full max-sm:max-w-none" : "max-h-86.5",
+          docked ? "max-sm:h-56 max-sm:w-full max-sm:max-w-none" : "max-h-86.5",
         )}
         // Docked, the popup sets the height; a minimum here would overflow short windows.
         style={
-          props.docked
+          docked
             ? undefined
             : isSearching
               ? { height: searchHeight }
@@ -947,7 +966,6 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   e.stopPropagation();
                   return;
                 }
-                const slider = props.effortSlider;
                 if (
                   slider &&
                   searchQuery.length === 0 &&
@@ -1117,6 +1135,6 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           </div>
         </Combobox>
       </div>
-    </TooltipProvider>
+    </TooltipProvider>,
   );
 });

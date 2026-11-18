@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  DEFAULT_SERVER_SETTINGS,
   type ModelSelection,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -21,30 +22,40 @@ const high = [{ id: "reasoningEffort", value: "high" }];
 const state = vi.hoisted(() => ({
   favorites: [] as ModelFavorite[],
   effortSlider: [] as ModelSelection[],
+  providerEffortSliders: undefined as (typeof DEFAULT_SERVER_SETTINGS)["providerEffortSliders"],
   source: "environment" as "environment" | "project",
   projectScope: false,
   /** All environments is selected, and a second environment is connected beside the first. */
   allEnvironments: false,
   supported: true,
+  providerSlidersSupported: false,
   /** The environment keeps its favorites on the server, instead of this client's old copy. */
   listOnServer: true,
   updateSettings: vi.fn<(patch: ScopedSettingsPatch) => void>(),
   clearOverrides: vi.fn<(keys: readonly string[]) => void>(),
+  updateProviderSlider: vi.fn(),
 }));
 
-function setup(overrides: Partial<Omit<typeof state, "updateSettings" | "clearOverrides">> = {}) {
+function setup(
+  overrides: Partial<
+    Omit<typeof state, "updateSettings" | "clearOverrides" | "updateProviderSlider">
+  > = {},
+) {
   Object.assign(state, {
     favorites: [],
     effortSlider: [],
+    providerEffortSliders: undefined,
     source: "environment",
     projectScope: false,
     allEnvironments: false,
     supported: true,
+    providerSlidersSupported: false,
     listOnServer: true,
     ...overrides,
   });
   state.updateSettings.mockReset();
   state.clearOverrides.mockReset();
+  state.updateProviderSlider.mockReset();
 }
 
 vi.mock("~/hooks/useModelShortcuts", () => ({
@@ -55,20 +66,24 @@ vi.mock("~/hooks/useModelShortcuts", () => ({
   }),
   useToggleModelFavorite: () => vi.fn(),
 }));
-vi.mock(import("@tanstack/react-router"), async (original) => ({
-  ...(await original()),
-  useNavigate: (() => vi.fn()) as never,
-}));
+const scopedSliderSettings = () => ({
+  ...DEFAULT_SERVER_SETTINGS,
+  effortSlider: state.effortSlider,
+  ...(state.providerEffortSliders ? { providerEffortSliders: state.providerEffortSliders } : {}),
+});
 vi.mock(import("./useScopedSettings"), async (original) => ({
   ...(await original()),
   useScopedSettings: (() => ({
     ...DEFAULT_UNIFIED_SETTINGS,
+    ...scopedSliderSettings(),
     favorites: state.favorites,
     effortSlider: state.effortSlider,
   })) as never,
   useScopedSettingsMixed: () => false,
   useScopedSettingSource: () => state.source,
   useUpdateScopedSettings: () => state.updateSettings,
+  useScopedSettingsWriteAllowed: () => true,
+  useUpdateScopedProviderEffortSlider: () => state.updateProviderSlider,
   useClearScopedSettings: () => state.clearOverrides,
 }));
 vi.mock(import("./useScopedModelAvailability"), async (original) => ({
@@ -78,12 +93,14 @@ vi.mock(import("./useScopedModelAvailability"), async (original) => ({
 vi.mock(import("./SettingsScopeContext"), async (original) => ({
   ...(await original()),
   useSettingsScope: (() => ({
+    search: {},
     scope: state.projectScope
       ? { kind: "project", environmentIds: [environmentId] }
       : state.allEnvironments
         ? { kind: "all", environmentIds: [environmentId, otherEnvironmentId] }
         : { kind: "environment", environmentId, environmentIds: [environmentId] },
     target: { environmentId, projectId: null },
+    targets: [{ environmentId, projectId: null, settings: scopedSliderSettings() }],
     connectedEnvironments: [
       environmentId,
       ...(state.allEnvironments ? [otherEnvironmentId] : []),
@@ -92,7 +109,11 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
       label: id === environmentId ? "Mac mini" : "Laptop",
       serverConfig: {
         settings: { favorites: state.listOnServer ? state.favorites : null },
-        environment: { capabilities: state.supported ? { effortSlider: true } : {} },
+        environment: {
+          capabilities: state.supported
+            ? { effortSlider: true, providerEffortSliders: state.providerSlidersSupported }
+            : {},
+        },
       },
     })),
   })) as never,
@@ -142,6 +163,19 @@ vi.mock(import("../../state/environments"), async (original) => ({
             auth: { status: "authenticated" },
             checkedAt: "2026-01-01T00:00:00.000Z",
             models: [withLevels("luna", "Luna"), withLevels("sol", "Sol")],
+            slashCommands: [],
+            skills: [],
+          },
+          {
+            instanceId: ProviderInstanceId.make("opencode"),
+            driver: ProviderDriverKind.make("opencode"),
+            enabled: true,
+            installed: true,
+            version: null,
+            status: "ready",
+            auth: { status: "authenticated" },
+            checkedAt: "2026-01-01T00:00:00.000Z",
+            models: [withLevels("open", "OpenCode model")],
             slashCommands: [],
             skills: [],
           },
@@ -253,6 +287,35 @@ it("moves a slider step as one whole list", async () => {
   await userEvent.click(page.getByRole("button", { name: "Move Sol up" }));
   expect(state.updateSettings).toHaveBeenLastCalledWith({ effortSlider: [steps[1], steps[0]] });
   await expect.element(page.getByRole("list", { name: "Effort slider steps" })).toBeVisible();
+});
+
+it("opens the requested provider editor, restricts model choices, and can clear the override", async () => {
+  const driver = ProviderDriverKind.make("codex");
+  setup({
+    effortSlider: steps,
+    providerSlidersSupported: true,
+    providerEffortSliders: { [driver]: [steps[0]!] },
+  });
+  await using screen = await render(<ModelShortcutsSettings />, {
+    router: "/?effortSliderProvider=codex",
+  });
+  const picker = screen.getByRole("combobox", { name: "Slider to edit" });
+  await expect.element(picker).toHaveTextContent("Codex");
+  await screen.getByRole("button", { name: "Add a step" }).click();
+  const solOption = page.getByRole("option", { name: /Sol.*Codex/ });
+  await expect.element(solOption).toBeVisible();
+  await expect
+    .element(page.getByRole("button", { name: "OpenCode", exact: true }))
+    .not.toBeInTheDocument();
+  await solOption.click();
+  expect(state.updateProviderSlider).toHaveBeenLastCalledWith(driver, [
+    steps[0],
+    { instanceId, model: "sol" },
+  ]);
+  expect(state.updateSettings).not.toHaveBeenCalled();
+
+  await screen.getByRole("button", { name: "Use Favorites slider" }).click();
+  expect(state.updateProviderSlider).toHaveBeenLastCalledWith(driver, null);
 });
 
 it("refuses to make one step repeat another, since the arrow keys could not tell them apart", async () => {

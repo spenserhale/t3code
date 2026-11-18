@@ -165,7 +165,7 @@ export function ComposerControlsBar(props: {
     onPromptEdit,
   });
   const effort = describeComposerEffort(traitsInput, props.effortDisplay, controlSize);
-  const effortSlider = useComposerEffortSlider({
+  const effortSliderForTab = useComposerEffortSlider({
     environmentId,
     projectId,
     suspended: multipleModelSelections !== null,
@@ -237,10 +237,8 @@ export function ComposerControlsBar(props: {
         pickerOwnsModeShortcut ? "composer.effort composer.mode" : "composer.effort"
       }
       projectId={projectId}
-      {...(effortSlider.slider ? { effortSlider: effortSlider.slider } : {})}
-      effortColumn={
-        <ComposerEffortColumn traits={traitsInput} sliderActions={effortSlider.actions} />
-      }
+      effortSliderForTab={effortSliderForTab}
+      effortColumn={<ComposerEffortColumn traits={traitsInput} />}
       footer={
         <ComposerPickerFooter
           traits={traitsInput}

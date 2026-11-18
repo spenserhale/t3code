@@ -10,6 +10,8 @@ import {
   type ProjectId,
   type ProjectScopedServerSettingKey,
   type ProjectSettingsOverrides,
+  type ModelSelection,
+  type ProviderDriverKind,
   ServerSettings,
   type T3ProjectFile,
   type ServerSettingsPatch,
@@ -182,6 +184,34 @@ interface ScopedServerWrite {
   readonly label: string;
   readonly patch: ServerSettingsPatch;
   readonly previous: ServerSettings;
+}
+
+export function planScopedProviderEffortSliderWrite(
+  targets: readonly ScopedSettingsTarget[],
+  driver: ProviderDriverKind,
+  steps: readonly ModelSelection[] | null,
+) {
+  const writes = new Map<EnvironmentId, ScopedServerWrite>();
+  for (const { environmentId, label, projectId, settings } of targets) {
+    const existing = writes.get(environmentId);
+    writes.set(environmentId, {
+      environmentId,
+      label,
+      previous: settings,
+      patch: {
+        setProviderEffortSliders: [
+          ...(existing?.patch.setProviderEffortSliders ?? []),
+          { driver, ...(projectId === null ? {} : { projectId }), steps },
+        ],
+      },
+    });
+  }
+  return {
+    clientPatch: {},
+    hasClientWrite: false,
+    serverWrites: [...writes.values()],
+    unavailableReason: writes.size > 0 ? null : "Connect an environment to save this slider.",
+  };
 }
 
 function projectOverrideWrites(

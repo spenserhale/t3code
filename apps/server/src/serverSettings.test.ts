@@ -254,6 +254,41 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       });
     }).pipe(Effect.provide(layerServerSettings())),
   );
+  it.effect("persists independent provider sliders in the environment and project settings", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const driver = ProviderDriverKind.make("codex");
+      const provider = ProviderInstanceId.make("codex_work");
+      const projectId = ProjectId.make("project-a");
+      const steps = [createModelSelection(provider, "luna"), createModelSelection(provider, "sol")];
+      yield* service.updateSettings({
+        effortSlider: [steps[0]!],
+        projectSettingsOverrides: { [projectId]: { defaultAutoPull: true } },
+        setProviderEffortSliders: [
+          { driver, steps },
+          { driver, projectId, steps: [...steps].reverse() },
+        ],
+      });
+      const saved = yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath));
+      assert.deepEqual(saved.effortSlider, [steps[0]!]);
+      assert.deepEqual(saved.providerEffortSliders, { [driver]: steps });
+      assert.deepEqual(saved.projectSettingsOverrides[projectId], {
+        defaultAutoPull: true,
+        providerEffortSliders: { [driver]: [...steps].reverse() },
+      });
+
+      yield* service.updateSettings({
+        setProviderEffortSliders: [{ driver, projectId, steps: null }],
+      });
+      const afterReset = yield* decodeServerSettingsJson(
+        yield* fs.readFileString(config.settingsPath),
+      );
+      assert.deepEqual(afterReset.providerEffortSliders, { [driver]: steps });
+      assert.deepEqual(afterReset.projectSettingsOverrides[projectId], { defaultAutoPull: true });
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
   it.effect("migrates saved token delivery to paragraph buffering without resetting settings", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

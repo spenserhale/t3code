@@ -1,6 +1,13 @@
 import { effortSliderIsShown, stableListKeys } from "@t3tools/client-runtime/effort-slider";
-import type { EnvironmentId, ModelSelection, ProjectId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type ModelSelection,
+  type ProjectId,
+  PROVIDER_DISPLAY_NAMES,
+  type ProviderDriverKind,
+} from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { resolveProviderEffortSlider } from "@t3tools/shared/modelShortcuts";
 
 import { useAddEffortSliderStep, useEnvironmentModelShortcuts } from "~/hooks/useModelShortcuts";
 import { announce } from "~/lib/announce";
@@ -19,13 +26,20 @@ export interface EffortSliderActions {
   /** Why the selected model and effort cannot be added; null when they can. */
   readonly addDisabledReason: string | null;
   readonly onAdd: () => void;
+  readonly sliderLabel: string;
   /** What the settings link opens: the project's own list when it is the one in use. */
   readonly settingsTarget: {
     readonly environmentId: EnvironmentId;
     readonly projectId: ProjectId | null;
     readonly projectOverrides: boolean;
+    readonly driver: ProviderDriverKind | null;
   };
 }
+
+export type ComposerEffortSliderForTab = (driver: ProviderDriverKind | null) => {
+  slider: ModelPickerEffortSlider | null;
+  actions: EffortSliderActions | null;
+} | null;
 
 function describeEffort(modelLabel: string, effortLabel: string | null) {
   return effortLabel === null ? modelLabel : `${modelLabel}, ${effortLabel.toLowerCase()} effort`;
@@ -50,78 +64,99 @@ export function useComposerEffortSlider(
       options?: ProviderModelSelectOptions,
     ) => void;
   },
-): { slider: ModelPickerEffortSlider | null; actions: EffortSliderActions | null } {
+): ComposerEffortSliderForTab {
   const { environmentId, projectId, selectedModelSelection } = input;
-  const { effortSlider, effortSliderSupported, favoritesSource, effortSliderSource } =
-    useEnvironmentModelShortcuts(environmentId, projectId);
+  const shortcuts = useEnvironmentModelShortcuts(environmentId, projectId);
   const addStep = useAddEffortSliderStep(environmentId, projectId);
-  if (!effortSliderSupported || input.suspended) return { slider: null, actions: null };
+  return (tabDriver) => {
+    if (!shortcuts.effortSliderSupported || input.suspended) return null;
 
-  const steps = resolveComposerEffortSteps(effortSlider, input);
-  const activeIndex = findActiveComposerEffortStep(
-    steps,
-    selectedModelSelection,
-    input.instanceEntries,
-    input.reportedModelSelection,
-  );
-  const active = activeIndex === null ? null : steps[activeIndex];
-  const current = currentEffortOf(
-    selectedModelSelection,
-    input.instanceEntries,
-    input.reportedModelSelection,
-  );
-  const stopKeys = stableListKeys(steps.map((step) => step.identity));
+    const driver = shortcuts.providerEffortSlidersSupported ? tabDriver : null;
+    const providerSlider =
+      shortcuts.settings && driver !== null
+        ? resolveProviderEffortSlider(shortcuts.settings, projectId, driver)
+        : null;
+    const sliderDriver = providerSlider ? driver : null;
+    const configured = providerSlider?.steps ?? shortcuts.effortSlider;
+    const driverLabel =
+      sliderDriver === null ? null : (PROVIDER_DISPLAY_NAMES[sliderDriver] ?? sliderDriver);
+    const steps = resolveComposerEffortSteps(configured, input, sliderDriver);
+    const activeIndex = findActiveComposerEffortStep(
+      steps,
+      selectedModelSelection,
+      input.instanceEntries,
+      input.reportedModelSelection,
+    );
+    const active = activeIndex === null ? null : steps[activeIndex];
+    const current = currentEffortOf(
+      selectedModelSelection,
+      input.instanceEntries,
+      input.reportedModelSelection,
+    );
+    const stopKeys = stableListKeys(steps.map((step) => step.identity));
 
-  const slider: ModelPickerEffortSlider | null = effortSliderIsShown(steps)
-    ? {
-        stops: steps.map((step, index) => ({
-          key: stopKeys[index]!,
-          modelLabel: step.modelLabel,
-          effortLabel: step.effortLabel,
-          unusableReason: step.unusableReason,
-        })),
-        activeIndex,
-        valueText: active
-          ? describeEffort(active.modelLabel, active.effortLabel)
-          : "No step chosen",
-        onSelect: (index) => {
-          const step = steps[index];
-          if (!step || step.unusableReason !== null || index === activeIndex) return;
-          input.onProviderModelSelect(step.selection.instanceId, step.selection.model, {
-            focusComposer: false,
-            ...(step.selection.options?.length ? { modelOptions: step.selection.options } : {}),
+    const slider: ModelPickerEffortSlider | null = effortSliderIsShown(steps)
+      ? {
+          stops: steps.map((step, index) => ({
+            key: stopKeys[index]!,
+            modelLabel: step.modelLabel,
+            effortLabel: step.effortLabel,
+            unusableReason: step.unusableReason,
+          })),
+          activeIndex,
+          valueText: active
+            ? describeEffort(active.modelLabel, active.effortLabel)
+            : "No step chosen",
+          onSelect: (index) => {
+            const step = steps[index];
+            if (!step || step.unusableReason !== null || index === activeIndex) return;
+            input.onProviderModelSelect(step.selection.instanceId, step.selection.model, {
+              focusComposer: false,
+              ...(step.selection.options?.length ? { modelOptions: step.selection.options } : {}),
+            });
+            announce(describeEffort(step.modelLabel, step.effortLabel), "effort-slider");
+          },
+        }
+      : null;
+
+    const selectedDriver = input.instanceEntries.find(
+      (entry) => entry.instanceId === selectedModelSelection.instanceId,
+    )?.driverKind;
+    const addDisabledReason =
+      sliderDriver !== null && selectedDriver !== sliderDriver
+        ? `Choose a ${driverLabel} model to add to this slider`
+        : effortSliderAddDisabledReason({
+            stepCount: configured.length,
+            activeIndex,
+            selectedModelKnown: current.model !== undefined,
           });
-          announce(describeEffort(step.modelLabel, step.effortLabel), "effort-slider");
+    return {
+      slider,
+      actions: {
+        addDisabledReason,
+        sliderLabel: driverLabel === null ? "Favorites slider" : `${driverLabel} slider`,
+        onAdd: () => {
+          if (addDisabledReason !== null) return;
+          void addStep(
+            createModelSelection(
+              selectedModelSelection.instanceId,
+              selectedModelSelection.model,
+              current.effort
+                ? [{ id: current.effort.descriptorId, value: current.effort.value }]
+                : undefined,
+            ),
+            sliderDriver,
+          );
         },
-      }
-    : null;
-
-  const addDisabledReason = effortSliderAddDisabledReason({
-    stepCount: effortSlider.length,
-    activeIndex,
-    selectedModelKnown: current.model !== undefined,
-  });
-  return {
-    slider,
-    actions: {
-      addDisabledReason,
-      onAdd: () => {
-        if (addDisabledReason !== null) return;
-        void addStep(
-          createModelSelection(
-            selectedModelSelection.instanceId,
-            selectedModelSelection.model,
-            current.effort
-              ? [{ id: current.effort.descriptorId, value: current.effort.value }]
-              : undefined,
-          ),
-        );
+        settingsTarget: {
+          environmentId,
+          projectId,
+          projectOverrides:
+            (providerSlider?.source ?? shortcuts.effortSliderSource) === "project" ||
+            shortcuts.favoritesSource === "project",
+          driver,
+        },
       },
-      settingsTarget: {
-        environmentId,
-        projectId,
-        projectOverrides: favoritesSource === "project" || effortSliderSource === "project",
-      },
-    },
+    };
   };
 }

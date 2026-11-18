@@ -3,6 +3,7 @@ import {
   EnvironmentAuthorizationError,
   EnvironmentId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   type ServerSettings,
 } from "@t3tools/contracts";
@@ -15,6 +16,7 @@ import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
 import {
   persistScopedSettingsPatch,
   planProjectOverridesClear,
+  planScopedProviderEffortSliderWrite,
   planScopedSettingsClear,
   planScopedSettingsPatch,
   scopedIdleCompaction,
@@ -142,6 +144,30 @@ describe("scoped settings targets", () => {
 });
 
 describe("scoped settings writes", () => {
+  it("targets each connected checkout with an edit for only the chosen provider", () => {
+    const driver = ProviderDriverKind.make("opencode");
+    const projectTargets = resolveScopedSettingsTargets(project, [laptop, server]);
+    const plan = planScopedProviderEffortSliderWrite(projectTargets, driver, null);
+    expect(plan.serverWrites.map(({ environmentId, patch }) => ({ environmentId, patch }))).toEqual(
+      [
+        {
+          environmentId: server.environmentId,
+          patch: { setProviderEffortSliders: [{ driver, projectId, steps: null }] },
+        },
+        {
+          environmentId: laptop.environmentId,
+          patch: {
+            setProviderEffortSliders: [{ driver, projectId: laptopProjectId, steps: null }],
+          },
+        },
+      ],
+    );
+    const environmentTargets = resolveScopedSettingsTargets(named, [server]);
+    expect(
+      planScopedProviderEffortSliderWrite(environmentTargets, driver, null).serverWrites[0]?.patch,
+    ).toEqual({ setProviderEffortSliders: [{ driver, steps: null }] });
+  });
+
   it("edits the effective machine policy without changing other machines' rules", () => {
     const custom = environment("Laptop", {
       settings: {

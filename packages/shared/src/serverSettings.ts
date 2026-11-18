@@ -279,16 +279,49 @@ function mergeProjectSettingsOverridesPatch(
       continue;
     }
     const storedProviderInstances = current[projectId]?.providerInstances;
+    const storedProviderEffortSliders = current[projectId]?.providerEffortSliders;
+    // Slider edits have their own delta. A whole-entry write may contain a stale copy.
+    const { providerEffortSliders: _sliders, ...overrides } = entry;
     next.set(projectId, {
       // Preserve downgraded storage, but reject new unknown writes so clients can detect unsupported settings.
       ...pickOverrideKeys(current[projectId], false),
-      ...pickOverrideKeys(entry, true),
+      ...pickOverrideKeys(overrides, true),
       ...(Object.hasOwn(entry, "providerInstances") || storedProviderInstances === undefined
         ? {}
         : { providerInstances: storedProviderInstances }),
+      ...(storedProviderEffortSliders === undefined
+        ? {}
+        : { providerEffortSliders: storedProviderEffortSliders }),
     });
   }
   return Object.fromEntries(next);
+}
+
+function patchProviderEffortSliders(
+  settings: ServerSettings,
+  edits: ServerSettingsPatch["setProviderEffortSliders"],
+): ServerSettings {
+  let next = settings;
+  for (const { driver, steps, projectId } of edits ?? []) {
+    const patch = { [driver]: steps };
+    if (projectId === undefined) {
+      const { providerEffortSliders, ...rest } = next;
+      const sliders = mergeSettingsEntries(providerEffortSliders ?? {}, patch);
+      next = Object.keys(sliders).length === 0 ? rest : { ...rest, providerEffortSliders: sliders };
+      continue;
+    }
+    const { providerEffortSliders, ...rest } = next.projectSettingsOverrides[projectId] ?? {};
+    const sliders = mergeSettingsEntries(providerEffortSliders ?? {}, patch);
+    const entry =
+      Object.keys(sliders).length === 0 ? rest : { ...rest, providerEffortSliders: sliders };
+    next = {
+      ...next,
+      projectSettingsOverrides: mergeSettingsEntries(next.projectSettingsOverrides, {
+        [projectId]: Object.keys(entry).length === 0 ? null : entry,
+      }),
+    };
+  }
+  return next;
 }
 
 export function deriveLegacyProjectOverrides(
@@ -428,6 +461,7 @@ export function applyServerSettingsPatch(
     migrateModelPreferences,
     setModelFavorites,
     reorderModelFavorites,
+    setProviderEffortSliders,
     setModelsHidden,
     setProviderModelOrder,
     providerModelPreferences,
@@ -709,9 +743,13 @@ export function applyServerSettingsPatch(
   const resolvedBackgroundActivity = resolveBackgroundActivitySettings(
     normalizedBackgroundActivity,
   );
+  const nextWithSliders = patchProviderEffortSliders(
+    nextWithReplacementsBase,
+    setProviderEffortSliders,
+  );
   const nextWithReplacements = {
-    ...withIdleCompaction(nextWithReplacementsBase, patchedIdleCompaction(current, patch)),
-    ...deriveLegacyProjectOverrides(nextWithReplacementsBase),
+    ...withIdleCompaction(nextWithSliders, patchedIdleCompaction(current, patch)),
+    ...deriveLegacyProjectOverrides(nextWithSliders),
     backgroundActivity: normalizedBackgroundActivity,
     automaticGitFetchInterval: resolvedBackgroundActivity.automaticGitFetchInterval,
     providerHealthRefreshInterval: resolvedBackgroundActivity.providerHealthRefreshInterval,
