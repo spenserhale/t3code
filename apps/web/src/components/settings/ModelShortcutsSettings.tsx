@@ -572,7 +572,9 @@ export function ModelShortcutsSettings() {
                     void navigate({
                       to: "/settings/threads",
                       search: {
-                        ...search,
+                        project: search.project,
+                        machine: search.machine,
+                        checkout: search.checkout,
                         ...(isProviderDriverKind(value) ? { effortSliderProvider: value } : {}),
                       },
                       hash: true,
