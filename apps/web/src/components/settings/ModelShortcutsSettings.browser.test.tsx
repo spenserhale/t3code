@@ -3,7 +3,6 @@ import {
   DEFAULT_SERVER_SETTINGS,
   type ModelSelection,
   ProviderDriverKind,
-  ProviderInstanceId,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type ModelFavorite } from "@t3tools/contracts/settings";
 import type { ReactNode } from "react";
@@ -11,13 +10,17 @@ import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import "../../index.css";
+import {
+  codexInstanceId as instanceId,
+  highEffort as high,
+  modelShortcutProviders,
+  modelShortcutSteps as steps,
+} from "../../../test/modelShortcutsSettingsFixtures";
 import { render } from "../../../test/render";
 import type { ScopedSettingsPatch } from "./scopedSettings";
 
-const instanceId = ProviderInstanceId.make("codex");
 const environmentId = EnvironmentId.make("env-a");
 const otherEnvironmentId = EnvironmentId.make("env-b");
-const high = [{ id: "reasoningEffort", value: "high" }];
 
 const state = vi.hoisted(() => ({
   favorites: [] as ModelFavorite[],
@@ -119,24 +122,6 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
   })) as never,
 }));
 
-const withLevels = (slug: string, name: string) => ({
-  slug,
-  name,
-  isCustom: false,
-  capabilities: {
-    optionDescriptors: [
-      {
-        id: "reasoningEffort",
-        label: "Reasoning effort",
-        type: "select" as const,
-        options: [
-          { id: "low", label: "Low" },
-          { id: "high", label: "High" },
-        ],
-      },
-    ],
-  },
-});
 vi.mock(import("../../state/environments"), async (original) => ({
   ...(await original()),
   useEnvironments: (() => ({
@@ -148,40 +133,7 @@ vi.mock(import("../../state/environments"), async (original) => ({
       },
     ],
   })) as never,
-  useEnvironmentProviders: () =>
-    new Map([
-      [
-        environmentId,
-        [
-          {
-            instanceId,
-            driver: ProviderDriverKind.make("codex"),
-            enabled: true,
-            installed: true,
-            version: null,
-            status: "ready",
-            auth: { status: "authenticated" },
-            checkedAt: "2026-01-01T00:00:00.000Z",
-            models: [withLevels("luna", "Luna"), withLevels("sol", "Sol")],
-            slashCommands: [],
-            skills: [],
-          },
-          {
-            instanceId: ProviderInstanceId.make("opencode"),
-            driver: ProviderDriverKind.make("opencode"),
-            enabled: true,
-            installed: true,
-            version: null,
-            status: "ready",
-            auth: { status: "authenticated" },
-            checkedAt: "2026-01-01T00:00:00.000Z",
-            models: [withLevels("open", "OpenCode model")],
-            slashCommands: [],
-            skills: [],
-          },
-        ],
-      ],
-    ]) as never,
+  useEnvironmentProviders: () => new Map([[environmentId, modelShortcutProviders]]),
 }));
 vi.mock(import("./settingsLayout"), async (original) => ({
   ...(await original()),
@@ -202,11 +154,6 @@ const favorites: ModelFavorite[] = [
   { provider: instanceId, model: "sol", options: high },
   { provider: instanceId, model: "luna" },
 ];
-const steps: ModelSelection[] = [
-  { instanceId, model: "luna", options: [{ id: "reasoningEffort", value: "low" }] },
-  { instanceId, model: "sol", options: high },
-];
-
 const luna = { provider: instanceId, model: "luna" };
 const sol = { provider: instanceId, model: "sol" };
 
