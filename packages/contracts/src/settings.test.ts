@@ -555,3 +555,31 @@ describe("server model preferences", () => {
     expect(decodeServerSettingsPatch(input)).toEqual(input);
   });
 });
+
+describe("model family defaults", () => {
+  it("round-trips followLatest only on project and environment defaults", () => {
+    const pin = {
+      instanceId: "codex_work",
+      model: "gpt-6.1-sol",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    };
+    const followed = { ...pin, followLatest: true };
+    const scopes = {
+      defaultModelSelection: followed,
+      projectSettingsOverrides: { project: { defaultModelSelection: followed } },
+    };
+    const input = { ...scopes, fallbackModelSelection: followed };
+    const expected = { ...scopes, fallbackModelSelection: pin };
+    expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(expected);
+    expect(encodeServerSettingsPatch(decodeServerSettingsPatch(input))).toEqual(expected);
+  });
+
+  it("continues to read legacy pinned defaults", () => {
+    const model = "claude-opus-5";
+    expect(
+      decodeServerSettings({
+        defaultModelSelection: { provider: "claudeAgent", model, options: undefined },
+      }).defaultModelSelection,
+    ).toEqual({ instanceId: "claudeAgent", model });
+  });
+});
