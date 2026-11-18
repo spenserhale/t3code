@@ -17,6 +17,8 @@ import {
   type UsageLimitSourceSnapshots,
 } from "@t3tools/contracts";
 
+import { resolveModelFamilyDefault } from "./modelFamilyDefault.ts";
+
 import * as DateTime from "effect/DateTime";
 
 const MINUTE = 60_000;
@@ -64,7 +66,7 @@ export function exhaustedUsageWindow(
 }
 
 export function resolveNewThreadModelSelection(input: {
-  readonly defaultSelection: ModelSelection | null;
+  readonly defaultSelection: ServerSettings["defaultModelSelection"];
   readonly explicitSelection?: ModelSelection | null;
   readonly fallbackSelection: ModelSelection | null;
   readonly providers: readonly ServerProvider[];
@@ -72,7 +74,9 @@ export function resolveNewThreadModelSelection(input: {
   readonly settings?: ServerSettings;
   readonly projectId?: ProjectId | null;
 }) {
-  const selection = input.explicitSelection ?? input.defaultSelection;
+  const selection =
+    input.explicitSelection ??
+    resolveModelFamilyDefault(input.defaultSelection, input.providers, input.settings);
   const unchanged = { selection, fallback: null };
   if (input.explicitSelection || !selection || !input.fallbackSelection) return unchanged;
   const provider = input.providers.find((entry) => entry.instanceId === selection.instanceId);

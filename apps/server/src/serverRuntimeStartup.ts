@@ -10,6 +10,7 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import { resolveModelFamilyDefault } from "@t3tools/shared/modelFamilyDefault";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
@@ -21,6 +22,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -38,6 +40,7 @@ import * as ProviderRuntimeRecovery from "./orchestration-v2/ProviderRuntimeReco
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunch from "./orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
+import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
 import * as ProjectService from "./project/ProjectService.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -286,17 +289,22 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
     if (existingThread === undefined) {
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const settings = yield* serverSettings.getSettings;
+      const defaults = resolveProjectSettings(settings, project.id, project).settings;
+      const registry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
+      const providers =
+        defaults.defaultModelSelection?.followLatest && Option.isSome(registry)
+          ? yield* registry.value.getProviders
+          : [];
       const launched = yield* threadLaunch
         .launch({
           commandId: CommandId.make(yield* randomUUID),
           projectId: project.id,
           title: "New thread",
           modelSelection:
-            resolveProjectSettings(settings, project.id, project).settings.defaultModelSelection ??
+            resolveModelFamilyDefault(defaults.defaultModelSelection, providers, defaults) ??
             threadModelSelection,
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          runtimeMode: resolveProjectSettings(settings, project.id, project).settings
-            .defaultRuntimeMode,
+          runtimeMode: defaults.defaultRuntimeMode,
           workspaceStrategy: { type: "root" },
           createdBy: "system",
           creationSource: "server",
