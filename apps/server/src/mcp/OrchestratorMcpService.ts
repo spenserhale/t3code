@@ -68,6 +68,7 @@ import {
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
+import { resolveModelFamilyDefault } from "@t3tools/shared/modelFamilyDefault";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -1396,7 +1397,7 @@ const make = Effect.gen(function* () {
         "invalid_request",
         `Project ${project.id} has no default model, so this caller cannot pick one for it.`,
       );
-    return selection;
+    return resolveModelFamilyDefault(selection, yield* providerRegistry.getProviders, settings);
   });
   const secretRequests = yield* SecretRequests.SecretRequests;
 

@@ -3,6 +3,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 
 import { type DraftId, useComposerDraftStore } from "../composerDraftStore";
+import { getClientSettings, mergeEnvironmentSettings } from "../hooks/useSettings";
 import { resolveProjectDefaultProviderModelSelection } from "../providerInstances";
 import { readProject } from "../state/entities";
 import { readEnvironment, readEnvironmentProviders } from "../state/environments";
@@ -28,10 +29,10 @@ export function seedDraftModelSelection(draftId: DraftId, projectRef: ScopedProj
         : resolveProjectDefaultProviderModelSelection(providers, settings, projectRef.projectId)),
     fallbackSelection: settings?.fallbackModelSelection ?? null,
     providers,
-    ...(settings ? { settings } : {}),
+    ...(settings ? { settings: mergeEnvironmentSettings(settings, getClientSettings()) } : {}),
     projectId: projectRef.projectId,
     now: Date.now(),
   });
-  const selection = resolution.fallback ? resolution.selection : defaultSelection;
+  const selection = defaultSelection || resolution.fallback ? resolution.selection : null;
   if (selection) store.setModelSelection(draftId, selection, { replaceOptions: true });
 }

@@ -7,6 +7,7 @@ import { msg } from "gt-react-native";
 import { m } from "../i18n/messages";
 
 import type {
+  DefaultModelSelection,
   ModelCapabilities,
   ModelSelection,
   ProjectId,
@@ -22,6 +23,7 @@ import {
   buildExplicitProviderOptionSelectionsFromDescriptors,
   getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
+import { resolveModelFamilyDefault } from "@t3tools/shared/modelFamilyDefault";
 import { resolveModelShortName } from "@t3tools/client-runtime/provider-clients";
 import { resolveProvidersForCwd } from "@t3tools/client-runtime/providerSkills";
 
@@ -281,10 +283,14 @@ export function resolveSelectableModelSelection(
 
 export function resolveDefaultableModelSelection(
   config: T3ServerConfig | null | undefined,
-  selection: ModelSelection | null,
+  selection: DefaultModelSelection | null,
   projectId: ProjectId | null,
 ): ModelSelection | null {
-  const usable = resolveSelectableModelSelection(config, selection, projectId);
+  const usable = resolveSelectableModelSelection(
+    config,
+    resolveModelFamilyDefault(selection, config?.providers ?? [], config?.settings),
+    projectId,
+  );
   if (!usable || !config) {
     return usable;
   }

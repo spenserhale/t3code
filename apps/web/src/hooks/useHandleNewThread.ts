@@ -50,7 +50,7 @@ import { environmentSummaries } from "../state/presentation";
 import { environmentServerConfigsAtom } from "../state/server";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
-import { getClientSettings, useClientSettings } from "./useSettings";
+import { getClientSettings, mergeEnvironmentSettings, useClientSettings } from "./useSettings";
 import { getLocalStorageItem, useLocalStorage } from "./useLocalStorage";
 import * as Schema from "effect/Schema";
 import { useAtomValue } from "@effect/atom-react";
@@ -116,7 +116,8 @@ export function createNewThreadHandler(router: AnyRouter) {
     },
   ): Promise<{ draftId: DraftId; threadId: ThreadId } | null> => {
     const projects = readProjects();
-    const projectGroupingSettings = selectProjectGroupingSettings(getClientSettings());
+    const clientSettings = getClientSettings();
+    const projectGroupingSettings = selectProjectGroupingSettings(clientSettings);
     // Read at call time; status pushes replace the config map and would recreate every sidebar handler.
     const environmentServerConfigs = appAtomRegistry.get(environmentServerConfigsAtom);
     const targetServerSettings =
@@ -188,13 +189,14 @@ export function createNewThreadHandler(router: AnyRouter) {
             )),
       fallbackSelection: targetServerSettings.fallbackModelSelection ?? null,
       providers: environmentServerConfigs.get(projectRef.environmentId)?.providers ?? [],
-      settings: targetServerSettings,
+      settings: mergeEnvironmentSettings(targetServerSettings, clientSettings),
       projectId: projectRef.projectId,
       now: Date.now(),
     });
-    const projectDefaultModelSelection = fallbackResolution.fallback
-      ? fallbackResolution.selection
-      : configuredDefaultModelSelection;
+    const projectDefaultModelSelection =
+      configuredDefaultModelSelection || fallbackResolution.fallback
+        ? fallbackResolution.selection
+        : null;
     const defaultRuntimeMode = projectSettings.settings.defaultRuntimeMode;
     const resolveModelSelectionOverride = (destinationDraftId: DraftId) =>
       resolveNewThreadModelSelectionOverride({
