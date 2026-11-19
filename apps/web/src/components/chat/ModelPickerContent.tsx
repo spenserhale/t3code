@@ -26,7 +26,7 @@ import {
 } from "react";
 import type { ModelPickerEffortSlider } from "./EffortSlider";
 import type { ComposerEffortSliderForTab, EffortSliderActions } from "./useComposerEffortSlider";
-import { ModelListRow } from "./ModelListRow";
+import { ModelListRow, type ModelDisabledAction } from "./ModelListRow";
 import type { ModelPick } from "./ProviderModelPicker";
 import { ModelPickerSidebar } from "./ModelPickerSidebar";
 import { getProviderStatusMessage, hasProviderSetup } from "./ProviderStatusBanner";
@@ -338,6 +338,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   onRequestClose?: () => void;
   onOpenProviderSetup?: (instanceId: ProviderInstanceId) => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
+  getModelDisabledAction?: (
+    instanceId: ProviderInstanceId,
+    model: string,
+  ) => ModelDisabledAction | null;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string, pick?: ModelPick) => void;
   /** Lists the favorites this project sees: its own override of them, else the environment's. */
   projectId?: ProjectId | null;
@@ -1090,6 +1094,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 }
                 const disabledReason =
                   getModelDisabledReason?.(model.instanceId, model.slug) ?? null;
+                const disabledAction =
+                  disabledReason && !model.isUnavailable
+                    ? props.getModelDisabledAction?.(model.instanceId, model.slug)
+                    : null;
                 return (
                   <ModelListRow
                     key={modelKey}
@@ -1117,6 +1125,17 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     unavailable={model.isUnavailable === true}
                     jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
                     disabledReason={disabledReason}
+                    disabledAction={
+                      disabledAction
+                        ? {
+                            ...disabledAction,
+                            onClick: () => {
+                              focusSearchInput();
+                              disabledAction.onClick();
+                            },
+                          }
+                        : null
+                    }
                     onToggleFavorite={toggleFavorite}
                   />
                 );

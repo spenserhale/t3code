@@ -6,9 +6,9 @@ Appearance, don't show it. They start at **All projects** and **All environments
 and stay selected as you move between categories or search for a setting.
 
 Preferences saved on this device, such as appearance, confirmations and browser profiles, always
-show and ignore the selection. Everything else is stored on a server. Choose one environment to
-edit its settings, or leave **All environments** to edit every connected environment at once.
-Offline environments keep their current values; this is a bulk edit, not a synced global default.
+show and ignore the selection. Everything else is stored on a server. Open the environment
+dropdown, check the environments you want to edit together, then choose **Apply**.
+Choose **All environments** to restore the default. Offline environments keep their current values.
 
 Choose a project to override settings for it on the selected environments. A layers icon beside
 each server row's title shows where the value comes from: the built-in default, the environment,

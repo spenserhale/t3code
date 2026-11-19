@@ -71,12 +71,12 @@ export function projectAxisValue(search: SettingsScopeSearch): string {
 
 export function projectScopeMenuGroups(
   groups: readonly SidebarProjectSnapshot[],
-  search: Pick<SettingsScopeSearch, "machine">,
+  search: Pick<SettingsScopeSearch, "machine" | "machines">,
 ) {
-  const { machine } = search;
-  if (machine === undefined) return groups;
+  const machines = search.machine === undefined ? search.machines : [search.machine];
+  if (machines === undefined) return groups;
   return groups.filter((group) =>
-    group.memberProjects.some((member) => member.environmentId === machine),
+    group.memberProjects.some((member) => machines.includes(member.environmentId)),
   );
 }
 
@@ -90,10 +90,19 @@ export function selectEnvironmentAxis(
   return next;
 }
 
+export function selectEnvironmentSubset(
+  search: SettingsScopeSearch,
+  machines: readonly string[],
+): SettingsScopeSearch {
+  if (machines.length === 1) return selectEnvironmentAxis(search, machines[0]!);
+  return { ...selectEnvironmentAxis(search, ALL_ENVIRONMENTS_VALUE), machines };
+}
+
 export function selectProjectAxis(search: SettingsScopeSearch, value: string): SettingsScopeSearch {
   const next: SettingsScopeSearch = {};
   if (value !== ALL_PROJECTS_VALUE) next.project = value;
   if (search.machine) next.machine = search.machine;
+  else if (search.machines !== undefined) next.machines = search.machines;
   return next;
 }
 
@@ -115,5 +124,7 @@ export function selectSingleEnvironmentScope(
     candidates.find((environment) => environment.environmentId === primaryEnvironmentId) ??
     candidates.find((environment) => environment.connection.phase === "connected") ??
     candidates[0];
-  return selected ? { ...search, machine: selected.environmentId } : search;
+  if (!selected) return search;
+  const { machines: _machines, ...scopeSearch } = search;
+  return { ...scopeSearch, machine: selected.environmentId };
 }

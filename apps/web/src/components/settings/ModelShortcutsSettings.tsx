@@ -50,7 +50,11 @@ import {
 import { SETTINGS_PICKER_TRIGGER_CLASSNAME, SettingsRow, SettingsSection } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 import { useSettingsScope } from "./SettingsScopeContext";
-import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
+import { selectEnvironmentSubset } from "./settingsScopeAxis";
+import {
+  scopedModelDisabledReason,
+  useScopedModelUnavailableEnvironments,
+} from "./useScopedModelAvailability";
 import {
   useClearScopedSettings,
   useScopedSettings,
@@ -258,7 +262,7 @@ function ProjectListControl(props: {
 }
 
 export function ModelShortcutsSettings() {
-  const { scope, search, target, targets, connectedEnvironments } = useSettingsScope();
+  const { scope, search, selectScope, target, targets, connectedEnvironments } = useSettingsScope();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const updateProviderSlider = useUpdateScopedProviderEffortSlider();
@@ -275,7 +279,9 @@ export function ModelShortcutsSettings() {
       : undefined) ?? EMPTY_SERVER_PROVIDERS;
   const entries = providerInstanceEntriesFor(providers, settings, target?.projectId ?? null);
   const modelOptions = getCustomModelOptionsByInstance(settings, providers);
-  const disabledReason = useScopedModelDisabledReason(settings, entries);
+  const unavailableEnvironments = useScopedModelUnavailableEnvironments(settings, entries);
+  const disabledReason = (instanceId: ProviderInstanceId, model: string) =>
+    scopedModelDisabledReason(unavailableEnvironments(instanceId, model));
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
   const unsupportedLabels = connectedEnvironments
     .filter(
@@ -568,7 +574,7 @@ export function ModelShortcutsSettings() {
           <>
             {editorOpen && !sliderReadOnly && canWrite && (
               <EffortSliderEditor
-                key={driver ?? FAVORITES_SLIDER}
+                key={JSON.stringify([driver, target?.environmentId, target?.projectId])}
                 title={`Edit ${driverLabel} slider`}
                 scopeLabel={scope.label}
                 mixed={driver === null ? mixedSlider : mixedProviderSlider}
@@ -580,6 +586,22 @@ export function ModelShortcutsSettings() {
                 environmentId={representative?.environmentId ?? null}
                 projectId={target?.projectId ?? null}
                 disabledReason={disabledReason}
+                getModelDisabledAction={(instanceId, model) => {
+                  const unavailable = unavailableEnvironments(instanceId, model);
+                  if (
+                    unavailable.size === 0 ||
+                    !targets.some(({ environmentId }) => !unavailable.has(environmentId))
+                  ) {
+                    return null;
+                  }
+                  const remaining = scope.environmentIds.filter((id) => !unavailable.has(id));
+                  return {
+                    label: "Deselect",
+                    ariaLabel: `Deselect ${[...unavailable.values()].join(", ")} to use ${describe(instanceId, model).name}`,
+                    onClick: () =>
+                      selectScope(selectEnvironmentSubset(search, remaining), { replace: true }),
+                  };
+                }}
                 onSave={writeSteps}
                 onClose={() => {
                   setEditorOpen(false);
@@ -597,6 +619,7 @@ export function ModelShortcutsSettings() {
                       search: {
                         project: search.project,
                         machine: search.machine,
+                        machines: search.machines,
                         checkout: search.checkout,
                         ...(isProviderDriverKind(value) ? { effortSliderProvider: value } : {}),
                       },

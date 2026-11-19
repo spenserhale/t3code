@@ -321,7 +321,7 @@ export function planScopedSettingsPatch(
               }
               return next as ProjectSettingsOverrides;
             })
-        : scope.kind === "all" || scope.kind === "environment"
+        : scope.kind !== "unavailable"
           ? connectedEnvironments.flatMap((environment) => {
               const previous = environment.serverConfig?.settings;
               if (!previous) return [];

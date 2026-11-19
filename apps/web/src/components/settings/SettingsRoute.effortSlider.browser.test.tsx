@@ -49,12 +49,11 @@ import { Route as ThreadsRoute } from "../../routes/_chat.settings.threads";
 
 const primaryId = EnvironmentId.make("env-a");
 const remoteId = EnvironmentId.make("env-b");
+const torrentId = EnvironmentId.make("env-torrent");
+const miniId = EnvironmentId.make("env-mini");
+const rwId = EnvironmentId.make("env-rw");
 const codex = ProviderDriverKind.make("codex");
 const openCode = ProviderDriverKind.make("opencode");
-const providerSnapshots = new Map([
-  [primaryId, modelShortcutProviders],
-  [remoteId, modelShortcutProviders],
-]);
 const project: Project = {
   id: ProjectId.make("project-slider"),
   environmentId: primaryId,
@@ -80,6 +79,7 @@ const missingProjectFile = Atom.make(AsyncResult.initial<never, never>());
 
 const state = vi.hoisted(() => ({
   environments: [] as EnvironmentPresentation[],
+  providers: new Map<EnvironmentId, typeof modelShortcutProviders>(),
   writeSettings: vi.fn(),
 }));
 
@@ -94,7 +94,7 @@ vi.mock(import("../../state/environments"), async (original) => ({
       state.environments.map((environment) => [environment.environmentId, environment]),
     ),
   }),
-  useEnvironmentProviders: () => providerSnapshots,
+  useEnvironmentProviders: () => state.providers,
   usePrimaryEnvironmentId: () => primaryId,
   usePrimaryEnvironment: () => state.environments[0] ?? null,
 }));
@@ -185,7 +185,13 @@ function environment(
         otlpMetricsEnabled: false,
         otlpLogsEnabled: false,
       },
-      settings: { ...DEFAULT_SERVER_SETTINGS, ...settings },
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: {
+          [openCodeInstanceId]: { driver: openCode, enabled: true, config: {} },
+        },
+        ...settings,
+      },
     },
   };
 }
@@ -196,8 +202,24 @@ function setup(primary: Partial<ServerSettings>, remote = primary) {
     environment(primaryId, "Mac mini", primary),
     environment(remoteId, "Laptop", remote),
   ];
+  state.providers = new Map([
+    [primaryId, modelShortcutProviders],
+    [remoteId, modelShortcutProviders],
+  ]);
   state.writeSettings.mockReset();
   state.writeSettings.mockResolvedValue(AsyncResult.success(undefined));
+}
+
+function addEnvironment(environmentId: EnvironmentId, label: string, supportsModel = true) {
+  state.environments.push(environment(environmentId, label, {}));
+  state.providers.set(
+    environmentId,
+    supportsModel
+      ? modelShortcutProviders
+      : modelShortcutProviders.map((provider) =>
+          provider.instanceId === openCodeInstanceId ? { ...provider, models: [] } : provider,
+        ),
+  );
 }
 
 const pickerEntries = deriveProviderInstanceEntries(modelShortcutProviders);
@@ -493,7 +515,12 @@ it("refreshes the slider when the environment scope changes", async () => {
   });
 
   await userEvent.click(page.getByRole("button", { name: "Environment scope: Mac mini" }));
-  await userEvent.click(page.getByRole("menuitemradio", { name: /^Laptop/ }));
+  await userEvent.click(page.getByRole("menuitemcheckbox", { name: /^Laptop/ }));
+  await expect
+    .element(page.getByRole("menuitemcheckbox", { name: /^Laptop/ }))
+    .toHaveAttribute("aria-checked", "true");
+  await userEvent.click(page.getByRole("menuitemcheckbox", { name: /^Mac mini/ }));
+  await userEvent.click(page.getByRole("menuitem", { name: "Apply", exact: true }));
   await expect
     .element(page.getByRole("button", { name: "Environment scope: Laptop" }))
     .toBeVisible();
@@ -504,8 +531,104 @@ it("refreshes the slider when the environment scope changes", async () => {
     machine: remoteId,
     effortSliderProvider: codex,
   });
-  expect(before.pane.isConnected).toBe(false);
+  expectSameEditor(before, measureEditor());
   expect(state.writeSettings).not.toHaveBeenCalled();
+});
+
+it("edits a slider on checked environments and can restore All environments", async () => {
+  setup({});
+  addEnvironment(torrentId, "Torrent");
+  addEnvironment(miniId, "LinkMini");
+  await using screen = await mountSettings();
+  const scopeButton = (name: string) =>
+    page.getByRole("button", { name: `Environment scope: ${name}`, exact: true });
+  const machine = (name: RegExp) => page.getByRole("menuitemcheckbox", { name });
+  await scopeButton("All environments").click();
+  await expect.element(machine(/^Laptop/)).toHaveAttribute("aria-checked", "true");
+  await expect.element(machine(/^Torrent/)).toHaveAttribute("aria-checked", "true");
+  await machine(/^Laptop/).click();
+  await expect.element(machine(/^Laptop/)).toHaveAttribute("aria-checked", "false");
+  await machine(/^Torrent/).click();
+  await page.getByRole("menuitem", { name: "Apply", exact: true }).click();
+  await expect.element(scopeButton("2 environments")).toHaveFocus();
+
+  await selectSlider("OpenCode");
+  expect(screen.router.state.location.search).toEqual({
+    machines: [primaryId, miniId],
+    effortSliderProvider: openCode,
+  });
+  await addStep().click();
+  const dialog = page.getByRole("dialog", { name: "Edit OpenCode slider" });
+  await expect
+    .element(dialog.getByRole("button", { name: "Environment scope: 2 environments" }))
+    .toBeVisible();
+  expect(state.writeSettings).not.toHaveBeenCalled();
+  await dialog.getByRole("button", { name: "Add first step" }).click();
+  await vi.waitFor(() => {
+    expect(state.writeSettings.mock.calls.map(([request]) => request.environmentId)).toEqual([
+      primaryId,
+      miniId,
+    ]);
+  });
+  await dialog.getByRole("button", { name: "Done" }).click();
+  await scopeButton("2 environments").click();
+  await page.getByRole("menuitem", { name: "All environments" }).click();
+  await expect.element(scopeButton("All environments")).toBeVisible();
+  expect(screen.router.state.location.search).toEqual({ effortSliderProvider: openCode });
+  expect(state.writeSettings).toHaveBeenCalledTimes(2);
+});
+
+it("deselects every machine blocking a model and keeps the search and save scoped", async () => {
+  setup({});
+  addEnvironment(torrentId, "Torrent");
+  addEnvironment(miniId, "LinkMini");
+  addEnvironment(rwId, "RW laptop", false);
+  state.providers.set(
+    remoteId,
+    modelShortcutProviders.filter((provider) => provider.instanceId !== openCodeInstanceId),
+  );
+  await using _screen = await mountSettings("/settings/threads?effortSliderProvider=opencode");
+  await addStep().click();
+  const dialog = page.getByRole("dialog", { name: "Edit OpenCode slider" });
+  const search = dialog.getByPlaceholder("Search models...");
+  await search.fill("OpenCode model");
+  const model = dialog.getByRole("option");
+  await expect.element(model).toHaveAttribute("aria-disabled", "true");
+  await model.hover();
+  await vi.waitFor(() => {
+    const tooltips = document.querySelectorAll('[data-slot="tooltip-popup"]');
+    expect(Array.from(tooltips, (tooltip) => tooltip.textContent)).toContain(
+      "This model is unavailable on Laptop, RW laptop.",
+    );
+  });
+  const deselect = dialog.getByRole("button", { name: /^Deselect Laptop, RW laptop/ });
+  expect(getComputedStyle(deselect.element().parentElement!).opacity).toBe("1");
+  await deselect.click();
+  await expect
+    .element(dialog.getByRole("button", { name: "Environment scope: 3 environments" }))
+    .toBeVisible();
+  await expect.element(search).toHaveValue("OpenCode model");
+  await expect.element(search).toHaveFocus();
+  await expect.element(model).not.toHaveAttribute("aria-disabled", "true");
+  await model.click();
+  await dialog.getByRole("button", { name: "High", exact: true }).click();
+  expect(state.writeSettings).not.toHaveBeenCalled();
+  await dialog.getByRole("button", { name: "Add first step" }).click();
+  await vi.waitFor(() => {
+    expect(state.writeSettings.mock.calls.map(([request]) => request.environmentId)).toEqual([
+      primaryId,
+      torrentId,
+      miniId,
+    ]);
+  });
+  expect(state.writeSettings).toHaveBeenCalledWith({
+    environmentId: primaryId,
+    input: {
+      patch: {
+        setProviderEffortSliders: [{ driver: openCode, steps: [openCodeSteps[1]!] }],
+      },
+    },
+  });
 });
 
 it.each([
@@ -608,6 +731,11 @@ it("opens the composer selection in the editor and returns to chat after inserti
     .element(dialog.getByRole("button", { name: "Luna · Low", exact: true }))
     .toHaveAttribute("aria-pressed", "true");
   await expect.element(after).toBeDisabled();
+  await dialog.getByRole("button", { name: "Environment scope: Mac mini" }).click();
+  await page.getByRole("menuitem", { name: "All environments" }).click();
+  await expect
+    .element(dialog.getByRole("button", { name: "Environment scope: All environments" }))
+    .toBeVisible();
   await dialog.getByRole("button", { name: "High", exact: true }).click();
   expect(state.writeSettings).not.toHaveBeenCalled();
   await after.click();

@@ -19,9 +19,11 @@ import { useRef, useState } from "react";
 import { cn } from "../../lib/utils";
 import { isProviderInstancePickerReady, type ProviderInstanceEntry } from "../../providerInstances";
 import { ModelPickerContent } from "../chat/ModelPickerContent";
+import type { ModelDisabledAction } from "../chat/ModelListRow";
 import { getDisplayModelName, type ModelEsque } from "../chat/providerIconUtils";
 import { Button } from "../ui/button";
 import { Dialog, DialogPopup, DialogTitle, DialogDescription } from "../ui/dialog";
+import { SettingsEnvironmentScopeMenu } from "./SettingsScopeSentence";
 import {
   effortSliderAddBlockReason,
   effortSliderEditBlockReason,
@@ -39,6 +41,10 @@ type Props = {
   environmentId: EnvironmentId | null;
   projectId: ProjectId | null;
   disabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
+  getModelDisabledAction: (
+    instanceId: ProviderInstanceId,
+    model: string,
+  ) => ModelDisabledAction | null;
   onSave: (steps: readonly ModelSelection[], onFailed: () => void) => void;
   onClose: () => void;
 };
@@ -162,9 +168,14 @@ export function EffortSliderEditor(props: Props) {
         showCloseButton={false}
       >
         <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
-          <div>
+          <div className="min-w-0">
             <DialogTitle>{props.title}</DialogTitle>
-            <DialogDescription>{props.scopeLabel}</DialogDescription>
+            <DialogDescription className={props.projectId === null ? "sr-only" : undefined}>
+              {props.scopeLabel}
+            </DialogDescription>
+            <div className="mt-1 min-w-0">
+              <SettingsEnvironmentScopeMenu disabled={pending !== null} />
+            </div>
           </div>
           <Button size="sm" variant="outline" onClick={props.onClose}>
             Done
@@ -305,6 +316,7 @@ export function EffortSliderEditor(props: Props) {
             onRequestClose={props.onClose}
             onFocusEffort={focusEffort}
             getModelDisabledReason={props.disabledReason}
+            {...(pending ? {} : { getModelDisabledAction: props.getModelDisabledAction })}
             onInstanceModelChange={(instanceId, model) =>
               setDraft(createModelSelection(instanceId, model))
             }

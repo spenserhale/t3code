@@ -94,7 +94,7 @@ vi.mock(import("./useScopedSettings"), async (original) => ({
 }));
 vi.mock(import("./useScopedModelAvailability"), async (original) => ({
   ...(await original()),
-  useScopedModelDisabledReason: () => () => null,
+  useScopedModelUnavailableEnvironments: () => () => new Map(),
 }));
 vi.mock(import("./SettingsScopeContext"), async (original) => ({
   ...(await original()),

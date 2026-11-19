@@ -1593,6 +1593,7 @@ export function ThreadsSettingsPanel() {
   const updateSettings = useUpdateScopedSettings();
   const navigate = useNavigate();
   const { environment, connectedEnvironments, target, scope } = useSettingsScope();
+  const environmentScopeKey = JSON.stringify(scope.environmentIds);
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
   const environmentId = environment?.environmentId ?? null;
   const hasServerTargets = connectedEnvironments.length > 0;
@@ -1649,7 +1650,7 @@ export function ThreadsSettingsPanel() {
 
   return (
     <SettingsPageContainer>
-      <SettingsSection id="new-projects" title="New projects">
+      <SettingsSection key={environmentScopeKey} id="new-projects" title="New projects">
         <SettingsRow
           serverScoped
           settingKeys={["addProjectBaseDirectory"]}
@@ -1824,6 +1825,7 @@ export function ThreadsSettingsPanel() {
               description="Any new activity un-settles a thread automatically."
               control={
                 <AutoSettleDaysInput
+                  key={environmentScopeKey}
                   value={settings.sidebarAutoSettleAfterDays}
                   onCommit={(days) => updateSettings({ sidebarAutoSettleAfterDays: days })}
                 />

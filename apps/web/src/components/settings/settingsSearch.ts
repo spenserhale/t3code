@@ -1463,10 +1463,11 @@ export function isSettingsSearchScopeAvailable(
     case "project":
       return scopeKind === "project" || scopeKind === "checkout";
     case "environment-defaults":
-      return scopeKind === "environment" || scopeKind === "all";
+      return scopeKind === "environment" || scopeKind === "environments" || scopeKind === "all";
     case "project-defaults":
       return (
         scopeKind === "environment" ||
+        scopeKind === "environments" ||
         scopeKind === "all" ||
         scopeKind === "project" ||
         scopeKind === "checkout"

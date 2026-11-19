@@ -15,7 +15,7 @@ export function ProjectsSettings() {
       <SettingsPageContainer>
         <div className="flex flex-col items-start gap-3">
           <p className="text-sm text-muted-foreground">{scope.message}</p>
-          {value.machine || value.checkout ? (
+          {value.machine || value.machines !== undefined || value.checkout ? (
             <Button
               variant="outline"
               size="xs"
@@ -40,6 +40,7 @@ export function ProjectsSettings() {
         <ProjectSettingsPanel
           projectKey={value.project}
           environmentId={value.machine ? EnvironmentId.make(value.machine) : null}
+          environmentIds={value.machines}
           checkoutKey={value.checkout ?? null}
           unavailable={unavailable}
         />
