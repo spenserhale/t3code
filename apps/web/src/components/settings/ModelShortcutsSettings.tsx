@@ -152,6 +152,8 @@ function ModelRow(props: {
   name: string;
   available: boolean;
   position?: number;
+  hideHarnessBranding?: boolean;
+  subProvider?: string | undefined;
   index: number;
   count: number;
   readOnly: boolean;
@@ -166,7 +168,7 @@ function ModelRow(props: {
           {props.position}
         </span>
       )}
-      {props.entry ? (
+      {props.entry && !props.hideHarnessBranding ? (
         <ProviderInstanceIcon
           driverKind={props.entry.driverKind}
           displayName={props.entry.displayName}
@@ -186,9 +188,15 @@ function ModelRow(props: {
         >
           {props.name}
         </span>
-        <span className="truncate text-xs text-muted-foreground/70">
-          {props.available ? (props.entry?.displayName ?? props.instanceId) : "Not available here"}
-        </span>
+        {(!props.available || !props.hideHarnessBranding || props.subProvider) && (
+          <span className="truncate text-xs text-muted-foreground/70">
+            {!props.available
+              ? "Not available here"
+              : props.hideHarnessBranding
+                ? props.subProvider
+                : (props.entry?.displayName ?? props.instanceId)}
+          </span>
+        )}
       </span>
       {props.effort}
       <span className="flex shrink-0 items-center">
@@ -353,13 +361,18 @@ export function ModelShortcutsSettings() {
       ? isProjectScope && sliderSource === "environment"
       : !canWrite || inheritsProviderSlider;
 
-  const describe = (instanceId: ProviderInstanceId, slug: string) => {
+  const sliderEntries =
+    driver === null ? entries : entries.filter((entry) => entry.driverKind === driver);
+  const scopedEntry = driver !== null && sliderEntries.length === 1 ? sliderEntries[0] : undefined;
+
+  const describe = (instanceId: ProviderInstanceId, slug: string, harnessName?: string) => {
     const entry = entries.find((candidate) => candidate.instanceId === instanceId);
     const option = modelOptions.get(instanceId)?.find((candidate) => candidate.slug === slug);
     return {
       entry,
       model: entry?.models.find((candidate) => candidate.slug === slug),
-      name: option ? getDisplayModelName(option) : slug,
+      name: option ? getDisplayModelName(option, { harnessName }) : slug,
+      subProvider: option?.subProvider,
       available: option !== undefined && option.isUnavailable !== true,
     };
   };
@@ -561,9 +574,8 @@ export function ModelShortcutsSettings() {
                 mixed={driver === null ? mixedSlider : mixedProviderSlider}
                 steps={steps}
                 initialSelection={composerSelection ?? null}
-                entries={
-                  driver === null ? entries : entries.filter((entry) => entry.driverKind === driver)
-                }
+                entries={sliderEntries}
+                scopedEntry={scopedEntry}
                 models={modelOptions}
                 environmentId={representative?.environmentId ?? null}
                 projectId={target?.projectId ?? null}
@@ -656,7 +668,12 @@ export function ModelShortcutsSettings() {
             ) : (
               <ol aria-label="Effort slider steps" className="pb-2">
                 {steps.map((step, index) => {
-                  const { entry, model, name, available } = describe(step.instanceId, step.model);
+                  const hideHarnessBranding = step.instanceId === scopedEntry?.instanceId;
+                  const { entry, model, name, available, subProvider } = describe(
+                    step.instanceId,
+                    step.model,
+                    hideHarnessBranding ? driverLabel : undefined,
+                  );
                   return (
                     <ModelRow
                       key={stepKeys[index]!}
@@ -665,6 +682,8 @@ export function ModelShortcutsSettings() {
                       name={name}
                       available={available && (driver === null || entry?.driverKind === driver)}
                       position={index + 1}
+                      hideHarnessBranding={hideHarnessBranding}
+                      subProvider={subProvider}
                       index={index}
                       count={steps.length}
                       readOnly={sliderReadOnly}

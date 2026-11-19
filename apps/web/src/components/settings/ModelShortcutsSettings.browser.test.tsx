@@ -149,7 +149,7 @@ vi.mock(import("../../state/environments"), async (original) => ({
             models: [
               {
                 slug: "opus",
-                name: "Opus",
+                name: "Claude Opus",
                 isCustom: false,
                 capabilities: {
                   optionDescriptors: [
@@ -288,7 +288,7 @@ it("opens the requested provider editor, restricts model choices, and can clear 
   const picker = screen.getByRole("combobox", { name: "Slider to edit" });
   await expect.element(picker).toHaveTextContent("Codex");
   await screen.getByRole("button", { name: "Edit slider" }).click();
-  const solOption = page.getByRole("option", { name: /Sol.*Codex/ });
+  const solOption = page.getByRole("option", { name: /^Sol\b/ });
   await expect.element(solOption).toBeVisible();
   await expect
     .element(page.getByRole("button", { name: "OpenCode", exact: true }))
@@ -306,6 +306,23 @@ it("opens the requested provider editor, restricts model choices, and can clear 
   await page.getByRole("button", { name: "Done" }).click();
   await screen.getByRole("button", { name: "Use Favorites slider" }).click();
   expect(state.updateProviderSlider).toHaveBeenLastCalledWith(driver, null);
+});
+
+it("omits Claude branding in the scoped slider list and editor", async () => {
+  setup({
+    providerSlidersSupported: true,
+    providerEffortSliders: {
+      [ProviderDriverKind.make("claudeAgent")]: [{ instanceId: opusInstance, model: "opus" }],
+    },
+  });
+  await using screen = await render(<ModelShortcutsSettings />, {
+    router: "/?effortSliderProvider=claudeAgent",
+  });
+  const steps = page.getByRole("list", { name: "Effort slider steps" });
+  await expect.element(steps.getByText("Opus", { exact: true })).toBeVisible();
+  await expect.element(steps.getByText(/Claude/)).not.toBeInTheDocument();
+  await screen.getByRole("button", { name: "Edit slider" }).click();
+  await expect.element(page.getByRole("option", { name: /^Opus\b/ })).toBeVisible();
 });
 
 it("refuses to make one step repeat another, since the arrow keys could not tell them apart", async () => {
@@ -398,18 +415,18 @@ it("can add another Opus at High, then reorder the saved pair without reopening"
 
   await before.click();
   expect(state.updateSettings.mock.calls.at(-1)?.[0]).toEqual({ effortSlider: [high, medium] });
-  const selected = editor.getByRole("button", { name: "Opus · High", exact: true });
+  const selected = editor.getByRole("button", { name: "Claude Opus · High", exact: true });
   await expect.element(selected).toHaveAttribute("aria-pressed", "true");
   state.effortSlider = [high, medium];
   await screen.rerender(<ModelShortcutsSettings />);
   await selected.hover();
-  await editor.getByRole("button", { name: "Move Opus · High right" }).click();
+  await editor.getByRole("button", { name: "Move Claude Opus · High right" }).click();
   expect(state.updateSettings.mock.calls.at(-1)?.[0]).toEqual({ effortSlider: [medium, high] });
   await expect.element(selected).toHaveAttribute("aria-pressed", "true");
   state.effortSlider = [medium, high];
   await screen.rerender(<ModelShortcutsSettings />);
   await expect
-    .element(editor.getByRole("button", { name: "Move Opus · High right" }))
+    .element(editor.getByRole("button", { name: "Move Claude Opus · High right" }))
     .toBeDisabled();
 });
 

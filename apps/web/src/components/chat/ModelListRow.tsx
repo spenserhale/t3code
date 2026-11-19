@@ -1,4 +1,8 @@
-import { type ProviderDriverKind, type ProviderInstanceId } from "@t3tools/contracts";
+import {
+  PROVIDER_DISPLAY_NAMES,
+  type ProviderDriverKind,
+  type ProviderInstanceId,
+} from "@t3tools/contracts";
 import { memo } from "react";
 import { CheckIcon, StarIcon } from "lucide-react";
 import { getDisplayModelName } from "./providerIconUtils";
@@ -19,6 +23,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
   instanceId: ProviderInstanceId;
   driverKind: ProviderDriverKind;
   providerDisplayName: string;
+  hideHarnessBranding?: boolean;
   providerAccentColor?: string | undefined;
   acpRegistryAgentId?: string | undefined;
   acpRegistryIconUrl?: string | undefined;
@@ -42,6 +47,10 @@ export const ModelListRow = memo(function ModelListRow(props: {
     subProvider: props.subProvider,
   };
 
+  const displayName = getDisplayModelName(model, {
+    harnessName: props.hideHarnessBranding ? PROVIDER_DISPLAY_NAMES[props.driverKind] : undefined,
+  });
+
   const row = (
     <ComboboxItem
       hideIndicator
@@ -55,31 +64,33 @@ export const ModelListRow = memo(function ModelListRow(props: {
           "data-disabled:pointer-events-auto data-disabled:cursor-not-allowed",
       )}
     >
-      {/* One row shape in every tab: the logo names the provider, so Favorites needs no second line. */}
-      <ProviderInstanceIcon
-        driverKind={props.driverKind}
-        displayName={props.providerDisplayName}
-        accentColor={props.providerAccentColor}
-        acpRegistryAgentId={props.acpRegistryAgentId}
-        acpRegistryIconUrl={props.acpRegistryIconUrl}
-        showBadge={props.showInstanceBadge}
-        className="size-4"
-        iconClassName="size-4"
-        indicatorBackground="var(--popover)"
-        badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 px-0.5 text-5xs"
-      />
+      {!props.hideHarnessBranding && (
+        <ProviderInstanceIcon
+          driverKind={props.driverKind}
+          displayName={props.providerDisplayName}
+          accentColor={props.providerAccentColor}
+          acpRegistryAgentId={props.acpRegistryAgentId}
+          acpRegistryIconUrl={props.acpRegistryIconUrl}
+          showBadge={props.showInstanceBadge}
+          className="size-4"
+          iconClassName="size-4"
+          indicatorBackground="var(--popover)"
+          badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 px-0.5 text-5xs"
+        />
+      )}
       <div className="flex min-w-0 flex-1 items-center gap-2 text-left">
         <div
           className="min-w-0 truncate text-sm font-normal leading-snug"
           // Names the row in full on hover only when it is cut off.
           onPointerEnter={(event) => {
             const name = event.currentTarget;
-            name.title = name.scrollWidth > name.clientWidth ? getDisplayModelName(model) : "";
+            name.title = name.scrollWidth > name.clientWidth ? displayName : "";
           }}
         >
-          {getDisplayModelName(model)}
-          {/* The logo is decorative, so name the provider for screen readers. */}
-          <span className="sr-only">, {props.providerDisplayName}</span>
+          {displayName}
+          {!props.hideHarnessBranding && (
+            <span className="sr-only">, {props.providerDisplayName}</span>
+          )}
         </div>
         {props.isSelected ? <CheckIcon className="size-3.5 shrink-0" aria-hidden="true" /> : null}
         {props.subProvider ? (

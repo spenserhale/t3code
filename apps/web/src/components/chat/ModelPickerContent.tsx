@@ -342,6 +342,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   /** Lists the favorites this project sees: its own override of them, else the environment's. */
   projectId?: ProjectId | null;
   preferActiveProvider?: boolean;
+  scopedInstanceId?: ProviderInstanceId | undefined;
   effortSliderForTab?: ComposerEffortSliderForTab;
   /** The owning popup moves focus here when it opens (its `initialFocus`). */
   searchInputRef: RefObject<HTMLInputElement | null>;
@@ -1099,6 +1100,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     instanceId={model.instanceId}
                     driverKind={model.driverKind}
                     providerDisplayName={model.instanceDisplayName}
+                    hideHarnessBranding={model.instanceId === props.scopedInstanceId}
                     providerAccentColor={model.instanceAccentColor}
                     acpRegistryAgentId={model.acpRegistryAgentId}
                     acpRegistryIconUrl={model.acpRegistryIconUrl}

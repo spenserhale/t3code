@@ -6,6 +6,7 @@ import {
   stableListKeys,
 } from "@t3tools/client-runtime/effort-slider";
 import {
+  PROVIDER_DISPLAY_NAMES,
   type EnvironmentId,
   type ProjectId,
   type ModelSelection,
@@ -33,6 +34,7 @@ type Props = {
   steps: readonly ModelSelection[];
   initialSelection: ModelSelection | null;
   entries: readonly ProviderInstanceEntry[];
+  scopedEntry: ProviderInstanceEntry | undefined;
   models: ReadonlyMap<ProviderInstanceId, readonly ModelEsque[]>;
   environmentId: EnvironmentId | null;
   projectId: ProjectId | null;
@@ -60,7 +62,12 @@ export function EffortSliderEditor(props: Props) {
     props.models.get(step.instanceId)?.find((option) => option.slug === step.model);
   const nameOf = (step: ModelSelection) => {
     const option = optionOf(step);
-    return option ? getDisplayModelName(option) : step.model;
+    const scopedEntry = props.scopedEntry;
+    const harnessName =
+      scopedEntry?.instanceId === step.instanceId
+        ? PROVIDER_DISPLAY_NAMES[scopedEntry.driverKind]
+        : undefined;
+    return option ? getDisplayModelName(option, { harnessName }) : step.model;
   };
   const effortOf = (step: ModelSelection) =>
     shownEffort(modelOf(step), step)?.value ??
@@ -289,6 +296,7 @@ export function EffortSliderEditor(props: Props) {
             activeInstanceId={draft.instanceId}
             model={draft.model}
             preferActiveProvider
+            scopedInstanceId={props.scopedEntry?.instanceId}
             lockedProvider={null}
             instanceEntries={props.entries}
             modelOptionsByInstance={props.models}

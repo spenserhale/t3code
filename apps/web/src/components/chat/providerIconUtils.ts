@@ -29,10 +29,13 @@ function stripLeadingQualifier(value: string, qualifier: string | null | undefin
 
 export function getDisplayModelName(
   model: ModelEsque,
-  options?: { preferShortName?: boolean },
+  options?: { preferShortName?: boolean; harnessName?: string | undefined },
 ): string {
   const name = options?.preferShortName && model.shortName ? model.shortName : model.name;
-  return stripLeadingQualifier(name, model.subProvider);
+  return stripLeadingQualifier(
+    stripLeadingQualifier(name, model.subProvider),
+    options?.harnessName,
+  );
 }
 
 export function getTriggerDisplayModelName(
