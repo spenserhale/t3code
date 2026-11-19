@@ -502,3 +502,62 @@ export async function persistScopedSettingsPatch(
     savedEnvironmentCount: savedEnvironments.length,
   };
 }
+
+function listLabels(labels: readonly string[]) {
+  return labels.length <= 1
+    ? (labels[0] ?? "")
+    : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
+}
+
+/** Writes go only to connected environments, so these are the ones a save skips. */
+export function offlineScopedEnvironments<
+  T extends Pick<ScopedSettingsEnvironment, "connection" | "serverConfig">,
+>(environments: readonly T[]): T[] {
+  return environments.filter((environment) => !isConnectedWithConfig(environment));
+}
+
+export function describeOfflineScope(labels: readonly string[]): string | null {
+  if (labels.length === 0) return null;
+  return labels.length === 1
+    ? `${labels[0]} is offline. Changes here won't reach it.`
+    : `${listLabels(labels)} are offline. Changes here won't reach them.`;
+}
+
+export function describeScopedSave({
+  saved,
+  failed,
+  skipped,
+}: {
+  readonly saved: readonly { readonly label: string }[];
+  readonly failed: readonly { readonly label: string; readonly message: string }[];
+  readonly skipped: readonly { readonly label: string }[];
+}): { type: "warning" | "error"; title: string; description: string } | null {
+  if (failed.length === 0 && skipped.length === 0) return null;
+  const skippedLines =
+    skipped.length === 0
+      ? []
+      : [
+          `${listLabels(skipped.map(({ label }) => label))} ${skipped.length === 1 ? "is offline and was" : "are offline and were"} not changed.`,
+        ];
+  const savedLines =
+    saved.length === 0 ? [] : [`Saved on ${saved.map(({ label }) => label).join(", ")}.`];
+  if (failed.length === 0) {
+    return {
+      type: "warning",
+      title:
+        skipped.length === 1
+          ? `Not saved on ${skipped[0]!.label}`
+          : `Not saved on ${skipped.length} environments`,
+      description: [...skippedLines, ...savedLines].join("\n"),
+    };
+  }
+  return {
+    type: "error",
+    title: saved.length > 0 ? "Setting saved on some environments" : "Setting not saved",
+    description: [
+      ...failed.map(({ label, message }) => `Could not save on ${label}: ${message}`),
+      ...skippedLines,
+      ...savedLines,
+    ].join("\n"),
+  };
+}

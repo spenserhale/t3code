@@ -20,6 +20,8 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { toastManager } from "../ui/toast";
 import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
 import {
+  describeScopedSave,
+  offlineScopedEnvironments,
   persistScopedSettingsPatch,
   planProjectOverridesClear,
   planScopedSettingsClear,
@@ -49,6 +51,7 @@ export function useScopedSettingSource(keys: readonly (keyof ServerSettings)[]) 
 
 function useRunScopedPlan() {
   const persistServer = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
+  const scopeEnvironments = useOptionalSettingsScope()?.environments ?? [];
   return (plan: ReturnType<typeof planScopedSettingsPatch>, onFailed?: () => void) => {
     if (plan.unavailableReason) {
       toastManager.add({
@@ -77,22 +80,18 @@ function useRunScopedPlan() {
         return persistServer(request);
       },
       persistClientSettingsPatch,
-    ).then(({ failedEnvironments, savedEnvironments, savedEnvironmentCount }) => {
-      if (failedEnvironments.length === 0) return;
-      onFailed?.();
-      toastManager.add({
-        type: "error",
-        title:
-          savedEnvironmentCount > 0 ? "Setting saved on some environments" : "Setting not saved",
-        description: [
-          ...failedEnvironments.map(
-            ({ label, message }) => `Could not save on ${label}: ${message}`,
-          ),
-          ...(savedEnvironmentCount > 0
-            ? [`Saved on ${savedEnvironments.map(({ label }) => label).join(", ")}.`]
-            : []),
-        ].join("\n"),
+    ).then(({ failedEnvironments, savedEnvironments }) => {
+      if (failedEnvironments.length > 0) onFailed?.();
+      const outcome = describeScopedSave({
+        saved: savedEnvironments,
+        failed: failedEnvironments,
+        skipped: plan.serverWrites.length > 0 ? offlineScopedEnvironments(scopeEnvironments) : [],
       });
+      // One warning toast per skip, updated in place, so edits made while offline don't stack.
+      if (outcome)
+        toastManager.add(
+          outcome.type === "warning" ? { ...outcome, id: "scoped-save-skipped" } : outcome,
+        );
     });
   };
 }

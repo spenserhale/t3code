@@ -27,6 +27,7 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { useOptionalSettingsScope } from "./SettingsScopeContext";
+import { describeOfflineScope, offlineScopedEnvironments } from "./scopedSettings";
 import { resolveSettingsScope, type SettingsScopeSearch } from "./settingsScope";
 import {
   ALL_ENVIRONMENTS_VALUE,
@@ -74,6 +75,9 @@ export function SettingsScopeSentence() {
     environments,
     onChange: scope.selectScope,
   };
+  const offlineNotice = describeOfflineScope(
+    offlineScopedEnvironments(scope.environments).map(({ label }) => label),
+  );
   return (
     <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 px-3 text-sm text-muted-foreground sm:px-4">
       <span className="flex min-w-0 items-center gap-1.5">
@@ -86,6 +90,7 @@ export function SettingsScopeSentence() {
         </span>
         <EnvironmentScopeMenu {...props} />
       </span>
+      {offlineNotice ? <span className="basis-full text-xs">{offlineNotice}</span> : null}
     </p>
   );
 }
