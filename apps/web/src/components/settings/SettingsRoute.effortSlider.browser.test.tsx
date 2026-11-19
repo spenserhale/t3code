@@ -404,7 +404,7 @@ it("keeps the editor in view when switching between Favorites and an empty provi
   await userEvent.keyboard("{Shift>}{Tab}{/Shift}");
   await expect.element(addStep()).toHaveFocus();
   await userEvent.keyboard("{Enter}");
-  await expect.element(page.getByRole("option", { name: /Sol.*Codex/ })).toBeVisible();
+  await expect.element(page.getByRole("option", { name: /^Sol\b/ })).toBeVisible();
   await expect
     .element(page.getByRole("option", { name: /OpenCode model/ }))
     .not.toBeInTheDocument();
@@ -461,9 +461,9 @@ it("keeps the controls usable at the end of the visible editor in a short pane",
 
   // Open the model picker where the controls landed, without scrolling them into view first.
   await userEvent.click(addStep());
-  await expect.element(page.getByRole("option", { name: /Sol.*Codex/ })).toBeVisible();
+  await expect.element(page.getByRole("option", { name: /^Sol\b/ })).toBeVisible();
   await userEvent.keyboard("{Escape}");
-  await expect.element(page.getByRole("option", { name: /Sol.*Codex/ })).not.toBeInTheDocument();
+  await expect.element(page.getByRole("option", { name: /^Sol\b/ })).not.toBeInTheDocument();
   expect(scrollPane().scrollTop).toBe(empty.scrollTop);
 
   await selectSlider("Favorites");
