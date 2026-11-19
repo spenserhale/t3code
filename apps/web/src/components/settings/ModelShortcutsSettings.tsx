@@ -66,6 +66,8 @@ import {
 } from "./useScopedSettings";
 
 import { EffortSliderEditor } from "./EffortSliderEditor";
+import { SettingsCompareBanner } from "./SettingsCompare";
+import { favoritesMixedNote, sliderMixedNote } from "./settingsCompare.logic";
 
 const LAST_USED = "last-used";
 const FAVORITES_SLIDER = ":favorites";
@@ -458,6 +460,7 @@ export function ModelShortcutsSettings() {
 
   return (
     <SettingsSection id="model-shortcuts" title="Favorites and effort slider">
+      <SettingsCompareBanner />
       <SettingsRow
         serverScoped
         settingKeys={["favorites"]}
@@ -493,7 +496,8 @@ export function ModelShortcutsSettings() {
         ) : null}
         {mixedFavorites ? (
           <p className="px-2 pb-1 text-xs text-muted-foreground">
-            The selected environments keep different lists. Changing this one replaces them all.
+            {favoritesMixedNote(targets, target) ??
+              "The selected environments keep different lists. Changing this one replaces them all."}
           </p>
         ) : null}
         {unsupportedLabels.length > 0 && connectedEnvironments.length > 1 ? (
@@ -676,8 +680,16 @@ export function ModelShortcutsSettings() {
             ) : null}
             {(driver === null ? mixedSlider : mixedProviderSlider) ? (
               <p className="px-2 pb-1 text-xs text-muted-foreground">
-                The selected targets have different slider settings. Saving applies the displayed
-                list to each target.
+                {sliderMixedNote({
+                  targets,
+                  shown: target,
+                  sliderLabel: driverLabel,
+                  steps,
+                  ...(driver === null
+                    ? {}
+                    : { provider: { sliders: scopedProviderSliders, shown: providerSlider } }),
+                }) ??
+                  "The selected targets have different slider settings. Saving applies the displayed list to each target."}
               </p>
             ) : null}
             {steps.length === 0 ? (

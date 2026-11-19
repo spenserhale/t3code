@@ -631,6 +631,24 @@ it("deselects every machine blocking a model and keeps the search and save scope
   });
 });
 
+it("names the environment that missed a slider and copies the primary's slider to it", async () => {
+  setup({ providerEffortSliders: { [openCode]: openCodeSteps } }, {});
+  await using _screen = await mountSettings(`/settings/threads?machine=${remoteId}`);
+  await expect
+    .element(page.getByText("Laptop differs from Mac mini on OpenCode slider."))
+    .toBeVisible();
+  await page.getByRole("button", { name: "Compare", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Compare environments" });
+  await expect.element(dialog.getByRole("group", { name: "OpenCode slider" })).toBeVisible();
+  expect(state.writeSettings).not.toHaveBeenCalled();
+  await dialog.getByRole("button", { name: "Copy to Laptop" }).click();
+  await vi.waitFor(() => expect(state.writeSettings).toHaveBeenCalledTimes(1));
+  expect(state.writeSettings).toHaveBeenCalledWith({
+    environmentId: remoteId,
+    input: { patch: { setProviderEffortSliders: [{ driver: openCode, steps: openCodeSteps }] } },
+  });
+});
+
 it.each([
   { width: 360, height: 620, layout: "a narrow window" },
   { width: 640, height: 520, layout: "a 200% zoom-equivalent viewport" },

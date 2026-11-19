@@ -25,6 +25,7 @@ import { cn } from "~/lib/utils";
 import { ModelPickerContent, resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import { ChatGptSharingControl } from "./ChatGptSharingControl";
 import { EffortSlider, type ModelPickerEffortSlider } from "./EffortSlider";
+import { EffortSliderCopyHint } from "./EffortSliderCopyHint";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ModelEsque, getDisplayModelName, getTriggerDisplayModelName } from "./providerIconUtils";
 import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../providerInstances";
@@ -304,7 +305,11 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   ) => (
     <DockedPickerContext value={{ modelLabel: triggerTitle, sliderActions, onRequestClose }}>
       <div className="flex max-h-(--available-height) flex-col">
-        {slider ? <EffortSlider {...slider} /> : null}
+        {slider ? (
+          <EffortSlider {...slider} />
+        ) : sliderActions ? (
+          <EffortSliderCopyHint target={sliderActions.settingsTarget} />
+        ) : null}
         <div className="flex h-86.5 min-h-0 max-sm:h-auto max-sm:flex-col">
           {modelList}
           <div
