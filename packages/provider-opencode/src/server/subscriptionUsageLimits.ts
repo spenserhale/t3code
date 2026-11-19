@@ -7,6 +7,7 @@ import type * as Path from "effect/Path";
 import type * as HttpClient from "effect/http/HttpClient";
 
 import { makeOllamaCloudUsageLimits } from "./ollamaCloudUsageLimits.ts";
+import { readUnlidUsageLimits } from "./unlidUsageLimits.ts";
 import { readOpenCodeGoUsageLimits } from "./usageLimits.ts";
 import {
   combineUsageLimits,
@@ -16,9 +17,9 @@ import {
 } from "./zaiUsageLimits.ts";
 
 /**
- * Reads the subscriptions an OpenCode account can hold, OpenCode Go, the Z.ai Coding Plan and
- * Ollama Cloud, as the account's usage limits. Build it once, where the provider is built: each
- * subscription remembers its last good read between refreshes.
+ * Reads the subscriptions an OpenCode account can hold, OpenCode Go, the Z.ai Coding Plan,
+ * Ollama Cloud and Unlid's prepaid balance, as the account's usage limits. Build it once,
+ * where the provider is built: each subscription remembers its last good read between refreshes.
  */
 export const makeSubscriptionUsageLimits = Effect.fn("makeSubscriptionUsageLimits")(
   function* (input: {
@@ -36,15 +37,22 @@ export const makeSubscriptionUsageLimits = Effect.fn("makeSubscriptionUsageLimit
     const readOllamaLimits = yield* keepLastGoodUsageLimits(
       yield* makeOllamaCloudUsageLimits(input),
     );
+    const readUnlidLimits = yield* keepLastGoodUsageLimits(readUnlidUsageLimits(input));
     const usageLimits = Effect.all(
-      { goLimits: readGoLimits, zaiLimits: readZaiLimits, ollamaLimits: readOllamaLimits },
+      {
+        goLimits: readGoLimits,
+        zaiLimits: readZaiLimits,
+        ollamaLimits: readOllamaLimits,
+        unlidLimits: readUnlidLimits,
+      },
       { concurrency: "unbounded" },
     ).pipe(
-      Effect.flatMap(({ goLimits, zaiLimits, ollamaLimits }) =>
+      Effect.flatMap(({ goLimits, zaiLimits, ollamaLimits, unlidLimits }) =>
         combineUsageLimits([
           { id: "opencode-go", label: "OpenCode Go", limits: goLimits },
           { id: "zai-coding-plan", label: "Z.ai", limits: zaiLimits },
           { id: "ollama-cloud", label: "Ollama Cloud", limits: ollamaLimits },
+          { id: "unlid", label: "Unlid", limits: unlidLimits },
         ]),
       ),
       Effect.provide(services),

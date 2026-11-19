@@ -49,6 +49,7 @@ function subscriptionAccounts(
         displayName: instanceName ? `${instanceName} · ${subscription.label}` : subscription.label,
         subscription: subscription.id,
         ...(subscription.credit ? { credit: subscription.credit } : {}),
+        ...(subscription.balance ? { balance: subscription.balance } : {}),
         redeem: subscription.resetCredits ? native : null,
         limits: {
           checkedAt: subscription.checkedAt,
@@ -77,7 +78,18 @@ function subscriptionAccounts(
       },
     },
   ]);
-  return accounts.filter(([, account]) => account.limits.windows.length > 0);
+  // A balance-only subscription is still shown; one with neither window nor balance is not.
+  return accounts.filter(
+    ([, account]) => account.limits.windows.length > 0 || account.balance !== undefined,
+  );
+}
+
+/** A provider shows something drawable when it reports windows or a subscription with a balance. */
+export function hasDrawableLimits(limits: ServerProviderUsageLimits): boolean {
+  return (
+    limits.windows.length > 0 ||
+    (limits.subscriptions ?? []).some((subscription) => subscription.balance !== undefined)
+  );
 }
 
 /**

@@ -1,6 +1,7 @@
 import type {
   ProviderConsumeResetCreditOutcome,
   ServerProviderResetCredits,
+  ServerProviderUsageBalance,
   ServerProviderUsageCredit,
   ServerProviderUsageLimits,
   ServerProviderUsageWindow,
@@ -321,12 +322,14 @@ export const consumeZaiResetCredit = Effect.fn("consumeZaiResetCredit")(function
 }, Effect.timeout("20 seconds"));
 
 /**
- * What a subscription probe reads: its limits, and its credit pool when the plan has one.
- * The credit travels with the limits so a failed read keeps both, and leaves them
- * together in `combineUsageLimits`, which lists it under the subscription only.
+ * What a subscription probe reads: its limits, its credit pool when the plan has
+ * one, and its prepaid balance when it is pay-as-you-go. Both travel with the
+ * limits so a failed read keeps them, and `combineUsageLimits` lists them under
+ * the subscription only.
  */
 export type SubscriptionLimits = ServerProviderUsageLimits & {
   readonly credit?: ServerProviderUsageCredit | undefined;
+  readonly balance?: ServerProviderUsageBalance | undefined;
 };
 
 /** What one subscription probe returned, with the plan it reads. */
@@ -337,10 +340,10 @@ interface SubscriptionProbe {
 }
 
 /**
- * One OpenCode account can hold several subscriptions: their windows show together, and the
- * first failure explains an account with none available. One fingerprint passes through
- * unchanged, several are hashed together, and remembered inputs make the oldest `checkedAt`
- * the result's. Each probe with a credential is also listed under `subscriptions`.
+ * One OpenCode account can hold several subscriptions: their windows show together, the first
+ * failure explains an account with none, and remembered inputs make the oldest `checkedAt` the
+ * result's. One fingerprint passes through unchanged, several are hashed together, and each
+ * probe with a credential and windows or a balance to show is listed under `subscriptions`.
  */
 export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
   probes: readonly [SubscriptionProbe, ...SubscriptionProbe[]],
@@ -351,6 +354,7 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
     return limits.find((entry) => entry.unavailable?.reason === "probeFailed") ?? probes[0].limits;
   }
   const resetCredits = available.find((entry) => entry.resetCredits !== undefined)?.resetCredits;
+  const externalUsage = available.find((entry) => entry.externalUsage !== undefined)?.externalUsage;
   const fingerprints = [
     ...new Set(limits.flatMap((entry) => entry.credentialFingerprint ?? [])),
   ].toSorted();
@@ -362,7 +366,9 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
     entry.checkedAt < oldest.checkedAt ? entry : oldest,
   ).checkedAt;
   const subscriptions = probes.flatMap(({ id, label, limits: entry }) =>
-    entry.unavailable === undefined && entry.credentialFingerprint
+    entry.unavailable === undefined &&
+    entry.credentialFingerprint &&
+    (entry.windows.length > 0 || entry.balance !== undefined)
       ? [
           {
             id,
@@ -372,6 +378,7 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
             windowIds: entry.windows.map((window) => window.id),
             ...(entry.resetCredits ? { resetCredits: entry.resetCredits } : {}),
             ...(entry.credit ? { credit: entry.credit } : {}),
+            ...(entry.balance ? { balance: entry.balance } : {}),
           },
         ]
       : [],
@@ -383,6 +390,7 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
     }),
     ...(credentialFingerprint ? { credentialFingerprint } : {}),
     ...(resetCredits ? { resetCredits } : {}),
+    ...(externalUsage !== undefined ? { externalUsage } : {}),
     ...(subscriptions.length > 0 ? { subscriptions } : {}),
   };
 });
