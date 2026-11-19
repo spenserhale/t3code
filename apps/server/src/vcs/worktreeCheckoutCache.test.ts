@@ -15,6 +15,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as ServerConfig from "../config.ts";
 import * as CheckoutCloner from "./CheckoutCloner.ts";
+import type { CreateWorktreeProgress } from "./GitVcsDriver.ts";
 import { makeGitVcsDriverCore } from "./GitVcsDriverCore.ts";
 import { makeWorktreeCheckoutCache } from "./worktreeCheckoutCache.ts";
 
@@ -87,11 +88,16 @@ const setup = Effect.gen(function* () {
   const cache = (yield* provide(
     makeWorktreeCheckoutCache({ cacheDir: worktreeCheckoutCacheDir, execute: driver.execute }),
   ))!;
-  const create = (name: string, refName = "main", fastCheckout = true) =>
+  const create = (
+    name: string,
+    refName = "main",
+    fastCheckout = true,
+    progress?: CreateWorktreeProgress,
+  ) =>
     provide(
       driver.createWorktree(
         { cwd: repo, refName, newRefName: name, path: NodePath.join(root, name) },
-        { fastCheckout },
+        { fastCheckout, ...(progress ? { progress } : {}) },
       ),
     ).pipe(Effect.map(({ worktree }) => worktree.path));
   // Whether the last creation of `name` checked out with Git rather than cloning.
@@ -231,6 +237,19 @@ describe.skipIf(!symlinksSupported)("worktree checkout cache", () => {
       yield* fixture.create("fallback");
       assert.isTrue(fixture.checkedOutWithGit("fallback"));
       assert.isTrue(NodeFS.existsSync(marker));
+    }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
+  it.effect("checks out with Git into a folder the caller reserved", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup;
+      yield* fixture.build(yield* fixture.create("base", "main", false));
+
+      const reserved = yield* fixture.create("handoff", "main", true, {
+        onWorktreeReserved: () => Effect.void,
+      });
+      assert.isTrue(fixture.checkedOutWithGit("handoff"));
+      assert.equal(sh(reserved, ["status", "--porcelain"]), "");
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 

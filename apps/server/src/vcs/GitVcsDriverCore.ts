@@ -45,6 +45,7 @@ import { removeEmptyDirectory, type RemoveEmptyDirectoryError } from "./removeEm
 import { explicitBareRepositoryEnv, gitConfigEnv } from "./VcsProcess.ts";
 import { makeWorktreeCheckoutCache } from "./worktreeCheckoutCache.ts";
 import { removeLinkedWorktree } from "./worktreeRemoval.ts";
+import { reserveWorktreeFolder } from "./worktreeReservation.ts";
 import { resolveWorktreesDirectory } from "../worktreesDirectory.ts";
 import {
   parseRemoteNames,
@@ -4282,6 +4283,32 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const directoryName = `${prefix}-${Hex.encode(hash).slice(0, 16)}`;
       worktreePath = path.join(parentDir, repoName, directoryName);
     }
+    const progress = options?.progress;
+    if (progress?.onWorktreeReserved) {
+      const onReserved = progress.onWorktreeReserved;
+      // Not interruptible between making the folder and handing it over, or it would be lost.
+      yield* reserveWorktreeFolder(
+        worktreePath,
+        path.dirname(worktreePath),
+        removeWorktree({ cwd: input.cwd, path: worktreePath }),
+      ).pipe(
+        Effect.mapError(
+          (error) =>
+            new GitCommandError({
+              operation: "GitVcsDriver.createWorktree",
+              command: "git worktree add",
+              cwd: input.cwd,
+              ...(error.taken ? { reason: "path_already_exists" as const } : {}),
+              detail: error.taken
+                ? "git worktree add failed"
+                : "The folder for the worktree could not be made.",
+              cause: error.cause,
+            }),
+        ),
+        Effect.flatMap(onReserved),
+        Effect.uninterruptible,
+      );
+    }
     const newRefName = input.newRefName;
     if (newRefName) {
       // Kept apart from the checkout so the shared-config lock only covers the tracking write.
@@ -4290,9 +4317,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         { cwd: input.cwd, branch: newRefName, startPoint: input.refName },
         "git worktree add failed",
       );
+      if (progress?.onBranchCreated) yield* progress.onBranchCreated(input.newRefName);
     }
     const checkoutRef = newRefName ?? input.refName;
-    const progress = options?.progress;
     const onCheckoutProgress = progress?.onCheckoutProgress;
 
     // Both reads leave the repository alone, so they share one round trip before the checkout.
@@ -4306,7 +4333,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       { concurrency: "unbounded" },
     );
     const checkoutWorkers = configuredCheckoutWorkers ?? "0";
-    const fastCheckout = checkoutCache !== undefined && options?.fastCheckout === true;
+    // The cache's fallback deletes and re-makes the folder, so a reserved one is no longer its own.
+    const fastCheckout =
+      checkoutCache !== undefined &&
+      options?.fastCheckout === true &&
+      progress?.onWorktreeReserved === undefined;
     const cacheGeneration = fastCheckout ? yield* checkoutCache.currentGeneration : 0;
     const stockCheckout = executeGitWithStableDiagnostics(
       "GitVcsDriver.createWorktree",
