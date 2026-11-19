@@ -10,7 +10,7 @@ import { PreviewLoginCandidate, PreviewLoginField } from "./previewLogin.ts";
  * redacted on both ends.
  */
 
-export const SecretRelayKind = Schema.Literals(["login", "identity"]);
+export const SecretRelayKind = Schema.Literals(["login", "identity", "secretReference"]);
 export type SecretRelayKind = typeof SecretRelayKind.Type;
 
 export const SecretRelayRequest = Schema.Struct({
@@ -23,8 +23,10 @@ export const SecretRelayRequest = Schema.Struct({
   origin: Schema.optional(Schema.String),
   /** A `device:` id from an earlier `choose` answer. */
   item: Schema.optional(TrimmedNonEmptyString),
-  /** An item the user named, such as `op://Vault/Item`. */
+  /** An item the user named, such as `op://Vault/Item`, or the secret a command uses. */
   reference: Schema.optional(TrimmedNonEmptyString),
+  /** For a secret a command uses: the command as the user reads it, about 200 characters at most. */
+  command: Schema.optional(Schema.String),
   /** The login fields to read; default username and password. */
   fields: Schema.optional(Schema.Array(PreviewLoginField)),
   /** For an identity: fill a page, or show the values to the agent. */

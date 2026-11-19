@@ -1,7 +1,7 @@
 /**
  * Answers secret requests relayed from the user's other machines with this device's own password
  * managers, after asking the user in the desktop app. Only a server with its desktop app attached
- * answers; the values go back once, for one fill or read there.
+ * answers; the values go back once, for one fill, read or command there.
  */
 import {
   type PreviewLoginField,
@@ -92,11 +92,19 @@ const make = Effect.gen(function* () {
             : "all";
       const reference = item === undefined ? request.reference : undefined;
       const kind: BrowserLogins.BrowserApprovalKind =
-        request.kind === "login"
-          ? "login"
+        request.kind !== "identity"
+          ? request.kind
           : request.purpose === "read"
             ? "identityRead"
             : "identity";
+      const secret = request.kind === "secretReference" ? reference : undefined;
+      if (request.kind === "secretReference") {
+        if (secret === undefined) return unavailable("The request did not name a secret.");
+        // Which password managers take a reference is known without opening any.
+        if ((yield* logins.secretSources(secret, reach)).accounts.length === 0) {
+          return { type: "none" } as const;
+        }
+      }
 
       // Asked before any password manager is touched: listing and looking up are reads too.
       const scope = { threadId: request.threadId, requester: requester.environmentId };
@@ -108,6 +116,7 @@ const make = Effect.gen(function* () {
             kind,
             providerLabel: provider?.account ?? providers.map(({ account }) => account).join(", "),
             ...(reference ? { reference } : {}),
+            ...(request.command ? { command: request.command } : {}),
             ...(origin ? { origin } : {}),
             machine: requester.label,
             ...(request.threadTitle ? { threadTitle: request.threadTitle } : {}),
@@ -116,6 +125,15 @@ const make = Effect.gen(function* () {
         );
         if (answer === false || (yield* remaining) <= 0) return { type: "denied" } as const;
         if (answer === "thread") yield* logins.recordApproval(revision, scope, kind);
+      }
+
+      if (secret !== undefined) {
+        const { value, account } = yield* logins.readSecret(revision, secret, reach);
+        return {
+          type: "values",
+          item: { id: secret, title: secret, account, urls: [] },
+          values: { value },
+        } as const;
       }
 
       if (request.kind === "login") {

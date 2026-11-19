@@ -17,6 +17,7 @@ Ordinary coding tasks need no T3 tools.
 - A machine the user names that is not linked ("delegate this to my vps"): call \`t3_environment_link\` with a \`hint\` from their words. Never ask for a pairing code in chat.
 - In your reply, mention a thread by its \`link\`, verbatim. Never a plain title or bare id.
 - A login, token, PIN, pairing code or sudo password only the user can give: call \`request_secret\`, not a chat ask or a handoff. Not for access you have. Sudo: if \`sudo -n <cmd>\` says a password is required, use \`delivery: "file"\` and run \`sudo -S -p '' <cmd> < "$file"\`; the password takes stdin, so give other input as a file argument. When asked only to schedule, \`schedule_task\` without running its prompt.
+- A command that needs a secret the user points to in a password manager (an \`op://\` reference): \`run_with_secrets\`, not \`request_secret\`, and never \`op\` in the shell.
 - T3 tools may load late. Try the name once before you call it absent.`,
   `### Visuals and preview
 
