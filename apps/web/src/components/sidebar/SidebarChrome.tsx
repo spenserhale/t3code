@@ -1,4 +1,4 @@
-import { ArrowLeftIcon, ArrowRightIcon, SettingsIcon } from "lucide-react";
+import { ArrowLeftIcon, ArrowRightIcon, SettingsIcon, SquareKanbanIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -14,6 +14,8 @@ import {
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { cn } from "../../lib/utils";
 import { usePullRequestsSupported } from "../../state/environments";
+import { useJiraEnvironmentId } from "../../state/jira";
+import { readJiraView } from "../jira/jiraViewMemory";
 import { T3Wordmark } from "../T3Wordmark";
 import {
   resolveEnvironmentIdentificationPillLabel,
@@ -227,6 +229,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     select: (location) => isSidebarUtilityPage(location.pathname),
   });
   const pullRequestsSupported = usePullRequestsSupported();
+  const jiraAvailable = useJiraEnvironmentId() !== null;
   const closeMobileSidebar = () => {
     if (isMobile) {
       setOpenMobile(false);
@@ -238,6 +241,10 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
       to: "/pull-requests",
       search: readPullRequestListPreferences(),
     });
+  };
+  const handleJiraClick = () => {
+    closeMobileSidebar();
+    void navigate({ to: "/jira", search: readJiraView() });
   };
   const handleSettingsClick = () => {
     closeMobileSidebar();
@@ -277,6 +284,13 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
               icon={<PullRequestGlyph.pullRequest />}
               label="Pull requests"
               onClick={handlePullRequestsClick}
+            />
+          ) : null}
+          {jiraAvailable ? (
+            <SidebarUtilityItem
+              icon={<SquareKanbanIcon />}
+              label="Jira"
+              onClick={handleJiraClick}
             />
           ) : null}
           <SidebarUsageItem onClick={handleUsageClick} />

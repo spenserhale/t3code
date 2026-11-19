@@ -67,6 +67,8 @@ import { ComposerControl } from "./chat/ComposerControl";
 import { MiddleTruncate } from "./ui/middle-truncate";
 import { BranchPicker, BranchPickerRefItem } from "./BranchPicker";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { JiraThreadChip } from "./jira/JiraThreadChip";
+import { useThreadJiraLink } from "../state/jira";
 
 export interface BranchToolbarBranchSelectorHandle {
   open: () => void;
@@ -133,6 +135,7 @@ export function BranchToolbarBranchSelector({
   });
   const threadRef = scopeThreadRef(environmentId, threadId);
   const serverThread = useQuietThreadShell(threadRef);
+  const jiraLink = useThreadJiraLink(serverThread);
   const serverSession = serverThread?.runtime ?? null;
   const draftThread = useComposerDraftStore((store) =>
     draftId ? store.getDraftSession(draftId) : store.getDraftThreadByRef(threadRef),
@@ -704,6 +707,13 @@ export function BranchToolbarBranchSelector({
             }}
           />
         ) : null}
+        {displayMode !== "panel" ? (
+          <JiraThreadChip
+            link={jiraLink}
+            thread={serverThread}
+            render={<ComposerControl size="xs" />}
+          />
+        ) : null}
         <span
           className="flex min-w-0"
           onMouseDownCapture={(event) => {
@@ -751,6 +761,14 @@ export function BranchToolbarBranchSelector({
             openAriaLabel={prUrl ?? `Open ${sourceControlPresentation.terminology.singular}`}
             onOpen={(event) => openPrLink(event, prUrl)}
             onActed={() => branchStatusQuery.refresh()}
+          />
+        ) : null}
+        {displayMode === "panel" ? (
+          <JiraThreadChip
+            link={jiraLink}
+            thread={serverThread}
+            panel
+            render={<ThreadDetailsControl />}
           />
         ) : null}
       </div>
