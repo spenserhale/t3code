@@ -18,10 +18,9 @@ A desktop sign-in asks for approval on that machine, which a remote user cannot 
 or headless server, sign `op` in with a [service account](./secrets-1password-service-account.md) or a
 [Connect server](./secrets-1password-connect.md) instead.
 
-To add one, open **Settings → Secrets**, select **Add provider**, and enter a name and the
-1Password account: the shorthand, sign-in address (without `https://`), or ID that
-`op account list` shows. Secret providers belong to the environment you are connected to. Each
-environment keeps its own list.
+To add one, open **Settings → Secrets**, select **Add provider**, and enter a name. Paste the
+1Password sign-in URL or enter the account shorthand or ID from `op account list`. Secret
+providers belong to the environment you are connected to. Each environment keeps its own list.
 
 ## Choose which vaults a provider reads
 

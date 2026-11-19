@@ -10,7 +10,7 @@ describe("secretProviderFromDraft", () => {
   it("adds a provider keyed by its name and reports every field that blocks it", () => {
     expect(
       secretProviderFromDraft(
-        { name: "  1Password!  ", account: "my.1password.com", ...noToken },
+        { name: "  1Password!  ", account: "https://my.1password.com/", ...noToken },
         new Set(),
         { mode: "add" },
       ),
@@ -45,7 +45,7 @@ describe("secretProviderFromDraft", () => {
       [{ ...noToken, clearServiceAccountToken: true }, ""],
     ] as const) {
       const result = secretProviderFromDraft(
-        { name: "Personal (team)", account: "team.1password.com", ...tokens },
+        { name: "Personal (team)", account: " HTTP://team.1password.com// ", ...tokens },
         new Set(["personal"]),
         { mode: "edit", id },
       );
