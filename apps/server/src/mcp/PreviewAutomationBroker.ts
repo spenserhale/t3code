@@ -77,6 +77,11 @@ export class PreviewAutomationBroker extends Context.Service<
     readonly invoke: <A = unknown>(
       request: PreviewAutomationInvokeInput,
     ) => Effect.Effect<A, PreviewAutomationError>;
+    /**
+     * Completes once nobody waits for the request's response: it was answered, it timed out, its
+     * host left, or its caller was interrupted. A host stops work for it then.
+     */
+    readonly ended: (requestId: string) => Effect.Effect<void>;
   }
 >()("t3/mcp/PreviewAutomationBroker") {}
 
@@ -97,6 +102,7 @@ interface PendingRequest {
   readonly queue: ClientConnection["queue"];
   readonly deferred: Deferred.Deferred<unknown, PreviewAutomationError>;
   readonly context: PreviewAutomationRequestErrorContext;
+  readonly ended: Deferred.Deferred<void>;
 }
 
 /** A lease belongs to this exact connectionId/queue; replacing the host invalidates it. */
@@ -524,6 +530,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     input: Parameters<PreviewAutomationBroker["Service"]["invoke"]>[0],
   ): Effect.fn.Return<A, PreviewAutomationError> {
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
+    const ended = yield* Deferred.make<void>();
     const route = yield* SynchronizedRef.modify(state, (current) => {
       const assignments = new Map(
         Array.from(current.assignments).filter(([, assignment]) => {
@@ -606,7 +613,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         ...selectorDiagnostics,
       };
       const pending = new Map(current.pending);
-      pending.set(requestId, { queue: connection.queue, deferred, context });
+      pending.set(requestId, { queue: connection.queue, deferred, context, ended });
       return [
         { connection, requestId, requestContext: context, requestSequence },
         { ...current, assignments, pending, requestSequence: current.requestSequence + 1 },
@@ -629,7 +636,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       const pending = new Map(next.pending);
       pending.delete(requestId);
       return { ...next, pending };
-    });
+    }).pipe(Effect.andThen(Deferred.succeed(ended, undefined)));
     const awaitResponse = Effect.fn("PreviewAutomationBroker.awaitResponse")(function* () {
       const offered = yield* SynchronizedRef.modifyEffect(state, (current) => {
         // Serialize generation checks and offers with queue closure; routes can outlive eviction.
@@ -709,7 +716,15 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     return result;
   });
 
-  return PreviewAutomationBroker.of({ connect, focusHost, respond, invoke });
+  const ended: PreviewAutomationBroker["Service"]["ended"] = (requestId) =>
+    SynchronizedRef.get(state).pipe(
+      Effect.flatMap((current) => {
+        const entry = current.pending.get(requestId);
+        return entry === undefined ? Effect.void : Deferred.await(entry.ended);
+      }),
+    );
+
+  return PreviewAutomationBroker.of({ connect, focusHost, respond, invoke, ended });
 }).pipe(Effect.withSpan("PreviewAutomationBroker.make"));
 
 export const layer = Layer.effect(PreviewAutomationBroker, make);

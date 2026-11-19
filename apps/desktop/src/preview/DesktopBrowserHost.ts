@@ -163,6 +163,8 @@ export const make = Effect.gen(function* () {
   const openedWindows = new WeakMap<Electron.WebContents, Set<Electron.BrowserWindow>>();
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
   const loginApproval = yield* Effect.serviceOption(LoginApprovalDialog.LoginApprovalDialog);
+  /** Open or queued prompts, so the server can close one it stopped waiting for. */
+  const loginApprovalCancels = new Map<string, AbortController>();
 
   const nextScreenshot = (tab: AttachedTab) => {
     tab.screenshotTurn = null;
@@ -673,11 +675,14 @@ export const make = Effect.gen(function* () {
         // reading an identity names no tab at all.
         const guest =
           tabId === undefined ? undefined : tabs.get(keyOf({ threadId, tabId }))?.debuggee;
+        const cancel = new AbortController();
+        loginApprovalCancels.set(requestId, cancel);
         const ask = Option.isSome(loginApproval)
-          ? loginApproval.value.ask(guest?.webContents, command.value)
-          : Effect.succeed(false);
+          ? loginApproval.value.ask(guest?.webContents, command.value, cancel.signal)
+          : Effect.succeed<LoginApprovalDialog.LoginApprovalAnswer>(false);
         runFork(
           ask.pipe(
+            Effect.ensuring(Effect.sync(() => loginApprovalCancels.delete(requestId))),
             Effect.flatMap((approved) =>
               PubSub.publish(outbox, {
                 type: "loginApproval",
@@ -689,6 +694,10 @@ export const make = Effect.gen(function* () {
             ),
           ),
         );
+        return;
+      }
+      if (command.value.type === "loginApprovalCancel") {
+        loginApprovalCancels.get(command.value.requestId)?.abort();
         return;
       }
       const tab = tabs.get(keyOf(command.value));
