@@ -16,6 +16,9 @@ import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
 import {
   applyPendingScopedWrites,
   createScopedSettingsWriter,
+  describeOfflineScope,
+  describeScopedSave,
+  offlineScopedEnvironments,
   persistScopedSettingsPatch,
   planProjectOverridesClear,
   planScopedSettingsClear,
@@ -759,6 +762,71 @@ describe("scoped settings mixed values", () => {
     writes = [{ save, environmentId: waiting.environmentId, patch }];
     settle(waiting.environmentId);
     expect(writes).toEqual([]);
+  });
+});
+
+describe("offline environments in a scope", () => {
+  const label = (name: string) => ({ label: name });
+
+  it("treats environments without a loaded config as offline", () => {
+    expect(offlineScopedEnvironments(environments).map(({ label }) => label)).toEqual([
+      "Offline",
+      "Loading",
+    ]);
+  });
+
+  it("names offline environments before anything is saved", () => {
+    expect(describeOfflineScope([])).toBeNull();
+    expect(describeOfflineScope(["Torrent"])).toBe(
+      "Torrent is offline. Changes here won't reach it.",
+    );
+    expect(describeOfflineScope(["Torrent", "RW"])).toBe(
+      "Torrent and RW are offline. Changes here won't reach them.",
+    );
+    expect(describeOfflineScope(["Torrent", "RW", "LinkMini"])).toBe(
+      "Torrent, RW, and LinkMini are offline. Changes here won't reach them.",
+    );
+  });
+
+  it("reports a save that skipped offline environments", () => {
+    const saved = [label("LinkPro"), label("LinkMini"), label("RW")];
+    expect(describeScopedSave({ saved, failed: [], skipped: [] })).toBeNull();
+    expect(describeScopedSave({ saved, failed: [], skipped: [label("Torrent")] })).toEqual({
+      type: "warning",
+      title: "Not saved on Torrent",
+      description: "Torrent is offline and was not changed.\nSaved on LinkPro, LinkMini, RW.",
+    });
+    expect(
+      describeScopedSave({
+        saved: [label("LinkPro")],
+        failed: [],
+        skipped: [label("Torrent"), label("RW")],
+      }),
+    ).toEqual({
+      type: "warning",
+      title: "Not saved on 2 environments",
+      description: "Torrent and RW are offline and were not changed.\nSaved on LinkPro.",
+    });
+  });
+
+  it("lists skipped environments with failures", () => {
+    const failed = [{ label: "LinkMini", message: "Permission denied" }];
+    expect(
+      describeScopedSave({ saved: [label("LinkPro")], failed, skipped: [label("Torrent")] }),
+    ).toEqual({
+      type: "error",
+      title: "Setting saved on some environments",
+      description: [
+        "Could not save on LinkMini: Permission denied",
+        "Torrent is offline and was not changed.",
+        "Saved on LinkPro.",
+      ].join("\n"),
+    });
+    expect(describeScopedSave({ saved: [], failed, skipped: [] })).toEqual({
+      type: "error",
+      title: "Setting not saved",
+      description: "Could not save on LinkMini: Permission denied",
+    });
   });
 });
 

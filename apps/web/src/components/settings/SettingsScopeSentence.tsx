@@ -2,7 +2,7 @@ import { resolveEnvironmentMachineKind } from "@t3tools/contracts";
 import { fileDisplayName } from "@t3tools/shared/path";
 import { CheckIcon, ChevronDownIcon, FolderIcon, LayersIcon } from "lucide-react";
 import { Fragment, useState, type ReactNode } from "react";
-import { T, useGT, useMessages, Var } from "gt-react";
+import { T, useGT, useLocale, useMessages, Var } from "gt-react";
 
 import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
 import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
@@ -28,6 +28,7 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 import { useOptionalSettingsScope } from "./SettingsScopeContext";
+import { describeOfflineScope, offlineScopedEnvironments } from "./scopedSettings";
 import { resolveSettingsScope, type SettingsScopeSearch } from "./settingsScope";
 import {
   ALL_CHECKOUTS_VALUE,
@@ -72,6 +73,8 @@ export function SettingsScopeSentence() {
   const scope = useOptionalSettingsScope();
   const pathname = useRenderedSettingsPathname();
   const { environments } = useEnvironments();
+  const messages = useMessages();
+  const locale = useLocale();
   if (scope === null || SETTINGS_DEVICE_ONLY_PATHS.has(pathname)) return null;
   const props: SettingsScopeMenuProps = {
     value: scope.search,
@@ -86,6 +89,11 @@ export function SettingsScopeSentence() {
   const environment = <EnvironmentScopeMenu {...props} />;
   const checkout = <CheckoutScopeMenu {...props} />;
   const onEnvironment = scope.search.machine || scope.scope.kind === "checkout";
+  const offlineNotice = describeOfflineScope(
+    offlineScopedEnvironments(scope.environments).map(({ label }) => label),
+    messages,
+    locale,
+  );
   return (
     <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 px-3 text-sm text-muted-foreground sm:px-4">
       {onEnvironment && hasCheckouts ? (
@@ -141,6 +149,7 @@ export function SettingsScopeSentence() {
           </span>
         </T>
       )}
+      {offlineNotice ? <span className="basis-full text-xs">{offlineNotice}</span> : null}
     </p>
   );
 }
