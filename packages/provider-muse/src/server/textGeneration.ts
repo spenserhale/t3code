@@ -120,7 +120,7 @@ async function generateMuseText(
       await host.connection.command("userInput/cancel", {
         sessionId,
         userInputId: request.userInputId,
-        reason: "T3 Code text generation cannot request user input.",
+        reason: "SECode text generation cannot request user input.",
       });
     }
   };
@@ -164,7 +164,7 @@ async function generateMuseText(
   });
   host.connection.onProtocolError(rejectCompletion);
   host.connection.onServerRequest(async () => {
-    const error = new Error("T3 Code text generation cannot approve interactive requests.");
+    const error = new Error("SECode text generation cannot approve interactive requests.");
     rejectCompletion(error);
     throw error;
   });

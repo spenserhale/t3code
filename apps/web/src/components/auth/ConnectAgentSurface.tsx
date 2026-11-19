@@ -250,7 +250,7 @@ export function McpConsent({
     pending === null &&
     access !== null &&
     resolveApprovalDecision({ code: pairingCode, access, details }) !== null;
-  // A code from "Use T3 Code in another app" names its level, so the page does not ask again.
+  // A code from "Use SECode in another app" names its level, so the page does not ask again.
   const codeAccess = parseMcpApprovalCode(pairingCode)?.access;
   const approveLevel = codeAccess ?? access;
 
@@ -316,7 +316,7 @@ export function McpConsent({
               value={pairingCode}
             />
             <p className="text-xs text-muted-foreground">
-              Get one from Use T3 Code in another app (MCP), Settings → Sharing & access, or{" "}
+              Get one from Use SECode in another app (MCP), Settings → Sharing & access, or{" "}
               <code>t3 auth pairing create</code> on this machine.
             </p>
           </div>

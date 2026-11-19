@@ -175,7 +175,7 @@ function PastWindows({
   if (average === null) {
     return (
       <p className="text-xs text-muted-foreground">
-        No finished windows recorded yet. They are noted while T3 Code is open.
+        No finished windows recorded yet. They are noted while SECode is open.
       </p>
     );
   }
@@ -205,7 +205,7 @@ function PastWindows({
                 </span>
                 {window.complete ? null : (
                   <span className="text-muted-foreground">
-                    Last read before T3 Code saw the end of the window
+                    Last read before SECode saw the end of the window
                   </span>
                 )}
               </div>

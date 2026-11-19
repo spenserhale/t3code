@@ -80,7 +80,7 @@ const usersThread = ThreadId.make("thread:box-users-own");
 const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
   const base = { ...liveThreadShell(boxThread, { runtimeMode: "auto" }), projectId: boxProject };
   const linked = Ref.get(linkSession).pipe(
-    Effect.map((sessionId) => ({ ...base, linkOrigin: { sessionId, label: "T3 Code · Laptop" } })),
+    Effect.map((sessionId) => ({ ...base, linkOrigin: { sessionId, label: "SECode · Laptop" } })),
   );
   const users = { ...liveThreadShell(usersThread, { runtimeMode: "auto" }), projectId: boxProject };
   const run = (status: OrchestrationV2Run["status"]) =>
@@ -292,7 +292,7 @@ const makeLaptop = Effect.gen(function* () {
               ? {
                   ...liveThreadShell(threadId, { runtimeMode: "full-access" }),
                   // Work another environment's link started on this laptop.
-                  linkOrigin: { sessionId: "session:desk", label: "T3 Code · Desk" },
+                  linkOrigin: { sessionId: "session:desk", label: "SECode · Desk" },
                 }
               : liveThreadShell(
                   threadId,

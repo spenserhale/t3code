@@ -3893,7 +3893,7 @@ it.live.each([
   [
     "with no device connected",
     undefined,
-    "no T3 Code desktop app that can ask the user is connected",
+    "no SECode desktop app that can ask the user is connected",
   ],
   [
     "when set to refuse, even with a device connected",
@@ -3917,7 +3917,7 @@ it.live.each([
           // New logins are never relayed.
           const refusedNew = yield* invoke("fillNewLogin", { username: "ada" }).pipe(Effect.flip);
           expect(refusedNew.message).toContain(
-            "Saving a new login to Work needs the user's approval in the T3 Code desktop app on this machine.",
+            "Saving a new login to Work needs the user's approval in the SECode desktop app on this machine.",
           );
           expect(asked).toEqual([]);
           expect(server.reads).toEqual([]);
@@ -4391,7 +4391,7 @@ it.live(
           const refusedChoice = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin", {
             requester: { threadTitle: "Deploy", provider: "codex" },
           }).pipe(Effect.flip);
-          expect(refusedChoice.message).toContain("updated T3 Code desktop app");
+          expect(refusedChoice.message).toContain("updated SECode desktop app");
           expect((yield* passwordField(context)).value).toBe("");
           const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin", {
             login: "device:work/g1",

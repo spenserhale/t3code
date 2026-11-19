@@ -661,7 +661,7 @@ function BrowserRecordingFrameRateSetting({ disabled }: { readonly disabled: boo
 
 const LINK_TARGET_LABELS: Readonly<Record<BrowserLinkTarget, string>> = {
   system: "Your default browser",
-  app: "T3 Code",
+  app: "SECode",
 };
 
 function BrowserLinkTargetSetting({ disabled }: { readonly disabled: boolean }) {
@@ -798,11 +798,11 @@ export function PullRequestLinksOpenInAppSetting() {
   return (
     <SettingsRow
       {...searchableSetting("pull-request-links-open-in-app")}
-      description="Clicking a pull request link opens it in T3 Code. Turn off to open pull request links like any other link, on your git host."
+      description="Clicking a pull request link opens it in SECode. Turn off to open pull request links like any other link, on your git host."
       resetAction={
         openInApp ? null : (
           <SettingResetButton
-            label="open pull requests in T3 Code"
+            label="open pull requests in SECode"
             onClick={() => updateSettings({ pullRequestLinksOpenInApp: true })}
           />
         )
@@ -813,7 +813,7 @@ export function PullRequestLinksOpenInAppSetting() {
           onCheckedChange={(checked) =>
             updateSettings({ pullRequestLinksOpenInApp: Boolean(checked) })
           }
-          aria-label="Open pull requests in T3 Code"
+          aria-label="Open pull requests in SECode"
         />
       }
     />
@@ -1627,7 +1627,7 @@ export function browserLoginsWrite(
   };
 }
 
-const DEFAULT_NEW_LOGIN_VAULT = "T3 Code Sign-ups";
+const DEFAULT_NEW_LOGIN_VAULT = "SECode Sign-ups";
 
 export function BrowserLoginSettings() {
   const settings = useScopedSettings();
@@ -1736,10 +1736,10 @@ export function BrowserLoginSettings() {
         serverScoped
         settingKeys={["browserLogins"]}
         {...searchableSetting("browser-secret-escalation")}
-        description="Logins, identities and secrets in a service account's vaults are used without asking. Anything else asks the T3 Code desktop app on your Mac (Touch ID). Refuse suits unattended machines."
+        description="Logins, identities and secrets in a service account's vaults are used without asking. Anything else asks the SECode desktop app on your Mac (Touch ID). Refuse suits unattended machines."
         status={
           outdated.length > 0
-            ? `Update T3 Code on ${outdated.join(", ")} before this setting applies there.`
+            ? `Update SECode on ${outdated.join(", ")} before this setting applies there.`
             : undefined
         }
         resetAction={

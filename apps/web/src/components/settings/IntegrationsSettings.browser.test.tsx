@@ -58,18 +58,18 @@ describe("BrowserLoginSettings", () => {
   it("shows the escalation setting only to servers that read it", async () => {
     state.environments = [{ label: "LinkMini" }];
     await using screen = await render(content());
-    await expect.element(page.getByText(/Update T3 Code on LinkMini\b/)).toBeInTheDocument();
+    await expect.element(page.getByText(/Update SECode on LinkMini\b/)).toBeInTheDocument();
     await expect.element(escalation()).not.toBeInTheDocument();
 
     state.environments = [{ label: "LinkMini", secretRelay: true }];
     await screen.rerender(content());
     await expect.element(escalation()).toBeInTheDocument();
-    await expect.element(page.getByText(/Update T3 Code on/)).not.toBeInTheDocument();
+    await expect.element(page.getByText(/Update SECode on/)).not.toBeInTheDocument();
 
     // Set from several machines at once, the older ones are named.
     state.environments = [{ label: "LinkMini", secretRelay: true }, { label: "RW" }];
     await screen.rerender(content());
     await expect.element(escalation()).toBeInTheDocument();
-    await expect.element(page.getByText(/Update T3 Code on RW\b/)).toBeInTheDocument();
+    await expect.element(page.getByText(/Update SECode on RW\b/)).toBeInTheDocument();
   });
 });

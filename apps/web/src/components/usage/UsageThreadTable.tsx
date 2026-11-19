@@ -28,7 +28,7 @@ const COLUMNS: readonly { readonly key: ThreadSortKey; readonly label: string }[
 
 /**
  * Usage per thread for the page's window. Rows open their thread. Totals cover
- * the main agent's turns driven through T3 Code, so they do not add up to the
+ * the main agent's turns driven through SECode, so they do not add up to the
  * model breakdown.
  */
 function UsageThreadTable({

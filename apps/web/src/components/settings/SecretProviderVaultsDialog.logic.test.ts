@@ -185,7 +185,7 @@ describe("vaultChoiceExcludes", () => {
     expect(vaultChoiceExcludes(undefined, "Anything")).toBe(false);
     expect(vaultChoiceExcludes([secode], "secode")).toBe(false);
     expect(vaultChoiceExcludes([secode], "v1")).toBe(false);
-    expect(vaultChoiceExcludes([secode], "T3 Code Sign-ups")).toBe(true);
+    expect(vaultChoiceExcludes([secode], "SECode Sign-ups")).toBe(true);
     expect(vaultChoiceExcludes([], "Secode")).toBe(true);
   });
 });

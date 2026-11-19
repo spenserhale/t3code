@@ -400,7 +400,7 @@ export const fillLogin = async (
   if (access.status === "none") return { status: "no_login", tabId: tab.tabId, origin };
   if (access.status === "choose") {
     throw loginError(
-      "Choosing this login needs an updated T3 Code desktop app on the user's device. Update it, then try again.",
+      "Choosing this login needs an updated SECode desktop app on the user's device. Update it, then try again.",
     );
   }
   const { item } = access;

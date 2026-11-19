@@ -47,7 +47,7 @@ function RemindersDialog({ onOpenChange }: { readonly onOpenChange: (open: boole
           <DialogDescription>
             Allowance you do not spend is gone when a window resets. Get a nudge when a subscription
             is about to reset with plenty left and you are on course to leave it. Reminders appear
-            only while T3 Code is open, and follow your notification settings.
+            only while SECode is open, and follow your notification settings.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>

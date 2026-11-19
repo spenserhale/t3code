@@ -29,7 +29,7 @@ const refused = (message: string) =>
 
 const needsChooser = () =>
   refused(
-    "Choosing this login needs a connected T3 Code desktop app with login selection support. Connect or update the user's desktop app, then try again.",
+    "Choosing this login needs a connected SECode desktop app with login selection support. Connect or update the user's desktop app, then try again.",
   );
 
 /** Asks only about metadata; this primitive never opens a password manager. */

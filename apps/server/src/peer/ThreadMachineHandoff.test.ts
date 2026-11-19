@@ -197,7 +197,7 @@ const makeHarness = (initial: Options = {}) => {
           },
     client:
       options.linkedCaller === true
-        ? { sessionId: "session:link", label: "T3 Code · Server", access: "auto", linked: true }
+        ? { sessionId: "session:link", label: "SECode · Server", access: "auto", linked: true }
         : undefined,
     capabilities: new Set(["orchestration", "worktree"]),
     issuedAt: 1,
@@ -661,7 +661,7 @@ describe("t3_thread_continue_on_machine", () => {
         const error = yield* harness.failed({ threadId: sourceThread });
         expect(error.code).toBe("capability_denied");
         expect(error.message).toContain(
-          "started from T3 Code · Server through a linked environment",
+          "started from SECode · Server through a linked environment",
         );
         expect(harness.log).toEqual([]);
       }),
@@ -1025,7 +1025,7 @@ describe("t3_thread_continue_on_machine", () => {
         const harness = makeHarness({ openBranch: "missing" });
         const error = yield* harness.failed();
         expect(error.message).toContain(
-          "LinkMini runs a T3 Code version that does not have t3_worktree_open_branch",
+          "LinkMini runs a SECode version that does not have t3_worktree_open_branch",
         );
         expect(error.message).toContain(`pushed to origin/feature/login (${tip.slice(0, 7)})`);
         expect(harness.settled).toEqual([]);

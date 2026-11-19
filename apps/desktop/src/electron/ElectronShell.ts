@@ -21,7 +21,7 @@ const REMOTE_EDITOR_PROTOCOLS = new Set(
   }),
 );
 
-// "Use T3 Code in another app" opens these apps (apps/web/src/components/mcp/mcpApps.ts). List
+// "Use SECode in another app" opens these apps (apps/web/src/components/mcp/mcpApps.ts). List
 // each exact link shape the wizard sends, never a whole scheme.
 const APP_LAUNCH_URLS = new Set(["grokbot://app"]);
 

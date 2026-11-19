@@ -479,11 +479,11 @@ it.effect("uses vocabulary only for supported transcription and always applies a
             speechCustomWords: [
               { term: "GitHub", aliases: [] },
               { term: "Bob", aliases: ["Robert"] },
-              { term: "T3 Code", aliases: [] },
+              { term: "SECode", aliases: [] },
             ],
           };
           const vocabulary =
-            supportsVocabulary && !translate ? ["GitHub", "Bob", "T3 Code"] : undefined;
+            supportsVocabulary && !translate ? ["GitHub", "Bob", "SECode"] : undefined;
           native.transcribe.mockResolvedValueOnce({ text: "git hub and Robert" });
           expect(yield* speech.transcribe(pcm(), options)).toBe(
             vocabulary ? "git hub and Bob" : "GitHub and Bob",

@@ -2,7 +2,7 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import type * as Path from "effect/Path";
 
 /** A branded build's own default folder, used only under the standard T3 home. */
-const BRANDED_NEW_PROJECTS_ROOT: string | null = null;
+const BRANDED_NEW_PROJECTS_ROOT: string | null = "~/.se/projects";
 
 /**
  * The folder new projects go in while the setting is empty. A dev worktree or an explicit
