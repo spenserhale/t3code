@@ -13,6 +13,7 @@ import {
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
   SecretProviderId,
+  SecretProviderKind,
   ServerSettings,
   ServerSettingsPatch,
   UsageLimitSourceId,
@@ -1525,7 +1526,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
   );
 
   it.effect(
-    "uses the same secret lifecycle for provider config, environment, host tokens, and quota keys",
+    "uses the same secret lifecycle for provider config, environment, host tokens, quota keys, and secret provider tokens",
     () =>
       Effect.gen(function* () {
         const service = yield* ServerSettingsModule.ServerSettingsService;
@@ -1533,6 +1534,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         const fs = yield* FileSystem.FileSystem;
         const store = yield* ServerSecretStore.ServerSecretStore;
         const instanceId = ProviderInstanceId.make("antigravity_secrets");
+        const headless = SecretProviderId.make("headless");
         const saved = yield* service.updateSettings({
           providerInstances: {
             [instanceId]: {
@@ -1568,6 +1570,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
               maxConcurrentSessions: 2,
             },
           ],
+          secretProviders: {
+            [headless]: {
+              kind: SecretProviderKind.make("one_password"),
+              label: "Headless",
+              config: { account: "my.1password.com", serviceAccountToken: "ops_service-secret" },
+            },
+          },
         });
         const values = [
           "config-secret",
@@ -1577,6 +1586,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
           "gitcafe-secret",
           "quota-secret",
           "expo-secret",
+          "ops_service-secret",
         ];
         const client = ServerSettingsModule.redactServerSettingsForClient(saved, {
           secretReferences: true,
@@ -1589,13 +1599,39 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         }
         assert.include(JSON.stringify(client), "https://example.test");
         assert.include(JSON.stringify(client), "me@example.test");
+        assert.deepEqual(client.secretProviders[headless]?.config, {
+          account: "my.1password.com",
+          serviceAccountToken: SECRET_REDACTED,
+        });
         const echoed = yield* service.updateSettings({
           providerInstances: client.providerInstances,
           sourceControlHosts: client.sourceControlHosts,
           usageLimitSources: client.usageLimitSources,
           easDeviceHosts: client.easDeviceHosts,
+          secretProviders: client.secretProviders,
         });
         for (const value of values) assert.include(JSON.stringify(echoed), value);
+        // What the secret resolver hands the 1Password driver.
+        assert.propertyVal(
+          (yield* service.getSettings).secretProviders[headless]?.config,
+          "serviceAccountToken",
+          "ops_service-secret",
+        );
+        // An older client's dialog renames the provider without the token field it does not know.
+        yield* service.updateSettings({
+          secretProviders: {
+            [headless]: {
+              kind: SecretProviderKind.make("one_password"),
+              label: "Renamed",
+              config: { account: "my.1password.com" },
+            },
+          },
+        });
+        assert.propertyVal(
+          (yield* service.getSettings).secretProviders[headless]?.config,
+          "serviceAccountToken",
+          "ops_service-secret",
+        );
         const renamed = yield* service.updateProviderInstance({
           operation: "upsert",
           instanceId,
@@ -1645,6 +1681,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
           }),
           sourceControlHostSecretName({ kind: "gitcafe", field: "token", serverHost: null }),
           "usage-limit-source-aHVi",
+          "secret-provider-aGVhZGxlc3M-b25lX3Bhc3N3b3Jk-c2VydmljZUFjY291bnRUb2tlbg",
         ];
         for (const name of secretNames) {
           assert.isTrue(Option.isSome(yield* store.get(name)), name);
@@ -1669,7 +1706,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
             .providerInstances[instanceId]?.environment,
           [{ name: "API_TOKEN", value: secret, sensitive: true }],
         );
-        yield* service.updateSettings({
+        const cleared = yield* service.updateSettings({
           providerInstances: {},
           sourceControlHosts: {
             github: { tokens: {} },
@@ -1677,10 +1714,17 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
             gitcafe: { token: "" },
           },
           usageLimitSources: { [UsageLimitSourceId.make("hub")]: null },
+          secretProviders: {
+            [headless]: {
+              ...client.secretProviders[headless]!,
+              config: { account: "my.1password.com", serviceAccountToken: "" },
+            },
+          },
         });
         for (const name of secretNames) {
           assert.isTrue(Option.isNone(yield* store.get(name)));
         }
+        assert.propertyVal(cleared.secretProviders[headless]?.config, "serviceAccountToken", "");
       }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
   );
 

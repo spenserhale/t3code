@@ -5,7 +5,10 @@ import type * as Schema from "effect/Schema";
 export interface SecretProviderDefinition<Config = unknown> {
   readonly kind: SecretProviderKind;
   readonly label: string;
-  readonly configSchema: Schema.Codec<Config, unknown>;
+  /** A struct, so the server can keep the fields marked `secretSetting` in its secret store. */
+  readonly configSchema: Schema.Codec<Config, unknown> & {
+    readonly fields: Readonly<Record<string, Schema.Top>>;
+  };
   /** Whether `reference` is syntax this kind can read. */
   readonly isReference: (reference: string) => boolean;
   readonly referencePlaceholder: string;
