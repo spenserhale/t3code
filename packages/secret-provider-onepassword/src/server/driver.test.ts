@@ -336,6 +336,64 @@ describe("1Password logins", () => {
       }).pipe(Effect.provide(op.layer));
     });
 
+    it.effect("lists identities vault by vault, then reads one from its vault", () => {
+      const op = fakeOp((args) =>
+        args[1] === "vault"
+          ? { stdout: vaults("v1", "v2") }
+          : args[2] === "list"
+            ? {
+                stdout: JSON.stringify(
+                  vaultOf(args) === "v1"
+                    ? [{ id: "me1", title: "Me", vault: { id: "v1", name: "Agents" } }]
+                    : [],
+                ),
+              }
+            : {
+                stdout: JSON.stringify({
+                  fields: [{ id: "firstname", type: "STRING", value: "Ada" }],
+                }),
+              },
+      );
+      return Effect.gen(function* () {
+        const identities = yield* driver.identities!.list(config);
+        assert.deepStrictEqual(identities, [
+          { id: "me1", title: "Me", vault: "Agents", vaultId: "v1" },
+        ]);
+        assert.deepStrictEqual(yield* driver.identities!.read(config, identities![0]!), {
+          firstName: "Ada",
+        });
+        assert.sameDeepMembers(
+          op.invocations.slice(1, 3).map((args) => [...args]),
+          [
+            [
+              "--cache=false",
+              "item",
+              "list",
+              "--vault=v1",
+              "--categories=Identity",
+              "--format=json",
+            ],
+            [
+              "--cache=false",
+              "item",
+              "list",
+              "--vault=v2",
+              "--categories=Identity",
+              "--format=json",
+            ],
+          ],
+        );
+        assert.deepStrictEqual(op.invocations[3], [
+          "--cache=false",
+          "item",
+          "get",
+          "me1",
+          "--vault=v1",
+          "--format=json",
+        ]);
+      }).pipe(Effect.provide(op.layer));
+    });
+
     it.effect("reads as not listing when every vault fails", () => {
       const op = fakeOp((args) =>
         args[1] === "vault" ? { stdout: vaults("v1", "v2") } : { code: 1, stderr: "[ERROR]" },
@@ -374,6 +432,8 @@ describe("1Password logins", () => {
     return Effect.gen(function* () {
       assert.strictEqual(yield* driver.logins!.list({ account }), undefined);
       assert.strictEqual(yield* driver.logins!.read({ account }, grafana, ["password"]), undefined);
+      assert.strictEqual(yield* driver.identities!.list({ account }), undefined);
+      assert.strictEqual(yield* driver.identities!.read({ account }, grafana), undefined);
     }).pipe(Effect.provide(op.layer));
   });
 
@@ -385,8 +445,237 @@ describe("1Password logins", () => {
         { ...grafana, vaultId: "--help" },
       ]) {
         assert.strictEqual(yield* driver.logins!.read({ account }, flag, ["password"]), undefined);
+        assert.strictEqual(yield* driver.identities!.read({ account }, flag), undefined);
       }
       assert.strictEqual(op.invocations.length, 0);
     }).pipe(Effect.provide(op.layer));
   });
+});
+
+describe("1Password identities", () => {
+  const me = { id: "me1", title: "Me" };
+  const readFields = (fields: ReadonlyArray<object>) => {
+    const op = fakeOp(() => ({ stdout: JSON.stringify({ id: "me1", fields }) }));
+    return driver.identities!.read({ account }, me).pipe(Effect.provide(op.layer));
+  };
+
+  it.effect("lists every identity, website or not", () => {
+    const op = fakeOp(() => ({
+      stdout: JSON.stringify([{ id: "me1", title: "Me", vault: { id: "v1", name: "Private" } }]),
+    }));
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(yield* driver.identities!.list({ account }), [
+        { id: "me1", title: "Me", vault: "Private" },
+      ]);
+      assert.deepStrictEqual(op.invocations, [
+        [
+          "--cache=false",
+          "item",
+          "--account=my.1password.com",
+          "list",
+          "--categories=Identity",
+          "--format=json",
+        ],
+      ]);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect("reads values by field id, then by label, with the first phone that is set", () =>
+    Effect.gen(function* () {
+      const values = yield* readFields([
+        { id: "firstname", type: "STRING", label: "first name", value: " Ada " },
+        { id: "initial", type: "STRING", label: "initial", value: "M" },
+        { id: "lastname", type: "STRING", label: "last name", value: "Lovelace" },
+        { id: "sex", type: "MENU", label: "sex", value: "female" },
+        { id: "birthdate", type: "DATE", label: "birth date", value: "642902400" },
+        { id: "company", type: "STRING", label: "company", value: "" },
+        { id: "q7x2", type: "STRING", label: "Company", value: "Analytical Engines" },
+        { id: "defphone", type: "PHONE", label: "default phone", value: "" },
+        { id: "cellphone", type: "PHONE", label: "cell", value: "+1 555 0100" },
+        { id: "homephone", type: "PHONE", label: "home", value: "+1 555 0101" },
+        { id: "email", type: "EMAIL", label: "email", value: "ada@example.com" },
+        { id: "username", type: "STRING", label: "username", value: "ada" },
+        { id: "9kd1", type: "STRING", label: "Job Title", value: "Programmer" },
+        {
+          id: "address",
+          type: "ADDRESS",
+          label: "address",
+          value: "1 Main St, Springfield, IL, 62701, United States",
+        },
+      ]);
+      assert.deepStrictEqual(values, {
+        firstName: "Ada",
+        middleInitial: "M",
+        lastName: "Lovelace",
+        email: "ada@example.com",
+        phone: "+1 555 0100",
+        company: "Analytical Engines",
+        jobTitle: "Programmer",
+        username: "ada",
+        birthDate: "1990-05-17",
+        address: "1 Main St, Springfield, IL, 62701, United States",
+        street: "1 Main St",
+        city: "Springfield",
+        state: "IL",
+        postalCode: "62701",
+        country: "United States",
+      });
+    }),
+  );
+
+  it.effect("never reads a credential as a person's details, by id or by label", () =>
+    Effect.gen(function* () {
+      const names = [
+        "firstname",
+        "first name",
+        "initial",
+        "middle initial",
+        "lastname",
+        "last name",
+        "email",
+        "defphone",
+        "cellphone",
+        "phone",
+        "company",
+        "jobtitle",
+        "job title",
+        "birthdate",
+        "birth date",
+        "username",
+        "address",
+      ];
+      const fields = names.flatMap((name, index) => [
+        { id: name, type: "CONCEALED", label: name, value: `secret-${index}` },
+        { id: `c${index}`, type: "CONCEALED", label: name, value: `secret-${index}` },
+        { id: `o${index}`, type: "OTP", label: name, value: "otpauth://x", totp: "123456" },
+        { id: `p${index}`, type: "STRING", purpose: "PASSWORD", label: name, value: `pw-${index}` },
+        { id: `u${index}`, label: name, value: `untyped-${index}` },
+      ]);
+      assert.deepStrictEqual(yield* readFields(fields), {});
+    }),
+  );
+
+  it.effect.each([
+    ["epoch seconds", "642902400", "1990-05-17"],
+    ["what op 2.41.1 printed for 1990-04-23, a minute past noon UTC", "640872060", "1990-04-23"],
+    ["epoch seconds in a JSON number", 642902400, "1990-05-17"],
+    ["an ISO date", "1990-05-17", "1990-05-17"],
+    ["seconds before 1970", "-86400", "1969-12-31"],
+  ] as const)("reads a birth date given as %s", ([, value, birthDate]) =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(yield* readFields([{ id: "birthdate", type: "DATE", value }]), {
+        birthDate,
+      });
+    }),
+  );
+
+  // Each value is what `op` 2.41.1 printed for a real item whose parts were known (2026-11-11).
+  const usAddress = {
+    address: "1 Main St, Springfield, IL, 62701, United States",
+    street: "1 Main St",
+    city: "Springfield",
+    state: "IL",
+    postalCode: "62701",
+    country: "United States",
+  };
+  it.effect.each([
+    ["a country code op knows", "1 Main St, Springfield, IL, 62701, United States", usAddress],
+    [
+      "a country op does not know, which it puts before the postal code",
+      "1 Main St, Springfield, IL, United States, 62701",
+      usAddress,
+    ],
+    [
+      "a comma in the street",
+      "1 Main St, Apt 4, Springfield, IL, 62701, United States",
+      {
+        ...usAddress,
+        address: "1 Main St, Apt 4, Springfield, IL, 62701, United States",
+        street: "1 Main St, Apt 4",
+      },
+    ],
+    [
+      "a street on two lines",
+      "1 Main St\nApt 4, Springfield, IL, 62701, United States",
+      {
+        ...usAddress,
+        address: "1 Main St, Apt 4, Springfield, IL, 62701, United States",
+        street: "1 Main St, Apt 4",
+      },
+    ],
+    [
+      "no state",
+      "10 Downing Street, London, <nil>, SW1A 2AA, United Kingdom",
+      {
+        address: "10 Downing Street, London, SW1A 2AA, United Kingdom",
+        street: "10 Downing Street",
+        city: "London",
+        postalCode: "SW1A 2AA",
+        country: "United Kingdom",
+      },
+    ],
+    [
+      "no postal code",
+      "1 Main St, Springfield, IL, <nil>, United States",
+      {
+        address: "1 Main St, Springfield, IL, United States",
+        street: "1 Main St",
+        city: "Springfield",
+        state: "IL",
+        country: "United States",
+      },
+    ],
+    [
+      "no postal code and a country op does not know",
+      "1 Main St, Springfield, IL, zz, <nil>",
+      {
+        address: "1 Main St, Springfield, IL, zz",
+        street: "1 Main St",
+        city: "Springfield",
+        state: "IL",
+        country: "zz",
+      },
+    ],
+    [
+      "no city",
+      "1 Main St, <nil>, IL, 62701, United States",
+      {
+        address: "1 Main St, IL, 62701, United States",
+        street: "1 Main St",
+        state: "IL",
+        postalCode: "62701",
+        country: "United States",
+      },
+    ],
+    // Without a digit to mark the postal code, the last two places cannot be told apart.
+    [
+      "a postal code without a digit",
+      "1 Main St, Springfield, IL, none, United States",
+      { address: "1 Main St, Springfield, IL, none, United States" },
+    ],
+    [
+      "fewer places than an address has",
+      "1 Main St, Sacramento, CA",
+      { address: "1 Main St, Sacramento, CA" },
+    ],
+    ["only separators", " , \n, ", {}],
+    ["something else", 42, {}],
+  ] as const)("reads an address with %s", ([, value, address]) =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(
+        yield* readFields([{ id: "address", type: "ADDRESS", label: "address", value }]),
+        address,
+      );
+    }),
+  );
+
+  it.effect("keeps a text field named address whole, since only an ADDRESS has known places", () =>
+    Effect.gen(function* () {
+      const value = "Flat 2, 1 Main St, Springfield, 62701, United States";
+      assert.deepStrictEqual(
+        yield* readFields([{ id: "x1", type: "STRING", label: "Address", value }]),
+        { address: value },
+      );
+    }),
+  );
 });

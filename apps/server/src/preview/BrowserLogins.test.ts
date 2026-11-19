@@ -7,7 +7,10 @@ import {
   SecretProviderId,
   SecretProviderKind,
 } from "@t3tools/contracts";
-import { defineSecretProviderDriver } from "@t3tools/secret-provider-core/server/driver";
+import {
+  defineSecretProviderDriver,
+  type SecretProviderIdentity,
+} from "@t3tools/secret-provider-core/server/driver";
 import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -112,15 +115,25 @@ const grafana = {
 };
 const github = { id: "h1", title: "GitHub", vaultId: "v9", urls: ["https://github.com"] };
 const bothProviders = { secretProviderIds: [work, personal], approval: "thread" } as const;
+const me: SecretProviderIdentity = { id: "i1", title: "Me", vault: "Work" };
+const partner: SecretProviderIdentity = { id: "i2", title: "Partner", vaultId: "v9" };
 
-/** Logins by the account in a provider's config; an account left out cannot list. */
+/**
+ * Logins and identities by the account in a provider's config; an account left out cannot list.
+ */
 const makeService = (
   listed: Partial<Record<string, ReadonlyArray<typeof grafana | typeof github>>>,
   browserLogins: BrowserLoginSettings = { secretProviderIds: [work], approval: "thread" },
+  identities: Partial<Record<string, ReadonlyArray<SecretProviderIdentity>>> = {},
   /** Holds every listing until it opens. */
   gate?: Deferred.Deferred<void>,
 ) => {
-  const calls = { list: 0, read: [] as Array<string>, listing: Deferred.makeUnsafe<void>() };
+  const calls = {
+    list: 0,
+    read: [] as Array<string>,
+    identityList: 0,
+    listing: Deferred.makeUnsafe<void>(),
+  };
   const driver = defineSecretProviderDriver({
     kind,
     definition: defineSecretProvider({
@@ -149,6 +162,18 @@ const makeService = (
         Effect.sync(() => {
           calls.read.push(`${account}:${login.id}@${login.vaultId ?? ""}`);
           return Object.fromEntries(fields.map((field) => [field, `${field}-${account}`]));
+        }),
+    },
+    identities: {
+      list: ({ account }) =>
+        Effect.sync(() => {
+          calls.identityList++;
+          return identities[account];
+        }),
+      read: ({ account }, identity) =>
+        Effect.sync(() => {
+          calls.read.push(`${account}:${identity.id}@${identity.vaultId ?? ""}`);
+          return { firstName: `first-${account}` };
         }),
     },
   });
@@ -189,7 +214,7 @@ describe("BrowserLogins", () => {
 
   it.effect("shares one listing among the requests that arrive while it runs", () => {
     const gate = Deferred.makeUnsafe<void>();
-    const { layer, calls } = makeService({ work: [github] }, undefined, gate);
+    const { layer, calls } = makeService({ work: [github] }, undefined, {}, gate);
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
       // Each request runs until it waits, so all five arrive before any listing ends.
@@ -212,7 +237,7 @@ describe("BrowserLogins", () => {
     const listed: Partial<Record<string, ReadonlyArray<typeof grafana | typeof github>>> = {
       work: [github],
     };
-    const { layer, calls } = makeService(listed, undefined, gate);
+    const { layer, calls } = makeService(listed, undefined, {}, gate);
     return Effect.gen(function* () {
       const logins = yield* BrowserLogins.BrowserLogins;
       const early = yield* logins
@@ -315,30 +340,30 @@ describe("BrowserLogins", () => {
         logins.candidates("https://github.com/").pipe(Effect.map((found) => found.revision));
 
       let at = yield* revision();
-      assert.strictEqual(yield* logins.needsApproval(at, "thread-a"), "thread");
-      yield* logins.recordApproval(at, "thread-a");
-      assert.isFalse(yield* logins.needsApproval(at, "thread-a"));
-      assert.strictEqual(yield* logins.needsApproval(at, "thread-b"), "thread");
+      assert.strictEqual(yield* logins.needsApproval(at, "thread-a", "login"), "thread");
+      yield* logins.recordApproval(at, "thread-a", "login");
+      assert.isFalse(yield* logins.needsApproval(at, "thread-a", "login"));
+      assert.strictEqual(yield* logins.needsApproval(at, "thread-b", "login"), "thread");
 
       yield* setApproval("request");
       at = yield* revision();
-      yield* logins.recordApproval(at, "thread-a");
-      assert.strictEqual(yield* logins.needsApproval(at, "thread-a"), "request");
+      yield* logins.recordApproval(at, "thread-a", "login");
+      assert.strictEqual(yield* logins.needsApproval(at, "thread-a", "login"), "request");
 
       // Back to once per thread: the earlier approval is forgotten.
       yield* setApproval("thread");
       at = yield* revision();
-      assert.strictEqual(yield* logins.needsApproval(at, "thread-a"), "thread");
+      assert.strictEqual(yield* logins.needsApproval(at, "thread-a", "login"), "thread");
 
       yield* setApproval("application");
       at = yield* revision();
-      assert.strictEqual(yield* logins.needsApproval(at, "thread-a"), "application");
-      yield* logins.recordApproval(at, "thread-a");
-      assert.isFalse(yield* logins.needsApproval(at, "thread-b"));
+      assert.strictEqual(yield* logins.needsApproval(at, "thread-a", "login"), "application");
+      yield* logins.recordApproval(at, "thread-a", "login");
+      assert.isFalse(yield* logins.needsApproval(at, "thread-b", "login"));
 
       yield* setApproval("never");
       at = yield* revision();
-      assert.isFalse(yield* logins.needsApproval(at, "thread-c"));
+      assert.isFalse(yield* logins.needsApproval(at, "thread-c", "login"));
     }).pipe(Effect.provide(layer));
   });
 
@@ -350,19 +375,25 @@ describe("BrowserLogins", () => {
       const choose = (secretProviderIds: ReadonlyArray<SecretProviderId>) =>
         settings.updateSettings({ browserLogins: { secretProviderIds, approval: "thread" } });
       const { revision } = yield* logins.candidates("https://github.com/");
-      yield* logins.recordApproval(revision, "thread-a");
+      yield* logins.recordApproval(revision, "thread-a", "login");
       yield* choose([]);
       yield* logins.candidates("https://github.com/").pipe(Effect.flip);
       yield* choose([work]);
       const again = yield* logins.candidates("https://github.com/");
       assert.notStrictEqual(again.revision, revision);
-      assert.strictEqual(yield* logins.needsApproval(again.revision, "thread-a"), "thread");
+      assert.strictEqual(
+        yield* logins.needsApproval(again.revision, "thread-a", "login"),
+        "thread",
+      );
 
-      yield* logins.recordApproval(again.revision, "thread-a");
+      yield* logins.recordApproval(again.revision, "thread-a", "login");
       yield* choose([work, personal]);
       yield* logins.check(again.revision).pipe(Effect.flip);
       const widened = yield* logins.candidates("https://github.com/");
-      assert.strictEqual(yield* logins.needsApproval(widened.revision, "thread-a"), "thread");
+      assert.strictEqual(
+        yield* logins.needsApproval(widened.revision, "thread-a", "login"),
+        "thread",
+      );
     }).pipe(Effect.provide(layer));
   });
 
@@ -379,12 +410,15 @@ describe("BrowserLogins", () => {
         });
       yield* useToken("ops_first");
       const first = yield* logins.candidates("https://github.com/");
-      yield* logins.recordApproval(first.revision, "thread-a");
+      yield* logins.recordApproval(first.revision, "thread-a", "login");
 
       yield* useToken("ops_second");
       yield* logins.check(first.revision).pipe(Effect.flip);
       const second = yield* logins.candidates("https://github.com/");
-      assert.strictEqual(yield* logins.needsApproval(second.revision, "thread-a"), "thread");
+      assert.strictEqual(
+        yield* logins.needsApproval(second.revision, "thread-a", "login"),
+        "thread",
+      );
       assert.strictEqual(calls.list, 2);
     }).pipe(Effect.provide(layer));
   });
@@ -400,10 +434,10 @@ describe("BrowserLogins", () => {
       yield* setApproval("request");
       yield* logins.candidates("https://github.com/");
       yield* setApproval("thread");
-      yield* logins.recordApproval(revision, "thread-a").pipe(Effect.flip);
+      yield* logins.recordApproval(revision, "thread-a", "login").pipe(Effect.flip);
       yield* logins.check(revision).pipe(Effect.flip);
       const now = yield* logins.candidates("https://github.com/");
-      assert.strictEqual(yield* logins.needsApproval(now.revision, "thread-a"), "thread");
+      assert.strictEqual(yield* logins.needsApproval(now.revision, "thread-a", "login"), "thread");
     }).pipe(Effect.provide(layer));
   });
 
@@ -422,11 +456,125 @@ describe("BrowserLogins", () => {
       yield* setApproval(from);
       const { revision, logins: found } = yield* logins.candidates("https://github.com/");
       yield* setApproval(to);
-      yield* logins.recordApproval(revision, "thread-a").pipe(Effect.flip);
+      yield* logins.recordApproval(revision, "thread-a", "login").pipe(Effect.flip);
       yield* logins.read(revision, found[0]!, ["password"]).pipe(Effect.flip);
       yield* logins.check(revision).pipe(Effect.flip);
       const now = yield* logins.candidates("https://github.com/");
-      assert.strictEqual(yield* logins.needsApproval(now.revision, "thread-b"), to);
+      assert.strictEqual(yield* logins.needsApproval(now.revision, "thread-b", "login"), to);
+    }).pipe(Effect.provide(layer));
+  });
+});
+
+describe("BrowserLogins identities", () => {
+  it.effect("offers identities from every chosen provider, listing each once", () => {
+    const { layer, calls } = makeService({ work: [grafana] }, bothProviders, {
+      work: [me],
+      personal: [partner],
+    });
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const found = yield* logins.identityCandidates("identity");
+      assert.deepStrictEqual(found.identities, [
+        { ...me, id: "work/i1", account: "Work" },
+        { ...partner, id: "personal/i2", account: "Personal" },
+      ]);
+      yield* logins.identityCandidates("identityRead");
+      // Identities have their own list, so listing logins did not list them, nor the reverse.
+      yield* logins.candidates("https://grafana.example.com/");
+      assert.deepStrictEqual(
+        { list: calls.list, read: calls.read, identityList: calls.identityList },
+        { list: 2, read: [], identityList: 2 },
+      );
+
+      const values = yield* logins.readIdentity(found.revision, found.identities[1]!);
+      assert.deepStrictEqual(values, { firstName: "first-personal" });
+      assert.deepStrictEqual(calls.read, ["personal:i2@v9"]);
+      for (const id of ["stranger/i1", "i1"]) {
+        const error = yield* logins
+          .readIdentity(found.revision, { ...found.identities[0]!, id })
+          .pipe(Effect.flip);
+        assert.strictEqual(error.reason, "not_configured");
+      }
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("a provider that cannot list identities hides only its own", () => {
+    const { layer } = makeService({}, bothProviders, { personal: [partner] });
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const found = yield* logins.identityCandidates("identity");
+      assert.deepStrictEqual(
+        found.identities.map((identity) => identity.id),
+        ["personal/i2"],
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("approves logins, identity fills and identity reads each on their own", () => {
+    const { layer } = makeService({ work: [github] }, undefined, { work: [me] });
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const { revision } = yield* logins.identityCandidates("identity");
+      yield* logins.recordApproval(revision, "thread-a", "login");
+      assert.strictEqual(yield* logins.needsApproval(revision, "thread-a", "identity"), "thread");
+      yield* logins.recordApproval(revision, "thread-a", "identity");
+      assert.isFalse(yield* logins.needsApproval(revision, "thread-a", "identity"));
+      // Reading has its own setting, which asks every time unless the user chose otherwise.
+      yield* logins.recordApproval(revision, "thread-a", "identityRead");
+      assert.strictEqual(
+        yield* logins.needsApproval(revision, "thread-a", "identityRead"),
+        "request",
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("showing identities to the agent can be turned off, apart from filling them", () => {
+    const { layer, calls } = makeService(
+      { work: [github] },
+      { secretProviderIds: [work], approval: "never", identityReadApproval: "off" },
+      { work: [me] },
+    );
+    return Effect.gen(function* () {
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const off = yield* logins.identityCandidates("identityRead").pipe(Effect.flip);
+      assert.strictEqual(off.reason, "not_configured");
+      assert.include(off.message, "preview_fill_identity");
+      // Nothing was listed for a read that cannot happen.
+      assert.strictEqual(calls.identityList, 0);
+      const { revision } = yield* logins.identityCandidates("identity");
+      assert.isFalse(yield* logins.needsApproval(revision, "thread-a", "identity"));
+      const refused = yield* logins
+        .needsApproval(revision, "thread-a", "identityRead")
+        .pipe(Effect.flip);
+      assert.strictEqual(refused.reason, "not_configured");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("changing the identity read setting forgets approvals of every kind", () => {
+    const { layer } = makeService({ work: [github] }, undefined, { work: [me] });
+    return Effect.gen(function* () {
+      const settings = yield* Settings.ServerSettingsService;
+      const logins = yield* BrowserLogins.BrowserLogins;
+      const setRead = (identityReadApproval: "thread" | "request") =>
+        settings.updateSettings({
+          browserLogins: { secretProviderIds: [work], approval: "thread", identityReadApproval },
+        });
+      yield* setRead("thread");
+      const first = yield* logins.identityCandidates("identityRead");
+      yield* logins.recordApproval(first.revision, "thread-a", "login");
+      yield* logins.recordApproval(first.revision, "thread-a", "identityRead");
+
+      yield* setRead("request");
+      yield* logins.check(first.revision).pipe(Effect.flip);
+      yield* logins.readIdentity(first.revision, first.identities[0]!).pipe(Effect.flip);
+      yield* setRead("thread");
+      const now = yield* logins.identityCandidates("identityRead");
+      assert.notStrictEqual(now.revision, first.revision);
+      assert.strictEqual(yield* logins.needsApproval(now.revision, "thread-a", "login"), "thread");
+      assert.strictEqual(
+        yield* logins.needsApproval(now.revision, "thread-a", "identityRead"),
+        "thread",
+      );
     }).pipe(Effect.provide(layer));
   });
 });

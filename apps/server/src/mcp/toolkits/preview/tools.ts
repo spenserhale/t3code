@@ -6,10 +6,14 @@ import {
   PreviewAutomationDialogInput,
   PreviewAutomationError,
   PreviewAutomationEvaluateInput,
+  PreviewAutomationFillIdentityInput,
+  PreviewAutomationFillIdentityResult,
   PreviewAutomationFillLoginInput,
   PreviewAutomationFillLoginResult,
   PreviewAutomationNavigateInput,
   PreviewAutomationOpenInput,
+  PreviewAutomationReadIdentityInput,
+  PreviewAutomationReadIdentityResult,
   PreviewAutomationRecordingArtifact,
   PreviewAutomationRecordingStatus,
   PreviewAutomationResizeInput,
@@ -207,6 +211,32 @@ const PreviewFillLoginTool = browserTool(
   }).annotate(Tool.Title, "Fill a saved login"),
 );
 
+const PreviewFillIdentityTool = browserTool(
+  Tool.make("preview_fill_identity", {
+    description:
+      "Fill the user's saved identity (name, email, phone, address) into this tab's fields. Pass `fields` with `aria-ref` locators from `preview_snapshot`; without them only autocomplete-tagged fields are filled. Returns `choose` when several identities exist.",
+    parameters: PreviewAutomationFillIdentityInput,
+    success: Schema.Union(
+      PreviewAutomationFillIdentityResult.members.map((member) =>
+        Schema.Struct({ ...member.fields, ...presentationFields }),
+      ),
+    ),
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Fill a saved identity"),
+);
+
+const PreviewReadIdentityTool = safeBrowserTool(
+  Tool.make("preview_read_identity", {
+    description:
+      "Return the user's saved identity (name, email, phone, address) as text once the user approves. A fallback for forms outside the preview browser; prefer `preview_fill_identity`.",
+    parameters: PreviewAutomationReadIdentityInput,
+    success: PreviewAutomationReadIdentityResult,
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "Read a saved identity"),
+);
+
 const PreviewWaitForTool = readonlyBrowserTool(
   Tool.make("preview_wait_for", {
     description:
@@ -250,6 +280,8 @@ export const PreviewToolkit = Toolkit.make(
   PreviewActTool,
   PreviewEvaluateTool,
   PreviewFillLoginTool,
+  PreviewFillIdentityTool,
+  PreviewReadIdentityTool,
   PreviewWaitForTool,
   PreviewRecordingStartTool,
   PreviewRecordingStopTool,
@@ -265,6 +297,8 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewActTool,
   PreviewEvaluateTool,
   PreviewFillLoginTool,
+  PreviewFillIdentityTool,
+  PreviewReadIdentityTool,
   PreviewWaitForTool,
   PreviewRecordingStartTool,
   PreviewRecordingStopTool,
