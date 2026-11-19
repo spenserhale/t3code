@@ -1061,7 +1061,9 @@ export function resolveWindowsServerAsarIgnoreGlobs(arch: typeof BuildArch.Type)
   ];
 }
 
-export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 80;
+// SECode carries more server modules than the official build, and since the server compile cache
+// each one is a file in the package: 89 in the v0.1.9 SECode build.
+export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 120;
 export const WINDOWS_SERVER_RESOURCE_SOURCE_DIR = "apps/desktop/prod-resources/windows-server";
 export const WINDOWS_SERVER_EXTRA_RESOURCES = [
   {
