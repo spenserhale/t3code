@@ -295,6 +295,22 @@ export const SETTINGS_SEARCH_ITEMS = [
     environmentOnly: true,
   },
   {
+    id: "model-favorites",
+    title: "Favorite models",
+    to: "/settings/threads",
+    scope: "project-defaults",
+    searchTerms: ["star order picker effort reasoning level favorites list"],
+  },
+  {
+    id: "effort-slider",
+    title: "Effort slider",
+    to: "/settings/threads",
+    scope: "project-defaults",
+    searchTerms: [
+      "model picker steps reasoning effort composer arrow keys favorites provider harness",
+    ],
+  },
+  {
     id: "default-permissions",
     title: "Permissions",
     to: "/settings/threads",
@@ -1466,10 +1482,11 @@ export function isSettingsSearchScopeAvailable(
     case "project":
       return scopeKind === "project" || scopeKind === "checkout";
     case "environment-defaults":
-      return scopeKind === "environment" || scopeKind === "all";
+      return scopeKind === "environment" || scopeKind === "environments" || scopeKind === "all";
     case "project-defaults":
       return (
         scopeKind === "environment" ||
+        scopeKind === "environments" ||
         scopeKind === "all" ||
         scopeKind === "project" ||
         scopeKind === "checkout"

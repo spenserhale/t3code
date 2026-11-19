@@ -555,6 +555,10 @@
       "types": "./src/pullRequestReviewers.ts",
       "default": "./src/pullRequestReviewers.ts"
     },
+    "./effort-slider": {
+      "types": "./src/effortSlider.ts",
+      "default": "./src/effortSlider.ts"
+    },
     "./provider-clients": {
       "types": "./src/providerClients.ts",
       "default": "./src/providerClients.ts"

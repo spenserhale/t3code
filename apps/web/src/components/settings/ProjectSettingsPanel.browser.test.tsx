@@ -225,7 +225,7 @@ function projectKey() {
   })[0]!.projectKey;
 }
 
-async function mountPanel(search: Omit<SettingsScopeSearch, "project"> = {}) {
+async function mountPanel(search: Omit<SettingsScopeSearch, "project" | "machines"> = {}) {
   const key = projectKey();
   const rootRoute = createRootRoute();
   const settingsRoute = createRoute({
@@ -271,7 +271,9 @@ async function mountPanel(search: Omit<SettingsScopeSearch, "project"> = {}) {
 
 async function mountSettings(search: SettingsScopeSearch) {
   const searchParams = new URLSearchParams(
-    Object.entries(search).flatMap(([key, value]) => (value === undefined ? [] : [[key, value]])),
+    Object.entries(search).flatMap(([key, value]) =>
+      value === undefined ? [] : [[key, typeof value === "string" ? value : JSON.stringify(value)]],
+    ),
   );
   const route = createRootRoute({
     validateSearch: validateSettingsScopeSearch,
@@ -578,8 +580,8 @@ it("opens the fallback search target across all environments from a checkout", a
 
 describe("project settings scope", () => {
   const environmentMenu = () => page.getByRole("button", { name: /^Environment scope:/ });
-  const primaryOption = () => page.getByRole("menuitemradio", { name: /^primary/ });
-  const remoteOption = () => page.getByRole("menuitemradio", { name: /^remote/ });
+  const primaryOption = () => page.getByRole("menuitemcheckbox", { name: /^primary/ });
+  const remoteOption = () => page.getByRole("menuitemcheckbox", { name: /^remote/ });
 
   it("offers every environment while no project is selected", async () => {
     setup();
@@ -602,6 +604,16 @@ describe("project settings scope", () => {
     await expect.element(remoteOption()).not.toBeInTheDocument();
   });
 
+  it("limits checkout actions to the chosen environments", async () => {
+    setup();
+    const key = projectKey();
+    // One selected machine has since been removed. Its surviving peer still owns this scope.
+    await using screen = await mountSettings({ project: key, machines: [primaryId, "removed"] });
+    await expect.element(screen.getByRole("textbox", { name: "Project name" })).toBeVisible();
+    expect(screen.container.textContent).toContain("/work/primary");
+    expect(screen.container.textContent).not.toContain("/work/remote");
+  });
+
   it("keeps an unknown project recoverable from any environment", async () => {
     setup();
     state.projects = state.projects.filter((project) => project.environmentId === primaryId);
@@ -610,7 +622,8 @@ describe("project settings scope", () => {
     await userEvent.click(environmentMenu());
     await expect.element(primaryOption()).toBeVisible();
     await expect.element(remoteOption()).toBeVisible();
-    await userEvent.click(remoteOption());
+    await userEvent.click(primaryOption());
+    await userEvent.click(page.getByRole("menuitem", { name: "Apply", exact: true }));
     await vi.waitFor(() =>
       expect(screen.router.state.location.search).toEqual({
         project: "removed-project",

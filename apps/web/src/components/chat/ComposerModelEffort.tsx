@@ -7,10 +7,17 @@ import {
 import type { ProviderOptionDescriptor, RuntimeMode } from "@t3tools/contracts";
 import type { EffortDisplay } from "@t3tools/contracts/settings";
 import { getProviderOptionCurrentLabel } from "@t3tools/shared/model";
-import { CheckIcon, ChevronRightIcon, ChevronUpIcon, WorkflowIcon } from "lucide-react";
+import {
+  CheckIcon,
+  ChevronRightIcon,
+  ChevronUpIcon,
+  SlidersHorizontalIcon,
+  WorkflowIcon,
+} from "lucide-react";
 import { type KeyboardEvent, type ReactNode, use, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
+import { Button } from "../ui/button";
 import {
   Menu,
   MenuPopup,
@@ -26,6 +33,8 @@ import { ComposerPermissionsSection, type RuntimeModeOption } from "./ComposerFo
 import { composerFloatingLayerProps, focusCheckedPermission } from "./composerEventScope";
 import { EffortGlyph, FastBolt, resolveEffortGlyph } from "./EffortGlyph";
 import { DockedPickerContext } from "./ProviderModelPicker";
+import type { EffortSliderActions } from "./useComposerEffortSlider";
+import { useOpenModelShortcutsSettings } from "./useOpenModelShortcutsSettings";
 import {
   getTraitsSectionVisibility,
   type TraitsSelectionInput,
@@ -489,6 +498,47 @@ function NoEffortRow() {
   );
 }
 
+/** Neither shortcut takes focus from the search box the picker opened on. */
+function EffortSliderShortcuts(props: { actions: EffortSliderActions }) {
+  const { actions } = props;
+  const { onRequestClose } = use(DockedPickerContext);
+  const openSettings = useOpenModelShortcutsSettings(actions.settingsTarget);
+  return (
+    <div className="flex shrink-0 items-center gap-1 border-t border-border/70 px-2 py-1.5">
+      <Button
+        size="xs"
+        variant="ghost-muted"
+        onClick={() => {
+          onRequestClose();
+          openSettings(actions.selection);
+        }}
+      >
+        Edit slider
+      </Button>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              size="icon-xs"
+              variant="ghost-muted"
+              className="ms-auto"
+              aria-label="Effort slider settings"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onRequestClose();
+                openSettings();
+              }}
+            />
+          }
+        >
+          <SlidersHorizontalIcon aria-hidden="true" />
+        </TooltipTrigger>
+        <TooltipPopup side="top">Effort slider settings</TooltipPopup>
+      </Tooltip>
+    </div>
+  );
+}
+
 /** The model picker's effort column: the selected model's levels and its other options. */
 export function ComposerEffortColumn(props: { traits: TraitsSelectionInput | null }) {
   const picker = use(DockedPickerContext);
@@ -518,6 +568,7 @@ export function ComposerEffortColumn(props: { traits: TraitsSelectionInput | nul
       >
         {props.traits ? <EffortLevels traits={props.traits} /> : <NoEffortRow />}
       </div>
+      {picker.sliderActions ? <EffortSliderShortcuts actions={picker.sliderActions} /> : null}
     </>
   );
 }

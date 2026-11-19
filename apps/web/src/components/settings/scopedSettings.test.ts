@@ -3,6 +3,7 @@ import {
   EnvironmentAuthorizationError,
   EnvironmentId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   type ServerSettings,
 } from "@t3tools/contracts";
@@ -18,6 +19,7 @@ import {
   offlineScopedEnvironments,
   persistScopedSettingsPatch,
   planProjectOverridesClear,
+  planScopedProviderEffortSliderWrite,
   planScopedSettingsClear,
   planScopedSettingsPatch,
   scopedIdleCompaction,
@@ -145,6 +147,30 @@ describe("scoped settings targets", () => {
 });
 
 describe("scoped settings writes", () => {
+  it("targets each connected checkout with an edit for only the chosen provider", () => {
+    const driver = ProviderDriverKind.make("opencode");
+    const projectTargets = resolveScopedSettingsTargets(project, [laptop, server]);
+    const plan = planScopedProviderEffortSliderWrite(projectTargets, driver, null);
+    expect(plan.serverWrites.map(({ environmentId, patch }) => ({ environmentId, patch }))).toEqual(
+      [
+        {
+          environmentId: server.environmentId,
+          patch: { setProviderEffortSliders: [{ driver, projectId, steps: null }] },
+        },
+        {
+          environmentId: laptop.environmentId,
+          patch: {
+            setProviderEffortSliders: [{ driver, projectId: laptopProjectId, steps: null }],
+          },
+        },
+      ],
+    );
+    const environmentTargets = resolveScopedSettingsTargets(named, [server]);
+    expect(
+      planScopedProviderEffortSliderWrite(environmentTargets, driver, null).serverWrites[0]?.patch,
+    ).toEqual({ setProviderEffortSliders: [{ driver, steps: null }] });
+  });
+
   it("edits the effective machine policy without changing other machines' rules", () => {
     const custom = environment("Laptop", {
       settings: {
@@ -775,6 +801,43 @@ describe("partial object patches at project scope", () => {
         },
       },
     });
+  });
+});
+
+describe("favorite intents", () => {
+  const codex = ProviderInstanceId.make("codex");
+  const sol = { provider: codex, model: "sol" };
+  const luna = { provider: codex, model: "luna" };
+  const intents = [
+    { reorderModelFavorites: [luna, sol] },
+    { setModelFavorites: [{ ...sol, favorite: true, options: [] }] },
+  ] as const;
+
+  it.each(intents)("sends %j to each connected environment in scope as it is", (intent) => {
+    const plan = planScopedSettingsPatch(all, environments, intent);
+    expect(plan.unavailableReason).toBeNull();
+    expect(plan.serverWrites.map((write) => [write.environmentId, write.patch])).toEqual([
+      [laptop.environmentId, intent],
+      [server.environmentId, intent],
+    ]);
+    expect(planScopedSettingsPatch(named, environments, intent).serverWrites).toHaveLength(1);
+  });
+
+  it.each(intents)("keeps %j out of project overrides, which are written whole", (intent) => {
+    expect(planScopedSettingsPatch(project, environments, intent)).toMatchObject({
+      serverWrites: [],
+      unavailableReason: "This setting is environment-wide and cannot be overridden by a project.",
+    });
+  });
+
+  it.each(intents)("does not mistake %j for a key the server dropped", async (intent) => {
+    const result = await persistScopedSettingsPatch(
+      planScopedSettingsPatch(all, environments, intent),
+      vi.fn(async () => ({ _tag: "Success" as const, value: DEFAULT_SERVER_SETTINGS })),
+      vi.fn(),
+    );
+    expect(result.failedEnvironments).toEqual([]);
+    expect(result.savedEnvironmentCount).toBe(2);
   });
 });
 

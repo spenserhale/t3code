@@ -113,7 +113,9 @@ function SettingsContentLayout() {
   const contentScopeKey =
     location.pathname === "/settings/diagnostics" || location.pathname === "/settings/providers"
       ? environment?.environmentId
-      : JSON.stringify(search);
+      : location.pathname === "/settings/threads"
+        ? JSON.stringify([search.project, search.checkout])
+        : JSON.stringify(search);
   const [restoreSignal, setRestoreSignal] = useState(0);
 
   return (
@@ -151,17 +153,22 @@ function SettingsRouteLayout() {
     <SettingsScopeProvider
       search={rawSearch}
       singleEnvironment={pathname === "/settings/providers" || pathname === "/settings/secrets"}
-      onChange={(next) => {
+      onChange={(next, options) => {
         // Send every axis so retain middleware recognizes "all" as an explicit target.
         void navigate({
           to: pathname,
-          search: () => ({
+          search: (previous) => ({
             project: next.project,
             machine: next.machine,
+            machines: next.machines,
             checkout: next.checkout,
+            ...(pathname === "/settings/threads" && "effortSliderProvider" in previous
+              ? { effortSliderProvider: previous.effortSliderProvider }
+              : {}),
           }),
           hash: "",
           resetScroll: false,
+          ...(options?.replace ? { replace: true, state: true } : {}),
         });
       }}
     >

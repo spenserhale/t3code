@@ -86,7 +86,7 @@ const SettingsScopeContext = createContext<
   | (ReturnType<typeof useResolvedSettingsScope> & {
       singleEnvironment: boolean;
       search: SettingsScopeSearch;
-      selectScope: (next: SettingsScopeSearch) => void;
+      selectScope: (next: SettingsScopeSearch, options?: { replace?: boolean }) => void;
     })
   | null
 >(null);
@@ -99,7 +99,7 @@ export function SettingsScopeProvider({
 }: {
   singleEnvironment?: boolean;
   search: SettingsScopeSearch;
-  onChange: (next: SettingsScopeSearch) => void;
+  onChange: (next: SettingsScopeSearch, options?: { replace?: boolean }) => void;
   children: ReactNode;
 }) {
   const resolved = useResolvedSettingsScope(search, singleEnvironment);
