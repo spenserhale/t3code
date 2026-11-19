@@ -218,7 +218,7 @@ export function backgroundWorkNowItem(input: {
     title:
       only && typeof only.label !== "string" && only.task.label !== only.task.kind ? (
         <>
-          {presentation.waiting ? "Waiting" : "Running"} · {only.label}
+          {presentation.waiting ? "Waiting" : "Background"} · {only.label}
         </>
       ) : (
         presentation.title

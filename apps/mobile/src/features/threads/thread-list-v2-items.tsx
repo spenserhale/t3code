@@ -28,6 +28,7 @@ import {
 import { AuthOrchestrationOperateScope, type EnvironmentMachineKind } from "@t3tools/contracts";
 import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
 import { canSnooze } from "@t3tools/client-runtime/state/thread-settled";
+import { backgroundProcessSummary } from "@t3tools/client-runtime/state/thread-execution";
 import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import type { MenuAction } from "@react-native-menu/menu";
 import { memo, useCallback, useMemo, useState, type ComponentProps } from "react";
@@ -143,6 +144,12 @@ const DONE_STATUS_LABEL: StatusLabel = {
   icon: "checkmark.circle",
   className: "text-adaptive-emerald-700-300",
   iconTintClassName: "accent-adaptive-emerald-700-300",
+};
+const BACKGROUND_STATUS_LABEL: StatusLabel = {
+  label: "Background",
+  icon: "terminal",
+  className: "text-foreground-muted",
+  iconTintClassName: "accent-foreground-muted",
 };
 
 // DM Sans has no tabular figures, so a ticking timer in it reflows the row every second.
@@ -770,13 +777,21 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const isUnread = status === "ready" && threadHasUnseenCompletion(thread);
   const workingLabel = STATUS_LABEL_BY_STATUS[status];
   const showsWoke = status === "ready" && props.wokeAt !== null;
+  const backgroundSummary = backgroundProcessSummary(thread.pendingBackgroundTasks);
+  const showsBackground =
+    status === "ready" &&
+    !showsWoke &&
+    !isUnread &&
+    !(thread.interactionMode === "plan" && thread.hasActionableProposedPlan) &&
+    backgroundSummary !== null;
   const statusLabel =
     (status === "working" && workingLabel !== undefined && thread.goal?.status === "active"
       ? { ...workingLabel, label: "Goal" }
-      : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
+      : workingLabel) ??
+    (isUnread ? DONE_STATUS_LABEL : showsBackground ? BACKGROUND_STATUS_LABEL : undefined);
   const recede = shouldRecedeThreadRow({ status, selected });
   const isRegeneratingTitle = thread.titleRegeneration != null;
-  const rowAccessibilityLabel = `${thread.title}${providerNameLabel ? `, ${providerNameLabel}` : ""}${props.hasQueuedMessages ? ", messages queued to send" : ""}${isRegeneratingTitle ? ", regenerating title" : ""}`;
+  const rowAccessibilityLabel = `${thread.title}${providerNameLabel ? `, ${providerNameLabel}` : ""}${props.hasQueuedMessages ? ", messages queued to send" : ""}${isRegeneratingTitle ? ", regenerating title" : ""}${backgroundSummary !== null ? `, ${backgroundSummary}` : ""}`;
   const timeLabel = props.timeLabel;
 
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });

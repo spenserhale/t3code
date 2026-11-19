@@ -399,6 +399,7 @@ describe("resolveWorkingStartedAt", () => {
 
 describe("resolveThreadStatusPill", () => {
   const baseThread = {
+    pendingBackgroundTasks: [{ taskId: "server", kind: "command" as const }],
     hasActionableProposedPlan: false,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
@@ -454,6 +455,24 @@ describe("resolveThreadStatusPill", () => {
     });
   });
 
+  it.each([
+    { request: { hasPendingApprovals: true }, label: "Pending Approval" },
+    { request: { hasPendingUserInput: true }, label: "Awaiting Input" },
+    { request: { pendingSubagentRequest: "approval" as const }, label: "Pending Approval" },
+    { request: { pendingSubagentRequest: "user_input" as const }, label: "Awaiting Input" },
+    { request: { pendingGuestMessageCount: 1 }, label: "Guest Request" },
+  ])("keeps $label above background processes", ({ request, label }) => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          ...request,
+          runtime: { ...baseThread.runtime, status: "completed", activeRunId: null },
+        },
+      }),
+    ).toMatchObject({ label, pulse: false });
+  });
+
   it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {
     expect(
       resolveThreadStatusPill({
@@ -471,7 +490,7 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Plan Ready", pulse: false });
   });
 
-  it("does not manufacture completed state without a client visit marker", () => {
+  it("shows background processes without manufacturing completed state without a visit marker", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
@@ -484,7 +503,7 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toBeNull();
+    ).toMatchObject({ label: "Background", pulse: false });
   });
 
   it("shows completed when there is an unseen completion and no active blocker", () => {
@@ -973,6 +992,16 @@ describe("unseen completion with background work", () => {
     ).toBe(expected.receded);
     expect(isSidebarThreadWorking(thread)).toBe(expected.receded);
     expect(resolveThreadStatusPill({ thread })).toMatchObject({ label: expected.pill });
+    const readThread = { ...thread, lastVisitedAt: "2026-06-20T01:01:00.000Z" };
+    expect(resolveThreadStatusPill({ thread: readThread })).toMatchObject({
+      label: expected.receded ? "Waiting" : "Background",
+      pulse: false,
+    });
+    expect(resolveSidebarThreadStatus(readThread)).toBe(expected.status);
+    expect(isSidebarThreadWorking(readThread)).toBe(expected.receded);
+    expect(
+      resolveThreadStatusPill({ thread: { ...readThread, pendingBackgroundTasks: [] } }),
+    ).toBeNull();
   });
 });
 
