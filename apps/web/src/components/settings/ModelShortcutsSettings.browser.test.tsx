@@ -3,6 +3,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   type ModelSelection,
   ProviderDriverKind,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS, type ModelFavorite } from "@t3tools/contracts/settings";
 import type { ReactNode } from "react";
@@ -19,6 +20,7 @@ import {
 import { render } from "../../../test/render";
 import type { ScopedSettingsPatch } from "./scopedSettings";
 
+const opusInstance = ProviderInstanceId.make("claudeAgent");
 const environmentId = EnvironmentId.make("env-a");
 const otherEnvironmentId = EnvironmentId.make("env-b");
 
@@ -34,7 +36,8 @@ const state = vi.hoisted(() => ({
   providerSlidersSupported: false,
   /** The environment keeps its favorites on the server, instead of this client's old copy. */
   listOnServer: true,
-  updateSettings: vi.fn<(patch: ScopedSettingsPatch) => void>(),
+  updateSettings:
+    vi.fn<(patch: ScopedSettingsPatch, options?: { onFailed?: () => void }) => void>(),
   clearOverrides: vi.fn<(keys: readonly string[]) => void>(),
   updateProviderSlider: vi.fn(),
 }));
@@ -133,7 +136,40 @@ vi.mock(import("../../state/environments"), async (original) => ({
       },
     ],
   })) as never,
-  useEnvironmentProviders: () => new Map([[environmentId, modelShortcutProviders]]),
+  useEnvironmentProviders: () =>
+    new Map([
+      [
+        environmentId,
+        [
+          ...modelShortcutProviders,
+          {
+            ...modelShortcutProviders[0]!,
+            instanceId: opusInstance,
+            driver: ProviderDriverKind.make("claudeAgent"),
+            models: [
+              {
+                slug: "opus",
+                name: "Opus",
+                isCustom: false,
+                capabilities: {
+                  optionDescriptors: [
+                    {
+                      id: "effort",
+                      label: "Reasoning effort",
+                      type: "select" as const,
+                      options: [
+                        { id: "medium", label: "Medium", isDefault: true },
+                        { id: "high", label: "High" },
+                      ],
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      ],
+    ]),
 }));
 vi.mock(import("./settingsLayout"), async (original) => ({
   ...(await original()),
@@ -232,7 +268,10 @@ it("moves a slider step as one whole list", async () => {
   setup({ effortSlider: steps });
   await using _screen = await render(<ModelShortcutsSettings />);
   await userEvent.click(page.getByRole("button", { name: "Move Sol up" }));
-  expect(state.updateSettings).toHaveBeenLastCalledWith({ effortSlider: [steps[1], steps[0]] });
+  expect(state.updateSettings).toHaveBeenLastCalledWith(
+    { effortSlider: [steps[1], steps[0]] },
+    undefined,
+  );
   await expect.element(page.getByRole("list", { name: "Effort slider steps" })).toBeVisible();
 });
 
@@ -248,19 +287,23 @@ it("opens the requested provider editor, restricts model choices, and can clear 
   });
   const picker = screen.getByRole("combobox", { name: "Slider to edit" });
   await expect.element(picker).toHaveTextContent("Codex");
-  await screen.getByRole("button", { name: "Add a step" }).click();
+  await screen.getByRole("button", { name: "Edit slider" }).click();
   const solOption = page.getByRole("option", { name: /Sol.*Codex/ });
   await expect.element(solOption).toBeVisible();
   await expect
     .element(page.getByRole("button", { name: "OpenCode", exact: true }))
     .not.toBeInTheDocument();
   await solOption.click();
-  expect(state.updateProviderSlider).toHaveBeenLastCalledWith(driver, [
-    steps[0],
-    { instanceId, model: "sol" },
-  ]);
+  expect(state.updateProviderSlider).not.toHaveBeenCalled();
+  await page.getByRole("button", { name: "Add step after" }).click();
+  expect(state.updateProviderSlider).toHaveBeenLastCalledWith(
+    driver,
+    [steps[0], { instanceId, model: "sol" }],
+    expect.any(Function),
+  );
   expect(state.updateSettings).not.toHaveBeenCalled();
 
+  await page.getByRole("button", { name: "Done" }).click();
   await screen.getByRole("button", { name: "Use Favorites slider" }).click();
   expect(state.updateProviderSlider).toHaveBeenLastCalledWith(driver, null);
 });
@@ -332,4 +375,66 @@ it("offers a project no list of its own on a server that cannot keep one", async
     .element(screen.getByRole("button", { name: "Customize for this project" }))
     .not.toBeInTheDocument();
   await expect.element(screen.getByText(/only on environments running a newer/)).toBeVisible();
+});
+
+it("can add another Opus at High, then reorder the saved pair without reopening", async () => {
+  const medium = {
+    instanceId: opusInstance,
+    model: "opus",
+    options: [{ id: "effort", value: "medium" }],
+  };
+  const high = { ...medium, options: [{ id: "effort", value: "high" }] };
+  setup({ effortSlider: [medium] });
+  await using screen = await render(<ModelShortcutsSettings />);
+  await page.getByRole("button", { name: "Edit slider" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit Favorites slider" });
+  const before = editor.getByRole("button", { name: "Add step before" });
+  await expect.element(before).toBeDisabled();
+  await expect
+    .element(editor.getByRole("button", { name: /Medium On slider/ }))
+    .toHaveAttribute("aria-pressed", "true");
+  await editor.getByRole("button", { name: "High", exact: true }).click();
+  expect(state.updateSettings).not.toHaveBeenCalled();
+
+  await before.click();
+  expect(state.updateSettings.mock.calls.at(-1)?.[0]).toEqual({ effortSlider: [high, medium] });
+  const selected = editor.getByRole("button", { name: "Opus · High", exact: true });
+  await expect.element(selected).toHaveAttribute("aria-pressed", "true");
+  state.effortSlider = [high, medium];
+  await screen.rerender(<ModelShortcutsSettings />);
+  await selected.hover();
+  await editor.getByRole("button", { name: "Move Opus · High right" }).click();
+  expect(state.updateSettings.mock.calls.at(-1)?.[0]).toEqual({ effortSlider: [medium, high] });
+  await expect.element(selected).toHaveAttribute("aria-pressed", "true");
+  state.effortSlider = [medium, high];
+  await screen.rerender(<ModelShortcutsSettings />);
+  await expect
+    .element(editor.getByRole("button", { name: "Move Opus · High right" }))
+    .toBeDisabled();
+});
+
+it("drops a step after a neighbor and restores order when a write fails", async () => {
+  setup({ effortSlider: steps });
+  await using _screen = await render(<ModelShortcutsSettings />);
+  await page.getByRole("button", { name: "Edit slider" }).click();
+  const editor = page.getByRole("dialog", { name: "Edit Favorites slider" });
+  const items = editor.getByRole("listitem").elements();
+  const transfer = new DataTransfer();
+  const drag = (el: Element, type: string, x: number) =>
+    el.dispatchEvent(
+      new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer, clientX: x }),
+    );
+  const lastEdge = items[1]!.getBoundingClientRect().right - 1;
+  drag(items[0]!, "dragstart", 0);
+  await vi.waitFor(() => {
+    drag(items[1]!, "dragover", lastEdge);
+    expect(items[1]!.classList.contains("border-r-primary")).toBe(true);
+  });
+  drag(items[1]!, "drop", lastEdge);
+  expect(state.updateSettings.mock.calls.at(-1)?.[0]).toEqual({
+    effortSlider: [steps[1], steps[0]],
+  });
+  const writeOptions = state.updateSettings.mock.lastCall?.[1];
+  writeOptions?.onFailed?.();
+  await expect.element(editor.getByRole("listitem").first()).toHaveTextContent("LunaLow");
 });

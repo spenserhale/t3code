@@ -1,8 +1,15 @@
+import type { ModelSelection } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 
 import { useSettingsProjectGroups } from "../settings/useSettingsProjectGroups";
 import { modelShortcutsSettingsSearch } from "./composerEffortSlider.logic";
 import type { EffortSliderActions } from "./useComposerEffortSlider";
+
+declare module "@tanstack/react-router" {
+  interface HistoryState {
+    sliderEditorSelection?: ModelSelection;
+  }
+}
 
 /**
  * Opens Settings at the favorites and effort slider, in the scope whose lists the picker shows.
@@ -11,14 +18,14 @@ import type { EffortSliderActions } from "./useComposerEffortSlider";
 export function useOpenModelShortcutsSettings(target: EffortSliderActions["settingsTarget"]) {
   const navigate = useNavigate();
   const groups = useSettingsProjectGroups();
-  return () => {
+  return (selection?: ModelSelection) => {
     void navigate({
       to: "/settings/threads",
       search: {
         ...modelShortcutsSettingsSearch(target, groups),
         ...(target.driver === null ? {} : { effortSliderProvider: target.driver }),
       },
-      hash: "effort-slider",
+      ...(selection ? { state: { sliderEditorSelection: selection } } : { hash: "effort-slider" }),
     });
   };
 }

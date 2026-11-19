@@ -12,7 +12,6 @@ import {
   CheckIcon,
   ChevronRightIcon,
   ChevronUpIcon,
-  PlusIcon,
   SlidersHorizontalIcon,
   WorkflowIcon,
 } from "lucide-react";
@@ -553,24 +552,16 @@ function EffortSliderShortcuts(props: { actions: EffortSliderActions }) {
   const openSettings = useOpenModelShortcutsSettings(actions.settingsTarget);
   return (
     <div className="flex shrink-0 items-center gap-1 border-t border-border/70 px-2 py-1.5">
-      {/* A disabled button gets no pointer events, so the tooltip hangs on a wrapper. */}
-      <Tooltip>
-        <TooltipTrigger render={<span className="inline-flex" />}>
-          <Button
-            size="xs"
-            variant="ghost-muted"
-            disabled={actions.addDisabledReason !== null}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={actions.onAdd}
-          >
-            <PlusIcon aria-hidden="true" />
-            Add to slider
-          </Button>
-        </TooltipTrigger>
-        <TooltipPopup side="top">
-          {actions.addDisabledReason ?? `Add this model and effort to the ${actions.sliderLabel}`}
-        </TooltipPopup>
-      </Tooltip>
+      <Button
+        size="xs"
+        variant="ghost-muted"
+        onClick={() => {
+          onRequestClose();
+          openSettings(actions.selection);
+        }}
+      >
+        Edit slider
+      </Button>
       <Tooltip>
         <TooltipTrigger
           render={

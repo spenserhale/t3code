@@ -90,8 +90,13 @@ slider** in the provider's editor.
 
 Each slider holds up to six model and effort steps. It appears above search when at least two steps
 are usable. Click or drag it, or press Left and Right in an empty search, to change the model and
-effort together. **Add to slider** adds the current model and effort to the slider in use. The
-settings button beside it opens the editor for the selected tab.
+effort together. **Edit slider** opens the editor for the selected tab. The gear opens Threads
+settings to manage the slider and its scope.
+
+In the editor, select a step on the top strip, then choose a model and its effort below.
+**Add step before** and **Add step after** insert beside the selected step. **Update selected step**
+replaces it. Drag a step into place, or hover or focus it to reveal its move and remove buttons.
+Edits save as you go. Choose **Done** to close the editor.
 
 Favorites and sliders follow the scope chosen at the top of Settings. **All environments** applies
 the list being edited to each connected environment. A project can customize an inherited list

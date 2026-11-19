@@ -159,8 +159,11 @@ export function useUpdateScopedSettings() {
 export function useUpdateScopedProviderEffortSlider() {
   const { targets } = useSettingsScope();
   const run = useRunScopedPlan();
-  return (driver: ProviderDriverKind, steps: readonly ModelSelection[] | null) =>
-    run(planScopedProviderEffortSliderWrite(targets, driver, steps));
+  return (
+    driver: ProviderDriverKind,
+    steps: readonly ModelSelection[] | null,
+    onFailed?: () => void,
+  ) => run(planScopedProviderEffortSliderWrite(targets, driver, steps), onFailed);
 }
 
 export function useClearScopedSettings() {

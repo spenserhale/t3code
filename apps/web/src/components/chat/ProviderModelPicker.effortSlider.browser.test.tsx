@@ -25,7 +25,6 @@ const state = vi.hoisted(() => ({
   favorites: [] as ModelFavorite[],
   effortSliderSupported: true,
   settings: null as ServerSettings | null,
-  addStep: vi.fn(),
 }));
 
 vi.mock("~/hooks/useModelShortcuts", () => ({
@@ -38,7 +37,6 @@ vi.mock("~/hooks/useModelShortcuts", () => ({
     effortSliderSource: "environment",
     favoritesSource: "environment",
   }),
-  useAddEffortSliderStep: () => state.addStep,
   useToggleModelFavorite: () => vi.fn(),
 }));
 
@@ -46,7 +44,6 @@ function setup() {
   state.favorites = [];
   state.effortSliderSupported = true;
   state.settings = null;
-  state.addStep.mockReset();
 }
 
 const instanceId = ProviderInstanceId.make("codex");
@@ -252,17 +249,14 @@ it("switches sliders with the provider rail and falls back to Favorites for unco
   await page.getByRole("button", { name: "Codex", exact: true }).click();
   await expect.element(slider().getByText("Sol model", { exact: true }).first()).toBeVisible();
   await expect.element(slider().getByText("Code A")).not.toBeInTheDocument();
-  await expect.element(page.getByRole("button", { name: "Add to slider" })).toBeDisabled();
+  await expect.element(page.getByRole("button", { name: "Edit slider" })).toBeEnabled();
   await expect.element(search).toHaveFocus();
   await userEvent.keyboard("{ArrowRight}");
   await expect.element(slider()).toHaveAttribute("aria-valuetext", "Sol model, medium effort");
 
   await page.getByRole("button", { name: "OpenCode", exact: true }).click();
   await expect.element(slider().getByText("Code A")).toBeVisible();
-  await expect.element(page.getByRole("button", { name: "Add to slider" })).toBeEnabled();
-  await page.getByRole("button", { name: "Add to slider" }).click();
-  expect(state.addStep).toHaveBeenLastCalledWith(selection(instanceId, "sol", "medium"), null);
-
+  await expect.element(page.getByRole("button", { name: "Edit slider" })).toBeEnabled();
   state.settings = {
     ...state.settings,
     providerEffortSliders: {
