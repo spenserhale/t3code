@@ -191,8 +191,26 @@ const make = () => {
       if (waiting === undefined || (yield* Deferred.isDone(waiting.answer))) return;
       // Asked of one device, a request takes no other's answer.
       if (waiting.device !== undefined && waiting.device !== device) return;
-      const answer: SecretRelayAnswer =
-        given.type === "values" && waiting.accepts?.(given) === false ? { type: "none" } : given;
+      const choice = waiting.request.kind === "loginChoice";
+      if (
+        choice &&
+        ![...subscribers].some(
+          (subscriber) => subscriber.device === device && hears(subscriber, waiting),
+        )
+      ) {
+        return;
+      }
+      const invalidChoice =
+        choice &&
+        (given.type === "choose" ||
+          (given.type === "values" &&
+            (!waiting.request.candidates?.some((candidate) => candidate.id === given.item.id) ||
+              Object.keys(given.values).length !== 0)));
+      const answer: SecretRelayAnswer = invalidChoice
+        ? { type: "unavailable", message: "The device did not select one of the offered logins." }
+        : given.type === "values" && waiting.accepts?.(given) === false
+          ? { type: "none" }
+          : given;
       if (answer.type === "none" || answer.type === "unavailable") {
         if (answer.type === "none" || waiting.inconclusive === undefined) {
           waiting.inconclusive = answer;
@@ -200,7 +218,7 @@ const make = () => {
         stopWaiting(waiting, device);
         return;
       }
-      if (answer.type === "denied") {
+      if (answer.type === "denied" || choice) {
         yield* Deferred.succeed(waiting.answer, answer);
         return;
       }

@@ -360,6 +360,18 @@ describe("1Password logins", () => {
     }).pipe(Effect.provide(op.layer));
   });
 
+  it.effect("reads chooser usernames without revealing concealed fields", () => {
+    const op = fakeOp(() => ({ stdout: item }));
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(yield* driver.logins!.read({ account }, grafana, ["username"]), {
+        username: "ops@example.com",
+      });
+      assert.deepStrictEqual(op.invocations, [
+        ["--cache=false", "item", "--account=my.1password.com", "get", "abc123", "--format=json"],
+      ]);
+    }).pipe(Effect.provide(op.layer));
+  });
+
   describe("with a service account token", () => {
     const config = { account, serviceAccountToken: "ops_test-token" };
     const vaults = (...ids: ReadonlyArray<string>) =>

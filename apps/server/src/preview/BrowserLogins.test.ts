@@ -4,6 +4,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   type BrowserLoginSettings,
   type BrowserNewLoginSettings,
+  type PreviewLoginChoice,
   EnvironmentId,
   type SecretRelayAnswer,
   type SecretRelayRequest,
@@ -23,6 +24,7 @@ import * as Logger from "effect/Logger";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as Settings from "../serverSettings.ts";
 import * as BrowserLogins from "./BrowserLogins.ts";
@@ -143,6 +145,8 @@ const makeService = (
   const calls = {
     list: 0,
     read: [] as Array<string>,
+    readFields: [] as Array<{ readonly id: string; readonly fields: ReadonlyArray<string> }>,
+    failedLoginReads: [] as Array<string>,
     identityList: 0,
     lookup: 0,
     listing: Deferred.makeUnsafe<void>(),
@@ -211,6 +215,8 @@ const makeService = (
       read: ({ account }, login, fields) =>
         Effect.gen(function* () {
           calls.read.push(`${account}:${login.id}@${login.vaultId ?? ""}`);
+          calls.readFields.push({ id: `${account}/${login.id}`, fields });
+          if (calls.failedLoginReads.includes(`${account}/${login.id}`)) return undefined;
           if (!created.some((entry) => entry.login.id === login.id)) {
             // No login here has a one-time code.
             return Object.fromEntries(
@@ -283,6 +289,41 @@ const makeService = (
 };
 
 describe("BrowserLogins", () => {
+  it.effect(
+    "discovers source-site logins alongside the final site without broadening fill permission",
+    () => {
+      const source = { ...github, id: "source", urls: ["https://www.rocketmoney.com"] };
+      const current = { ...github, id: "current", urls: ["https://auth.rocketaccount.com"] };
+      const unrelated = { ...github, id: "unrelated", urls: ["https://rocketmoney.com.evil.test"] };
+      const insecure = { ...github, id: "insecure", urls: ["https://www.rocketmoney.com:8443"] };
+      const { layer } = makeService({ work: [source, current, unrelated, insecure] });
+      return Effect.gen(function* () {
+        const logins = yield* BrowserLogins.BrowserLogins;
+        const found = yield* logins.candidates(
+          "https://auth.rocketaccount.com/login",
+          "all",
+          "https://app.rocketmoney.com/",
+        );
+        assert.deepStrictEqual(
+          found.logins.map((login) => login.id),
+          ["work/source", "work/current"],
+        );
+        assert.isFalse(
+          BrowserLogins.loginCoversPage(source.urls, "https://auth.rocketaccount.com/"),
+        );
+        assert.isFalse(BrowserLogins.loginCoversPage(source.urls, "https://app.rocketmoney.com/"));
+        assert.deepStrictEqual(
+          (yield* logins.candidates(
+            "https://auth.rocketaccount.com/",
+            "all",
+            "http://app.rocketmoney.com/",
+          )).logins.map((login) => login.id),
+          ["work/current"],
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("offers the page's logins from every chosen provider, listing each once", () => {
     const { layer, calls } = makeService({ work: [grafana], personal: [github] }, bothProviders);
     return Effect.gen(function* () {
@@ -938,12 +979,14 @@ describe("SecretRelayDevice", () => {
     options: {
       readonly available: boolean;
       readonly answers?: Array<DesktopBrowserChannel.DesktopApproval>;
+      readonly choices?: Array<string | undefined>;
     },
   ) => {
     const prompts: Array<DesktopBrowserChannel.DesktopLoginPrompt> = [];
     /** How many listings and lookups had run when each prompt was shown. */
     const lookedUpBefore: Array<number> = [];
     const logs: Array<string> = [];
+    const choices: Array<ReadonlyArray<PreviewLoginChoice>> = [];
     const channel = Layer.succeed(DesktopBrowserChannel.DesktopBrowserChannel, {
       available: options.available,
       awaitAttached: () => Effect.succeed(false),
@@ -963,6 +1006,11 @@ describe("SecretRelayDevice", () => {
           );
           return options.answers?.shift() ?? false;
         }),
+      chooseLogin: (_key, _timeoutMs, prompt) =>
+        Effect.sync(() => {
+          choices.push(prompt.candidates);
+          return options.choices?.shift();
+        }),
     });
     const layer = SecretRelayDevice.layer.pipe(
       Layer.provideMerge(Layer.merge(service.layer, channel)),
@@ -972,7 +1020,7 @@ describe("SecretRelayDevice", () => {
         }),
       ),
     );
-    return { layer, prompts, lookedUpBefore, logs };
+    return { layer, prompts, lookedUpBefore, logs, choices };
   };
 
   it.effect("answers unavailable when no desktop app is attached to ask", () => {
@@ -1051,7 +1099,7 @@ describe("SecretRelayDevice", () => {
       const asksNobody = deviceServer(attended, { available: true, answers: ["thread"] });
       const held = { work: [github], personal: [github] };
       const mixed = makeService(held, refusing, {}, undefined, ["work"]);
-      const asksForWork = deviceServer(mixed, { available: true, answers: ["once"] });
+      const asksForWork = deviceServer(mixed, { available: true, answers: ["once", "once"] });
       return Effect.gen(function* () {
         yield* Effect.gen(function* () {
           const relay = yield* SecretRelayDevice.SecretRelayDevice;
@@ -1068,60 +1116,260 @@ describe("SecretRelayDevice", () => {
           const relay = yield* SecretRelayDevice.SecretRelayDevice;
           const answer = yield* relay.resolve({ request: request(), requester: linkMini });
           assert.strictEqual(answer.type === "values" && answer.item.id, "device:work/h1");
-          // The password manager a person unlocks is not named, listed or read, even when chosen.
+          // A named account outside this reach cannot silently become the service-account login.
           const chosen = request({ item: "device:personal/h1" });
           assert.strictEqual(
             (yield* relay.resolve({ request: chosen, requester: linkMini })).type,
-            "unavailable",
+            "denied",
           );
           assert.deepStrictEqual(
             asksForWork.prompts.map((prompt) => prompt.providerLabel),
-            ["Work"],
+            ["Work", "Work"],
           );
           assert.deepStrictEqual(
             { list: mixed.calls.list, read: mixed.calls.read },
-            { list: 1, read: ["work:h1@v9"] },
+            { list: 1, read: ["work:h1@v9", "work:h1@v9"] },
           );
+          assert.deepStrictEqual(mixed.calls.readFields.at(-1)?.fields, ["username"]);
         }).pipe(Effect.provide(asksForWork.layer));
       });
     },
   );
 
-  it.effect("offers device ids to choose from, and reads only the one chosen once allowed", () => {
+  it.effect("chooses on the device after approval, ignoring an untrusted item id", () => {
     const service = makeService({ work: [github], personal: [github] }, bothProviders);
-    const device = deviceServer(service, { available: true, answers: ["once", false, "once"] });
+    const device = deviceServer(service, {
+      available: true,
+      answers: ["once"],
+      choices: ["personal/h1"],
+    });
     return Effect.gen(function* () {
       const relay = yield* SecretRelayDevice.SecretRelayDevice;
-      assert.deepStrictEqual(yield* relay.resolve({ request: request(), requester: linkMini }), {
-        type: "choose",
-        candidates: [
-          { id: "device:work/h1", title: "GitHub", account: "Work" },
-          { id: "device:personal/h1", title: "GitHub", account: "Personal" },
-        ],
+      const answer = yield* relay.resolve({
+        request: request({ item: "device:work/h1" }),
+        requester: linkMini,
       });
-      const chosen = request({ item: "device:personal/h1" });
-      assert.deepStrictEqual(yield* relay.resolve({ request: chosen, requester: linkMini }), {
-        type: "denied",
-      });
-      assert.deepStrictEqual(service.calls.read, []);
-      const answer = yield* relay.resolve({ request: chosen, requester: linkMini });
       assert.strictEqual(answer.type === "values" && answer.item.account, "Personal");
-      assert.deepStrictEqual(service.calls.read, ["personal:h1@v9"]);
-      // Each request asked before anything was listed; the chosen one names only its provider.
-      assert.deepStrictEqual(
-        device.prompts.map((prompt) => prompt.providerLabel),
-        ["Work, Personal", "Personal", "Personal"],
+      assert.deepStrictEqual(service.calls.readFields, [
+        { id: "work/h1", fields: ["username"] },
+        { id: "personal/h1", fields: ["username"] },
+        { id: "personal/h1", fields: ["username", "password"] },
+      ]);
+      assert.deepStrictEqual(device.lookedUpBefore, [0]);
+      assert.lengthOf(device.choices, 1);
+    }).pipe(Effect.provide(device.layer));
+  });
+
+  it.effect.each(["login", "loginChoice"] as const)(
+    "a cancelled device %s choice ends the request without reading a password",
+    (kind) => {
+      const service = makeService({ work: [github], personal: [github] }, bothProviders);
+      const device = deviceServer(service, { available: true, answers: ["once"] });
+      return Effect.gen(function* () {
+        const relay = yield* SecretRelayDevice.SecretRelayDevice;
+        const answer = yield* relay.resolve({
+          request: request({
+            kind,
+            candidates: [
+              { id: "work/h1", title: "GitHub", websites: github.urls },
+              { id: "personal/h1", title: "GitHub", websites: github.urls },
+            ],
+          }),
+          requester: linkMini,
+        });
+        assert.strictEqual(answer.type, "denied");
+        assert.include(answer.type === "denied" ? (answer.message ?? "") : "", "did not choose");
+        assert.isTrue(service.calls.readFields.every(({ fields }) => fields.join() === "username"));
+      }).pipe(Effect.provide(device.layer));
+    },
+  );
+
+  it.effect.each(["missing totp", "unreadable"] as const)(
+    "a selected device login fails closed when %s without falling through to another device",
+    (problem) => {
+      const service = makeService({ work: [github], personal: [github] }, bothProviders);
+      if (problem === "unreadable") service.calls.failedLoginReads.push("personal/h1");
+      const device = deviceServer(service, {
+        available: true,
+        answers: ["once"],
+        choices: ["personal/h1"],
+      });
+      return Effect.gen(function* () {
+        const relay = yield* SecretRelayDevice.SecretRelayDevice;
+        const answer = yield* relay.resolve({
+          request: request({ fields: problem === "unreadable" ? ["password"] : ["totp"] }),
+          requester: linkMini,
+        });
+        assert.strictEqual(answer.type, "denied");
+        assert.include(
+          answer.type === "denied" ? (answer.message ?? "") : "",
+          problem === "unreadable" ? "could not be read" : "has no totp",
+        );
+        assert.deepStrictEqual(
+          service.calls.readFields
+            .filter(({ fields }) => fields.includes(problem === "unreadable" ? "password" : "totp"))
+            .map(({ id }) => id),
+          ["personal/h1"],
+        );
+      }).pipe(Effect.provide(device.layer));
+    },
+  );
+
+  it.effect(
+    "a metadata-only relay choice preserves original ids and opens no password manager",
+    () => {
+      const service = makeService({});
+      const device = deviceServer(service, { available: true, choices: ["remote/item-2"] });
+      return Effect.gen(function* () {
+        const relay = yield* SecretRelayDevice.SecretRelayDevice;
+        const offered = [
+          {
+            id: "remote/item-1",
+            title: "First",
+            username: "first",
+            websites: ["https://good.test"],
+          },
+          { id: "remote/item-2", title: "Second", websites: ["https://good.test"] },
+        ];
+        const answer = yield* relay.resolve({
+          request: request({ kind: "loginChoice", candidates: offered }),
+          requester: linkMini,
+        });
+        assert.deepStrictEqual(answer, {
+          type: "values",
+          item: { id: "remote/item-2", title: "Second", urls: [] },
+          values: {},
+        });
+        assert.strictEqual(service.calls.list, 0);
+        assert.deepStrictEqual(service.calls.read, []);
+        assert.deepStrictEqual(device.prompts, []);
+      }).pipe(Effect.provide(device.layer));
+    },
+  );
+
+  it.effect(
+    "discovers a source website on the device and returns exact-origin authorization only after choice",
+    () => {
+      const source = { ...github, id: "source", urls: ["https://www.rocketmoney.com"] };
+      const current = { ...github, urls: ["https://auth.rocketaccount.com"] };
+      const service = makeService({ work: [current, source] });
+      const device = deviceServer(service, {
+        available: true,
+        answers: ["once"],
+        choices: ["work/source"],
+      });
+      return Effect.gen(function* () {
+        const relay = yield* SecretRelayDevice.SecretRelayDevice;
+        const answer = yield* relay.resolve({
+          request: request({
+            origin: "https://auth.rocketaccount.com",
+            siteUrl: "https://app.rocketmoney.com",
+          }),
+          requester: linkMini,
+        });
+        assert.strictEqual(
+          answer.type === "values" && answer.item.fillOrigin,
+          "https://auth.rocketaccount.com",
+        );
+        assert.deepStrictEqual(service.calls.readFields.at(-1), {
+          id: "work/source",
+          fields: ["username", "password"],
+        });
+      }).pipe(Effect.provide(device.layer));
+    },
+  );
+
+  it.effect(
+    "a remembered automatic device login cannot become cross-site permission when its websites change",
+    () => {
+      const held: Partial<Record<string, ReadonlyArray<typeof github>>> = { work: [github] };
+      const service = makeService(held);
+      const device = deviceServer(service, { available: true, answers: ["thread"] });
+      return Effect.gen(function* () {
+        const relay = yield* SecretRelayDevice.SecretRelayDevice;
+        assert.strictEqual(
+          (yield* relay.resolve({ request: request(), requester: linkMini })).type,
+          "values",
+        );
+        held.work = [{ ...github, urls: ["https://www.source.test"] }];
+        yield* (yield* BrowserLogins.BrowserLogins).invalidate;
+        const answer = yield* relay.resolve({
+          request: request({
+            item: "device:work/h1",
+            siteUrl: "https://app.source.test",
+            fields: ["password"],
+          }),
+          requester: linkMini,
+        });
+        assert.strictEqual(answer.type, "denied");
+        assert.lengthOf(device.choices, 1);
+        assert.strictEqual(
+          service.calls.readFields.filter(({ fields }) => fields.includes("password")).length,
+          1,
+        );
+      }).pipe(Effect.provide(device.layer));
+    },
+  );
+
+  it.effect("device choice reuse expires and a new source context must choose again", () => {
+    const held: Partial<Record<string, ReadonlyArray<typeof github>>> = { work: [github] };
+    const service = makeService(held);
+    const device = deviceServer(service, { available: true, answers: ["thread"] });
+    return Effect.gen(function* () {
+      const relay = yield* SecretRelayDevice.SecretRelayDevice;
+      assert.strictEqual(
+        (yield* relay.resolve({
+          request: request({ siteUrl: "https://github.com" }),
+          requester: linkMini,
+        })).type,
+        "values",
       );
-      // Both password managers were listed once, after the first question.
-      assert.deepStrictEqual(device.lookedUpBefore, [0, 2, 2]);
+      held.work = [{ ...github, id: "second" }];
+      yield* (yield* BrowserLogins.BrowserLogins).invalidate;
+      const missing = yield* relay.resolve({
+        request: request({
+          item: "device:work/h1",
+          siteUrl: "https://github.com",
+          fields: ["password"],
+        }),
+        requester: linkMini,
+      });
+      assert.strictEqual(missing.type, "denied");
+      held.work = [github, { ...github, id: "second" }];
+      yield* (yield* BrowserLogins.BrowserLogins).invalidate;
+      const changed = yield* relay.resolve({
+        request: request({
+          item: "device:work/h1",
+          siteUrl: "https://different.test",
+          fields: ["password"],
+        }),
+        requester: linkMini,
+      });
+      assert.strictEqual(changed.type, "denied");
+      yield* TestClock.adjust("5 minutes");
+      const expired = yield* relay.resolve({
+        request: request({
+          item: "device:work/h1",
+          siteUrl: "https://github.com",
+          expiresAt: 360_000,
+          fields: ["password"],
+        }),
+        requester: linkMini,
+      });
+      assert.strictEqual(expired.type, "denied");
+      assert.lengthOf(device.choices, 3);
+      assert.strictEqual(
+        service.calls.readFields.filter(({ fields }) => fields.includes("password")).length,
+        1,
+      );
     }).pipe(Effect.provide(device.layer));
   });
 
   it.effect(
-    "a login found without a field asked for is no login; one named goes back as read",
+    "a login missing a field falls through only before a successful account selection",
     () => {
       const service = makeService({ work: [github] });
-      const device = deviceServer(service, { available: true, answers: ["once", "once"] });
+      const device = deviceServer(service, { available: true, answers: ["once", "once", "once"] });
       return Effect.gen(function* () {
         const relay = yield* SecretRelayDevice.SecretRelayDevice;
         const code = request({ fields: ["password", "totp"] });
@@ -1129,37 +1377,54 @@ describe("SecretRelayDevice", () => {
         assert.deepStrictEqual(yield* relay.resolve({ request: code, requester: linkMini }), {
           type: "none",
         });
-        // The login the agent chose is not swapped for another: the fill says what it lacks.
+        // Only a successful earlier selection can continue as a named item.
+        assert.strictEqual(
+          (yield* relay.resolve({ request: request(), requester: linkMini })).type,
+          "values",
+        );
         const named = { ...code, item: "device:work/h1" };
         const chosen = reveal(yield* relay.resolve({ request: named, requester: linkMini }));
-        assert.deepStrictEqual(chosen.type === "values" && chosen.values, {
-          password: "password-work",
-        });
+        assert.strictEqual(chosen.type, "denied");
+        assert.include(chosen.type === "denied" ? (chosen.message ?? "") : "", "has no totp");
       }).pipe(Effect.provide(device.layer));
     },
   );
 
-  it.effect("resolves a reference, never filling a login saved for another site", () => {
+  it.effect("a cross-site reference requires native choice before it is read for filling", () => {
     const service = makeService({ work: [grafana, github] });
-    const device = deviceServer(service, { available: true, answers: ["once", "once", "once"] });
+    const device = deviceServer(service, {
+      available: true,
+      answers: ["once", "once", "once", "once"],
+      choices: [undefined, "work/g1"],
+    });
     return Effect.gen(function* () {
       const relay = yield* SecretRelayDevice.SecretRelayDevice;
       const resolve = (reference: string) =>
         relay.resolve({ request: request({ reference }), requester: linkMini });
       const elsewhere = yield* resolve("op://work/g1");
       assert.deepStrictEqual(elsewhere, {
-        type: "unavailable",
-        message: 'The login "Grafana" is saved for another site.',
+        type: "denied",
+        message: "The user did not choose a login.",
       });
+      const allowed = yield* resolve("op://work/g1");
+      assert.strictEqual(
+        allowed.type === "values" && allowed.item.fillOrigin,
+        "https://github.com",
+      );
       assert.deepStrictEqual(yield* resolve("op://work/missing"), { type: "none" });
       assert.strictEqual((yield* resolve("op://work/h1")).type, "values");
       // The reference is named in the question, asked before each lookup.
       assert.deepStrictEqual(
         device.prompts.map((prompt) => prompt.reference),
-        ["op://work/g1", "op://work/missing", "op://work/h1"],
+        ["op://work/g1", "op://work/g1", "op://work/missing", "op://work/h1"],
       );
-      assert.deepStrictEqual(device.lookedUpBefore, [0, 1, 2]);
-      assert.deepStrictEqual(service.calls.read, ["work:h1@v9"]);
+      assert.deepStrictEqual(device.lookedUpBefore, [0, 1, 2, 3]);
+      assert.deepStrictEqual(
+        service.calls.readFields
+          .filter(({ fields }) => fields.includes("password"))
+          .map(({ id }) => id),
+        ["work/g1", "work/h1"],
+      );
     }).pipe(Effect.provide(device.layer));
   });
 

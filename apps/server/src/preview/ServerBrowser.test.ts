@@ -25,7 +25,9 @@ import {
   type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
   type PreviewNavStatus,
+  type PreviewLoginChoice,
   type SecretRelayAnswer,
+  type SecretRelayKind,
   type SecretRelayRequest,
   type SecretRelayStreamItem,
 } from "@t3tools/contracts";
@@ -2615,6 +2617,7 @@ const realLoginBrowser = Effect.acquireRelease(
   Effect.promise(async () => {
     const browser = await chromium.launch({ headless: true });
     const context = await browser.newContext();
+    await context.route("**/*", (route) => route.abort());
     await context.route("https://good.test/**", (route) => {
       const path = `/${new URL(route.request().url()).pathname.split("/")[1]}`;
       // Never answered, so a window opened on it stays blank and the browser reports no page.
@@ -2683,14 +2686,20 @@ const loginServer = (
     readonly unreadable?: ReadonlyArray<keyof typeof HELD>;
     /** Where calls to the password managers are recorded, shared with `approvingDesktop`. */
     readonly trail?: Array<string>;
+    readonly websites?: Partial<Record<keyof typeof HELD, ReadonlyArray<string>>>;
   } = {},
 ) => {
   const { secret = (field: string) => `${field}-value`, showsNewPassword = true } = options;
   const reads: Array<string> = [];
+  const readFields: Array<{ readonly id: string; readonly fields: ReadonlyArray<string> }> = [];
   const logs: Array<string> = [];
   /** Every call to a password manager, in order; `approvingDesktop` adds its questions. */
   const trail = options.trail ?? [];
   const failing = (account: keyof typeof HELD) => options.unreadable?.includes(account) === true;
+  const loginFor = (account: keyof typeof HELD) => ({
+    ...HELD[account].login,
+    urls: options.websites?.[account] ?? HELD[account].login.urls,
+  });
   const driver = defineSecretProviderDriver({
     kind: loginKind,
     definition: defineSecretProvider({
@@ -2708,17 +2717,18 @@ const loginServer = (
       list: ({ account }) =>
         Effect.sync(() => {
           trail.push(`list ${account} logins`);
-          return account === "Work" && options.noWorkLogin ? [] : [HELD[account].login];
+          return account === "Work" && options.noWorkLogin ? [] : [loginFor(account)];
         }),
       lookup: ({ account }, reference) =>
         Effect.sync(() => {
           trail.push(`look up ${reference} in ${account}`);
-          return reference === `op://${account}/Good` ? HELD[account].login : undefined;
+          return reference === `op://${account}/Good` ? loginFor(account) : undefined;
         }),
       read: ({ account }, login, fields) =>
         Effect.sync(() => {
           trail.push(`read ${account} ${login.id}`);
           reads.push(login.id);
+          readFields.push({ id: login.id, fields });
           if (failing(account)) return undefined;
           const values = fields.map((field) => [field, secret(field, reads.length)] as const);
           // An empty value reads as one the password manager did not return.
@@ -2786,6 +2796,7 @@ const loginServer = (
   );
   return {
     reads,
+    readFields,
     logs,
     trail,
     layer: ServerBrowser.layer.pipe(
@@ -2804,11 +2815,14 @@ const loginServer = (
  * The user's device, connected to the server: it answers each relayed request in turn and
  * records what it was asked.
  */
-const connectedDevice = (answers: ReadonlyArray<SecretRelayAnswer>) =>
+const connectedDevice = (
+  answers: ReadonlyArray<SecretRelayAnswer>,
+  kinds: ReadonlyArray<SecretRelayKind> = ["login", "identity"],
+) =>
   Effect.gen(function* () {
     const relay = yield* SecretRelay.SecretRelay;
     const asked: Array<SecretRelayRequest> = [];
-    yield* relay.subscribe(["login", "identity"], "device").pipe(
+    yield* relay.subscribe(kinds, "device").pipe(
       Stream.runForEach((item) =>
         item.type === "request"
           ? relay.answer(item.request.requestId, answers[asked.push(item.request) - 1]!, "device")
@@ -3895,6 +3909,7 @@ const approvingDesktop = (
   asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }>,
   answers: ReadonlyArray<DesktopChannel.DesktopApproval> = ["once"],
   trail?: Array<string>,
+  choose?: (candidates: ReadonlyArray<PreviewLoginChoice>) => Effect.Effect<string | undefined>,
 ) =>
   Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
     available: true,
@@ -3912,7 +3927,256 @@ const approvingDesktop = (
         trail?.push(`ask ${prompt.kind ?? "login"}`);
         return answers[asked.push({ key, prompt }) - 1] ?? answers.at(-1)!;
       }),
+    ...(choose === undefined
+      ? {}
+      : { chooseLogin: (_key, _timeoutMs, prompt) => choose(prompt.candidates) }),
   });
+
+it.live(
+  "native choice overrides an untrusted login id and same-origin MFA reuses only that choice",
+  () => {
+    const asked: Array<{
+      readonly key: DesktopChannel.DesktopApprovalKey;
+      readonly prompt: object;
+    }> = [];
+    const choices: Array<ReadonlyArray<PreviewLoginChoice>> = [];
+    const server = loginServer(
+      approvingDesktop(asked, ["thread"], undefined, (candidates) =>
+        Effect.sync(() => {
+          choices.push(candidates);
+          return choices.length === 2 ? "work/g1" : "personal/p1";
+        }),
+      ),
+      { personal: true },
+    );
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin", {
+            login: "work/g1",
+          });
+          expect(filled).toMatchObject({ status: "filled", login: { id: "personal/p1" } });
+          expect(server.readFields).toEqual([
+            { id: "g1", fields: ["username"] },
+            { id: "p1", fields: ["username"] },
+            { id: "p1", fields: ["username", "password"] },
+          ]);
+          expect(yield* invoke("fillLogin", { login: "work/g1" })).toMatchObject({
+            status: "filled",
+            login: { id: "work/g1" },
+          });
+          expect(choices).toHaveLength(2);
+          expect(yield* invoke("fillLogin")).toMatchObject({
+            status: "filled",
+            login: { id: "personal/p1" },
+          });
+          expect(choices).toHaveLength(3);
+          yield* Effect.promise(() => context.pages()[0]!.goto("https://good.test/otp"));
+          yield* invoke("fillLogin", { fields: ["totp"] });
+          expect(server.readFields.at(-1)).toEqual({ id: "p1", fields: ["totp"] });
+          expect(choices).toHaveLength(3);
+          yield* invoke("navigate", { url: "https://good.test/login" });
+          yield* invoke("fillLogin");
+          expect(choices).toHaveLength(4);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live(
+  "initial open discovers the source website after redirect and explicit choice permits only this auth origin",
+  () => {
+    const asked: Array<{
+      readonly key: DesktopChannel.DesktopApprovalKey;
+      readonly prompt: object;
+    }> = [];
+    const choices: Array<ReadonlyArray<PreviewLoginChoice>> = [];
+    const server = loginServer(
+      approvingDesktop(asked, ["thread"], undefined, (candidates) =>
+        Effect.sync(() => {
+          choices.push(candidates);
+          return choices.length === 1 ? "personal/p1" : undefined;
+        }),
+      ),
+      {
+        personal: true,
+        websites: { Work: ["https://auth.good.test"], Personal: ["https://www.source.test"] },
+      },
+    );
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.promise(async () => {
+          await context.route("https://app.source.test/**", (route) =>
+            route.fulfill({
+              contentType: "text/html",
+              body: '<script>location.replace("https://auth.good.test/login")</script>',
+            }),
+          );
+          await context.route(/^https:\/\/(?:sub\.)?auth\.good\.test\//, (route) =>
+            route.fulfill({
+              contentType: "text/html",
+              body: new URL(route.request().url()).pathname === "/otp" ? CODE_FIELD : LOGIN_PAGE,
+            }),
+          );
+        });
+        yield* Effect.gen(function* () {
+          yield* ServerBrowser.ServerBrowser;
+          const broker = yield* Broker.PreviewAutomationBroker;
+          yield* Effect.yieldNow;
+          const opened = yield* broker.invoke<PreviewAutomationStatus>({
+            scope,
+            operation: "open",
+            input: { url: "https://app.source.test", show: false },
+          });
+          yield* Effect.promise(() =>
+            context.pages()[0]!.waitForURL("https://auth.good.test/login", { waitUntil: "load" }),
+          );
+          const invoke = onTab(broker, PreviewTabId.make(opened.tabId!));
+          expect(yield* invoke("status")).toMatchObject({ url: "https://auth.good.test/login" });
+          const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
+          expect(filled).toMatchObject({ status: "filled", login: { id: "personal/p1" } });
+          expect(choices[0]?.map((choice) => choice.id)).toEqual(["work/g1", "personal/p1"]);
+          expect((yield* passwordField(context)).value).toBe("password-value");
+          yield* Effect.promise(() => context.pages()[0]!.goto("https://auth.good.test/otp"));
+          expect(yield* invoke("fillLogin", { fields: ["totp"] })).toMatchObject({
+            status: "filled",
+            login: { id: "personal/p1" },
+          });
+          expect(choices).toHaveLength(1);
+          yield* Effect.promise(() => context.pages()[0]!.goto("https://sub.auth.good.test/otp"));
+          const changedOrigin = yield* invoke("fillLogin", { fields: ["totp"] }).pipe(Effect.flip);
+          expect(changedOrigin.message).toContain("did not choose a login");
+          expect(choices).toHaveLength(2);
+          expect(server.readFields.filter(({ fields }) => fields.includes("totp"))).toEqual([
+            { id: "p1", fields: ["totp"] },
+          ]);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live("navigation while choosing refuses before password read or write", () => {
+  const asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }> =
+    [];
+  let context: BrowserContext;
+  const server = loginServer(
+    approvingDesktop(asked, ["thread"], undefined, () =>
+      Effect.promise(async () => {
+        await context.pages()[0]!.goto("https://good.test/login?changed");
+        return "personal/p1";
+      }),
+    ),
+    { personal: true },
+  );
+  return Effect.scoped(
+    Effect.gen(function* () {
+      context = (yield* realLoginBrowser).context;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+        expect(refused.message).toContain("page changed");
+        expect(server.readFields.every((read) => read.fields.join() === "username")).toBe(true);
+        expect((yield* passwordField(context)).value).toBe("");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live(
+  "a remote service account asks a negotiated device picker before reading its source-site password",
+  () => {
+    const server = loginServer(DesktopChannel.layer, {
+      unattended: true,
+      websites: { Work: ["https://www.source.test"] },
+    });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.promise(() =>
+          context.route("https://app.source.test/**", (route) =>
+            route.fulfill({
+              contentType: "text/html",
+              body: '<script>location.replace("https://good.test/login")</script>',
+            }),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const asked = yield* connectedDevice(
+            [{ type: "values", item: { id: "work/g1", title: "Good", urls: [] }, values: {} }],
+            ["loginChoice"],
+          );
+          const { tabId, invoke } = yield* openLoginTab;
+          yield* invoke("navigate", { url: "https://app.source.test" });
+          yield* Effect.promise(() =>
+            context.pages()[0]!.waitForURL("https://good.test/login", { waitUntil: "load" }),
+          );
+          expect(yield* invoke("fillLogin")).toMatchObject({
+            status: "filled",
+            tabId,
+            login: { id: "work/g1" },
+          });
+          expect(asked).toHaveLength(1);
+          expect(asked[0]).toMatchObject({
+            kind: "loginChoice",
+            origin: "https://good.test",
+            candidates: [
+              { id: "work/g1", username: "username-value", websites: ["https://www.source.test"] },
+            ],
+          });
+          expect(server.readFields).toEqual([
+            { id: "g1", fields: ["username"] },
+            { id: "g1", fields: ["username", "password"] },
+          ]);
+          expect((yield* passwordField(context)).value).toBe("password-value");
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live.each(["missing password", "unreadable"] as const)(
+  "a native-selected login stays bound when its values are %s",
+  (problem) => {
+    const asked: Array<{
+      readonly key: DesktopChannel.DesktopApprovalKey;
+      readonly prompt: object;
+    }> = [];
+    const server = loginServer(
+      approvingDesktop(asked, ["thread"], undefined, () => Effect.succeed("work/g1")),
+      {
+        personal: true,
+        ...(problem === "unreadable"
+          ? { unreadable: ["Work"] }
+          : { secret: (field: string) => (field === "password" ? "" : `${field}-value`) }),
+      },
+    );
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const device = yield* connectedDevice([deviceLogin("device:personal/p1", "fallback-pw")]);
+          const { invoke } = yield* openLoginTab;
+          const failed = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(failed.message).toContain(
+            problem === "unreadable" ? "could not be read" : "has no password",
+          );
+          expect(device).toEqual([]);
+          expect(
+            server.readFields
+              .filter(({ fields }) => fields.includes("password"))
+              .map(({ id }) => id),
+          ).toEqual(["g1"]);
+          expect((yield* passwordField(context)).value).toBe("");
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
 
 it.live(
   "a headless tab on a server with its desktop app asks there, remembering Allow for this thread",
@@ -3979,7 +4243,7 @@ it.live(
 );
 
 it.live(
-  "a login from the user's device fills through the same page guards, after a choose round trip",
+  "an older device cannot delegate login choice to the agent; a selected device login keeps the page guards",
   () => {
     const server = loginServer(DesktopChannel.layer);
     const item = { id: "device:work/g1", title: "Good", account: "Work" };
@@ -4002,21 +4266,16 @@ it.live(
             },
           ]);
           const { tabId, invoke } = yield* openLoginTab;
-          const choose = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin", {
+          const refusedChoice = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin", {
             requester: { threadTitle: "Deploy", provider: "codex" },
-          });
-          expect(choose).toMatchObject({
-            status: "choose",
-            candidates: [
-              { title: "Good", account: "Work" },
-              { title: "Good", account: "Personal" },
-            ],
-          });
-          const chosen = choose.status === "choose" ? (choose.candidates[0]?.id ?? "") : "";
-          expect(chosen).toMatch(DEVICE_ITEM_ID);
+          }).pipe(Effect.flip);
+          expect(refusedChoice.message).toContain("updated T3 Code desktop app");
+          expect((yield* passwordField(context)).value).toBe("");
           const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin", {
-            login: chosen,
+            login: "device:work/g1",
           });
+          const chosen = filled.status === "filled" ? filled.login.id : "";
+          expect(chosen).toMatch(DEVICE_ITEM_ID);
           expect(filled).toEqual({
             status: "filled",
             tabId,
@@ -4031,11 +4290,16 @@ it.live(
               threadTitle: "Deploy",
               agent: "codex",
               origin: "https://good.test",
+              siteUrl: "https://good.test/login",
               fields: ["username", "password"],
               expiresAt: asked[0]!.expiresAt,
             },
-            expect.objectContaining({ item: "device:work/g1", origin: "https://good.test" }),
+            expect.objectContaining({
+              origin: "https://good.test",
+              siteUrl: "https://good.test/login",
+            }),
           ]);
+          expect(asked[1]!.item).toBeUndefined();
           expect(yield* passwordField(context)).toEqual({
             value: "device-secret",
             security: "disc",
@@ -4069,10 +4333,24 @@ it.live(
             },
             { type: "denied" },
             { type: "unavailable", message: "Browser logins are off." },
+            {
+              type: "denied",
+              message: 'The selected login "Good" has no password. Choose another login.',
+            },
+            {
+              type: "values",
+              item: {
+                id: "device:work/b1",
+                title: "Bank",
+                urls: ["https://bank.test"],
+                fillOrigin: "https://elsewhere.test",
+              },
+              values: { username: Redacted.make("bank-user"), password: Redacted.make("bank-pw") },
+            },
           ]);
           const { invoke } = yield* openLoginTab;
           const messages: Array<string> = [];
-          for (let attempt = 0; attempt < 3; attempt++) {
+          for (let attempt = 0; attempt < 5; attempt++) {
             messages.push((yield* invoke("fillLogin").pipe(Effect.flip)).message);
           }
           expect(messages).toEqual(
@@ -4080,6 +4358,8 @@ it.live(
               'The login "Bank" is saved for another site, so it is not filled here.',
               "The user did not approve this login on their device.",
               "The user's device could not answer: Browser logins are off.",
+              'The selected login "Good" has no password. Choose another login.',
+              "The login choice was authorized for another origin. Try again.",
             ].map((message) => `Preview automation fillLogin failed: ${message}`),
           );
           expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
@@ -4322,6 +4602,7 @@ it.live("a login without a field asked for is passed over for a source that has 
             values: { username: Redacted.make("old-user") },
           },
           { type: "none" },
+          { type: "none" },
         ]);
         const { invoke } = yield* openLoginTab;
         const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
@@ -4336,10 +4617,10 @@ it.live("a login without a field asked for is passed over for a source that has 
           expect(lacking.message).toContain('The login "Good" has no password.');
           expect(device).toHaveLength(asked);
         }
-        // A login the agent chose is never swapped for another account's.
+        // An untrusted id does not skip the ordinary source order.
         const chosen = yield* invoke("fillLogin", { login: "work/g1" }).pipe(Effect.flip);
         expect(chosen.message).toContain('The login "Good" has no password.');
-        expect(device).toHaveLength(3);
+        expect(device).toHaveLength(4);
         expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
       }).pipe(Effect.provide(server.layer));
     }),
@@ -4373,22 +4654,26 @@ it.live("this machine's password managers having nothing go on to the user's dev
   );
 });
 
-it.live("a login an earlier choose named goes only to its own password manager", () => {
+it.live("untrusted login ids cannot pick a provider and follow the ordinary device flow", () => {
   const server = loginServer(DesktopChannel.layer, { unattended: true, noWorkLogin: true });
   return Effect.scoped(
     Effect.gen(function* () {
       const { context } = yield* realLoginBrowser;
       yield* Effect.gen(function* () {
-        const device = yield* connectedDevice([deviceLogin("device:personal/p1", "device-pw")]);
+        const device = yield* connectedDevice(
+          Array.from({ length: 3 }, () => deviceLogin("device:personal/p1", "device-pw")),
+        );
         const { invoke } = yield* openLoginTab;
-        // The last is a guess at a device's own id, which no choose here ever gave out.
         for (const login of ["work/selected-item", "stranger/g1", "device:personal/p1"]) {
-          const refused = yield* invoke("fillLogin", { login }).pipe(Effect.flip);
-          expect(refused.message).toContain("could not be read; choose again");
+          yield* invoke("navigate", { url: "https://good.test/login" });
+          expect(yield* invoke("fillLogin", { login })).toMatchObject({
+            status: "filled",
+            login: { account: "Personal" },
+          });
         }
-        // No other password manager, and not the user's device, was asked instead.
-        expect(device).toEqual([]);
-        expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+        expect(device).toHaveLength(3);
+        expect(device.every((request) => request.item === undefined)).toBe(true);
+        expect(yield* passwordField(context)).toEqual({ value: "device-pw", security: "disc" });
       }).pipe(Effect.provide(server.layer));
     }),
   );

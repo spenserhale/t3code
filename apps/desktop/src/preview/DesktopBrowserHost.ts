@@ -19,6 +19,7 @@ import * as Stream from "effect/Stream";
 import { createCdpRelayConnection, type CdpRelayConnection } from "./CdpRelay.ts";
 import { sendPageCommand } from "./GuestInput.ts";
 import * as LoginApprovalDialog from "./LoginApprovalDialog.ts";
+import * as LoginChoiceDialog from "./LoginChoiceDialog.ts";
 
 const encodeEvent = Schema.encodeSync(Schema.fromJsonString(DesktopBrowserEvent));
 const decodeCommand = Schema.decodeUnknownOption(Schema.fromJsonString(DesktopBrowserCommand));
@@ -163,6 +164,7 @@ export const make = Effect.gen(function* () {
   const openedWindows = new WeakMap<Electron.WebContents, Set<Electron.BrowserWindow>>();
   const emit = (event: DesktopBrowserEventType) => runFork(PubSub.publish(outbox, event));
   const loginApproval = yield* Effect.serviceOption(LoginApprovalDialog.LoginApprovalDialog);
+  const loginChoice = yield* Effect.serviceOption(LoginChoiceDialog.LoginChoiceDialog);
   /** Open or queued prompts, so the server can close one it stopped waiting for. */
   const loginApprovalCancels = new Map<string, AbortController>();
 
@@ -670,26 +672,54 @@ export const make = Effect.gen(function* () {
         return;
       }
       if (command.value.type === "loginApproval") {
-        const { threadId, tabId, requestId } = command.value;
+        const prompt = command.value;
+        const { threadId, tabId, requestId } = prompt;
         // A tab the desktop does not show, such as an agent's headless tab, is asked about too;
         // reading an identity names no tab at all.
         const guest =
           tabId === undefined ? undefined : tabs.get(keyOf({ threadId, tabId }))?.debuggee;
         const cancel = new AbortController();
+        loginApprovalCancels.get(requestId)?.abort();
         loginApprovalCancels.set(requestId, cancel);
-        const ask = Option.isSome(loginApproval)
-          ? loginApproval.value.ask(guest?.webContents, command.value, cancel.signal)
-          : Effect.succeed<LoginApprovalDialog.LoginApprovalAnswer>(false);
+        const ask =
+          prompt.candidates === undefined
+            ? (Option.isSome(loginApproval)
+                ? loginApproval.value.ask(guest?.webContents, prompt, cancel.signal)
+                : Effect.succeed<LoginApprovalDialog.LoginApprovalAnswer>(false)
+              ).pipe(Effect.map((approved) => ({ approved })))
+            : (Option.isSome(loginChoice)
+                ? loginChoice.value.choose(
+                    guest?.webContents,
+                    { ...prompt, candidates: prompt.candidates },
+                    cancel.signal,
+                  )
+                : Effect.undefined
+              ).pipe(
+                Effect.map((choice) => {
+                  const selected =
+                    !cancel.signal.aborted && prompt.candidates?.some(({ id }) => id === choice)
+                      ? choice
+                      : undefined;
+                  return selected === undefined
+                    ? { approved: false as const }
+                    : { approved: "once" as const, selected };
+                }),
+              );
         runFork(
           ask.pipe(
-            Effect.ensuring(Effect.sync(() => loginApprovalCancels.delete(requestId))),
-            Effect.flatMap((approved) =>
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (loginApprovalCancels.get(requestId) === cancel)
+                  loginApprovalCancels.delete(requestId);
+              }),
+            ),
+            Effect.flatMap((answer) =>
               PubSub.publish(outbox, {
                 type: "loginApproval",
                 threadId,
                 tabId,
                 requestId,
-                approved,
+                ...answer,
               }),
             ),
           ),

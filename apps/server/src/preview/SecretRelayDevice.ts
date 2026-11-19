@@ -16,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 
 import * as BrowserLogins from "./BrowserLogins.ts";
+import * as BrowserLoginChoice from "./BrowserLoginChoice.ts";
 import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 
 export class SecretRelayDevice extends Context.Service<
@@ -47,10 +48,22 @@ const redacted = (values: Readonly<Record<string, string | undefined>>) =>
   );
 
 const DEFAULT_FIELDS: ReadonlyArray<PreviewLoginField> = ["username", "password"];
+const SELECTION_TTL_MS = 5 * 60_000;
+const MAX_SELECTIONS = 256;
 
 const make = Effect.gen(function* () {
   const logins = yield* BrowserLogins.BrowserLogins;
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
+  const selected = new Map<
+    string,
+    {
+      readonly id: string;
+      readonly revision: string;
+      readonly fillOrigin?: string;
+      readonly siteUrl: string | undefined;
+      readonly expiresAt: number;
+    }
+  >();
 
   const resolve: SecretRelayDevice["Service"]["resolve"] = Effect.fn("SecretRelayDevice.resolve")(
     function* ({ request, requester }) {
@@ -61,8 +74,47 @@ const make = Effect.gen(function* () {
       const remaining = Effect.map(Clock.currentTimeMillis, (now) => request.expiresAt - now);
       if ((yield* remaining) <= 0) return unavailable("The request ended before it was shown.");
       const origin = request.origin;
-      if (request.kind === "login" && origin === undefined) {
+      if (
+        (request.kind === "login" || request.kind === "loginChoice") &&
+        (origin === undefined || !URL.canParse(origin) || new URL(origin).origin !== origin)
+      ) {
         return unavailable("The request did not name the site.");
+      }
+      if (request.kind === "loginChoice") {
+        if (
+          request.candidates === undefined ||
+          request.candidates.length === 0 ||
+          desktopChannel.chooseLogin === undefined
+        ) {
+          return unavailable("The device needs an updated desktop app that can choose a login.");
+        }
+        const choice = yield* BrowserLoginChoice.choose(
+          { desktopChannel },
+          {
+            threadId: request.threadId,
+            origin: origin!,
+            deadline: request.expiresAt,
+            candidates: request.candidates,
+            machine: requester.label,
+            ...(request.threadTitle ? { threadTitle: request.threadTitle } : {}),
+            ...(request.agent ? { agent: request.agent } : {}),
+          },
+        ).pipe(Effect.result);
+        if (choice._tag === "Failure")
+          return { type: "denied", message: choice.failure.message } as const;
+        const id = choice.success;
+        const item = request.candidates.find((candidate) => candidate.id === id)!;
+        return {
+          type: "values",
+          item: {
+            id,
+            title: item.title,
+            ...(item.vault ? { vault: item.vault } : {}),
+            ...(item.account ? { account: item.account } : {}),
+            urls: [],
+          },
+          values: {},
+        } as const;
       }
       const { revision, escalation, providers: chosen } = yield* logins.escalation;
       if (chosen.length === 0) {
@@ -77,7 +129,8 @@ const make = Effect.gen(function* () {
           "That device is set to use only its service accounts, and none is chosen for browser logins there.",
         );
       }
-      const item = request.item === undefined ? undefined : ownId(request.item);
+      const item =
+        request.kind === "login" || request.item === undefined ? undefined : ownId(request.item);
       // An item this device offered earlier is read from its own password manager only.
       const provider =
         item === undefined ? undefined : providers.find(({ id }) => item.startsWith(`${id}/`));
@@ -140,28 +193,102 @@ const make = Effect.gen(function* () {
         const page = origin ?? "";
         const found =
           reference === undefined
-            ? (yield* logins.candidates(page, reach)).logins
+            ? (yield* logins.candidates(page, reach, request.siteUrl)).logins
             : [(yield* logins.lookupLogin(reference, reach)).login].flatMap((login) =>
                 login === undefined ? [] : [login],
               );
-        const matching = found.filter((login) => item === undefined || login.id === item);
-        const [login, ...others] = matching;
+        const selectionKey = `${requester.environmentId}\u0000${request.threadId}\u0000${origin}`;
+        const now = yield* Clock.currentTimeMillis;
+        for (const [key, selection] of selected) {
+          if (selection.expiresAt <= now) selected.delete(key);
+        }
+        const previous = selected.get(selectionKey);
+        const remembered =
+          reference === undefined &&
+          previous?.revision === revision &&
+          previous.siteUrl === request.siteUrl &&
+          !(request.fields ?? DEFAULT_FIELDS).includes("username") &&
+          request.item !== undefined &&
+          ownId(request.item) === previous.id
+            ? found.find((login) => login.id === previous.id)
+            : undefined;
+        const reused =
+          remembered !== undefined &&
+          (BrowserLogins.loginCoversPage(remembered.urls, page) || previous?.fillOrigin === page)
+            ? remembered
+            : undefined;
+        const selecting =
+          reused === undefined
+            ? BrowserLoginChoice.select(
+                { logins, desktopChannel },
+                {
+                  revision,
+                  candidates: found,
+                  threadId: request.threadId,
+                  origin: page,
+                  deadline: request.expiresAt,
+                  forceChoice: request.item !== undefined,
+                  machine: requester.label,
+                  ...(request.threadTitle ? { threadTitle: request.threadTitle } : {}),
+                  ...(request.agent ? { agent: request.agent } : {}),
+                },
+              )
+            : Effect.succeed({
+                ...reused,
+                userChosen: true,
+                ...(previous?.fillOrigin === undefined ? {} : { fillOrigin: previous.fillOrigin }),
+              });
+        const selection = yield* selecting.pipe(Effect.result);
+        if (selection._tag === "Failure")
+          return { type: "denied", message: selection.failure.message } as const;
+        const login = selection.success;
         if (login === undefined) return { type: "none" } as const;
-        if (others.length > 0) {
-          return { type: "choose", candidates: matching.map(summary) } as const;
-        }
-        if (!BrowserLogins.loginCoversPage(login.urls, page)) {
-          return unavailable(`The login "${login.title}" is saved for another site.`);
-        }
+        if ((yield* remaining) <= 0) return { type: "denied" } as const;
         const fields = [...new Set(request.fields ?? DEFAULT_FIELDS)];
-        const values = yield* logins.read(revision, login, fields);
+        const read = yield* logins.check(revision).pipe(
+          Effect.andThen(logins.read(revision, login, fields)),
+          Effect.tap(() => logins.check(revision)),
+          Effect.result,
+        );
+        if (read._tag === "Failure") {
+          if (login.userChosen || read.failure.reason === "changed")
+            return {
+              type: "denied",
+              message:
+                read.failure.reason === "changed"
+                  ? "The browser login settings changed. Try again."
+                  : `The selected login "${login.title}" could not be read. Unlock its password manager or choose another login, then try again.`,
+            } as const;
+          return yield* read.failure;
+        }
+        const values = read.success;
+        const absent = fields.filter((field) => values[field] === undefined);
+        if (login.userChosen && absent.length > 0)
+          return {
+            type: "denied",
+            message: `The selected login "${login.title}" has no ${absent.join(" or ")}. Choose another login or ask the user to sign in.`,
+          } as const;
         // Another device may hold what this login lacks, so only a named one goes back short.
-        if (item === undefined && fields.some((field) => values[field] === undefined)) {
+        if (reused === undefined && fields.some((field) => values[field] === undefined)) {
           return { type: "none" } as const;
         }
+        if ((yield* remaining) <= 0) return { type: "denied" } as const;
+        selected.delete(selectionKey);
+        if (selected.size >= MAX_SELECTIONS) selected.delete(selected.keys().next().value!);
+        selected.set(selectionKey, {
+          id: login.id,
+          revision,
+          siteUrl: request.siteUrl,
+          expiresAt: (yield* Clock.currentTimeMillis) + SELECTION_TTL_MS,
+          ...(login.fillOrigin === undefined ? {} : { fillOrigin: login.fillOrigin }),
+        });
         return {
           type: "values",
-          item: { ...summary(login), urls: login.urls },
+          item: {
+            ...summary(login),
+            urls: login.urls,
+            ...(login.fillOrigin === undefined ? {} : { fillOrigin: login.fillOrigin }),
+          },
           values: redacted(values),
         } as const;
       }

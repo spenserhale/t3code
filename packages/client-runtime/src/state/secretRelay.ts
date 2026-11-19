@@ -37,12 +37,16 @@ import { createEnvironmentRpcCommand } from "./runtime.ts";
 
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1"]);
 
-/** What this device's server can answer. A server sends only the kinds a client names. */
-export const SECRET_RELAY_KINDS = [
+const LEGACY_SECRET_RELAY_KINDS = [
   "login",
   "identity",
   "secretReference",
 ] as const satisfies ReadonlyArray<SecretRelayKind>;
+const LOGIN_CHOICE_KINDS = ["loginChoice"] as const satisfies ReadonlyArray<SecretRelayKind>;
+const NO_SECRET_RELAY_KINDS: ReadonlyArray<SecretRelayKind> = [];
+
+/** A server sends only the kinds a client names. */
+export const SECRET_RELAY_KINDS = [...LEGACY_SECRET_RELAY_KINDS, ...LOGIN_CHOICE_KINDS] as const;
 
 /** Nobody between can read what crosses: TLS, an SSH tunnel, or a socket on this machine. */
 export function isEncryptedConnection(
@@ -64,6 +68,7 @@ export interface SecretRelayCandidate {
   readonly connected: boolean;
   readonly config: {
     readonly secretRelay?: boolean;
+    readonly secretRelayLoginChoice?: boolean;
     readonly settings: { readonly browserLogins: BrowserLoginSettings };
   } | null;
   /** Read only for an environment that otherwise qualifies. */
@@ -71,11 +76,25 @@ export interface SecretRelayCandidate {
   readonly session: () => AuthSessionState | null;
 }
 
+/** The primary resolves requests, so only its capabilities determine the subscribed kinds. */
+export function secretRelayKinds(
+  primaryConfig: SecretRelayCandidate["config"],
+): ReadonlyArray<SecretRelayKind> {
+  if (primaryConfig?.secretRelay !== true) return NO_SECRET_RELAY_KINDS;
+  const canRead = browserLoginProviderIds(primaryConfig.settings.browserLogins).length > 0;
+  if (canRead) {
+    return primaryConfig.secretRelayLoginChoice === true
+      ? SECRET_RELAY_KINDS
+      : LEGACY_SECRET_RELAY_KINDS;
+  }
+  return primaryConfig.secretRelayLoginChoice === true ? LOGIN_CHOICE_KINDS : NO_SECRET_RELAY_KINDS;
+}
+
 /**
  * The environments whose relayed requests this device answers. None unless the primary can read
- * logins for them: connected over an encrypted connection, offering the relay, with a password
- * manager chosen for browser logins, and a session that may manage access there. Then every other
- * environment that offers the relay over an encrypted connection and lets this session operate.
+ * logins or show a chooser: connected over an encrypted connection, offering those kinds, with a
+ * session that may manage access there. Then every other environment that offers the relay over
+ * an encrypted connection and lets this session operate.
  */
 export function secretRelayEnvironmentIds(input: {
   readonly primaryEnvironmentId: EnvironmentId | null;
@@ -93,7 +112,7 @@ export function secretRelayEnvironmentIds(input: {
   );
   if (
     primary?.config == null ||
-    browserLoginProviderIds(primary.config.settings.browserLogins).length === 0 ||
+    secretRelayKinds(primary.config).length === 0 ||
     !offersRelay(primary, AuthAccessWriteScope)
   ) {
     return [];
@@ -162,13 +181,14 @@ export const serveSecretRelay = Effect.fn("SecretRelay.serve")(function* <
 /** Answers `environmentId`'s relayed requests with `resolve` until interrupted. */
 const relayEnvironment = Effect.fn("SecretRelay.relayEnvironment")(function* <ResolveError>(
   environmentId: EnvironmentId,
+  kinds: ReadonlyArray<SecretRelayKind>,
   resolve: (request: SecretRelayRequest) => Effect.Effect<SecretRelayAnswer, ResolveError>,
 ) {
   const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
   yield* serveSecretRelay({
     requests: registry.followStream(
       environmentId,
-      subscribe(WS_METHODS.subscribeSecretRelay, { kinds: [...SECRET_RELAY_KINDS] }),
+      subscribe(WS_METHODS.subscribeSecretRelay, { kinds: [...kinds] }),
     ),
     resolve,
     // A route can change under a live subscription, so each answer checks the one it takes.
@@ -193,61 +213,67 @@ export function createSecretRelayAtoms<R, E>(
     tag: WS_METHODS.secretRelayResolve,
   });
   /** While mounted, answers `environmentId`'s relayed requests through the primary. */
-  const relay = Atom.family((primaryEnvironmentId: EnvironmentId) =>
-    Atom.family((environmentId: EnvironmentId) =>
-      runtime
-        .atom(
-          Effect.gen(function* () {
-            const atoms = yield* AtomRegistry.AtomRegistry;
-            const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
-            const requester = Effect.map(SubscriptionRef.get(registry.entries), (entries) => ({
-              environmentId,
-              label: (entries.get(environmentId)?.target.label ?? environmentId).slice(0, 200),
-            }));
-            yield* relayEnvironment(environmentId, (relayed) =>
-              requester.pipe(
-                Effect.flatMap((from) =>
-                  Effect.promise((signal) =>
-                    resolve.run(
-                      atoms,
-                      {
-                        environmentId: primaryEnvironmentId,
-                        input: { request: relayed, requester: from },
-                      },
-                      { signal },
+  const relayForKinds = Atom.family((kinds: ReadonlyArray<SecretRelayKind>) =>
+    Atom.family((primaryEnvironmentId: EnvironmentId) =>
+      Atom.family((environmentId: EnvironmentId) =>
+        runtime
+          .atom(
+            Effect.gen(function* () {
+              const atoms = yield* AtomRegistry.AtomRegistry;
+              const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+              const requester = Effect.map(SubscriptionRef.get(registry.entries), (entries) => ({
+                environmentId,
+                label: (entries.get(environmentId)?.target.label ?? environmentId).slice(0, 200),
+              }));
+              yield* relayEnvironment(environmentId, kinds, (relayed) =>
+                requester.pipe(
+                  Effect.flatMap((from) =>
+                    Effect.promise((signal) =>
+                      resolve.run(
+                        atoms,
+                        {
+                          environmentId: primaryEnvironmentId,
+                          input: { request: relayed, requester: from },
+                        },
+                        { signal },
+                      ),
                     ),
                   ),
+                  Effect.flatMap((result) =>
+                    result._tag === "Success"
+                      ? Effect.succeed(result.value)
+                      : Effect.logWarning(
+                          "This device's server did not answer a relayed request.",
+                        ).pipe(
+                          Effect.annotateLogs({
+                            environmentId,
+                            ...safeErrorLogAttributes(Cause.squash(result.cause)),
+                          }),
+                          Effect.andThen(Effect.fail(new SecretRelayResolveError())),
+                        ),
+                  ),
                 ),
-                Effect.flatMap((result) =>
-                  result._tag === "Success"
-                    ? Effect.succeed(result.value)
-                    : Effect.logWarning(
-                        "This device's server did not answer a relayed request.",
-                      ).pipe(
-                        Effect.annotateLogs({
-                          environmentId,
-                          ...safeErrorLogAttributes(Cause.squash(result.cause)),
-                        }),
-                        Effect.andThen(Effect.fail(new SecretRelayResolveError())),
-                      ),
-                ),
+              );
+            }).pipe(
+              Effect.catchCauseIf(
+                (cause) => !Cause.hasInterruptsOnly(cause),
+                (cause) =>
+                  Effect.logWarning("Stopped answering relayed secret requests.").pipe(
+                    Effect.annotateLogs({
+                      environmentId,
+                      ...safeErrorLogAttributes(Cause.squash(cause)),
+                    }),
+                  ),
               ),
-            );
-          }).pipe(
-            Effect.catchCauseIf(
-              (cause) => !Cause.hasInterruptsOnly(cause),
-              (cause) =>
-                Effect.logWarning("Stopped answering relayed secret requests.").pipe(
-                  Effect.annotateLogs({
-                    environmentId,
-                    ...safeErrorLogAttributes(Cause.squash(cause)),
-                  }),
-                ),
             ),
-          ),
-        )
-        .pipe(Atom.withLabel(`secret-relay:${primaryEnvironmentId}:${environmentId}`)),
+          )
+          .pipe(Atom.withLabel(`secret-relay:${primaryEnvironmentId}:${environmentId}`)),
+      ),
     ),
   );
-  return { resolve, relay };
+  return {
+    resolve,
+    relay: (primaryEnvironmentId: EnvironmentId, kinds: ReadonlyArray<SecretRelayKind>) =>
+      relayForKinds(kinds)(primaryEnvironmentId),
+  };
 }
