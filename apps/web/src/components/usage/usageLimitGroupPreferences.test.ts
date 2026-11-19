@@ -1,4 +1,9 @@
-import { assignLimitGroup, setLimitGroupsEnabled } from "@t3tools/shared/usageLimitGroups";
+import {
+  assignLimitGroup,
+  setLimitGroupsEnabled,
+  setLimitSchedule,
+} from "@t3tools/shared/usageLimitGroups";
+import { WEEKDAYS, WORK_HOURS } from "@t3tools/shared/usageLimitSchedule";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { readUsageLimitGroups, updateUsageLimitGroups } from "./usageLimitGroupPreferences";
@@ -70,6 +75,43 @@ describe("Limits group preferences", () => {
       expect(readUsageLimitGroups()).toEqual(grouped);
     },
   );
+
+  it("keeps schedules, and the workspaces already migrated, beside the assignments", () => {
+    updateUsageLimitGroups(() => ({ ...grouped, migrated: ["codex:me@example.com:ws-1"] }));
+    updateUsageLimitGroups((groups) => setLimitSchedule(groups, "named:Work", WORK_HOURS));
+    updateUsageLimitGroups((groups) => assignLimitGroup(groups, "claude:me@example.com", "Home"));
+    expect(readUsageLimitGroups()).toEqual({
+      enabled: true,
+      assignments: { "codex:me@example.com": "Work", "claude:me@example.com": "Home" },
+      schedules: { "named:Work": WORK_HOURS },
+      migrated: ["codex:me@example.com:ws-1"],
+    });
+  });
+
+  it("drops a stored schedule it cannot use without losing the assignments beside it", () => {
+    values.set(
+      key,
+      JSON.stringify({
+        enabled: true,
+        assignments: { "codex:me@example.com": "Work" },
+        schedules: {
+          "named:Work": { days: [5, 1, 1], timeZone: "Not/AZone" },
+          "named:Home": { days: [] },
+          other: "weekdays",
+        },
+      }),
+    );
+    expect(readUsageLimitGroups()).toEqual({
+      enabled: true,
+      assignments: { "codex:me@example.com": "Work" },
+      schedules: { "named:Work": { days: [1, 5] } },
+    });
+    updateUsageLimitGroups((groups) => setLimitSchedule(groups, "other", WEEKDAYS));
+    expect(JSON.parse(values.get(key)!).schedules).toEqual({
+      "named:Work": { days: [1, 5] },
+      other: WEEKDAYS,
+    });
+  });
 
   it("contains failures when the browser blocks storage access", () => {
     vi.stubGlobal("window", {

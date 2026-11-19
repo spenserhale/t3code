@@ -3,11 +3,14 @@ import { useId, useState } from "react";
 import type { EnvironmentId, UsageProviderKind } from "@t3tools/contracts";
 import {
   assignLimitGroup,
+  groupLimitAccounts,
   labelLimitAccounts,
+  limitAccountScheduleKey,
   limitGroupNames,
   limitSubscriptionId,
   MAX_LIMIT_GROUP_NAME_LENGTH,
   setLimitGroupsEnabled,
+  setLimitSchedule,
   type LimitGroupState,
 } from "@t3tools/shared/usageLimitGroups";
 import { collectLimitAccounts, collectLimitPools } from "@t3tools/shared/usageLimits";
@@ -27,6 +30,8 @@ import {
 import { DraftInput } from "../ui/draft-input";
 import { Switch } from "../ui/switch";
 import { useUsageLimitGroups } from "./usageLimitGroupPreferences";
+import { LimitGroupName } from "./UsageLimitGroupSections";
+import { LimitScheduleField } from "./UsageLimitScheduleField";
 import { AccountAvatar } from "./UsageLimitsPooled";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
 
@@ -73,6 +78,9 @@ function UsageLimitGroupsDialog({
     (account) =>
       account.displayName ?? providerClients.get(account.driver)?.label ?? String(account.driver),
   );
+  // Schedules belong to these groups whether or not Limits is shown grouped.
+  const groupList = groupLimitAccounts(shown, groups.assignments);
+  const emailGroups = groupList.filter((group) => group.kind === "email");
   return (
     <Dialog open onOpenChange={onOpenChange}>
       <DialogPopup>
@@ -80,7 +88,8 @@ function UsageLimitGroupsDialog({
           <DialogTitle>Account groups</DialogTitle>
           <DialogDescription>
             Each group gets its own section on Limits and pools only its own accounts. Accounts
-            without a group are grouped by email.
+            without a group are grouped by email. A schedule says when a group is used, so pace and
+            reminders skip the days and hours it is not.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -98,6 +107,33 @@ function UsageLimitGroupsDialog({
               }
             />
           </label>
+          {groupList.length > 0 ? (
+            <section className="flex flex-col gap-2 border-t border-border/60 pt-4">
+              <h3 className="text-sm font-medium text-foreground">When each group is used</h3>
+              <ul className="flex flex-col gap-2">
+                {groupList.map((group) => {
+                  const label =
+                    group.kind === "email"
+                      ? `email group ${emailGroups.indexOf(group) + 1}`
+                      : group.name;
+                  return (
+                    <li key={group.key} className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                      <span className="flex min-w-0 flex-1 items-center gap-1.5 text-sm text-foreground">
+                        <LimitGroupName group={group} className="text-sm" />
+                      </span>
+                      <LimitScheduleField
+                        label={label}
+                        value={groups.schedules?.[group.key]}
+                        onChange={(schedule) =>
+                          onChange((current) => setLimitSchedule(current, group.key, schedule))
+                        }
+                      />
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ) : null}
           {accounts.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No subscription accounts on the selected environments.
@@ -109,7 +145,7 @@ function UsageLimitGroupsDialog({
                 const labelId = `${idPrefix}-account-${index}`;
                 const inputId = `${idPrefix}-group-${index}`;
                 return (
-                  <li key={id} className="flex items-center gap-3">
+                  <li key={id} className="flex flex-wrap items-center gap-x-3 gap-y-2">
                     <span className="flex size-5 shrink-0 items-center justify-center">
                       <AccountAvatar account={account} />
                     </span>
@@ -144,6 +180,19 @@ function UsageLimitGroupsDialog({
                         spellCheck={false}
                         onCommit={(next) =>
                           onChange((current) => assignLimitGroup(current, id, next))
+                        }
+                      />
+                    </div>
+                    <div className="flex basis-full flex-wrap items-center gap-x-3 gap-y-2 ps-8">
+                      <span className="text-xs text-muted-foreground">Schedule</span>
+                      <LimitScheduleField
+                        label={label}
+                        inherits
+                        value={groups.schedules?.[limitAccountScheduleKey(id)]}
+                        onChange={(schedule) =>
+                          onChange((current) =>
+                            setLimitSchedule(current, limitAccountScheduleKey(id), schedule),
+                          )
                         }
                       />
                     </div>

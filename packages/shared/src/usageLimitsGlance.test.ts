@@ -1,7 +1,9 @@
+// @effect-diagnostics globalDate:off -- Token days are listed from fixed epochs.
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { NO_LIMIT_GROUPS } from "./usageLimitGroups.ts";
+import { paceLabel } from "./usageLimitPace.ts";
 import { type LimitAccount } from "./usageLimits.ts";
 import { collectLimitGlance, formatCheckedAgo } from "./usageLimitsGlance.ts";
 
@@ -60,6 +62,144 @@ const rows = (accounts: readonly LimitAccount[]) =>
   glance(accounts).sections.flatMap((section) => section.rows);
 
 describe("collectLimitGlance", () => {
+  it("keeps Z.ai tools out of Quick View, including the stale-window fallback", () => {
+    const tools: Window = {
+      id: "zai_tools_monthly",
+      kind: "monthly",
+      label: "Z.ai · Tools",
+      usedPercent: 95,
+    };
+    const source = account(
+      { key: "zai", displayName: "Z.ai", driver: ProviderDriverKind.make("opencode") },
+      [session(1), weekly(1), tools],
+    );
+    expect(
+      rows([source])[0]?.pools.flatMap((pool) => pool.windows.map((window) => window.id)),
+    ).toEqual(["five_hour", "seven_day"]);
+    expect(source.limits.windows).toContain(tools);
+    expect(rows([account({ key: "tools-only" }, [tools])])).toEqual([]);
+    expect(
+      rows([
+        account({ key: "stale" }, [{ ...session(1), resetsAt: "2026-09-03T11:00:00.000Z" }, tools]),
+      ]),
+    ).toMatchObject([{ resetSinceChecked: true, pools: [] }]);
+  });
+
+  it("keeps every live reset window together without combining their balances", () => {
+    const [row] = rows([account({ key: "a" }, [weekly(24), session(88)])]);
+    expect(row?.pools).toMatchObject([
+      {
+        label: null,
+        windows: [
+          {
+            id: "five_hour",
+            kind: "session",
+            label: "5-hour",
+            remainingPercent: 12,
+            resetsIn: "resets in 1h 5m",
+          },
+          { id: "seven_day", kind: "weekly", label: "Weekly", remainingPercent: 76 },
+        ],
+      },
+    ]);
+  });
+
+  it("separates Claude's overall and scoped consumption limits", () => {
+    const fable = { ...weekly(51), id: "seven_day_fable", label: "Weekly · Fable" };
+    const spend: Window = {
+      id: "monthly_spend",
+      kind: "monthly",
+      label: "Monthly spend",
+      usedPercent: 0,
+    };
+    const source = account({ key: "a", driver: claude }, [fable, weekly(33), session(10), spend]);
+    const pools = rows([source])[0]?.pools;
+    expect(pools).toMatchObject([
+      {
+        label: "Overall",
+        windows: [{ id: "five_hour" }, { id: "seven_day", remainingPercent: 67 }],
+      },
+      { label: "Fable", windows: [{ id: "seven_day_fable", remainingPercent: 49 }] },
+    ]);
+    expect(pools?.flatMap((pool) => pool.windows.map((window) => window.id))).toEqual([
+      "five_hour",
+      "seven_day",
+      "seven_day_fable",
+    ]);
+    expect(source.limits.windows).toContain(spend);
+    expect(rows([account({ key: "spend-only", driver: claude }, [spend])])).toEqual([]);
+    expect(
+      rows([
+        account({ key: "stale", driver: claude }, [
+          { ...weekly(33), resetsAt: "2026-09-03T11:00:00.000Z" },
+          spend,
+        ]),
+      ]),
+    ).toMatchObject([{ resetSinceChecked: true, pools: [] }]);
+  });
+
+  it("pairs Antigravity windows by consumption identity, keeping shared and model-specific pools distinct", () => {
+    const ag = ProviderDriverKind.make("antigravity");
+    const window = (id: string, label: string, kind: Window["kind"]): Window => ({
+      id,
+      label,
+      kind,
+      usedPercent: 0,
+    });
+    const source = account({ key: "a", driver: ag }, [
+      window("3p-weekly", "Claude & GPT (shared) · Weekly", "weekly"),
+      window("gemini-argon-wtu-weekly", "Gemini 4 Argon · Weekly", "weekly"),
+      window("gemini-weekly", "Gemini · Weekly", "weekly"),
+      window("3p-5h", "Claude & GPT (shared) · 5-hour", "session"),
+      window("gemini-5h", "Gemini · 5-hour", "session"),
+    ]);
+    const [row] = rows([source]);
+    expect(row?.pools).toMatchObject([
+      {
+        label: "Gemini",
+        windows: [{ id: "gemini-5h", resetsIn: null, pace: null }, { id: "gemini-weekly" }],
+      },
+      { label: "Gemini 4 Argon", windows: [{ id: "gemini-argon-wtu-weekly" }] },
+      { label: "Claude & GPT (shared)", windows: [{ id: "3p-5h" }, { id: "3p-weekly" }] },
+    ]);
+    expect(source.limits.windows).toHaveLength(5);
+  });
+
+  it("keeps legacy Gemini quota without inventing a reset period", () => {
+    const [row] = rows([
+      account({ key: "legacy", driver: ProviderDriverKind.make("antigravity") }, [
+        { id: "gemini-quota", kind: "other", label: "Gemini · Reported quota", usedPercent: 0 },
+      ]),
+    ]);
+    expect(row?.pools).toMatchObject([
+      {
+        label: "Gemini",
+        windows: [
+          { kind: "other", remainingPercent: 100, resetsAt: null, resetsIn: null, pace: null },
+        ],
+      },
+    ]);
+  });
+
+  it("orders subscriptions by their soonest current reset, leaving unknown resets last", () => {
+    const { resetsAt: _reset, ...unknown } = session(10);
+    expect(
+      rows([
+        account({ key: "unknown", driver: claude }, [unknown]),
+        account({ key: "later", email: "later@example.com" }, [weekly(20)]),
+        account({ key: "first", driver: cursor }, [session(30)]),
+      ]).map((row) => row.account.key),
+    ).toEqual(["first", "later", "unknown"]);
+  });
+
+  it("drops expired nested windows without dropping live sibling allowances", () => {
+    const expired = { ...session(80), resetsAt: "2026-09-03T11:00:00.000Z" };
+    expect(rows([account({ key: "a" }, [expired, weekly(30)])])[0]?.pools).toMatchObject([
+      { windows: [{ id: "seven_day", remainingPercent: 70 }] },
+    ]);
+    expect(rows([account({ key: "a" }, [expired])])[0]?.pools).toEqual([]);
+  });
+
   it("shows the window an account has least of left", () => {
     expect(rows([account({ key: "a" }, [session(50), weekly(16)])])).toMatchObject([
       { name: "Codex", windowLabel: "Session", remainingPercent: 50, resetsIn: "resets in 1h 5m" },
@@ -92,6 +232,18 @@ describe("collectLimitGlance", () => {
 
     expect(rows([account({ key: "a", driver: cursor }, [total, auto, api])])).toMatchObject([
       { name: "Cursor", windowLabel: "Other Models", remainingPercent: 70 },
+    ]);
+    expect(
+      rows([account({ key: "a", driver: cursor }, [total, auto, api])])[0]?.pools,
+    ).toMatchObject([
+      {
+        label: "Cursor Models",
+        windows: [{ id: "autoPercentUsed", label: "Monthly", remainingPercent: 90 }],
+      },
+      {
+        label: "Other Models",
+        windows: [{ id: "apiPercentUsed", label: "Monthly", remainingPercent: 70 }],
+      },
     ]);
     expect(rows([account({ key: "a", driver: cursor }, [total, auto])])).toMatchObject([
       { windowLabel: "Overall", remainingPercent: 10 },
@@ -203,8 +355,8 @@ describe("collectLimitGlance", () => {
         row.resetSinceChecked,
       ]),
     ).toEqual([
-      ["a", true],
       ["b", false],
+      ["a", true],
     ]);
   });
 
@@ -248,6 +400,59 @@ describe("collectLimitGlance", () => {
     expect(rows([account({ key: "a" }, [now0])])).toMatchObject([
       { remainingPercent: 80, resetsIn: "resets now", resetSinceChecked: false },
     ]);
+  });
+
+  it("judges each row's pace against its account's schedule", () => {
+    // Monday noon, 3.5 days into a week that began on Thursday: 62% of the calendar week
+    // has passed, but only 47% of the Monday to Friday time in it.
+    const monday = Date.parse("2026-09-07T12:00:00.000Z");
+    const paced = (groups: Parameters<typeof collectLimitGlance>[1]) =>
+      collectLimitGlance([account({ key: "a" }, [weekly(30)])], groups, monday, nameOf).sections[0]!
+        .rows[0]!.pools[0]!.windows[0]!.pace;
+    expect(paceLabel(paced(NO_LIMIT_GROUPS)!)).toBe("32% in reserve");
+    expect(
+      paceLabel(
+        paced({
+          enabled: false,
+          assignments: {},
+          schedules: { other: { days: [1, 2, 3, 4, 5], timeZone: "UTC" } },
+        })!,
+      ),
+    ).toBe("17% in reserve");
+  });
+
+  it("judges pace from a recorded clearing and against the usual pattern when it knows them", () => {
+    const monday = Date.parse("2026-09-07T12:00:00.000Z");
+    const entry = account({ key: "a" }, [weekly(30)]);
+    const withExtras = (extras: Parameters<typeof collectLimitGlance>[4]) =>
+      collectLimitGlance([entry], NO_LIMIT_GROUPS, monday, nameOf, extras).sections[0]!.rows[0]!
+        .pools[0]!.windows[0]!.pace;
+    // A reset credit on Sunday noon: 30% in the day since is spending ahead of what remained.
+    const credit = Date.parse("2026-09-06T12:00:00.000Z");
+    const cleared = {
+      "a|weekly": [
+        {
+          resetsAt: Date.parse("2026-09-10T04:00:00.000Z"),
+          from: credit,
+          baseline: [credit, 0] as const,
+          readings: [[credit, 0] as const],
+        },
+      ],
+    };
+    expect(paceLabel(withExtras({ history: cleared })!)).toBe("3% in deficit");
+    // A pattern that puts everything on Thursday: nothing is expected before then.
+    const thursdaysOnly = Array.from({ length: 31 }, (_, offset) => {
+      const day = new Date(Date.UTC(2026, 7, 4 + offset));
+      return { day: day.toISOString().slice(0, 10), tokens: day.getUTCDay() === 4 ? 100 : 0 };
+    });
+    const pace = withExtras({ dailyTokens: () => thursdaysOnly })!;
+    expect(pace.reference).toBe("pattern");
+    expect(paceLabel(pace)).not.toBe(paceLabel(withExtras({})!));
+  });
+
+  it("has no pace for a row whose window has no clock", () => {
+    const { resetsAt: _resetsAt, ...open } = session(25);
+    expect(rows([account({ key: "a" }, [open])])[0]!.pace).toBeNull();
   });
 
   it("says nothing of a reset the window does not report", () => {
