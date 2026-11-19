@@ -114,7 +114,7 @@ const refsFor = (page: Page) => {
   return state;
 };
 
-const targetLocator = (
+export const targetLocator = (
   page: Page,
   input: { readonly locator?: string | undefined; readonly selector?: string | undefined },
 ): Locator | null => {
@@ -523,6 +523,10 @@ type SnapshotInput = {
   readonly consoleEntries: ReadonlyArray<PreviewAutomationConsoleEntry>;
   readonly networkEntries: ReadonlyArray<PreviewAutomationNetworkEntry>;
   readonly actionTimeline: PreviewAutomationSnapshot["actionTimeline"];
+  /** Removes secrets from page text; it runs before the text is cut to length. */
+  readonly scrub?: (text: string) => string;
+  /** False takes no screenshot. */
+  readonly images?: boolean;
 };
 
 /** The scale a page renders at and its viewport in device-independent pixels. */
@@ -563,14 +567,16 @@ const capture = async (
         "url" | "title" | "loading" | "visibleText" | "interactiveElements"
       >
     >,
-    captureViewport(input.cdp, { format: "png" }).then(async (full) =>
-      scale < 1
-        ? {
-            data: await shrinkPng(input.cdp, full, scale),
-            full: input.fullScreenshot ? full : undefined,
-          }
-        : { data: full, full: undefined },
-    ),
+    input.images === false
+      ? { data: undefined, full: undefined }
+      : captureViewport(input.cdp, { format: "png" }).then(async (full) =>
+          scale < 1
+            ? {
+                data: await shrinkPng(input.cdp, full, scale),
+                full: input.fullScreenshot ? full : undefined,
+              }
+            : { data: full, full: undefined },
+        ),
   ]);
   void pageAndScreenshot.catch(constVoid);
   // Leaves time for the second read; a frame that never loads holds the tree until then.
@@ -596,11 +602,12 @@ const capture = async (
   }
   const [page, { full, data }] = await pageAndScreenshot;
   if (state.generation !== generation) throw pageChanged();
-  const mask = (text: string) => (dotted ? text.replace(dotted, MASKED_VALUE) : text);
+  const scrub = input.scrub ?? ((text: string) => text);
+  const mask = (text: string) => scrub(dotted ? text.replace(dotted, MASKED_VALUE) : text);
   // Redacted before the cut, so a payload crossing it can't leave its start showing, and before
   // masking, which could hide the `data:` scheme behind a password value's dots.
   const redacted = withoutTreeDataPayloads(tree);
-  const accessibilityTree = (dotted ? maskTree(redacted, dotted) : redacted)
+  const accessibilityTree = scrub(dotted ? maskTree(redacted, dotted) : redacted)
     .slice(0, MAX_VISIBLE_TEXT_LENGTH)
     .replace(/\[ref=((?:f\d+)?e\d+)\]/g, (_match, nativeRef: string) => {
       const ref = `t3-${generation}-${nativeRef}`;
@@ -616,19 +623,26 @@ const capture = async (
     consoleEntries: [...input.consoleEntries],
     networkEntries: [...input.networkEntries],
     actionTimeline: [...input.actionTimeline],
-    screenshot: {
-      mimeType: "image/png",
-      data,
-      ...pngSize(data),
-    },
+    ...(data === undefined
+      ? {}
+      : { screenshot: { mimeType: "image/png", data, ...pngSize(data) } }),
     ...(full !== undefined ? { fullScreenshot: { data: full, ...pngSize(full) } } : {}),
   };
 };
 
+/** A screenshot is taken unless the caller can turn images off. */
+type SnapshotOf<Input> = Input extends { readonly images: boolean }
+  ? PreviewAutomationSnapshot
+  : PreviewAutomationSnapshot & {
+      readonly screenshot: NonNullable<PreviewAutomationSnapshot["screenshot"]>;
+    };
+
 /** Snapshots begun per page; observers' snapshots aren't queued, so two can overlap. */
 const snapshotTurns = new WeakMap<Page, number>();
 
-export const snapshot = async (input: SnapshotInput): Promise<PreviewAutomationSnapshot> => {
+export const snapshot = async <Input extends SnapshotInput>(
+  input: Input,
+): Promise<SnapshotOf<Input>> => {
   const deadline = Date.now() + SNAPSHOT_TIMEOUT_MS;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
@@ -645,7 +659,7 @@ export const snapshot = async (input: SnapshotInput): Promise<PreviewAutomationS
       : Promise.reject(cause),
   );
   try {
-    return await Promise.race([captured, expired]);
+    return (await Promise.race([captured, expired])) as SnapshotOf<Input>;
   } catch (cause) {
     throw cause instanceof Error && cause.name === "TimeoutError" ? tooBusy() : cause;
   } finally {
@@ -885,11 +899,26 @@ export const scroll = async (page: Page, input: PreviewAutomationScrollInput) =>
   await locator.evaluate((element, [x, y]) => element.scrollBy(x, y), delta);
 };
 
+/** What CDP answers for a script it ran, by `Runtime.evaluate` or any other way. */
+export interface ScriptReply {
+  readonly result: { readonly value?: unknown; readonly description?: string };
+  readonly exceptionDetails?: {
+    readonly text: string;
+    readonly exception?: { readonly description?: string };
+  };
+}
+
 /** Terminate expired page scripts so a hung expression cannot block the tab's control queue. */
 export const evaluate = async (
   cdp: CDPSession,
   input: PreviewAutomationEvaluateInput,
   timeoutMs: number,
+  /** Sends the script some other way, within the same time limit. */
+  send?: (script: {
+    readonly expression: string;
+    readonly awaitPromise: boolean;
+    readonly returnByValue: boolean;
+  }) => Promise<ScriptReply>,
 ) => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
@@ -911,19 +940,22 @@ export const evaluate = async (
     awaitPromise: input.awaitPromise ?? true,
     returnByValue: input.returnByValue ?? true,
   };
+  // A caller's own send runs every script itself, so the retry below never goes around it.
   // The devtools console's replMode allows top-level await but returns a trailing promise unawaited,
   // so it only retries what the page's parser rejected. A parse error has a scriptId but no stack and
   // ran nothing; a browser-internal rejection has neither.
-  const evaluation = cdp.send("Runtime.evaluate", params).then((classic) => {
-    const failure = classic.exceptionDetails;
-    const unparsed =
-      failure?.exception?.className === "SyntaxError" &&
-      failure.scriptId !== undefined &&
-      failure.stackTrace === undefined;
-    return unparsed && !timedOut && input.expression.includes("await")
-      ? cdp.send("Runtime.evaluate", { ...params, replMode: true })
-      : classic;
-  });
+  const evaluation: Promise<ScriptReply> = send
+    ? send(params)
+    : cdp.send("Runtime.evaluate", params).then((classic) => {
+        const failure = classic.exceptionDetails;
+        const unparsed =
+          failure?.exception?.className === "SyntaxError" &&
+          failure.scriptId !== undefined &&
+          failure.stackTrace === undefined;
+        return unparsed && !timedOut && input.expression.includes("await")
+          ? cdp.send("Runtime.evaluate", { ...params, replMode: true })
+          : classic;
+      });
   void evaluation.catch(constVoid);
   const result = await Promise.race([evaluation, expired]).finally(() => clearTimeout(timer));
   if (result.exceptionDetails) {

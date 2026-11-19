@@ -197,6 +197,50 @@ describe("DesktopPreReadyPlatform", () => {
     ).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
   });
 
+  it.effect.each([
+    {
+      label: "a list given on the command line",
+      platform: "darwin",
+      merged: "Vulkan,BackForwardCache",
+    },
+    {
+      label: "the Hyprland workaround on Linux",
+      platform: "linux",
+      merged: "Vulkan,WaylandWpColorManagerV1,BackForwardCache",
+    },
+  ] as const)("disables the back-forward cache alongside $label", ({ platform, merged }) => {
+    vi.stubEnv("VITE_DEV_SERVER_URL", "");
+    vi.stubEnv("XDG_CURRENT_DESKTOP", "Hyprland");
+    const commandLine = new Map([
+      ["disable-features", "Vulkan"],
+      ["ozone-platform", "wayland"],
+    ]);
+    hasSwitchMock.mockImplementation((name: string) => commandLine.has(name));
+    getSwitchValueMock.mockImplementation((name: string) => commandLine.get(name) ?? "");
+    appendSwitchMock.mockImplementation((name: string, value: string) => {
+      commandLine.set(name, value);
+    });
+    execFileSyncMock.mockReturnValue(
+      JSON.stringify({
+        version: "0.48.1",
+        tag: "v0.48.1",
+        commit: "29e2e59fdbab8ed2cc23a20e3c6043d5decb5cdc",
+        dirty: false,
+      }),
+    );
+    return Effect.gen(function* () {
+      yield* DesktopPreReadyPlatform.make;
+      // Chromium keeps only the last value it is given, so it gets the whole list once.
+      assert.deepEqual(
+        appendSwitchMock.mock.calls.filter(([name]) => name === "disable-features"),
+        [["disable-features", merged]],
+      );
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, platform),
+      Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())),
+    );
+  });
+
   it.effect(
     "acquires a synchronous pre-ready layer before an asynchronous Clerk-shaped layer",
     () =>
@@ -243,7 +287,8 @@ describe("DesktopPreReadyPlatform", () => {
         });
         assert.deepEqual(events, ["pre-ready", "clerk"]);
         assert.equal(registerSchemesMock.mock.calls.length, 1);
-        assert.equal(appendSwitchMock.mock.calls.length, 0);
+        // Browser tabs never get a page back whole from the back-forward cache.
+        assert.deepEqual(appendSwitchMock.mock.calls, [["disable-features", "BackForwardCache"]]);
         assert.equal(setDesktopNameMock.mock.calls.length, 0);
       }),
   );

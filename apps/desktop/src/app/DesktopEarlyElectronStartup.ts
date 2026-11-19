@@ -138,6 +138,20 @@ export function resolveLinuxDisableFeaturesSwitch(input: {
     : `${input.disableFeatures},${WAYLAND_COLOR_MANAGER_FEATURE}`;
 }
 
+const BACK_FORWARD_CACHE_FEATURE = "BackForwardCache";
+
+/**
+ * Back in a browser tab must load the page again, never bring it back whole: the rules keeping
+ * filled logins out of captures were checked against that. Electron 44 guests already load
+ * again; this holds it there. The app itself is one page, so nothing else changes.
+ */
+export const withBackForwardCacheDisabled = (disableFeatures: string | null): string => {
+  if (disableFeatures === null) return BACK_FORWARD_CACHE_FEATURE;
+  return featureListNames(disableFeatures).includes(BACK_FORWARD_CACHE_FEATURE)
+    ? disableFeatures
+    : `${disableFeatures},${BACK_FORWARD_CACHE_FEATURE}`;
+};
+
 export function resolveEarlyLinuxElectronOptions(
   input: EarlyLinuxElectronOptionsInput,
 ): EarlyLinuxElectronOptions {

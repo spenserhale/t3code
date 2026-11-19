@@ -14,6 +14,12 @@ export const DesktopBrowserEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("cdp"), ...TabKey, message: Schema.String }),
   /** Its `<webview>` started or stopped being on screen in a desktop window. */
   Schema.Struct({ type: Schema.Literal("shown"), ...TabKey, shown: Schema.Boolean }),
+  Schema.Struct({
+    type: Schema.Literal("loginApproval"),
+    ...TabKey,
+    requestId: TrimmedNonEmptyString,
+    approved: Schema.Boolean,
+  }),
 ]);
 export type DesktopBrowserEvent = typeof DesktopBrowserEvent.Type;
 
@@ -32,6 +38,30 @@ export const DesktopBrowserCommand = Schema.Union([
     type: Schema.Literal("turn"),
     threadId: TrimmedNonEmptyString,
     active: Schema.Boolean,
+  }),
+  /** Ask the user, in a native dialog, before a password manager login is filled into the tab. */
+  Schema.Struct({
+    type: Schema.Literal("loginApproval"),
+    ...TabKey,
+    requestId: TrimmedNonEmptyString,
+    providerLabel: Schema.String,
+    loginTitle: Schema.String,
+    vault: Schema.optional(Schema.String),
+    origin: Schema.String,
+    threadTitle: Schema.optional(Schema.String),
+    agent: Schema.optional(Schema.String),
+    scope: Schema.Literals(["request", "thread", "application"]),
+    /** The server stops waiting after this long; a prompt not yet shown by then is never shown. */
+    timeoutMs: Schema.Finite,
+  }),
+  /**
+   * A login is being filled into the tab's main document. Sent before the fill writes, so
+   * captures of the tab can be refused from then on.
+   */
+  Schema.Struct({
+    type: Schema.Literal("loginFilled"),
+    ...TabKey,
+    document: TrimmedNonEmptyString,
   }),
 ]);
 export type DesktopBrowserCommand = typeof DesktopBrowserCommand.Type;

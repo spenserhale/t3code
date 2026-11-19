@@ -933,12 +933,18 @@ export interface PreviewAnnotationSubmissionResult {
   annotation: PreviewAnnotationPayload;
   submission: PreviewAnnotationSubmission;
   screenshotFailed?: boolean;
+  /**
+   * The page may show a login the password manager filled, so the screenshot was left out and
+   * `annotation` holds nothing the page supplied but its origin.
+   */
+  screenshotWithheld?: boolean;
 }
 export const PreviewAnnotationSubmissionResultSchema: Schema.Codec<PreviewAnnotationSubmissionResult> =
   Schema.Struct({
     annotation: PreviewAnnotationPayloadSchema,
     submission: PreviewAnnotationSubmissionSchema,
     screenshotFailed: Schema.optionalKey(Schema.Boolean),
+    screenshotWithheld: Schema.optionalKey(Schema.Boolean),
   });
 
 export const DesktopPreviewTabInputSchema = Schema.Struct({
@@ -1300,7 +1306,7 @@ export interface DesktopPreviewBridge {
       tabId: string,
       mimeType: string,
       data: Uint8Array,
-    ) => Promise<DesktopPreviewRecordingArtifact>;
+    ) => Promise<DesktopPreviewRecordingArtifact | PreviewCaptureFailureEncoded>;
   };
   onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => () => void;
   onPointerEvent: (listener: (event: DesktopPreviewPointerEvent) => void) => () => void;
