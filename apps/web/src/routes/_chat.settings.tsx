@@ -154,7 +154,7 @@ function SettingsContentLayout() {
     pathname === "/settings/diagnostics" || pathname === "/settings/providers"
       ? environment?.environmentId
       : location.pathname === "/settings/threads"
-        ? JSON.stringify([search.project, search.machine, search.checkout])
+        ? JSON.stringify([search.project, search.checkout])
         : JSON.stringify(search);
   const [restoreSignal, setRestoreSignal] = useState(0);
 
@@ -195,7 +195,7 @@ function SettingsRouteLayout() {
       search={rawSearch}
       singleEnvironment={pathname === "/settings/providers" || pathname === "/settings/secrets"}
       deviceOnly={SETTINGS_DEVICE_ONLY_PATHS.has(pathname)}
-      onChange={(next) => {
+      onChange={(next, options) => {
         // Send every axis so retain middleware recognizes "all" as an explicit target.
         void navigate({
           // Read at call time: subscribing would hand every scope consumer a new context value on
@@ -204,6 +204,7 @@ function SettingsRouteLayout() {
           search: (previous) => ({
             project: next.project,
             machine: next.machine,
+            machines: next.machines,
             checkout: next.checkout,
             ...(router.state.location.pathname === "/settings/threads" &&
             "effortSliderProvider" in previous
@@ -212,6 +213,7 @@ function SettingsRouteLayout() {
           }),
           hash: "",
           resetScroll: false,
+          ...(options?.replace ? { replace: true, state: true } : {}),
         });
       }}
     >

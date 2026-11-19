@@ -13,6 +13,7 @@ export function validateSettingsRouteSearch(raw: Record<string, unknown>) {
 const SCOPE_KEYS = [
   "project",
   "machine",
+  "machines",
   "checkout",
 ] as const satisfies readonly (keyof SettingsScopeSearch)[];
 const TARGET_INPUT_KEYS = [...SCOPE_KEYS, "environmentId"];

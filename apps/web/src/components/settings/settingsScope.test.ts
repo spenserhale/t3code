@@ -84,6 +84,15 @@ describe("settings scope resolution", () => {
     });
   });
 
+  it("restricts explicit subsets to their requested environments and project checkouts", () => {
+    const machines = [laptopId, "removed", laptopId];
+    const search = validateSettingsScopeSearch({ machines });
+    expect(resolveSettingsScope(search, groups, environments).environmentIds).toEqual([laptopId]);
+    expect(
+      resolveSettingsScope({ ...search, project: "t3code" }, groups, environments),
+    ).toMatchObject({ kind: "project", members: [first, second], environmentIds: [laptopId] });
+  });
+
   it("narrows a checkout target to exactly one member, deriving its environment when omitted", () => {
     expect(
       resolveSettingsScope(
@@ -104,6 +113,9 @@ describe("settings scope resolution", () => {
   it.each([
     { project: "missing" },
     { machine: "removed" },
+    { machines: [] },
+    { machines: ["removed"] },
+    validateSettingsScopeSearch({ machines: "malformed" }),
     { project: "t3code", machine: "removed" },
     { project: "t3code", checkout: "deleted" },
     { project: "other", machine: laptopId },

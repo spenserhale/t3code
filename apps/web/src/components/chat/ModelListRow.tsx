@@ -16,6 +16,12 @@ import { modelPickerModelKey } from "./modelPickerKeys";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
+export interface ModelDisabledAction {
+  label: string;
+  ariaLabel: string;
+  onClick: () => void;
+}
+
 export const ModelListRow = memo(function ModelListRow(props: {
   index: number;
   slug: string;
@@ -40,6 +46,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
   unavailable?: boolean;
   jumpLabel?: string | null;
   disabledReason?: string | null;
+  disabledAction?: ModelDisabledAction | null;
   onToggleFavorite: (instanceId: ProviderInstanceId, slug: string) => void;
 }) {
   const gt = useGT();
@@ -159,7 +166,19 @@ export const ModelListRow = memo(function ModelListRow(props: {
     return row;
   }
 
-  return (
+  const disabledRow = (
     <SharedTooltipTrigger render={row} label={props.disabledReason} side="left" align="center" />
+  );
+  const action = props.disabledAction;
+  if (!action) return disabledRow;
+  return (
+    <div className="group/blocked flex items-center gap-1">
+      <div className="min-w-0 flex-1">{disabledRow}</div>
+      <div className="pointer-events-none opacity-0 group-hover/blocked:pointer-events-auto group-hover/blocked:opacity-100 group-focus-within/blocked:pointer-events-auto group-focus-within/blocked:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100">
+        <Button size="xs" variant="outline" aria-label={action.ariaLabel} onClick={action.onClick}>
+          {action.label}
+        </Button>
+      </div>
+    </div>
   );
 });

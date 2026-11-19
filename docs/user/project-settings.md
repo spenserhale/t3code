@@ -7,6 +7,7 @@ T3 Code separates **device preferences** (saved locally per browser/device, like
 Use the **"Applying settings for …"** selector at the top of Settings (web/desktop) or the header filter (mobile) to choose which **environment(s)** and **project** you are editing:
 
 - **All environments**: Bulk-edits every currently connected environment (offline environments keep their values). Controls show **Mixed** where environments disagree.
+- **Several environments**: Open the environment dropdown, check the environments you want to edit together, then choose **Apply**. Choose **All environments** to restore the default.
 - **Project scope**: Creates a project override for that setting without changing environment defaults. Settings that cannot be overridden appear read-only.
 - **Inheritance order**: `Project override` → `Environment setting` → `t3.json` in the repo → `Built-in default`. Leave a setting on **Inherit** to defer to the next tier.
 - Click the **layers icon** beside a server setting to inspect its inheritance chain, jump to overriding projects, or **Reset all** back to the environment default.

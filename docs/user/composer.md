@@ -99,9 +99,11 @@ replaces it. Drag a step into place, or hover or focus it to reveal its move and
 Edits save as you go. Choose **Done** to close the editor.
 
 Favorites and sliders follow the scope chosen at the top of Settings. **All environments** applies
-the list being edited to each connected environment. A project can customize an inherited list
-and return to it with **Use the environment’s**. These controls are available on web and desktop
-with a supporting server.
+the list being edited to each connected environment. You can also change the environment selection
+in the slider editor. If a model is unavailable on some selected environments, hover over it to see
+which ones and choose **Deselect**. You can then pick the model and save to the remaining selection.
+A project can customize an inherited list and return to it with **Use the environment’s**.
+These controls are available on web and desktop with a supporting server.
 
 ## Quote an assistant response
 

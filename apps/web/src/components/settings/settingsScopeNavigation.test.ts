@@ -180,6 +180,19 @@ describe("settings scope navigation", () => {
     expect(router.state.location.search).toEqual({ machine: "provider-server" });
   });
 
+  it("keeps an explicit subset across settings pages and clears it for a single target", async () => {
+    const router = createSettingsRouter();
+    const subset = { machines: ["desktop", "laptop"] };
+    await router.navigate({ to: "/settings/general", search: subset });
+    await router.navigate({ to: "/settings/integrations" });
+    expect(router.state.location.search).toEqual(subset);
+    const reloaded = createSettingsRouter(router.state.location.href);
+    await reloaded.load();
+    expect(reloaded.state.location.search).toEqual(subset);
+    await reloaded.navigate({ to: "/settings/general", search: { machine: "desktop" } });
+    expect(reloaded.state.location.search).toEqual({ machine: "desktop" });
+  });
+
   it("retains an explicit unavailable target rather than reviving the previous environment", async () => {
     const router = createSettingsRouter();
     await router.navigate({ to: "/settings/general", search: { machine: "online" } });

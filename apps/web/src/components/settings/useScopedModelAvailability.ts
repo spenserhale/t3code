@@ -1,9 +1,10 @@
 import {
+  type EnvironmentId,
   type ProviderInstanceId,
+  type ServerProviders,
   textGeneratorForSelection,
   type UnifiedSettings,
 } from "@t3tools/contracts";
-import { useGT } from "gt-react";
 
 import { mergeEnvironmentSettings } from "../../hooks/useSettings";
 import {
@@ -17,31 +18,70 @@ import {
 } from "../../providerInstances";
 import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
 import { useSettingsScope } from "./SettingsScopeContext";
+import type { ScopedSettingsTarget } from "./scopedSettings";
+import { settingsScopeEnvironmentLabel } from "./settingsScopeAxis";
 
-export function useScopedModelDisabledReason(
+function modelCatalogForTarget(
+  target: ScopedSettingsTarget,
+  providers: ServerProviders,
+  settings: UnifiedSettings,
+  textGeneration: boolean,
+) {
+  const entries = applyProviderInstanceSettings(
+    deriveProviderInstanceEntries(providers),
+    target.settings,
+    target.projectId,
+  );
+  const optionsForInstance = textGeneration
+    ? getTextGenerationModelOptionsByInstance
+    : getCustomModelOptionsByInstance;
+  const options = optionsForInstance(mergeEnvironmentSettings(target.settings, settings), providers);
+  return new Map(
+    entries
+      .filter((entry) => entry.enabled && entry.isAvailable)
+      .map((entry) => [
+        entry.instanceId,
+        {
+          driver: entry.driverKind,
+          models: new Set(
+            (options.get(entry.instanceId) ?? [])
+              .filter((option) => !option.isUnavailable)
+              .map((option) => option.slug),
+          ),
+        },
+      ]),
+  );
+}
+
+export function useScopedModelUnavailableEnvironments(
   settings: UnifiedSettings,
   entries: readonly ProviderInstanceEntry[],
   textGeneration = false,
 ) {
-  const gt = useGT();
   const { targets } = useSettingsScope();
   const { environments } = useEnvironments();
   const providersByEnvironment = useEnvironmentProviders();
-  return (instanceId: ProviderInstanceId, model: string): string | null => {
+  const labels = new Map(
+    environments.map((environment) => [
+      environment.environmentId,
+      settingsScopeEnvironmentLabel(environment, environments),
+    ]),
+  );
+  const catalogs = new Map(
+    targets.flatMap((target) => {
+      const providers = providersByEnvironment.get(target.environmentId);
+      return providers
+        ? [[target, modelCatalogForTarget(target, providers, settings, textGeneration)]]
+        : [];
+    }),
+  );
+  return (instanceId: ProviderInstanceId, model: string): ReadonlyMap<EnvironmentId, string> => {
     const sourceEntry = entries.find((entry) => entry.instanceId === instanceId);
     const shownGenerator = textGeneratorForSelection(settings, instanceId);
+    const unavailable = new Map<EnvironmentId, string>();
     for (const candidate of targets) {
-      const environment = environments.find(
-        (entry) => entry.environmentId === candidate.environmentId,
-      );
-      const unavailable = environment
-        ? gt(
-            "This model is unavailable on {environment}. Select that environment to choose its model separately.",
-            { environment: environment.label },
-          )
-        : gt(
-            "This model is unavailable on a selected environment. Select that environment to choose its model separately.",
-          );
+      if (unavailable.has(candidate.environmentId)) continue;
+      const label = labels.get(candidate.environmentId) ?? candidate.label;
       const generator = textGeneratorForSelection(candidate.settings, instanceId);
       if (shownGenerator !== undefined || generator !== undefined) {
         // Only the shown environment's model list is loaded; elsewhere it must reach the same API.
@@ -50,33 +90,37 @@ export function useScopedModelDisabledReason(
           generator.kind !== shownGenerator?.kind ||
           generator.baseUrl !== shownGenerator.baseUrl
         ) {
-          return unavailable;
+          unavailable.set(candidate.environmentId, label);
         }
         continue;
       }
-      const providers = providersByEnvironment.get(candidate.environmentId);
-      if (!environment?.serverConfig || !providers) continue;
-      const entry = applyProviderInstanceSettings(
-        deriveProviderInstanceEntries(providers),
-        candidate.settings,
-        candidate.projectId,
-      ).find((option) => option.instanceId === instanceId);
-      const optionsForInstance = textGeneration
-        ? getTextGenerationModelOptionsByInstance
-        : getCustomModelOptionsByInstance;
-      const options = optionsForInstance(
-        mergeEnvironmentSettings(candidate.settings, settings),
-        providers,
-      ).get(instanceId);
-      if (
-        !entry?.enabled ||
-        !entry.isAvailable ||
-        entry.driverKind !== sourceEntry?.driverKind ||
-        !options?.some((option) => option.slug === model && !option.isUnavailable)
-      ) {
-        return unavailable;
+      const catalog = catalogs.get(candidate);
+      if (!catalog) continue;
+      const entry = catalog.get(instanceId);
+      if (!entry || entry.driver !== sourceEntry?.driverKind || !entry.models.has(model)) {
+        unavailable.set(candidate.environmentId, label);
       }
     }
-    return null;
+    return unavailable;
   };
+}
+
+export function scopedModelDisabledReason(unavailable: ReadonlyMap<EnvironmentId, string>) {
+  return unavailable.size > 0
+    ? `This model is unavailable on ${[...unavailable.values()].join(", ")}.`
+    : null;
+}
+
+export function useScopedModelDisabledReason(
+  settings: UnifiedSettings,
+  entries: readonly ProviderInstanceEntry[],
+  textGeneration = false,
+) {
+  const unavailableEnvironments = useScopedModelUnavailableEnvironments(
+    settings,
+    entries,
+    textGeneration,
+  );
+  return (instanceId: ProviderInstanceId, model: string) =>
+    scopedModelDisabledReason(unavailableEnvironments(instanceId, model));
 }

@@ -11,6 +11,7 @@ import type { EnvironmentPresentation } from "../../state/environments";
 export interface SettingsScopeSearch {
   project?: string | undefined;
   machine?: string | undefined;
+  machines?: readonly string[] | undefined;
   checkout?: string | undefined;
 }
 
@@ -24,6 +25,7 @@ export type ResolvedSettingsScope = ScopeTargets &
   (
     | { kind: "all" }
     | { kind: "environment"; environmentId: EnvironmentId }
+    | { kind: "environments" }
     | {
         kind: "project";
         group: SidebarProjectSnapshot;
@@ -44,14 +46,22 @@ export type ResolvedSettingsScope = ScopeTargets &
 
 /** Stale IDs remain visible to the resolver so a removed target reads as unavailable, not as "all". */
 export function validateSettingsScopeSearch(raw: Record<string, unknown>): SettingsScopeSearch {
-  const stringValue = (value: unknown) =>
-    typeof value === "string" && value.trim().length > 0 ? value : undefined;
+  const isNonemptyString = (value: unknown): value is string =>
+    typeof value === "string" && value.trim().length > 0;
+  const stringValue = (value: unknown) => (isNonemptyString(value) ? value : undefined);
   const project = stringValue(raw.project);
   const machine = stringValue(raw.machine);
   const checkout = stringValue(raw.checkout);
+  const machines =
+    machine === undefined && raw.machines !== undefined
+      ? Array.isArray(raw.machines)
+        ? [...new Set(raw.machines.filter(isNonemptyString))]
+        : []
+      : undefined;
   return {
     ...(project === undefined ? {} : { project }),
     ...(machine === undefined ? {} : { machine }),
+    ...(machines === undefined ? {} : { machines }),
     ...(checkout === undefined ? {} : { checkout }),
   };
 }
@@ -82,13 +92,24 @@ export function resolveSettingsScope(
     );
   }
 
-  const environment = environments.find((candidate) => candidate.environmentId === search.machine);
-  if (search.machine && !environment) {
+  const requestedIds = search.machine === undefined ? search.machines : [search.machine];
+  const selectedEnvironments =
+    requestedIds === undefined
+      ? environments
+      : environments.filter((environment) => requestedIds.includes(environment.environmentId));
+  const environmentIds = selectedEnvironments.map((environment) => environment.environmentId);
+  if (requestedIds !== undefined && environmentIds.length === 0) {
     return unavailable(
       "environment-missing",
-      resolve(msg("This environment is no longer available.")),
+      search.machine
+        ? resolve(msg("This environment is no longer available."))
+        : "Select an available environment to change its settings.",
     );
   }
+  const environment =
+    requestedIds !== undefined && selectedEnvironments.length === 1
+      ? selectedEnvironments[0]
+      : undefined;
 
   if (search.project) {
     const group = groups.find((candidate) => candidate.projectKey === search.project);
@@ -96,7 +117,7 @@ export function resolveSettingsScope(
       return unavailable("project-missing", resolve(msg("This project is no longer available.")));
     const members = group.memberProjects.filter(
       (member) =>
-        (search.machine === undefined || member.environmentId === search.machine) &&
+        (requestedIds === undefined || environmentIds.includes(member.environmentId)) &&
         (search.checkout === undefined || member.physicalProjectKey === search.checkout),
     );
     if (members.length === 0) {
@@ -106,7 +127,9 @@ export function resolveSettingsScope(
           ? resolve(
               msg("This checkout is no longer available in the selected project and environment."),
             )
-          : resolve(msg("This project has no checkout on this environment.")),
+          : search.machine
+            ? resolve(msg("This project has no checkout on this environment."))
+            : "This project has no checkout on the selected environments.",
       );
     }
     if (search.checkout) {
@@ -135,13 +158,20 @@ export function resolveSettingsScope(
         environmentIds: [checkout.environmentId],
       };
     }
+    const memberEnvironmentIds = [...new Set(members.map((member) => member.environmentId))];
+    const memberEnvironmentLabel =
+      memberEnvironmentIds.length === 1
+        ? selectedEnvironments.find(
+            ({ environmentId }) => environmentId === memberEnvironmentIds[0],
+          )?.label
+        : `${memberEnvironmentIds.length} environments`;
     return {
       kind: "project",
       group,
       environmentId: environment?.environmentId ?? null,
-      label: `${group.displayName} / ${environment?.label ?? resolve(msg("All checkouts"))}`,
+      label: `${group.displayName} / ${requestedIds === undefined ? resolve(msg("All checkouts")) : memberEnvironmentLabel}`,
       members,
-      environmentIds: [...new Set(members.map((member) => member.environmentId))],
+      environmentIds: memberEnvironmentIds,
     };
   }
   if (environment) {
@@ -153,10 +183,18 @@ export function resolveSettingsScope(
       environmentIds: [environment.environmentId],
     };
   }
+  if (requestedIds !== undefined) {
+    return {
+      kind: "environments",
+      label: `${environmentIds.length} environments`,
+      members: [],
+      environmentIds,
+    };
+  }
   return {
     kind: "all",
     label: resolve(msg("All environments")),
     members: [],
-    environmentIds: environments.map((candidate) => candidate.environmentId),
+    environmentIds,
   };
 }
