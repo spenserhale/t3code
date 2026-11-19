@@ -14,6 +14,7 @@ import type * as PlatformError from "effect/PlatformError";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { OpenCodeSettings } from "../settings.ts";
+import { OLLAMA_CLOUD_PROVIDER_ID } from "./ollamaCloudMarket.ts";
 
 function object(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -49,6 +50,7 @@ function parseOpenCodeMessage(
   const cache = object(usage.cache);
   const modelReference = object(message.model);
   const model = text(modelReference.id) || text(modelReference.modelID) || text(message.modelID);
+  const providerId = text(modelReference.providerID) || text(message.providerID);
   const timestampMs = object(message.time).created ?? fallback.timestampMs;
   if (!model || typeof timestampMs !== "number" || !Number.isFinite(timestampMs)) return null;
   const reasoningTokens = tokens(usage.reasoning);
@@ -62,10 +64,12 @@ function parseOpenCodeMessage(
   if (totalTokens(totals) === 0) return null;
   const id = fallback.id || text(message.id);
   const cost = message.cost;
+  // Ollama Cloud serves models that Z.ai and local Ollama serve too, at its own price.
+  const ollamaCloud = providerId === OLLAMA_CLOUD_PROVIDER_ID;
   return {
     provider: "opencode",
     timestampMs,
-    model,
+    model: ollamaCloud ? `${OLLAMA_CLOUD_PROVIDER_ID}/${model}` : model,
     sessionId: fallback.sessionId || text(message.sessionID),
     totals,
     // OpenCode uses zero for unknown rates, including paid subscriptions; let shared pricing estimate.

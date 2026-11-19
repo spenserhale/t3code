@@ -99,10 +99,10 @@ function usageWindowEquals(a: ServerProviderUsageWindow, b: ServerProviderUsageW
   );
 }
 
-export function resolveUsageLimitsAfterProbe(input: {
-  readonly published: ServerProviderUsageLimits | undefined;
-  readonly probed: ServerProviderUsageLimits | undefined;
-}): ServerProviderUsageLimits | undefined {
+export function resolveUsageLimitsAfterProbe<Limits extends ServerProviderUsageLimits>(input: {
+  readonly published: Limits | undefined;
+  readonly probed: Limits | undefined;
+}): Limits | undefined {
   const { published, probed } = input;
   if (probed?.unavailable?.reason === "probeFailed" && published && !published.unavailable) {
     return published;
