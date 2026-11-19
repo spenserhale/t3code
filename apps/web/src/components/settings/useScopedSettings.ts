@@ -27,6 +27,7 @@ import {
   persistScopedSettingsPatch,
   planProjectOverridesClear,
   planScopedSettingsClear,
+  planScopedModelDefaults,
   planScopedSettingsPatch,
   planScopedProviderEffortSliderWrite,
   scopedSettingsAreMixed,
@@ -115,6 +116,13 @@ export function useUpdateScopedProviderEffortSlider() {
     steps: readonly ModelSelection[] | null,
     onFailed?: () => void,
   ) => run(planScopedProviderEffortSliderWrite(targets, driver, steps), onFailed);
+}
+
+export function useUpdateScopedModelDefaults() {
+  const { scope, environments } = useSettingsScope();
+  const run = useRunScopedPlan();
+  return (defaults: Parameters<typeof planScopedModelDefaults>[2]) =>
+    run(planScopedModelDefaults(scope, environments, defaults));
 }
 
 export function useClearScopedSettings() {

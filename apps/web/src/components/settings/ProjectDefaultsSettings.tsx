@@ -1,6 +1,6 @@
 import {
   DEFAULT_SERVER_SETTINGS,
-  type ModelSelection,
+  type DefaultModelSelection,
   type WorktreeSubmodules,
   managedRuntimeModeDenial,
 } from "@t3tools/contracts";
@@ -39,12 +39,14 @@ import {
   SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
+import { ModelFamilyDefaultSwitch } from "./ModelFamilyDefaultSwitch";
 import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
 import {
   useScopedSettings,
   useScopedSettingsMixed,
   useScopedSettingSource,
   useUpdateScopedSettings,
+  useUpdateScopedModelDefaults,
 } from "./useScopedSettings";
 
 const WORKTREE_SUBMODULES_OPTIONS = ["recursive", "top-level", "none"] as const;
@@ -57,6 +59,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const settings = useScopedSettings();
   const clientSettings = useClientSettings();
   const updateSettings = useUpdateScopedSettings();
+  const updateModelDefaults = useUpdateScopedModelDefaults();
   const navigate = useNavigate();
   const { environments } = useEnvironments();
   const providersByEnvironment = useEnvironmentProviders();
@@ -82,14 +85,13 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
     selection?.model,
   );
   const activeEntry = entries.find((entry) => entry.instanceId === selection?.instanceId);
-  const mixedModel = defaultModelSelectionsAreMixed(
-    clientSettings,
-    targets.map((candidate) => ({
-      projectId: candidate.projectId,
-      settings: candidate.settings,
-      providers: providersByEnvironment.get(candidate.environmentId) ?? EMPTY_SERVER_PROVIDERS,
-    })),
-  );
+  const modelTargets = targets.map((candidate) => ({
+    environmentId: candidate.environmentId,
+    projectId: candidate.projectId,
+    settings: candidate.settings,
+    providers: providersByEnvironment.get(candidate.environmentId) ?? EMPTY_SERVER_PROVIDERS,
+  }));
+  const mixedModel = defaultModelSelectionsAreMixed(clientSettings, modelTargets);
   const automaticModel =
     targets.length > 0 &&
     targets.every((candidate) => candidate.settings.defaultModelSelection === null);
@@ -120,7 +122,13 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
     ? modelDisabledReason(selection.instanceId, selection.model)
     : null;
 
-  const setModel = (value: ModelSelection | null) => {
+  const followed =
+    settings.defaultModelSelection?.followLatest &&
+    settings.defaultModelSelection.instanceId === selection?.instanceId
+      ? settings.defaultModelSelection
+      : null;
+
+  const setModel = (value: DefaultModelSelection | null) => {
     const reason = value ? modelDisabledReason(value.instanceId, value.model) : null;
     if (reason) {
       toastManager.add({ type: "error", title: "Default model not saved", description: reason });
@@ -166,7 +174,13 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
               triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
               {...(mixedModel
                 ? { triggerLabel: automaticModel ? "Automatic (mixed)" : "Mixed" }
-                : {})}
+                : followed
+                  ? {
+                      triggerLabel:
+                        activeEntry.models.find((model) => model.slug === selection.model)?.name ??
+                        selection.model,
+                    }
+                  : {})}
               getModelDisabledReason={modelDisabledReason}
               onOpenProviderSetup={(instanceId) => {
                 if (representative)
@@ -188,10 +202,22 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 allowPromptInjectedEffort={false}
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                 onModelOptionsChange={(options) =>
-                  setModel(createModelSelection(selection.instanceId, selection.model, options))
+                  followed
+                    ? updateSettings({
+                        defaultModelSelection: {
+                          ...createModelSelection(followed.instanceId, followed.model, options),
+                          followLatest: true,
+                        },
+                      })
+                    : setModel(createModelSelection(selection.instanceId, selection.model, options))
                 }
               />
             ) : null}
+            <ModelFamilyDefaultSwitch
+              targets={modelTargets}
+              clientSettings={clientSettings}
+              onChange={updateModelDefaults}
+            />
           </div>
         ) : (
           <span className="text-sm text-muted-foreground">

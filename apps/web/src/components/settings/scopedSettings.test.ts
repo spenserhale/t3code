@@ -20,6 +20,7 @@ import {
   persistScopedSettingsPatch,
   planProjectOverridesClear,
   planScopedProviderEffortSliderWrite,
+  planScopedModelDefaults,
   planScopedSettingsClear,
   planScopedSettingsPatch,
   scopedIdleCompaction,
@@ -871,13 +872,48 @@ describe("model selection patches at project scope", () => {
     settings: {
       projectSettingsOverrides: {
         [projectId]: {
-          defaultModelSelection: saved,
+          defaultModelSelection: { ...saved, followLatest: true },
           sourceControlWriterModelSelection: saved,
           reviewGuideModelSelection: saved,
           textGenerationModelSelection: saved,
         },
       },
     },
+  });
+
+  it("applies family following with independent versions and options at every scope", () => {
+    const first = { ...saved, model: "gpt-6.1-sol", followLatest: true };
+    const second = { ...saved, model: "gpt-6.2-sol", options: [], followLatest: true };
+    const defaults = [
+      { environmentId: laptop.environmentId, projectId: laptopProjectId, selection: first },
+      { environmentId: server.environmentId, projectId, selection: second },
+    ];
+    const projectPlan = planScopedModelDefaults(project, [laptop, customized], defaults);
+    expect(projectPlan.serverWrites.map((write) => write.patch)).toEqual([
+      {
+        projectSettingsOverrides: {
+          [projectId]: {
+            ...customized.serverConfig?.settings.projectSettingsOverrides[projectId],
+            defaultModelSelection: second,
+          },
+        },
+      },
+      { projectSettingsOverrides: { [laptopProjectId]: { defaultModelSelection: first } } },
+    ]);
+    const envPlan = planScopedModelDefaults(
+      all,
+      environments,
+      defaults.map((target) => ({ ...target, projectId: null })),
+    );
+    expect(envPlan.serverWrites.map((write) => write.patch)).toEqual([
+      { defaultModelSelection: first },
+      { defaultModelSelection: second },
+    ]);
+    const pinned = applyServerSettingsPatch(
+      { ...DEFAULT_SERVER_SETTINGS, defaultModelSelection: first },
+      { defaultModelSelection: saved },
+    );
+    expect(pinned.defaultModelSelection).toEqual(saved);
   });
 
   // regression: #16581 changing a project's model kept the old model's options

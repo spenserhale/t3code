@@ -27,6 +27,7 @@ import {
   resolveProjectSettings,
   type LegacyProjectSettingsFields,
 } from "@t3tools/shared/projectSettings";
+import { resolveModelFamilyDefault } from "@t3tools/shared/modelFamilyDefault";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 
 import type { ResolvedSettingsScope } from "./settingsScope";
@@ -366,7 +367,9 @@ export function scheduledTaskDefaultModel(
   );
   const configured = resolveProjectSettings(settings, project?.id ?? null, project).settings
     .defaultModelSelection;
-  for (const selection of [configured, settings.defaultModelSelection]) {
+  const providers = available.map((entry) => entry.snapshot);
+  for (const stored of [configured, settings.defaultModelSelection]) {
+    const selection = resolveModelFamilyDefault(stored, providers, settings);
     if (
       selection &&
       available.some(

@@ -24,6 +24,12 @@ setting you are editing, the layers icon counts them and the chain lists each on
 click a project to jump to it, or **Reset all** to make those projects follow the environment
 again.
 
+On web and desktop, open **Settings → Threads → New threads → Model** and turn on
+**Follow latest Sol** for a Codex Sol default, or **Follow latest Opus** for a Claude Opus
+default. Each environment uses the newest available release in that family for new threads and
+keeps its reasoning effort. Turn following off to pin the current version. Projects with their
+own model overrides can enable following separately.
+
 Providers and diagnostics are per machine: they show one environment at a time, the primary
 one until you pick another. Every other setting fans out to the selection.
 

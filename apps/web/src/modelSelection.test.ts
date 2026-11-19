@@ -176,6 +176,25 @@ describe("scoped default model selections", () => {
     ).toBe(true);
   });
 
+  it("shows the resolved family model while preserving effort and exact pins", () => {
+    const instanceId = ProviderInstanceId.make("codex");
+    const selected = createModelSelection(instanceId, "gpt-6.1-sol", [
+      { id: "reasoningEffort", value: "high" },
+    ]);
+    const settings = { ...DEFAULT_UNIFIED_SETTINGS, defaultModelSelection: selected };
+    const upgraded = [provider({ instanceId, models: ["gpt-6.1-sol", "gpt-6.2-sol"] })];
+    const following = { ...selected, followLatest: true };
+    expect(resolveEffectiveDefaultModelSelection(settings, upgraded, following)).toEqual({
+      ...selected,
+      model: "gpt-6.2-sol",
+    });
+    expect(resolveEffectiveDefaultModelSelection(settings, upgraded, selected)).toEqual(selected);
+    const missingFamily = [provider({ instanceId, models: ["gpt-6-astra"] })];
+    expect(resolveEffectiveDefaultModelSelection(settings, missingFamily, following)).toEqual(
+      resolveEffectiveDefaultModelSelection(settings, missingFamily, selected),
+    );
+  });
+
   it("keeps automatic, explicit, and different saved options distinct", () => {
     const providers = [provider({ instanceId: "codex", models: ["gpt-6-astra"] })];
     const selected = {

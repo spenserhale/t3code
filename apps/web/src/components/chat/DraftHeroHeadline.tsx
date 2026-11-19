@@ -15,7 +15,11 @@ import { useOrderWhileOpen } from "~/hooks/useOrderWhileOpen";
 import { useProjectPin } from "~/hooks/useProjectGroupUpdate";
 import { useScratchProject } from "~/hooks/useScratchProject";
 import { isTriagePrompt } from "~/hooks/useStartTriage";
-import { useClientSettings } from "~/hooks/useSettings";
+import {
+  getClientSettings,
+  mergeEnvironmentSettings,
+  useClientSettings,
+} from "~/hooks/useSettings";
 import { hasExplicitComposerModelSelection } from "~/lib/chatThreadActions";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -230,13 +234,14 @@ export function DraftHeroHeadline({
               )),
         fallbackSelection: environmentSettings?.fallbackModelSelection ?? null,
         providers: providersByEnvironment.get(project.environmentId) ?? [],
-        ...(environmentSettings ? { settings: environmentSettings } : {}),
+        ...(environmentSettings
+          ? { settings: mergeEnvironmentSettings(environmentSettings, getClientSettings()) }
+          : {}),
         projectId: project.id,
         now: Date.now(),
       });
-      const defaultModelSelection = fallbackResolution.fallback
-        ? fallbackResolution.selection
-        : defaultSelection;
+      const defaultModelSelection =
+        defaultSelection || fallbackResolution.fallback ? fallbackResolution.selection : null;
       if (defaultModelSelection) {
         setModelSelection(draftId, defaultModelSelection, {
           replaceOptions: true,

@@ -5,6 +5,7 @@ import {
 } from "@t3tools/client-runtime/state/provider-instance-display";
 
 import type {
+  DefaultModelSelection,
   ModelCapabilities,
   ModelSelection,
   ProjectId,
@@ -21,6 +22,7 @@ import {
   buildExplicitProviderOptionSelectionsFromDescriptors,
   getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
+import { resolveModelFamilyDefault } from "@t3tools/shared/modelFamilyDefault";
 import { resolveModelShortName } from "@t3tools/client-runtime/provider-clients";
 
 export type ModelOption = {
@@ -248,10 +250,14 @@ export function resolveSelectableModelSelection(
 
 export function resolveDefaultableModelSelection(
   config: T3ServerConfig | null | undefined,
-  selection: ModelSelection | null,
+  selection: DefaultModelSelection | null,
   projectId: ProjectId | null,
 ): ModelSelection | null {
-  const usable = resolveSelectableModelSelection(config, selection, projectId);
+  const usable = resolveSelectableModelSelection(
+    config,
+    resolveModelFamilyDefault(selection, config?.providers ?? [], config?.settings),
+    projectId,
+  );
   if (!usable || !config) {
     return usable;
   }
