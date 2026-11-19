@@ -7,7 +7,6 @@ import {
 } from "@t3tools/client-runtime/effort-slider";
 import {
   type EnvironmentId,
-  MAX_EFFORT_SLIDER_STEPS,
   type ModelSelection,
   type ProjectId,
   type ProviderDriverKind,
@@ -109,19 +108,6 @@ export function findActiveComposerEffortStep(
     model: selection.model,
     effort: currentEffortOf(selection, instanceEntries, reportedSelection).effort?.value ?? null,
   });
-}
-
-/** Why the selected model and effort cannot join the slider, or null when they can. */
-export function effortSliderAddDisabledReason(input: {
-  readonly stepCount: number;
-  readonly activeIndex: number | null;
-  readonly selectedModelKnown: boolean;
-}): string | null {
-  if (input.stepCount >= MAX_EFFORT_SLIDER_STEPS) {
-    return `The slider holds up to ${MAX_EFFORT_SLIDER_STEPS} steps`;
-  }
-  if (input.activeIndex !== null) return "Already on the slider";
-  return input.selectedModelKnown ? null : "This model is not available";
 }
 
 /**

@@ -221,9 +221,7 @@ function ModelPickerEntry() {
       effortSliderForTab={() => ({
         slider: null,
         actions: {
-          addDisabledReason: null,
-          onAdd: () => {},
-          sliderLabel: "Favorites slider",
+          selection: modelShortcutSteps[0]!,
           settingsTarget: {
             environmentId: primaryId,
             projectId: null,
@@ -291,7 +289,7 @@ async function mountSettings(url = "/settings/threads", width = 1280, height = 5
 }
 
 const sliderPicker = () => page.getByRole("combobox", { name: "Slider to edit" });
-const addStep = () => page.getByRole("button", { name: "Add a step" });
+const addStep = () => page.getByRole("button", { name: "Edit slider" });
 const sliderSteps = () =>
   page.getByRole("list", { name: "Effort slider steps" }).getByRole("listitem");
 const codexFallback = () => page.getByText(/The Codex tab uses the Favorites slider/);
@@ -447,8 +445,8 @@ it("keeps the same editor and offset when switching between equally long provide
 it("keeps the controls usable at the end of the visible editor in a short pane", async () => {
   setup({ effortSlider: sixSteps });
   await using _screen = await mountSettings("/settings/threads", 1280, 420);
-  const full = () => page.getByRole("button", { name: "Slider is full" });
-  await expect.element(full()).toBeDisabled();
+  const full = addStep;
+  await expect.element(full()).toBeEnabled();
   await vi.waitFor(() => expect(sliderSteps().elements()).toHaveLength(6));
   const before = showEditor(full(), 24);
 
@@ -597,4 +595,42 @@ it("dismisses the model picker and opens the requested slider at its scroll targ
   expect(screen.router.state.location.search).toEqual({ machine: primaryId });
   expect(screen.router.state.location.hash).toBe("");
   expect(state.writeSettings).not.toHaveBeenCalled();
+});
+
+it("opens the composer selection in the editor and returns to chat after inserting an effort", async () => {
+  setup({ providerEffortSliders: { [codex]: [modelShortcutSteps[0]!, modelShortcutSteps[1]!] } });
+  await using screen = await mountSettings("/");
+  await page.getByRole("button", { name: "Choose model" }).click();
+  await page.getByRole("button", { name: "Edit slider" }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit Codex slider" });
+  const after = dialog.getByRole("button", { name: "Add step after" });
+  await expect
+    .element(dialog.getByRole("button", { name: "Luna · Low", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect.element(after).toBeDisabled();
+  await dialog.getByRole("button", { name: "High", exact: true }).click();
+  expect(state.writeSettings).not.toHaveBeenCalled();
+  await after.click();
+  expect(state.writeSettings).toHaveBeenCalledWith({
+    environmentId: primaryId,
+    input: {
+      patch: {
+        setProviderEffortSliders: [
+          {
+            driver: codex,
+            steps: [
+              modelShortcutSteps[0],
+              { ...modelShortcutSteps[0], options: highEffort },
+              modelShortcutSteps[1],
+            ],
+          },
+        ],
+      },
+    },
+  });
+  await expect
+    .element(dialog.getByRole("button", { name: "Luna · High", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+  await dialog.getByRole("button", { name: "Done" }).click();
+  await vi.waitFor(() => expect(screen.router.state.location.pathname).toBe("/"));
 });

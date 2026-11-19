@@ -16,10 +16,10 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { resolveProviderEffortSlider } from "@t3tools/shared/modelShortcuts";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useLocation, useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import * as Equal from "effect/Equal";
 import { ArrowDownIcon, ArrowUpIcon, XIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
@@ -39,7 +39,6 @@ import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   addFavorite,
-  effortSliderAddBlockReason,
   effortSliderEditBlockReason,
   type FavoritesEdit,
   moveListItem,
@@ -61,6 +60,8 @@ import {
   useUpdateScopedProviderEffortSlider,
   useUpdateScopedSettings,
 } from "./useScopedSettings";
+
+import { EffortSliderEditor } from "./EffortSliderEditor";
 
 const LAST_USED = "last-used";
 const FAVORITES_SLIDER = ":favorites";
@@ -425,25 +426,16 @@ export function ModelShortcutsSettings() {
     );
   };
 
-  const writeSteps = (next: readonly ModelSelection[]) => {
-    if (driver === null) updateSettings({ effortSlider: next });
-    else updateProviderSlider(driver, next.length === 0 ? null : next);
+  const writeSteps = (next: readonly ModelSelection[], onFailed?: () => void) => {
+    if (driver === null)
+      updateSettings({ effortSlider: next }, onFailed ? { onFailed } : undefined);
+    else updateProviderSlider(driver, next.length === 0 ? null : next, onFailed);
   };
-  const addStep = (instanceId: ProviderInstanceId, slug: string) => {
-    const { model } = describe(instanceId, slug);
-    const effort = selectedEffort(model, undefined);
-    const step = createModelSelection(
-      instanceId,
-      slug,
-      effort ? [{ id: effort.descriptorId, value: effort.value }] : undefined,
-    );
-    const blocked = effortSliderAddBlockReason(steps, step, effortOf);
-    if (blocked) {
-      toastManager.add({ type: "warning", title: "Step not added", description: blocked });
-      return;
-    }
-    writeSteps([...steps, step]);
-  };
+  const router = useRouter();
+  const composerSelection = useLocation({
+    select: (location) => location.state.sliderEditorSelection,
+  });
+  const [editorOpen, setEditorOpen] = useState(composerSelection !== undefined);
 
   return (
     <SettingsSection id="model-shortcuts" title="Favorites and effort slider">
@@ -552,18 +544,37 @@ export function ModelShortcutsSettings() {
               : `Set up to ${MAX_EFFORT_SLIDER_STEPS} model and effort steps for the ${driverLabel} tab.`
         }
         control={
-          !supportsEffortSlider || sliderReadOnly ? undefined : steps.length >=
-            MAX_EFFORT_SLIDER_STEPS ? (
-            <Button size="xs" variant="outline" disabled>
-              Slider is full
+          !supportsEffortSlider || sliderReadOnly || !canWrite ? undefined : (
+            <Button size="xs" variant="outline" onClick={() => setEditorOpen(true)}>
+              Edit slider
             </Button>
-          ) : (
-            picker("Add a step", addStep, driver)
           )
         }
       >
         {supportsEffortSlider ? (
           <>
+            {editorOpen && !sliderReadOnly && canWrite && (
+              <EffortSliderEditor
+                key={driver ?? FAVORITES_SLIDER}
+                title={`Edit ${driverLabel} slider`}
+                scopeLabel={scope.label}
+                mixed={driver === null ? mixedSlider : mixedProviderSlider}
+                steps={steps}
+                initialSelection={composerSelection ?? null}
+                entries={
+                  driver === null ? entries : entries.filter((entry) => entry.driverKind === driver)
+                }
+                models={modelOptions}
+                environmentId={representative?.environmentId ?? null}
+                projectId={target?.projectId ?? null}
+                disabledReason={disabledReason}
+                onSave={writeSteps}
+                onClose={() => {
+                  setEditorOpen(false);
+                  if (composerSelection) router.history.back();
+                }}
+              />
+            )}
             {supportsProviderSliders && sliderDrivers.size > 0 ? (
               <div className="flex flex-wrap items-center gap-2 px-2 pb-2">
                 <Select
@@ -637,7 +648,7 @@ export function ModelShortcutsSettings() {
             {steps.length === 0 ? (
               <p className="px-2 py-2 text-xs text-muted-foreground">
                 {driver === null
-                  ? "No steps yet. Add a model, or use Add to slider beside a model’s effort in the picker."
+                  ? "No steps yet. Open Edit slider to add a model and effort."
                   : providerSlider === null
                     ? `The ${driverLabel} tab uses the Favorites slider. Add a step to customize it.`
                     : "No steps yet. Add two steps to show this slider."}

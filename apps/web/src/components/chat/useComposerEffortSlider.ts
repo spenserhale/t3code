@@ -3,19 +3,17 @@ import {
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
-  PROVIDER_DISPLAY_NAMES,
   type ProviderDriverKind,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { resolveProviderEffortSlider } from "@t3tools/shared/modelShortcuts";
 
-import { useAddEffortSliderStep, useEnvironmentModelShortcuts } from "~/hooks/useModelShortcuts";
+import { useEnvironmentModelShortcuts } from "~/hooks/useModelShortcuts";
 import { announce } from "~/lib/announce";
 import type { ModelPickerEffortSlider } from "./EffortSlider";
 import {
   type ComposerEffortSliderContext,
   currentEffortOf,
-  effortSliderAddDisabledReason,
   findActiveComposerEffortStep,
   resolveComposerEffortSteps,
 } from "./composerEffortSlider.logic";
@@ -23,10 +21,7 @@ import type { ProviderModelSelectOptions } from "./useComposerSelection";
 
 /** The picker's shortcuts for the effort slider, shown with the selected model's effort levels. */
 export interface EffortSliderActions {
-  /** Why the selected model and effort cannot be added; null when they can. */
-  readonly addDisabledReason: string | null;
-  readonly onAdd: () => void;
-  readonly sliderLabel: string;
+  readonly selection: ModelSelection;
   /** What the settings link opens: the project's own list when it is the one in use. */
   readonly settingsTarget: {
     readonly environmentId: EnvironmentId;
@@ -67,7 +62,6 @@ export function useComposerEffortSlider(
 ): ComposerEffortSliderForTab {
   const { environmentId, projectId, selectedModelSelection } = input;
   const shortcuts = useEnvironmentModelShortcuts(environmentId, projectId);
-  const addStep = useAddEffortSliderStep(environmentId, projectId);
   return (tabDriver) => {
     if (!shortcuts.effortSliderSupported || input.suspended) return null;
 
@@ -78,8 +72,6 @@ export function useComposerEffortSlider(
         : null;
     const sliderDriver = providerSlider ? driver : null;
     const configured = providerSlider?.steps ?? shortcuts.effortSlider;
-    const driverLabel =
-      sliderDriver === null ? null : (PROVIDER_DISPLAY_NAMES[sliderDriver] ?? sliderDriver);
     const steps = resolveComposerEffortSteps(configured, input, sliderDriver);
     const activeIndex = findActiveComposerEffortStep(
       steps,
@@ -119,41 +111,20 @@ export function useComposerEffortSlider(
         }
       : null;
 
-    const selectedDriver = input.instanceEntries.find(
-      (entry) => entry.instanceId === selectedModelSelection.instanceId,
-    )?.driverKind;
-    const addDisabledReason =
-      sliderDriver !== null && selectedDriver !== sliderDriver
-        ? `Choose a ${driverLabel} model to add to this slider`
-        : effortSliderAddDisabledReason({
-            stepCount: configured.length,
-            activeIndex,
-            selectedModelKnown: current.model !== undefined,
-          });
     return {
       slider,
       actions: {
-        addDisabledReason,
-        sliderLabel: driverLabel === null ? "Favorites slider" : `${driverLabel} slider`,
-        onAdd: () => {
-          if (addDisabledReason !== null) return;
-          void addStep(
-            createModelSelection(
-              selectedModelSelection.instanceId,
-              selectedModelSelection.model,
-              current.effort
-                ? [{ id: current.effort.descriptorId, value: current.effort.value }]
-                : undefined,
-            ),
-            sliderDriver,
-          );
-        },
+        selection: createModelSelection(
+          selectedModelSelection.instanceId,
+          selectedModelSelection.model,
+          current.effort
+            ? [{ id: current.effort.descriptorId, value: current.effort.value }]
+            : undefined,
+        ),
         settingsTarget: {
           environmentId,
           projectId,
-          projectOverrides:
-            (providerSlider?.source ?? shortcuts.effortSliderSource) === "project" ||
-            shortcuts.favoritesSource === "project",
+          projectOverrides: (providerSlider?.source ?? shortcuts.effortSliderSource) === "project",
           driver,
         },
       },

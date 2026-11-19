@@ -2,18 +2,11 @@ import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
   DEFAULT_SERVER_SETTINGS,
   type EnvironmentId,
-  MAX_EFFORT_SLIDER_STEPS,
-  type ModelSelection,
   type ProjectId,
-  type ProviderDriverKind,
   type ProviderInstanceId,
   type ServerSettings,
 } from "@t3tools/contracts";
-import {
-  planModelShortcutWrite,
-  resolveModelShortcuts,
-  resolveProviderEffortSlider,
-} from "@t3tools/shared/modelShortcuts";
+import { planModelShortcutWrite, resolveModelShortcuts } from "@t3tools/shared/modelShortcuts";
 import { Atom } from "effect/reactivity";
 import { use } from "react";
 
@@ -94,39 +87,6 @@ export function useToggleModelFavorite(
             )
           : [...shortcuts.favorites, { provider, model }],
       ),
-    );
-  };
-}
-
-export function useAddEffortSliderStep(
-  environmentId: EnvironmentId | null,
-  projectId: ProjectId | null,
-) {
-  const registry = use(RegistryContext);
-  const save = useUpdateEnvironmentModelPreferences(environmentId);
-  return async (step: ModelSelection, driver: ProviderDriverKind | null) => {
-    const settings = environmentId
-      ? registry.get(serverEnvironment.settingsValueAtom(environmentId))
-      : null;
-    if (!settings) return;
-    if (driver !== null) {
-      const slider = resolveProviderEffortSlider(settings, projectId, driver);
-      if (!slider || slider.steps.length >= MAX_EFFORT_SLIDER_STEPS) return;
-      await save({
-        setProviderEffortSliders: [
-          {
-            driver,
-            ...(slider.source === "project" && projectId !== null ? { projectId } : {}),
-            steps: [...slider.steps, step],
-          },
-        ],
-      });
-      return;
-    }
-    const { effortSlider } = resolveModelShortcuts(settings, projectId);
-    if (effortSlider.length >= MAX_EFFORT_SLIDER_STEPS) return;
-    await save(
-      planModelShortcutWrite(settings, projectId, "effortSlider", [...effortSlider, step]),
     );
   };
 }

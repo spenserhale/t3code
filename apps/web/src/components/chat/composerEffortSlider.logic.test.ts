@@ -1,6 +1,5 @@
 import {
   EnvironmentId,
-  MAX_EFFORT_SLIDER_STEPS,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -14,7 +13,6 @@ import { describe, expect, it } from "vite-plus/test";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
   currentEffortOf,
-  effortSliderAddDisabledReason,
   findActiveComposerEffortStep,
   modelShortcutsSettingsSearch,
   resolveComposerEffortSteps,
@@ -218,24 +216,10 @@ describe("a thread whose provider reports the effort it runs at", () => {
     ).toBe(0);
   });
 
-  it("offers the reported level to Add to slider as the one the model is on", () => {
+  it("offers the reported level to the editor as the one the model is on", () => {
     const reported = step(codex, "sol", "high");
     expect(currentEffortOf(step(codex, "sol"), instanceEntries, reported).effort?.value).toBe(
       "high",
-    );
-  });
-});
-
-describe("effortSliderAddDisabledReason", () => {
-  it("allows a new step only while there is room and the model is known", () => {
-    const open = { stepCount: 2, activeIndex: null, selectedModelKnown: true };
-    expect(effortSliderAddDisabledReason(open)).toBeNull();
-    expect(effortSliderAddDisabledReason({ ...open, stepCount: MAX_EFFORT_SLIDER_STEPS })).toMatch(
-      /up to 6/,
-    );
-    expect(effortSliderAddDisabledReason({ ...open, activeIndex: 0 })).toMatch(/Already/);
-    expect(effortSliderAddDisabledReason({ ...open, selectedModelKnown: false })).toMatch(
-      /not available/,
     );
   });
 });
