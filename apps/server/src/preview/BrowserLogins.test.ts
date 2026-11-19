@@ -147,6 +147,7 @@ const makeService = (
     read: [] as Array<string>,
     readFields: [] as Array<{ readonly id: string; readonly fields: ReadonlyArray<string> }>,
     failedLoginReads: [] as Array<string>,
+    loginValues: {} as Record<string, { hasTotp?: boolean; totp?: string }>,
     identityList: 0,
     lookup: 0,
     listing: Deferred.makeUnsafe<void>(),
@@ -218,10 +219,16 @@ const makeService = (
           calls.readFields.push({ id: `${account}/${login.id}`, fields });
           if (calls.failedLoginReads.includes(`${account}/${login.id}`)) return undefined;
           if (!created.some((entry) => entry.login.id === login.id)) {
-            // No login here has a one-time code.
-            return Object.fromEntries(
-              fields.flatMap((field) => (field === "totp" ? [] : [[field, `${field}-${account}`]])),
-            );
+            const extra = calls.loginValues[`${account}/${login.id}`];
+            return {
+              ...Object.fromEntries(
+                fields
+                  .filter((field) => field !== "totp")
+                  .map((field) => [field, `${field}-${account}`]),
+              ),
+              ...(fields.includes("totp") && extra?.totp !== undefined ? { totp: extra.totp } : {}),
+              ...(extra?.hasTotp === undefined ? {} : { hasTotp: extra.hasTotp }),
+            };
           }
           Deferred.doneUnsafe(newLogins.reading, Effect.void);
           if (newLogins.readGate !== undefined) yield* Deferred.await(newLogins.readGate);
@@ -1022,6 +1029,218 @@ describe("SecretRelayDevice", () => {
     );
     return { layer, prompts, lookedUpBefore, logs, choices };
   };
+
+  it.effect(
+    "continues password and TOTP with one device approval and fresh reads until fixed expiry",
+    () => {
+      const service = makeService({ work: [github] });
+      service.calls.loginValues["work/h1"] = { hasTotp: true, totp: "123456" };
+      const device = deviceServer(service, { available: true, answers: ["once", "once"] });
+      return Effect.gen(function* () {
+        const relay = yield* SecretRelayDevice.SecretRelayDevice;
+        const fill = (overrides: Partial<SecretRelayRequest> = {}) =>
+          relay.resolve({
+            request: request({ tabId: "tab-a", expiresAt: 600_000, ...overrides }),
+            requester: linkMini,
+          });
+        const first = reveal(yield* fill());
+        assert.strictEqual(first.type, "values");
+        if (first.type !== "values") return;
+        yield* TestClock.adjust("4 minutes");
+        assert.strictEqual(
+          (yield* fill({ item: first.item.id, fields: ["password"] })).type,
+          "values",
+        );
+        service.calls.loginValues["work/h1"] = { hasTotp: true, totp: "654321" };
+        const code = reveal(yield* fill({ item: first.item.id, fields: ["totp"] }));
+        assert.strictEqual(code.type, "values");
+        if (code.type === "values") assert.deepStrictEqual(code.values, { totp: "654321" });
+        assert.lengthOf(device.prompts, 1);
+        assert.deepStrictEqual(
+          service.calls.readFields.map(({ fields }) => fields),
+          [["username", "password"], ["password"], ["totp"]],
+        );
+        yield* TestClock.adjust("1 minute");
+        assert.strictEqual((yield* fill({ item: first.item.id, fields: ["totp"] })).type, "denied");
+        assert.lengthOf(device.prompts, 2);
+        assert.lengthOf(device.choices, 1);
+      }).pipe(Effect.provide(device.layer));
+    },
+  );
+
+  it.effect.each([true, false, undefined])(
+    "returns known TOTP metadata %s outside credential values",
+    (hasTotp) => {
+      const service = makeService({ work: [github] });
+      service.calls.loginValues["work/h1"] = {
+        ...(hasTotp === undefined ? {} : { hasTotp }),
+        totp: "123456",
+      };
+      const device = deviceServer(service, { available: true, answers: ["once"] });
+      return Effect.gen(function* () {
+        const answer = reveal(
+          yield* (yield* SecretRelayDevice.SecretRelayDevice).resolve({
+            request: request(),
+            requester: linkMini,
+          }),
+        );
+        assert.strictEqual(answer.type, "values");
+        if (answer.type !== "values") return;
+        assert.strictEqual(answer.item.hasTotp, hasTotp);
+        assert.strictEqual(Object.hasOwn(answer.item, "hasTotp"), hasTotp !== undefined);
+        assert.deepStrictEqual(answer.values, {
+          username: "username-work",
+          password: "password-work",
+        });
+        assert.isFalse(JSON.stringify(answer.item).includes("123456"));
+        assert.isFalse(JSON.stringify(answer.item).includes("totp-work"));
+      }).pipe(Effect.provide(device.layer));
+    },
+  );
+
+  it.effect.each([
+    "tab",
+    "item",
+    "source",
+    "origin",
+    "environment",
+    "thread",
+    "settings",
+    "reference",
+    "missing tab",
+  ] as const)("device once approval does not cross %s context", (context) => {
+    const service = makeService({ work: [github] });
+    const device = deviceServer(service, { available: true, answers: ["once", false] });
+    return Effect.gen(function* () {
+      const relay = yield* SecretRelayDevice.SecretRelayDevice;
+      const first = request({ tabId: "tab-a" });
+      assert.strictEqual(
+        (yield* relay.resolve({ request: first, requester: linkMini })).type,
+        "values",
+      );
+      if (context === "settings") {
+        yield* (yield* Settings.ServerSettingsService).updateSettings({
+          browserLogins: bothProviders,
+        });
+      }
+      const next = request({
+        ...first,
+        item: "device:work/h1",
+        fields: ["password"],
+        ...(context === "tab" ? { tabId: "tab-b" } : {}),
+        ...(context === "missing tab" ? { tabId: undefined } : {}),
+        ...(context === "item" ? { item: "device:work/second" } : {}),
+        ...(context === "source" ? { siteUrl: "https://other.test" } : {}),
+        ...(context === "origin" ? { origin: "https://www.github.com" } : {}),
+        ...(context === "thread" ? { threadId: "thread-b" } : {}),
+        ...(context === "reference" ? { reference: "op://work/h1" } : {}),
+      });
+      const answer = yield* relay.resolve({
+        request: next,
+        requester:
+          context === "environment"
+            ? { ...linkMini, environmentId: EnvironmentId.make("env-other") }
+            : linkMini,
+      });
+      assert.strictEqual(answer.type, "denied");
+      assert.lengthOf(device.prompts, 2);
+      assert.lengthOf(service.calls.readFields, 1);
+      assert.deepStrictEqual(device.lookedUpBefore, [0, 1]);
+    }).pipe(Effect.provide(device.layer));
+  });
+
+  it.effect.each(["removed", "unreadable", "website changed"] as const)(
+    "device continuation fails closed when selected item is %s",
+    (problem) => {
+      const held = { work: [github] };
+      const service = makeService(held);
+      const device = deviceServer(service, {
+        available: true,
+        answers: ["once"],
+        choices: ["work/second"],
+      });
+      return Effect.gen(function* () {
+        const relay = yield* SecretRelayDevice.SecretRelayDevice;
+        assert.strictEqual(
+          (yield* relay.resolve({ request: request({ tabId: "tab-a" }), requester: linkMini }))
+            .type,
+          "values",
+        );
+        if (problem === "unreadable") service.calls.failedLoginReads.push("work/h1");
+        else {
+          held.work =
+            problem === "removed"
+              ? [{ ...github, id: "second" }]
+              : [
+                  { ...github, urls: ["https://other.test"] },
+                  { ...github, id: "second" },
+                ];
+          yield* (yield* BrowserLogins.BrowserLogins).invalidate;
+        }
+        const answer = yield* relay.resolve({
+          request: request({ tabId: "tab-a", item: "device:work/h1", fields: ["password"] }),
+          requester: linkMini,
+        });
+        assert.strictEqual(answer.type, "denied");
+        assert.lengthOf(device.prompts, 1);
+        assert.lengthOf(device.choices, 0);
+        assert.isFalse(service.calls.readFields.some(({ id }) => id === "work/second"));
+      }).pipe(Effect.provide(device.layer));
+    },
+  );
+
+  it.effect.each([undefined, ["username"]] as const)(
+    "cancelled fresh device login %s revokes previous once approval",
+    (fields) => {
+      const service = makeService({ work: [github] });
+      const device = deviceServer(service, { available: true, answers: ["once", false, false] });
+      return Effect.gen(function* () {
+        const relay = yield* SecretRelayDevice.SecretRelayDevice;
+        const first = request({ tabId: "tab-a" });
+        assert.strictEqual(
+          (yield* relay.resolve({ request: first, requester: linkMini })).type,
+          "values",
+        );
+        assert.strictEqual(
+          (yield* relay.resolve({ request: { ...first, fields }, requester: linkMini })).type,
+          "denied",
+        );
+        assert.strictEqual(
+          (yield* relay.resolve({
+            request: request({ ...first, item: "device:work/h1", fields: ["totp"] }),
+            requester: linkMini,
+          })).type,
+          "denied",
+        );
+        assert.lengthOf(device.prompts, 3);
+        assert.lengthOf(service.calls.readFields, 1);
+      }).pipe(Effect.provide(device.layer));
+    },
+  );
+
+  it.effect.each([undefined, ""])(
+    "older device request with tabId %s keeps per-call approval",
+    (tabId) => {
+      const service = makeService({ work: [github] });
+      const device = deviceServer(service, { available: true, answers: ["once", false] });
+      return Effect.gen(function* () {
+        const relay = yield* SecretRelayDevice.SecretRelayDevice;
+        assert.strictEqual(
+          (yield* relay.resolve({ request: request({ tabId }), requester: linkMini })).type,
+          "values",
+        );
+        assert.strictEqual(
+          (yield* relay.resolve({
+            request: request({ tabId, item: "device:work/h1", fields: ["password"] }),
+            requester: linkMini,
+          })).type,
+          "denied",
+        );
+        assert.lengthOf(device.prompts, 2);
+        assert.lengthOf(service.calls.readFields, 1);
+      }).pipe(Effect.provide(device.layer));
+    },
+  );
 
   it.effect("answers unavailable when no desktop app is attached to ask", () => {
     const service = makeService({ work: [github] });

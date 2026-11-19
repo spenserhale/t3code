@@ -102,6 +102,9 @@ export interface SecretRequest {
   readonly item?: string | undefined;
   /** An item the user named, such as `op://Vault/Item`. */
   readonly reference?: string | undefined;
+  readonly sourceUrl?: string | undefined;
+  /** A successful server fill, never caller-supplied consent. */
+  readonly loginApproval?: LoginApprovalReceipt | undefined;
   /** When the call ends, in `Clock` time. */
   readonly deadline: number;
   /**
@@ -110,6 +113,64 @@ export interface SecretRequest {
    */
   readonly ready?: Effect.Effect<void, BrowserLogins.BrowserLoginError> | undefined;
 }
+
+export interface LoginApprovalReceipt {
+  readonly item: string;
+  readonly threadId: string;
+  readonly tabId: string;
+  readonly origin: string;
+  readonly sourceUrl?: string | undefined;
+  readonly revision: string;
+  readonly expiresAt: number;
+}
+
+// Object identity keeps malformed internal data from becoming permission to read a login.
+const successfulLoginFills = new WeakSet<LoginApprovalReceipt>();
+
+export const loginSelectionMatches = (
+  receipt: LoginApprovalReceipt | undefined,
+  request: Pick<
+    SecretRequest,
+    "kind" | "item" | "threadId" | "tabId" | "origin" | "sourceUrl" | "reference"
+  >,
+): receipt is LoginApprovalReceipt =>
+  receipt !== undefined &&
+  successfulLoginFills.has(receipt) &&
+  request.kind === "login" &&
+  request.reference === undefined &&
+  request.item !== undefined &&
+  receipt.item === request.item &&
+  receipt.threadId === request.threadId &&
+  receipt.tabId === request.tabId &&
+  receipt.origin === request.origin &&
+  receipt.sourceUrl === request.sourceUrl;
+
+const loginApprovalMatches = (
+  receipt: LoginApprovalReceipt | undefined,
+  request: Parameters<typeof loginSelectionMatches>[1],
+  revision: string,
+  now: number,
+) =>
+  loginSelectionMatches(receipt, request) &&
+  receipt.revision === revision &&
+  Number.isFinite(now) &&
+  now < receipt.expiresAt;
+
+/** Called only after every requested field was successfully filled. */
+export const recordLoginFill = Effect.fn("BrowserSecretAccess.recordLoginFill")(function* (
+  scope: Omit<LoginApprovalReceipt, "expiresAt">,
+  previous?: LoginApprovalReceipt,
+) {
+  const now = yield* Clock.currentTimeMillis;
+  if (
+    loginSelectionMatches(previous, { ...scope, kind: "login" }) &&
+    previous.revision === scope.revision
+  )
+    return previous;
+  const receipt = Object.freeze({ ...scope, expiresAt: now + 5 * 60 * 1000 });
+  successfulLoginFills.add(receipt);
+  return receipt;
+});
 
 /** One kind of item: where the request finds it, how it is read, and how a device is asked. */
 export interface SecretCatalog<Item extends SecretItem, Values> {
@@ -134,7 +195,7 @@ export interface SecretCatalog<Item extends SecretItem, Values> {
   readonly relay?: {
     /** The request, less the item or reference the order adds. */
     readonly ask: SecretRelay.SecretRelayAsk;
-    readonly values: (values: Readonly<Record<string, string>>) => Values;
+    readonly values: (values: Readonly<Record<string, string>>, item?: SecretRelayItem) => Values;
   };
   /** What the dialog names when the catalog knows it before anything is read. */
   readonly prompt?: Partial<
@@ -258,7 +319,16 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
   const approve = Effect.fn("BrowserSecretAccess.approve")(function* (providerLabel: string) {
     yield* ready;
     const scope = { threadId: request.threadId };
-    if (!(yield* logins.needsApproval(revision, scope, request.kind))) return;
+    if (
+      loginApprovalMatches(
+        request.loginApproval,
+        request,
+        revision,
+        yield* Clock.currentTimeMillis,
+      ) ||
+      !(yield* logins.needsApproval(revision, scope, request.kind))
+    )
+      return;
     const answer = yield* desktopChannel.approveLogin(
       { threadId: request.threadId, ...(request.tabId ? { tabId: request.tabId } : {}) },
       Math.max(0, request.deadline - (yield* Clock.currentTimeMillis)),
@@ -293,7 +363,7 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
         // A device that answers without checking must not end the request for one that has it.
         target.item === undefined
           ? ({ item, values }) =>
-              catalog.lacks?.(item, relayed.values(relayedValues(values))) === undefined
+              catalog.lacks?.(item, relayed.values(relayedValues(values), item)) === undefined
           : undefined,
       )
       .pipe(
@@ -309,7 +379,7 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
   });
 
   const fromDevice = (answer: SecretRelay.SecretRelayValues) =>
-    found(answer.item, catalog.relay!.values(relayedValues(answer.values)));
+    found(answer.item, catalog.relay!.values(relayedValues(answer.values), answer.item));
 
   // 1. An item named explicitly, from its own provider or device only.
   const named = request.item;

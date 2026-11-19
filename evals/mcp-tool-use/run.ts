@@ -70,6 +70,12 @@ import {
 } from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { proxyConfig } from "../shared/proxy.ts";
 import { changeRequestsCreatedBy } from "../../apps/server/src/orchestration-v2/PullRequestSyncReactor.ts";
+import {
+  BrowserLoginExpect,
+  BrowserLoginScenario,
+  gradeBrowserLogin,
+  makeBrowserLogin,
+} from "./browser-login.ts";
 import { DeviceExpect, gradeDevice } from "./device-grading.ts";
 import { FileLinksExpect, gradeFileLinks } from "./file-link-grading.ts";
 import {
@@ -220,6 +226,7 @@ const McpToolUseExpect = Schema.Struct({
   linkedNumbers: Schema.optional(Schema.Array(Schema.Number)),
   /** Device manager checks: child briefs, simulator UI over the shell, failures, recordings. */
   device: Schema.optional(DeviceExpect),
+  browserLogin: Schema.optional(BrowserLoginExpect),
   /**
    * Secret checks: chat asks in text and question tools, where fixture values went, and how the
    * files request_secret returned were read. See `SecretExpect` in secret-grading.ts.
@@ -237,6 +244,7 @@ const McpToolUseWorld = Schema.StructWithRest(
   Schema.Struct({
     /** GitHub `owner/name`. Defaults to `acme/app`. */
     repo: Schema.optional(Schema.String),
+    browserLogin: Schema.optional(BrowserLoginScenario),
     branch: Schema.optional(Schema.String),
     /** `git status --short` lines. */
     status: Schema.optional(Schema.String),
@@ -837,6 +845,7 @@ type Sample = {
   devices?: DeviceTools;
   /** T3's results for prior device calls whose case result is "default". */
   readonly priorResults: Map<unknown, string>;
+  readonly browserLogin?: ReturnType<typeof makeBrowserLogin>;
 };
 
 const SHELL_TOOLS = new Set(["Bash", "Read", "Edit", "Write", "WebFetch"]);
@@ -881,6 +890,9 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
     secretFiles: [],
     secretRequests: 0,
     priorResults: new Map(),
+    ...(testCase.setup.world?.browserLogin
+      ? { browserLogin: makeBrowserLogin(testCase.setup.world.browserLogin) }
+      : {}),
   };
 };
 
@@ -1587,6 +1599,8 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   if (isPageTool(name) && typeof input.path === "string" && !input.path.startsWith("/")) {
     return failed(`${input.path} is not a readable HTML document. Pass an absolute path.`);
   }
+  const browserResult = sample.browserLogin?.(name, input);
+  if (browserResult !== undefined) return toolResult(call.id, browserResult);
   const mock = testCase.setup.mocks?.[name];
   // T3 answers device calls from the world. A mock that is a T3 device error fails inside T3.
   const failure = deviceFailure(mock);
@@ -1842,6 +1856,7 @@ export const gradeSample = (
     add("linkedNumbers", exact === valueText(expect.linkedNumbers.toSorted((a, b) => a - b)));
   }
   checks.push(...gradeDevice(expect.device, run));
+  checks.push(...gradeBrowserLogin(expect.browserLogin, run));
   checks.push(
     ...gradeFileLinks(
       expect.fileLinks,

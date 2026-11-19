@@ -2,13 +2,19 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import { DesktopBrowserCommand, DesktopBrowserEvent } from "./desktopBrowser.ts";
-import { SecretRelayAnswer, SecretRelayRequest } from "./secretRelay.ts";
+import { PreviewAutomationFillLoginResult } from "./previewLogin.ts";
+import { SecretRelayAnswer, SecretRelayItem, SecretRelayRequest } from "./secretRelay.ts";
 
 const decodeCommand = Schema.decodeUnknownSync(DesktopBrowserCommand);
 const decodeEvent = Schema.decodeUnknownSync(DesktopBrowserEvent);
 const isRequest = Schema.is(SecretRelayRequest);
 const decodeRequest = Schema.decodeUnknownSync(SecretRelayRequest);
 const decodeAnswer = Schema.decodeUnknownSync(SecretRelayAnswer);
+const decodeResult = Schema.decodeUnknownSync(PreviewAutomationFillLoginResult);
+const decodeItem = Schema.decodeUnknownSync(SecretRelayItem);
+const encodeResult = Schema.encodeSync(PreviewAutomationFillLoginResult);
+const encodeRequest = Schema.encodeSync(SecretRelayRequest);
+const encodeItem = Schema.encodeSync(SecretRelayItem);
 
 const candidates = [
   {
@@ -79,4 +85,49 @@ describe("login choice wire compatibility", () => {
     expect(decodeAnswer(denied)).toEqual(denied);
     expect(decodeAnswer({ type: "denied" })).toEqual({ type: "denied" });
   });
+});
+
+describe("login MFA wire compatibility", () => {
+  it("decodes earlier successful fills, relay requests and items without metadata", () => {
+    const result = {
+      status: "filled",
+      tabId: "tab-a",
+      login: { id: "login-a", title: "Example" },
+      filled: ["password"],
+    };
+    const request = {
+      requestId: "request-a",
+      kind: "login",
+      threadId: "thread-a",
+      expiresAt: 120_000,
+    };
+    const item = { id: "login-a", title: "Example", urls: ["https://example.com"] };
+    expect(decodeResult(result)).toEqual(result);
+    expect(decodeRequest(request)).toEqual(request);
+    expect(decodeItem(item)).toEqual(item);
+  });
+
+  it.each([true, false])(
+    "round-trips saved-code availability %s and relay tab identity",
+    (hasTotp) => {
+      const result = {
+        status: "filled",
+        tabId: "tab-a",
+        login: { id: "login-a", title: "Example" },
+        filled: ["password"],
+        hasTotp,
+      };
+      const request = {
+        requestId: "request-a",
+        kind: "login",
+        threadId: "thread-a",
+        expiresAt: 120_000,
+        tabId: "tab-a",
+      };
+      const item = { id: "login-a", title: "Example", urls: ["https://example.com"], hasTotp };
+      expect.soft(encodeResult(decodeResult(result))).toEqual(result);
+      expect.soft(encodeRequest(decodeRequest(request))).toEqual(request);
+      expect.soft(encodeItem(decodeItem(item))).toEqual(item);
+    },
+  );
 });

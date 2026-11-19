@@ -2676,6 +2676,7 @@ const loginServer = (
     readonly escalation?: BrowserSecretEscalation;
     /** What the password manager holds for a field, on its nth read. */
     readonly secret?: (field: string, read: number) => string;
+    readonly hasTotp?: boolean | undefined;
     /** Whether saving a new login, or giving it a new password, shows the password. */
     readonly showsNewPassword?: boolean;
     /** Also chooses Personal, which a person unlocks. */
@@ -2729,10 +2730,13 @@ const loginServer = (
           trail.push(`read ${account} ${login.id}`);
           reads.push(login.id);
           readFields.push({ id: login.id, fields });
-          if (failing(account)) return undefined;
+          if (failing(account) || (account === "Work" && options.noWorkLogin)) return undefined;
           const values = fields.map((field) => [field, secret(field, reads.length)] as const);
           // An empty value reads as one the password manager did not return.
-          return Object.fromEntries(values.filter(([, value]) => value.length > 0));
+          return {
+            ...Object.fromEntries(values.filter(([, value]) => value.length > 0)),
+            ...(options.hasTotp === undefined ? {} : { hasTotp: options.hasTotp }),
+          };
         }),
       create: (_config, { title, url, username, vault, recipe }) =>
         Effect.sync(() => {
@@ -2903,6 +2907,26 @@ const shownDocument = (context: BrowserContext) =>
 
 /** What a desktop is told of a page: the browser's own id, which leads a fill's name for it. */
 const toldDocument = (named: string) => named.split(" ", 1)[0];
+
+it.live.each([true, false, undefined] as const)(
+  "filled login reports known TOTP metadata %s without exposing values",
+  (hasTotp) => {
+    const server = loginServer(DesktopChannel.layer, { unattended: true, hasTotp });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
+          expect(filled).toMatchObject({ status: "filled" });
+          if (hasTotp === undefined) expect(filled).not.toHaveProperty("hasTotp");
+          else expect(filled).toHaveProperty("hasTotp", hasTotp);
+          expect(JSON.stringify(filled)).not.toMatch(/password-value|username-value|totp-value/);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
 
 it.live(
   "a headless tab is filled from a service account without asking, behind the same page guards",
@@ -3941,7 +3965,7 @@ it.live(
     }> = [];
     const choices: Array<ReadonlyArray<PreviewLoginChoice>> = [];
     const server = loginServer(
-      approvingDesktop(asked, ["thread"], undefined, (candidates) =>
+      approvingDesktop(asked, ["once"], undefined, (candidates) =>
         Effect.sync(() => {
           choices.push(candidates);
           return choices.length === 2 ? "work/g1" : "personal/p1";
@@ -3977,14 +4001,112 @@ it.live(
           yield* invoke("fillLogin", { fields: ["totp"] });
           expect(server.readFields.at(-1)).toEqual({ id: "p1", fields: ["totp"] });
           expect(choices).toHaveLength(3);
+          expect(asked).toHaveLength(3);
           yield* invoke("navigate", { url: "https://good.test/login" });
           yield* invoke("fillLogin");
           expect(choices).toHaveLength(4);
+          expect(asked).toHaveLength(4);
         }).pipe(Effect.provide(server.layer));
       }),
     );
   },
 );
+
+it.live.each(["removed", "unreadable"] as const)(
+  "a remembered selected login that becomes %s never falls back to another account",
+  (problem) => {
+    const asked: Array<{
+      readonly key: DesktopChannel.DesktopApprovalKey;
+      readonly prompt: object;
+    }> = [];
+    const options = {
+      personal: true,
+      noWorkLogin: false,
+      unreadable: [] as Array<keyof typeof HELD>,
+    };
+    const server = loginServer(
+      approvingDesktop(asked, ["once"], undefined, () => Effect.succeed("work/g1")),
+      options,
+    );
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          yield* invoke("fillLogin");
+          if (problem === "removed") options.noWorkLogin = true;
+          else options.unreadable.push("Work");
+          yield* Effect.promise(() => context.pages()[0]!.goto("https://good.test/otp"));
+          const device = yield* connectedDevice([deviceLogin("device:personal/p1", "fallback-pw")]);
+          const refused = yield* invoke("fillLogin", { fields: ["totp"] }).pipe(Effect.flip);
+          expect(refused.message).toContain("could not be read");
+          expect(asked).toHaveLength(1);
+          expect(device).toEqual([]);
+          expect(server.readFields.filter(({ fields }) => fields.includes("totp"))).toEqual([
+            { id: "g1", fields: ["totp"] },
+          ]);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live("a canceled fresh sign-in revokes the previous once approval", () => {
+  const asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }> =
+    [];
+  const server = loginServer(approvingDesktop(asked, ["once", false, "once"]));
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* invoke("fillLogin");
+        const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+        expect(refused.message).toContain("did not approve");
+        yield* Effect.promise(() => context.pages()[0]!.goto("https://good.test/otp"));
+        yield* invoke("fillLogin", { fields: ["totp"] });
+        expect(asked).toHaveLength(3);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("once approval covers password and fresh TOTP retries for one selected item", () => {
+  const asked: Array<{ readonly key: DesktopChannel.DesktopApprovalKey; readonly prompt: object }> =
+    [];
+  const server = loginServer(approvingDesktop(asked), {
+    hasTotp: true,
+    secret: (field, read) => (field === "totp" ? `code-${read}` : `${field}-value`),
+  });
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* invoke("fillLogin", { fields: ["password"] });
+        const page = context.pages()[0]!;
+        yield* Effect.promise(() => page.goto("https://good.test/otp"));
+        for (let retry = 0; retry < 2; retry++) {
+          const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin", {
+            fields: ["totp"],
+            locators: { totp: "input" },
+          });
+          expect(filled).toMatchObject({ status: "filled", hasTotp: true });
+          expect(JSON.stringify(filled)).not.toContain("code-");
+          expect(yield* Effect.promise(() => page.locator("input").inputValue())).toBe(
+            `code-${retry + 2}`,
+          );
+        }
+        expect(asked).toHaveLength(1);
+        expect(server.readFields).toEqual([
+          { id: "g1", fields: ["password"] },
+          { id: "g1", fields: ["totp"] },
+          { id: "g1", fields: ["totp"] },
+        ]);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
 
 it.live(
   "initial open discovers the source website after redirect and explicit choice permits only this auth origin",
@@ -4287,6 +4409,7 @@ it.live(
               requestId: asked[0]!.requestId,
               kind: "login",
               threadId: scope.thread.threadId,
+              tabId,
               threadTitle: "Deploy",
               agent: "codex",
               origin: "https://good.test",
@@ -4311,6 +4434,42 @@ it.live(
           // This server's own password manager was never read, and no log holds the value.
           expect(server.reads).toEqual([]);
           expect(server.logs.some((line) => line.includes("device-secret"))).toBe(false);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live.each([true, false, undefined] as const)(
+  "relayed login uses item TOTP metadata %s and names its destination tab",
+  (hasTotp) => {
+    const server = loginServer(DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const asked = yield* connectedDevice([
+            {
+              type: "values",
+              item: {
+                id: "device:work/g1",
+                title: "Good",
+                urls: ["https://good.test"],
+                ...(hasTotp === undefined ? {} : { hasTotp }),
+              },
+              values: {
+                username: Redacted.make("device-user"),
+                password: Redacted.make("device-secret"),
+                hasTotp: Redacted.make("true"),
+              },
+            },
+          ]);
+          const { tabId, invoke } = yield* openLoginTab;
+          const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
+          if (hasTotp === undefined) expect(filled).not.toHaveProperty("hasTotp");
+          else expect(filled).toHaveProperty("hasTotp", hasTotp);
+          expect(asked[0]).toMatchObject({ tabId, kind: "login" });
+          expect(JSON.stringify(filled)).not.toMatch(/device-user|device-secret/);
         }).pipe(Effect.provide(server.layer));
       }),
     );

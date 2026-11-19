@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { EnvironmentId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { PreviewTabId } from "./preview.ts";
 import { PreviewLoginCandidate, PreviewLoginChoice, PreviewLoginField } from "./previewLogin.ts";
 
 /**
@@ -22,6 +23,7 @@ export const SecretRelayRequest = Schema.Struct({
   requestId: TrimmedNonEmptyString,
   kind: SecretRelayKind,
   threadId: TrimmedNonEmptyString,
+  tabId: Schema.optional(PreviewTabId),
   threadTitle: Schema.optional(Schema.String),
   agent: Schema.optional(Schema.String),
   /** The page's origin. A login is offered only for the site it is saved for. */
@@ -65,6 +67,7 @@ export const SecretRelayItem = Schema.Struct({
   urls: Schema.Array(Schema.String),
   /** The exact origin the user approved for this fill. */
   fillOrigin: Schema.optional(Schema.String),
+  hasTotp: Schema.optional(Schema.Boolean),
 });
 export type SecretRelayItem = typeof SecretRelayItem.Type;
 
