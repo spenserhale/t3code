@@ -9,7 +9,11 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import type { SecretProviderDriver, SecretProviderDriverServices } from "./driver.ts";
+import {
+  type SecretProviderDriver,
+  type SecretProviderDriverServices,
+  withSecretProviderVaults,
+} from "./driver.ts";
 
 export class SecretResolver extends Context.Service<
   SecretResolver,
@@ -42,9 +46,18 @@ interface ReadablePlan {
   readonly configKey: string;
 }
 
+type VaultLimits = (provider: SecretReference["provider"]) => ReadonlyArray<string> | undefined;
+
+const EVERY_VAULT: Effect.Effect<VaultLimits> = Effect.succeed(() => undefined);
+
 export const make = Effect.fn("SecretResolver.make")(function* (options: {
   readonly drivers: ReadonlyArray<SecretProviderDriver>;
   readonly secretProviders: Effect.Effect<ServerSettings["secretProviders"]>;
+  /**
+   * The vault ids each provider may open, read with the providers; `undefined` opens every vault.
+   * Without it, every provider opens every vault.
+   */
+  readonly vaults?: Effect.Effect<VaultLimits>;
 }) {
   const context = yield* Effect.context<SecretProviderDriverServices>();
   const driversByKind = new Map(
@@ -60,6 +73,7 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
   // on the next read.
   const planFor = (
     providers: ServerSettings["secretProviders"],
+    vaults: VaultLimits,
     reference: SecretReference,
   ): ReadablePlan | undefined => {
     const provider = providers[reference.provider];
@@ -67,10 +81,11 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
     if (provider === undefined || entry === undefined) return undefined;
     const { driver, decodeConfig } = entry;
     if (!driver.definition.isReference(reference.reference)) return undefined;
-    const config = decodeConfig(provider.config);
-    return Option.isNone(config)
-      ? undefined
-      : { driver, config: config.value, configKey: JSON.stringify(config.value) };
+    const decoded = decodeConfig(provider.config);
+    if (Option.isNone(decoded)) return undefined;
+    // Limited after decoding, so a changed limit is a changed config and reads again.
+    const config = withSecretProviderVaults(decoded.value, vaults(reference.provider));
+    return { driver, config, configKey: JSON.stringify(config) };
   };
 
   const isCached = (reference: SecretReference, plan: ReadablePlan) =>
@@ -87,20 +102,31 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
         : undefined;
     });
 
+  const plansNow = Effect.fn("SecretResolver.plansNow")(function* (
+    references: ReadonlyArray<SecretReference>,
+  ) {
+    const providers = yield* options.secretProviders;
+    const vaults = yield* options.vaults ?? EVERY_VAULT;
+    return references.map((reference) => planFor(providers, vaults, reference));
+  });
+
+  const isMissing = (reference: SecretReference, plan: ReadablePlan | undefined) =>
+    plan !== undefined && !isCached(reference, plan);
+
   // Cache hits answer without the lock, so a read waiting on an unlock never stalls a cached one.
   const read: SecretResolver["Service"]["read"] = Effect.fn("SecretResolver.read")(function* (
     references,
   ) {
-    const providers = yield* options.secretProviders;
-    const plans = references.map((reference) => planFor(providers, reference));
-    const isMissing = (reference: SecretReference, index: number) => {
-      const plan = plans[index];
-      return plan !== undefined && !isCached(reference, plan);
-    };
-    if (!references.some(isMissing)) return answer(references, plans);
+    const plans = yield* plansNow(references);
+    if (!references.some((reference, index) => isMissing(reference, plans[index]))) {
+      return answer(references, plans);
+    }
 
     return yield* semaphore.withPermits(1)(
       Effect.gen(function* () {
+        // Planned again under the lock: a read queued behind an unlock must not use a config or
+        // vault limit from before it waited.
+        const locked = yield* plansNow(references);
         const wanted = new Map<
           string,
           {
@@ -109,8 +135,8 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
           }
         >();
         references.forEach((reference, index) => {
-          const plan = plans[index];
-          if (plan === undefined || !isMissing(reference, index)) return;
+          const plan = locked[index];
+          if (plan === undefined || !isMissing(reference, plan)) return;
           const group = wanted.get(reference.provider) ?? { plan, byReference: new Map() };
           group.byReference.set(reference.reference, [
             ...(group.byReference.get(reference.reference) ?? []),
@@ -118,15 +144,29 @@ export const make = Effect.fn("SecretResolver.make")(function* (options: {
           ]);
           wanted.set(reference.provider, group);
         });
+        const results: Array<{
+          readonly reference: SecretReference;
+          readonly configKey: string;
+          readonly value: string | undefined;
+        }> = [];
         for (const { plan, byReference } of wanted.values()) {
           const values = yield* plan.driver.read(plan.config, [...byReference.keys()]);
           [...byReference.values()].forEach((sameReference, index) => {
             for (const reference of sameReference) {
-              cache.set(cacheKey(reference), { config: plan.configKey, value: values[index] });
+              results.push({ reference, configKey: plan.configKey, value: values[index] });
             }
           });
         }
-        return answer(references, plans);
+        // A config or limit that changed during the read, such as a vault taken away while
+        // 1Password waited to unlock, discards what was read under the old one.
+        const after = yield* plansNow(references);
+        for (const { reference, configKey, value } of results) {
+          const current = after[references.indexOf(reference)];
+          if (current?.configKey === configKey) {
+            cache.set(cacheKey(reference), { config: configKey, value });
+          }
+        }
+        return answer(references, after);
       }),
     );
   }, Effect.provideContext(context));

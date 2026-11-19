@@ -718,6 +718,286 @@ describe("1Password logins", () => {
   });
 });
 
+describe("1Password with a vault limit", () => {
+  const limited = { account, vaults: ["v1", "v2", "v3"] };
+  const token = { ...limited, serviceAccountToken: "ops_test-token" };
+  // Two vaults share a name, one name differs only in case, and one id reads as a flag.
+  const vaultList = JSON.stringify([
+    { id: "v1", name: "Work" },
+    { id: "v2", name: "Agents" },
+    { id: "v3", name: "Shared" },
+    { id: "v4", name: "Shared" },
+    { id: "v5", name: "work" },
+    { id: "--help", name: "Flagged" },
+  ]);
+  const vaultOf = (args: ReadonlyArray<string>) =>
+    args.find((arg) => arg.startsWith("--vault="))?.slice("--vault=".length);
+  /** The item `op item get` prints, in the vault it reports. */
+  const itemIn = (vaultId: string, category = "LOGIN") =>
+    JSON.stringify({
+      id: "abc123",
+      title: "Grafana",
+      category,
+      vault: { id: vaultId, name: "Work" },
+      urls: [{ href: "https://grafana.example.com" }],
+      fields: [
+        { id: "password", type: "CONCEALED", purpose: "PASSWORD", value: "hunter2" },
+        { id: "firstname", type: "STRING", value: "Ada" },
+      ],
+    });
+  /** A fake `op` for the account: its vaults, one login per vault, and what it reads. */
+  const accountOp = (
+    itemVault: (args: ReadonlyArray<string>) => string = (args) => vaultOf(args) ?? "",
+  ) =>
+    fakeOp((args) => {
+      if (args[1] === "vault") return { stdout: vaultList };
+      if (args[1] === "read") return { stdout: `value of ${args.at(-1)}` };
+      if (args[1] === "inject") {
+        return injectFrom({ "op://v1/A/key": "sk-a", "op://v2/B/key": "sk-b" })(args);
+      }
+      if (args.includes("list")) {
+        const vaultId = vaultOf(args)!;
+        return {
+          stdout: JSON.stringify([
+            {
+              id: `item-${vaultId}`,
+              title: "Grafana",
+              vault: { id: vaultId === "v1" ? "v9" : vaultId, name: "Work" },
+              urls: [{ href: "https://grafana.example.com" }],
+            },
+            { id: `own-${vaultId}`, title: "Jira", urls: [{ href: "https://jira.test" }] },
+          ]),
+        };
+      }
+      if (args.includes("create")) {
+        return { stdout: JSON.stringify({ id: "new1", vault: { id: vaultOf(args) } }) };
+      }
+      const category = args.includes("Me") ? "IDENTITY" : "LOGIN";
+      return { stdout: itemIn(itemVault(args), category) };
+    });
+  const vaultListArgs = ["--cache=false", "vault", "--account=my.1password.com", "list"];
+
+  it.effect("reads by the id of an allowed vault, resolving a name against the live list", () => {
+    const op = accountOp();
+    const read = (reference: string) =>
+      driver.read(limited, [reference]).pipe(Effect.map(([value]) => value));
+    return Effect.gen(function* () {
+      // An allowed id is read as it is, with no vault list.
+      assert.strictEqual(yield* read("op://v1/OpenAI/key"), "value of op://v1/OpenAI/key");
+      assert.deepStrictEqual(op.invocations, [
+        [
+          "--cache=false",
+          "read",
+          "--account=my.1password.com",
+          "--no-newline",
+          "op://v1/OpenAI/key",
+        ],
+      ]);
+      // A name is read by its vault's id: exact, then in any case if only one vault has it.
+      assert.strictEqual(yield* read("op://Agents/OpenAI/key"), "value of op://v2/OpenAI/key");
+      assert.strictEqual(yield* read("op://agents/OpenAI/key"), "value of op://v2/OpenAI/key");
+      assert.strictEqual(yield* read("op://Work/OpenAI/key"), "value of op://v1/OpenAI/key");
+      assert.deepStrictEqual(op.invocations[1], [...vaultListArgs, "--format=json"]);
+      const reads = op.invocations.filter((args) => args[1] === "read").length;
+      for (const outside of [
+        "op://Private/OpenAI/key", // no such vault
+        "op://Shared/OpenAI/key", // two vaults have that name
+        "op://WORK/OpenAI/key", // two in any case
+        "op://work/OpenAI/key", // exactly another vault's name, outside the limit
+        "op://v4/OpenAI/key", // an id outside the limit
+        "op://Flagged/OpenAI/key", // a vault whose id reads as a flag
+      ]) {
+        assert.isUndefined(yield* read(outside), outside);
+      }
+      assert.strictEqual(op.invocations.filter((args) => args[1] === "read").length, reads);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect(
+    "reads a batch through one vault list and one inject, only what the limit allows",
+    () => {
+      const op = accountOp();
+      return Effect.gen(function* () {
+        assert.deepStrictEqual(
+          yield* driver.read(limited, ["op://v1/A/key", "op://Agents/B/key", "op://Private/C/key"]),
+          ["sk-a", "sk-b", undefined],
+        );
+        assert.deepStrictEqual(
+          op.invocations.map((args) => args[1]),
+          ["vault", "inject"],
+        );
+        // An empty limit opens no vault and runs no `op` at all.
+        assert.deepStrictEqual(
+          yield* driver.read({ account, vaults: [] }, ["op://v1/A/key", "op://Agents/B/key"]),
+          [undefined, undefined],
+        );
+        assert.strictEqual(op.invocations.length, 2);
+      }).pipe(Effect.provide(op.layer));
+    },
+  );
+
+  it.effect("lists each allowed vault by id, never the account, whichever way it signs in", () => {
+    const op = accountOp();
+    return Effect.gen(function* () {
+      const logins = yield* driver.logins!.list({ account, vaults: ["v1", "v2"] });
+      // An item op places in another vault than the one listed is left out.
+      assert.deepStrictEqual(logins, [
+        { id: "own-v1", title: "Jira", vaultId: "v1", urls: ["https://jira.test"] },
+        {
+          id: "item-v2",
+          title: "Grafana",
+          vault: "Work",
+          vaultId: "v2",
+          urls: ["https://grafana.example.com"],
+        },
+        { id: "own-v2", title: "Jira", vaultId: "v2", urls: ["https://jira.test"] },
+      ]);
+      assert.sameDeepMembers(
+        op.invocations.map((args) => [...args]),
+        ["v1", "v2"].map((vaultId) => [
+          "--cache=false",
+          "item",
+          "--account=my.1password.com",
+          "list",
+          `--vault=${vaultId}`,
+          "--categories=Login",
+          "--format=json",
+        ]),
+      );
+      const identities = yield* driver.identities!.list({ ...token, vaults: ["v2"] });
+      assert.deepStrictEqual(
+        identities?.map((identity) => [identity.id, identity.vaultId]),
+        [
+          ["item-v2", "v2"],
+          ["own-v2", "v2"],
+        ],
+      );
+      assert.deepStrictEqual(op.invocations[2], [
+        "--cache=false",
+        "item",
+        "list",
+        "--vault=v2",
+        "--categories=Identity",
+        "--format=json",
+      ]);
+      assert.deepStrictEqual(yield* driver.logins!.list({ account, vaults: [] }), []);
+      assert.strictEqual(op.invocations.length, 3);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect("reads, renews and looks up only items of allowed vaults, checking op's answer", () => {
+    // `op item get` reports the item in v4 when asked for `Elsewhere`.
+    const op = accountOp((args) => (args.includes("Elsewhere") ? "v4" : (vaultOf(args) ?? "")));
+    const grafana = { id: "abc123", title: "Grafana", urls: ["https://grafana.example.com"] };
+    const recipe = { length: 24, digits: true, symbols: true };
+    return Effect.gen(function* () {
+      assert.strictEqual(
+        (yield* driver.logins!.read(limited, { ...grafana, vaultId: "v1" }, ["password"]))
+          ?.password,
+        "hunter2",
+      );
+      assert.deepStrictEqual(op.invocations[0]?.slice(3), [
+        "get",
+        "abc123",
+        "--vault=v1",
+        "--reveal",
+        "--format=json",
+      ]);
+      assert.deepStrictEqual(
+        yield* driver.identities!.read(limited, { id: "abc123", title: "Me", vaultId: "v2" }),
+        { firstName: "Ada" },
+      );
+      // An item outside the limit, or of a vault not known, is never asked for.
+      for (const outside of [{ ...grafana, vaultId: "v4" }, grafana]) {
+        assert.isUndefined(yield* driver.logins!.read(limited, outside, ["password"]));
+        assert.isUndefined(yield* driver.identities!.read(limited, outside));
+        assert.isUndefined(yield* driver.logins!.regeneratePassword!(limited, outside, recipe));
+      }
+      assert.strictEqual(op.invocations.length, 2);
+      // One op reports in another vault than the one asked is not used.
+      assert.isUndefined(
+        yield* driver.logins!.read(limited, { ...grafana, id: "Elsewhere", vaultId: "v1" }, [
+          "password",
+        ]),
+      );
+      assert.isUndefined(
+        yield* driver.identities!.read(limited, { id: "Elsewhere", title: "Me", vaultId: "v1" }),
+      );
+
+      const found = yield* driver.logins!.lookup!(limited, "op://Work/Grafana");
+      assert.deepStrictEqual(found, { ...grafana, vault: "Work", vaultId: "v1" });
+      assert.deepStrictEqual(op.invocations.slice(-2), [
+        [...vaultListArgs, "--format=json"],
+        [
+          "--cache=false",
+          "item",
+          "--account=my.1password.com",
+          "get",
+          "Grafana",
+          "--vault=v1",
+          "--format=json",
+        ],
+      ]);
+      const asked = op.invocations.length;
+      assert.deepStrictEqual(yield* driver.identities!.lookup!(limited, "op://v2/Me"), {
+        id: "abc123",
+        title: "Grafana",
+        vault: "Work",
+        vaultId: "v2",
+      });
+      assert.deepStrictEqual(op.invocations.length, asked + 1);
+      assert.isUndefined(yield* driver.logins!.lookup!(limited, "op://Private/Grafana"));
+      assert.isUndefined(yield* driver.logins!.lookup!(limited, "op://v1/Elsewhere"));
+      assert.isFalse(op.invocations.some((args) => vaultOf(args) === "Private"));
+      assert.isUndefined(yield* driver.logins!.lookup!({ account, vaults: [] }, "op://v1/X"));
+      assert.strictEqual(op.invocations.length, asked + 3);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect("saves a new login only to an allowed vault, named by its id", () => {
+    const op = accountOp();
+    const newLogin = {
+      vault: "Agents",
+      title: "shop.test",
+      url: "https://shop.test",
+      username: "ada@example.com",
+      recipe: { length: 24, digits: true, symbols: true },
+      notes: "",
+    };
+    return Effect.gen(function* () {
+      const saved = yield* driver.logins!.create!(limited, newLogin);
+      assert.strictEqual(saved?.login.vaultId, "v2");
+      assert.deepStrictEqual(
+        op.invocations.map((args) => [args[1], args[3], vaultOf(args)]),
+        [
+          ["vault", "list", undefined],
+          ["item", "create", "v2"],
+        ],
+      );
+      yield* driver.logins!.create!(limited, { ...newLogin, vault: "v1" });
+      assert.strictEqual(vaultOf(op.invocations[2]!), "v1");
+      assert.isUndefined(yield* driver.logins!.create!(limited, { ...newLogin, vault: "Shared" }));
+      assert.isUndefined(yield* driver.logins!.create!({ account, vaults: [] }, newLogin));
+      assert.strictEqual(op.invocations.filter((args) => args.includes("create")).length, 2);
+      assert.strictEqual(op.invocations.length, 4);
+    }).pipe(Effect.provide(op.layer));
+  });
+
+  it.effect("lists every vault it can open, whatever the limit, leaving out flag-like ids", () => {
+    const op = accountOp();
+    return Effect.gen(function* () {
+      assert.deepStrictEqual(yield* driver.vaults!.list(token), [
+        { id: "v1", name: "Work" },
+        { id: "v2", name: "Agents" },
+        { id: "v3", name: "Shared" },
+        { id: "v4", name: "Shared" },
+        { id: "v5", name: "work" },
+      ]);
+      assert.deepStrictEqual(op.invocations, [["--cache=false", "vault", "list", "--format=json"]]);
+    }).pipe(Effect.provide(op.layer));
+  });
+});
+
 describe("1Password identities", () => {
   const me = { id: "me1", title: "Me" };
   const readFields = (fields: ReadonlyArray<object>) => {

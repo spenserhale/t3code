@@ -42,6 +42,7 @@ import {
   type PreviewAppearancePreference,
   type PreviewViewportSetting,
   managedCapabilityDenial,
+  resolveSecretProviderVaults,
   type SecretProviderId,
 } from "@t3tools/contracts";
 import { usePrimaryManagedPolicy } from "~/state/managedPolicy";
@@ -126,6 +127,7 @@ import {
 } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 import { AdvancedSettings } from "./AdvancedSettings";
+import { vaultChoiceExcludes } from "./SecretProviderVaultsDialog.logic";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { BrowserImportWizard, type WizardTarget } from "./BrowserImportWizard";
 import type { ImportOutcome } from "./browserImportWizard.logic";
@@ -1630,7 +1632,7 @@ const DEFAULT_NEW_LOGIN_VAULT = "T3 Code Sign-ups";
 export function BrowserLoginSettings() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const { connectedEnvironments } = useSettingsScope();
+  const { connectedEnvironments, target } = useSettingsScope();
   const escalation = settings.browserLogins.escalation ?? DEFAULT_BROWSER_SECRET_ESCALATION;
   // An older server ignores `escalation` and keeps following the approval setting it reads.
   const outdated = connectedEnvironments.flatMap((environment) =>
@@ -1653,6 +1655,16 @@ export function BrowserLoginSettings() {
   ];
   const off = chosen.length === 0;
   const newLogins = settings.browserLogins.newLogins;
+  const newLoginVaultExcluded =
+    newLogins !== undefined &&
+    vaultChoiceExcludes(
+      resolveSecretProviderVaults(
+        settings.secretProviderVaults ?? {},
+        newLogins.secretProviderId,
+        target?.projectId ?? null,
+      ),
+      newLogins.vault,
+    );
   const save = (change: Parameters<typeof browserLoginsWrite>[1]) =>
     updateSettings({ browserLogins: browserLoginsWrite(settings.browserLogins, change) });
 
@@ -1724,7 +1736,7 @@ export function BrowserLoginSettings() {
         serverScoped
         settingKeys={["browserLogins"]}
         {...searchableSetting("browser-secret-escalation")}
-        description="Logins, identities and secrets for commands in a service account's vaults are used without asking. Anything else asks the T3 Code desktop app on your Mac, where 1Password needs Touch ID. Refuse suits machines left unattended."
+        description="Logins, identities and secrets in a service account's vaults are used without asking. Anything else asks the T3 Code desktop app on your Mac (Touch ID). Refuse suits unattended machines."
         status={
           outdated.length > 0
             ? `Update T3 Code on ${outdated.join(", ")} before this setting applies there.`
@@ -1770,11 +1782,13 @@ export function BrowserLoginSettings() {
         serverScoped
         settingKeys={["browserLogins"]}
         {...searchableSetting("browser-new-logins")}
-        description="Agents signing up for new accounts save the generated password here before sending the form. A service account needs write access to this vault, and its permissions cannot be changed after it is created."
+        description="Agents signing up for new accounts save the generated password here before sending the form. A service account needs write access to this vault; its permissions cannot be changed once created."
         status={
           newLogins !== undefined && !chosen.includes(newLogins.secretProviderId)
             ? "This password manager is not chosen for logins above, so agents cannot create logins."
-            : undefined
+            : newLoginVaultExcluded
+              ? "This vault is left out of the vaults this password manager may read, so agents cannot save new logins to it. Change it in Settings > Secrets."
+              : undefined
         }
         resetAction={
           newLogins !== undefined ? (

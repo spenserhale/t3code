@@ -4,11 +4,13 @@ import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  ProjectId,
   SecretProviderId,
   SecretProviderKind,
   type SecretCommandInput,
   type SecretRelayAnswer,
   type SecretRelayStreamItem,
+  type ServerSettings,
   ThreadId,
 } from "@t3tools/contracts";
 import { defineSecretProviderDriver } from "@t3tools/secret-provider-core/server/driver";
@@ -144,6 +146,9 @@ const setup = (
     /** A real process and file system instead of the fakes. */
     readonly real?: boolean;
     readonly run?: (spawned: Spawned) => FakeRun;
+    /** The calling thread's project, and the vaults chosen. */
+    readonly projectId?: ProjectId;
+    readonly secretProviderVaults?: ServerSettings["secretProviderVaults"];
   } = {},
 ) => {
   const reads: Array<string> = [];
@@ -165,9 +170,11 @@ const setup = (
       invalidReferenceMessage: "",
       supportsLogins: true,
     }),
-    read: ({ account }, references) =>
+    // A reference's vault is its id here; a limited config opens only those it names.
+    read: ({ account, vaults: limit }, references) =>
       Effect.sync(() =>
         references.map((reference) => {
+          if (limit !== undefined && !limit.includes(reference.split("/")[2]!)) return undefined;
           reads.push(`${account}:${reference}`);
           return vaults[account]?.[reference];
         }),
@@ -185,13 +192,26 @@ const setup = (
       approval: "thread",
       ...(options.escalation ? { escalation: options.escalation } : {}),
     },
+    ...(options.secretProviderVaults ? { secretProviderVaults: options.secretProviderVaults } : {}),
   });
+  const thread = Layer.mergeAll(
+    Layer.mock(ThreadManagementService.ThreadManagementService)({
+      getThreadShell: () =>
+        Effect.succeed({
+          id: caller.threadId,
+          title: caller.threadTitle,
+          worktreePath: options.workspaceRoot ?? "/work/repo",
+          ...(options.projectId ? { projectId: options.projectId } : {}),
+        } as never),
+    }),
+    Layer.mock(ProjectService.ProjectService)({}),
+  );
   const browserLogins = Layer.effect(
     BrowserLogins.BrowserLogins,
     BrowserLogins.make([driver]),
   ).pipe(
     Layer.provideMerge(settings),
-    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+    Layer.provide(Layer.mergeAll(thread, NodeServices.layer, NodeCrypto.layer)),
   );
   const channel = Layer.succeed(DesktopBrowserChannel.DesktopBrowserChannel, {
     available: options.desktop ?? false,
@@ -214,17 +234,6 @@ const setup = (
         );
       }),
   });
-  const thread = Layer.mergeAll(
-    Layer.mock(ThreadManagementService.ThreadManagementService)({
-      getThreadShell: () =>
-        Effect.succeed({
-          id: caller.threadId,
-          title: caller.threadTitle,
-          worktreePath: options.workspaceRoot ?? "/work/repo",
-        } as never),
-    }),
-    Layer.mock(ProjectService.ProjectService)({}),
-  );
   const processes = fakeSpawner(options.run ?? (() => ({ stdout: "ok" })));
   const layer = SecretCommands.layer.pipe(
     Layer.provideMerge(
@@ -488,6 +497,52 @@ describe("SecretCommands", () => {
       assert.lengthOf(fixture.processes.spawned, 1);
     }).pipe(Effect.scoped, Effect.provide(fixture.layer));
   });
+
+  it.effect(
+    "reads only the vaults the thread's project may open, naming them when it cannot",
+    () => {
+      const project = ProjectId.make("project-1");
+      const choose = (vaults: ReadonlyArray<string>) => ({
+        [work]: {
+          vaults: [{ id: "Employee", name: "Employee" }],
+          projects: { [project]: vaults.map((id) => ({ id, name: id })) },
+        },
+      });
+      const fixture = setup({
+        escalation: "refuse",
+        projectId: project,
+        secretProviderVaults: choose(["Agents"]),
+      });
+      return Effect.gen(function* () {
+        // The project's choice opens a vault the environment's does not.
+        const result = yield* run({ command: ["true"], stdin: FIRECRAWL });
+        assert.deepStrictEqual(result.sources, {
+          stdin: { type: "serviceAccount", label: "Work" },
+        });
+
+        const settings = yield* Settings.ServerSettingsService;
+        yield* settings.updateSettings({ secretProviderVaults: choose([]) });
+        const error = yield* run({ command: ["true"], stdin: FIRECRAWL }).pipe(Effect.flip);
+        assert.strictEqual(error.reason, "refused");
+        assert.include(
+          error.message,
+          "A vault limit applies here: Work may open no vault. The user can change it in Settings > Secrets.",
+        );
+        // Passed on to the user's device, which lacks it too, it still ends naming the limit.
+        yield* settings.updateSettings({
+          browserLogins: { secretProviderIds: [work, personal], approval: "thread" },
+        });
+        yield* device(() => ({ type: "none" }));
+        const nowhere = yield* run({ command: ["true"], stdin: FIRECRAWL }).pipe(Effect.flip);
+        assert.strictEqual(
+          nowhere.message,
+          `No password manager found ${FIRECRAWL}. A vault limit applies here: Work may open no vault. The user can change it in Settings > Secrets.`,
+        );
+        assert.deepStrictEqual(fixture.reads, [`work:${FIRECRAWL}`]);
+        assert.lengthOf(fixture.processes.spawned, 1);
+      }).pipe(Effect.scoped, Effect.provide(fixture.layer));
+    },
+  );
 
   it.effect("set to refuse, stops after the service accounts, before any dialog or read", () => {
     const fixture = setup({ desktop: true, escalation: "refuse", answers: ["once"] });

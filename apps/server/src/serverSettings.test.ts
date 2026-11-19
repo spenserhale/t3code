@@ -2013,6 +2013,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
           personal: { kind: "one_password", label: "Personal", config: { account: "my" } },
           work: { kind: "one_password", label: "Work", config: { account: "work" } },
         },
+        secretProviderVaults: {
+          personal: { vaults: [{ id: "v1", name: "Private" }] },
+          work: { vaults: [{ id: "v2", name: "Work" }] },
+        },
       }).pipe(Effect.flatMap(service.updateSettings));
       yield* service.updateSettings({
         providerInstances: {
@@ -2077,6 +2081,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       assert.deepEqual(removed.cloudSpeechCredentials, { openai: "", xai: work, openrouter: "" });
       assert.equal(removed.easDeviceHosts[0]?.accessToken, "");
       assert.deepEqual(Object.keys(removed.secretProviders), ["work"]);
+      // Its vault choice goes with it, so a provider added under that id opens every vault.
+      assert.deepEqual(removed.secretProviderVaults, {
+        [SecretProviderId.make("work")]: { vaults: [{ id: "v2", name: "Work" }] },
+      });
     }).pipe(Effect.provide(layerServerSettingsWithSecrets())),
   );
 

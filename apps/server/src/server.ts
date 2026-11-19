@@ -95,6 +95,7 @@ import * as BrowserLogins from "./preview/BrowserLogins.ts";
 import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
 import * as SecretRelayDevice from "./preview/SecretRelayDevice.ts";
 import * as SecretCommands from "./secrets/SecretCommands.ts";
+import * as SecretProviderVaults from "./secrets/SecretProviderVaults.ts";
 import * as SecretRelay from "./secrets/SecretRelay.ts";
 import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import * as PreviewBrowser from "./preview/PreviewBrowser.ts";
@@ -870,6 +871,8 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(PreviewAgentActivity.layer),
     ),
   ),
+  // ws.ts hands it to each socket, for Settings to list a provider's vaults.
+  Layer.provide(SecretProviderVaults.layer),
   Layer.provide(PreviewBrowser.layer),
   // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
   Layer.provide(

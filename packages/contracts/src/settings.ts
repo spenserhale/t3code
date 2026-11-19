@@ -23,6 +23,10 @@ import {
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 import { UsageModelFilter } from "./usage.ts";
 import { SecretProviderId, SecretProviderSlug } from "./secretReference.ts";
+import {
+  SecretProviderVaultScopeWrite,
+  SecretProviderVaultSettings,
+} from "./secretProviderVaults.ts";
 import { SettingsSecretValue } from "./settingsSecretValue.ts";
 import { EnvironmentMachineKind, ThreadEnvMode, WorktreeSubmodules } from "./environment.ts";
 import { KeybindingShortcut } from "./keybindings.ts";
@@ -1592,6 +1596,9 @@ export const ServerSettings = Schema.Struct({
   secretProviders: Schema.Record(SecretProviderId, SecretProviderConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  secretProviderVaults: SecretProviderVaultSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   browserLogins: BrowserLoginSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 
   usagePriceOverrides: Schema.Record(TrimmedNonEmptyString, UsageModelPriceOverride).pipe(
@@ -1988,6 +1995,10 @@ export const ServerSettingsPatch = Schema.Struct({
   secretProviders: Schema.optionalKey(
     Schema.Record(SecretProviderId, Schema.NullOr(SecretProviderConfigWrite)),
   ),
+  // Merge per provider like secretProviders; each entry is replaced whole and null removes it.
+  secretProviderVaults: Schema.optionalKey(
+    Schema.Record(SecretProviderId, Schema.NullOr(SecretProviderVaultScopeWrite)),
+  ),
   // Replaced whole, so clearing the providers turns logins off.
   browserLogins: Schema.optionalKey(BrowserLoginSettingsWrite),
 
@@ -2014,6 +2025,7 @@ export function requiredScopesForServerSettingsPatch(
       key === "usageLimitSources" ||
       key === "textGenerators" ||
       key === "secretProviders" ||
+      key === "secretProviderVaults" ||
       key === "browserLogins"
     ) {
       changesProviders = true;

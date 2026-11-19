@@ -100,6 +100,7 @@ import {
   ThreadId,
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
+  SecretProviderVaultsError,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -126,6 +127,7 @@ import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts"
 import * as DocumentText from "./provider/DocumentText.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as SecretProviderVaults from "./secrets/SecretProviderVaults.ts";
 import * as SecretRelay from "./secrets/SecretRelay.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
@@ -1469,6 +1471,9 @@ export const layerWsRpc = (
       // Optional, so a socket built without the relay answers nothing and finds no device.
       const secretRelay = yield* Effect.serviceOption(SecretRelay.SecretRelay);
       const secretRelayDevice = yield* Effect.serviceOption(SecretRelayDevice.SecretRelayDevice);
+      const secretProviderVaults = yield* Effect.serviceOption(
+        SecretProviderVaults.SecretProviderVaults,
+      );
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
@@ -2017,6 +2022,7 @@ export const layerWsRpc = (
           secretReferences: true,
           secretRequestReferences: true,
           secretProviderCredentials: true,
+          secretProviderVaults: Option.isSome(secretProviderVaults),
           secretRelay: true,
           secretRelayLoginChoice: true,
           ...Option.match(scratchWorkspaceRoot, {
@@ -2803,6 +2809,14 @@ export const layerWsRpc = (
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) => resourceTelemetry.retry,
         [WS_METHODS.serverCheckOtlpEndpoint]: (input) => otlpEndpointCheck.check(input),
         [WS_METHODS.serverListTextGeneratorModels]: (input) => textGenerators.listModels(input),
+        [WS_METHODS.serverListSecretProviderVaults]: (input) =>
+          Option.match(secretProviderVaults, {
+            onNone: () =>
+              Effect.fail(
+                new SecretProviderVaultsError({ message: "This server cannot list vaults." }),
+              ),
+            onSome: (vaults) => vaults.list(input.secretProviderId),
+          }),
         [WS_METHODS.serverPrepareTriage]: (input) => triage.prepare(input),
         [WS_METHODS.serverSignalProcess]: (input) => processDiagnostics.signal(input),
         [WS_METHODS.serverReportClientActivity]: (input, metadata) =>
@@ -3608,6 +3622,7 @@ export const layer = Layer.unwrap(
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const secretRelay = yield* SecretRelay.SecretRelay;
     const secretRelayDevice = yield* SecretRelayDevice.SecretRelayDevice;
+    const secretProviderVaults = yield* SecretProviderVaults.SecretProviderVaults;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3700,6 +3715,10 @@ export const layer = Layer.unwrap(
               // Server-wide, so a device's answer reaches the call waiting on another socket.
               Layer.provide(Layer.succeed(SecretRelay.SecretRelay, secretRelay)),
               Layer.provide(Layer.succeed(SecretRelayDevice.SecretRelayDevice, secretRelayDevice)),
+              // A socket sees only what is handed to it here, not what the routes were built with.
+              Layer.provide(
+                Layer.succeed(SecretProviderVaults.SecretProviderVaults, secretProviderVaults),
+              ),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

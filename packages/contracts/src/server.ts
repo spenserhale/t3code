@@ -660,6 +660,11 @@ export const ServerConfig = Schema.Struct({
   secretRelay: Schema.optionalKey(Schema.Boolean),
   /** The desktop can choose from a relayed list of saved logins. */
   secretRelayLoginChoice: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Secret providers can be limited to chosen vaults, per environment and per project (the
+   * `secretProviderVaults` setting), and `server.listSecretProviderVaults` lists them.
+   */
+  secretProviderVaults: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**

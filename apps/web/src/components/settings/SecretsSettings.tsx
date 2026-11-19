@@ -1,9 +1,15 @@
-import type { EnvironmentId, SecretProviderConfig, SecretProviderId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ProjectId,
+  SecretProviderConfig,
+  SecretProviderId,
+} from "@t3tools/contracts";
 import { PlusIcon } from "lucide-react";
 import { useState } from "react";
 
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../../hooks/useSettings";
 import type { EnvironmentPresentation } from "../../state/environments";
+import { useProjects } from "../../state/entities";
 import { useEnvironmentSessionState } from "../../state/session";
 import { OnePasswordIcon, type Icon } from "../Icons";
 import {
@@ -18,6 +24,12 @@ import {
 import { Button } from "../ui/button";
 import { SecretProviderDialog } from "./SecretProviderDialog";
 import { classifySecretProvider } from "./SecretProviderDialog.logic";
+import { SecretProviderVaultsDialog } from "./SecretProviderVaultsDialog";
+import {
+  projectsWithOwnVaultChoice,
+  summarizeVaultChoice,
+  type VaultChoiceTarget,
+} from "./SecretProviderVaultsDialog.logic";
 import { secretProviderUses } from "./SecretsSettings.logic";
 import {
   classifyProviderEnvironmentAccess,
@@ -52,6 +64,14 @@ export function SecretsSettingsPanel() {
           key={environment.environmentId}
           environment={environment}
           projectScoped={scope.kind === "project" || scope.kind === "checkout"}
+          projectIds={
+            scope.kind === "project" || scope.kind === "checkout"
+              ? scope.members
+                  .filter((member) => member.environmentId === environment.environmentId)
+                  .map((member) => member.id)
+              : null
+          }
+          projectLabel={scope.label}
         />
       ) : (
         <SettingsSection {...searchableSetting("secret-providers")}>
@@ -67,9 +87,14 @@ export function SecretsSettingsPanel() {
 function EnvironmentSecretProviders({
   environment,
   projectScoped,
+  projectIds,
+  projectLabel,
 }: {
   readonly environment: EnvironmentPresentation;
   readonly projectScoped: boolean;
+  /** This environment's projects behind the selected project or checkout; null at environment scope. */
+  readonly projectIds: ReadonlyArray<ProjectId> | null;
+  readonly projectLabel: string;
 }) {
   const environmentId = environment.environmentId;
   const sessionState = useEnvironmentSessionState(environmentId);
@@ -86,11 +111,28 @@ function EnvironmentSecretProviders({
   const readOnly = access.kind !== "editable" || projectScoped;
   const providers = useEnvironmentSettings(environmentId, (settings) => settings.secretProviders);
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
+  const vaultSettings = useEnvironmentSettings(
+    environmentId,
+    (settings) => settings.secretProviderVaults,
+  );
+  const projects = useProjects();
+  const vaultsSupported = environment.serverConfig?.secretProviderVaults === true;
+  const vaultTarget: VaultChoiceTarget =
+    projectIds === null ? { kind: "environment" } : { kind: "project", projectIds };
+  const projectTitles = new Map(
+    projects
+      .filter((project) => project.environmentId === environmentId)
+      .map((project) => [project.id as string, project.title]),
+  );
   const [dialog, setDialog] = useState<
-    null | { readonly mode: "add" } | { readonly mode: "edit"; readonly id: SecretProviderId }
+    | null
+    | { readonly mode: "add" }
+    | { readonly mode: "edit"; readonly id: SecretProviderId }
+    | { readonly mode: "vaults"; readonly id: SecretProviderId }
   >(null);
   const entries = Object.entries(providers) as Array<[SecretProviderId, SecretProviderConfig]>;
   const editingConfig = dialog?.mode === "edit" ? providers[dialog.id] : undefined;
+  const vaultsConfig = dialog?.mode === "vaults" ? providers[dialog.id] : undefined;
   const editing =
     dialog?.mode === "edit" && editingConfig !== undefined
       ? { id: dialog.id, config: editingConfig }
@@ -125,6 +167,15 @@ function EnvironmentSecretProviders({
               classified.kind === "unsupported"
                 ? undefined
                 : SECRET_PROVIDER_KINDS[classified.kind];
+            const canChooseVaults =
+              vaultsSupported &&
+              classified.kind === "one_password" &&
+              access.kind === "editable" &&
+              (projectIds === null || projectIds.length > 0);
+            const showVaults = vaultsSupported && classified.kind === "one_password";
+            const vaultEntry = Object.hasOwn(vaultSettings, id) ? vaultSettings[id] : undefined;
+            const overriddenProjects =
+              projectIds === null ? projectsWithOwnVaultChoice(vaultEntry, projectTitles) : [];
             return (
               <SettingsRow
                 key={id}
@@ -138,24 +189,45 @@ function EnvironmentSecretProviders({
                 }
                 description={
                   classified.kind === "one_password" && kind ? (
-                    <span className="flex min-w-0 items-center gap-1">
-                      <span className="shrink-0">{kind.name} ·</span>
-                      <RedactedSensitiveText
-                        value={classified.account}
-                        ariaLabel="Toggle account visibility"
-                        revealTooltip="Click to reveal account"
-                        hideTooltip="Click to hide account"
-                        className="max-w-full truncate"
-                      />
+                    <span className="grid min-w-0 gap-0.5">
+                      <span className="flex min-w-0 items-center gap-1">
+                        <span className="shrink-0">{kind.name} ·</span>
+                        <RedactedSensitiveText
+                          value={classified.account}
+                          ariaLabel="Toggle account visibility"
+                          revealTooltip="Click to reveal account"
+                          hideTooltip="Click to hide account"
+                          className="max-w-full truncate"
+                        />
+                      </span>
+                      {showVaults ? (
+                        <span className="block wrap-anywhere">
+                          {summarizeVaultChoice(vaultEntry, vaultTarget, environment.label)}
+                        </span>
+                      ) : null}
+                      {overriddenProjects.length > 0 ? (
+                        <span className="block wrap-anywhere">
+                          Own vaults for: {overriddenProjects.join(", ")}
+                        </span>
+                      ) : null}
                     </span>
                   ) : (
                     `Unsupported provider (${config.kind})`
                   )
                 }
                 control={
-                  !readOnly ? (
+                  !readOnly || canChooseVaults ? (
                     <div className="flex items-center gap-1">
-                      {kind ? (
+                      {canChooseVaults ? (
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => setDialog({ mode: "vaults", id })}
+                        >
+                          Vaults
+                        </Button>
+                      ) : null}
+                      {readOnly ? null : kind ? (
                         <Button
                           size="xs"
                           variant="ghost"
@@ -164,12 +236,14 @@ function EnvironmentSecretProviders({
                           Edit
                         </Button>
                       ) : null}
-                      <RemoveSecretProviderButton
-                        environmentId={environmentId}
-                        id={id}
-                        label={config.label}
-                        onConfirm={() => updateSettings({ secretProviders: { [id]: null } })}
-                      />
+                      {readOnly ? null : (
+                        <RemoveSecretProviderButton
+                          environmentId={environmentId}
+                          id={id}
+                          label={config.label}
+                          onConfirm={() => updateSettings({ secretProviders: { [id]: null } })}
+                        />
+                      )}
                     </div>
                   ) : null
                 }
@@ -185,6 +259,21 @@ function EnvironmentSecretProviders({
           environmentLabel={environment.label}
           existingIds={new Set(Object.keys(providers))}
           {...(editing === undefined ? {} : { existing: editing })}
+        />
+      ) : null}
+      {dialog?.mode === "vaults" &&
+      vaultsConfig !== undefined &&
+      vaultsSupported &&
+      access.kind === "editable" ? (
+        <SecretProviderVaultsDialog
+          onClose={() => setDialog(null)}
+          environmentId={environmentId}
+          environmentLabel={environment.label}
+          providerId={dialog.id}
+          providerLabel={vaultsConfig.label}
+          entry={Object.hasOwn(vaultSettings, dialog.id) ? vaultSettings[dialog.id] : undefined}
+          target={vaultTarget}
+          projectLabel={projectLabel}
         />
       ) : null}
     </>
