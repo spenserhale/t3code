@@ -16,12 +16,10 @@ import {
   type LimitAccount,
   type LimitPoolMember,
   collectLimitPools,
-  cursorUsageWindowDetails,
   displayLimitWindows,
-  formatDuration,
-  formatResetsIn,
   remainingPercent,
 } from "./usageLimits.ts";
+import { cursorUsageWindowDetails, formatDuration, formatResetsIn } from "./usageLimitsCopy.ts";
 
 export interface LimitGlanceRow {
   readonly account: LimitAccount;
@@ -132,8 +130,9 @@ export function collectLimitGlance(
             },
           ];
         }
+        const pool = pools.find((candidate) => candidate.driver === account.driver);
         const details =
-          account.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
+          pool?.driver === "cursor" ? cursorUsageWindowDetails(window.id, pool) : undefined;
         return [
           {
             account,

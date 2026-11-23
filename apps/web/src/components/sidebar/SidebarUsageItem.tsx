@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { collectLimitAccounts } from "@t3tools/shared/usageLimits";
+import { useGT } from "gt-react";
 import { ChartNoAxesColumnIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
@@ -20,6 +21,8 @@ import { readUsagePagePreferences, saveUsagePagePreferences } from "../usage/usa
  * starting or stopping to report.
  */
 export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) {
+  const gt = useGT();
+  const usageLabel = gt("Usage");
   const accounts = collectLimitAccounts(
     useAtomValue(environmentPresentations.presentationsWithProvidersAtom),
   );
@@ -48,7 +51,7 @@ export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) 
 
   const button = (
     <SidebarMenuButton
-      aria-label="Usage"
+      aria-label={usageLabel}
       onBlur={() => {
         suppressFocusOpen.current = false;
       }}
@@ -119,7 +122,7 @@ export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) 
               />
             }
           />
-          {!showGlance ? <TooltipPopup side="top">Usage</TooltipPopup> : null}
+          {!showGlance ? <TooltipPopup side="top">{usageLabel}</TooltipPopup> : null}
         </Tooltip>
         {showGlance ? (
           <PopoverPopup
