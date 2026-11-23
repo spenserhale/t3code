@@ -113,6 +113,7 @@ class SecretRelayResolveError extends Schema.TaggedError<SecretRelayResolveError
 // Fixed, because a failure can quote what it was decoding, and that may be a value.
 const UNREACHABLE: SecretRelayAnswer = {
   type: "unavailable",
+  // oxlint-disable-next-line t3code/no-untranslated-copy -- sent to the requesting server for its agent
   message: "The desktop app could not reach the server on that device.",
 };
 

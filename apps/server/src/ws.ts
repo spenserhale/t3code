@@ -3851,8 +3851,8 @@ export const layer = Layer.unwrap(
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const peerThreadRelay = yield* PeerThreadRelay.PeerThreadRelay;
     const peerClientPairing = yield* PeerClientPairing.PeerClientPairing;
-    const secretRelay = yield* SecretRelay.SecretRelay;
-    const secretRelayDevice = yield* SecretRelayDevice.SecretRelayDevice;
+    const secretRelay = yield* Effect.serviceOption(SecretRelay.SecretRelay);
+    const secretRelayDevice = yield* Effect.serviceOption(SecretRelayDevice.SecretRelayDevice);
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3962,8 +3962,18 @@ export const layer = Layer.unwrap(
               Layer.provide(Layer.succeed(PeerThreadRelay.PeerThreadRelay, peerThreadRelay)),
               Layer.provide(Layer.succeed(PeerClientPairing.PeerClientPairing, peerClientPairing)),
               // Server-wide, so a device's answer reaches the call waiting on another socket.
-              Layer.provide(Layer.succeed(SecretRelay.SecretRelay, secretRelay)),
-              Layer.provide(Layer.succeed(SecretRelayDevice.SecretRelayDevice, secretRelayDevice)),
+              Layer.provide(
+                Option.match(secretRelay, {
+                  onNone: () => Layer.empty,
+                  onSome: (relay) => Layer.succeed(SecretRelay.SecretRelay, relay),
+                }),
+              ),
+              Layer.provide(
+                Option.match(secretRelayDevice, {
+                  onNone: () => Layer.empty,
+                  onSome: (device) => Layer.succeed(SecretRelayDevice.SecretRelayDevice, device),
+                }),
+              ),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

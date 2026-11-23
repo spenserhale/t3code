@@ -901,6 +901,8 @@ describe("SecretRelayDevice", () => {
       attached: Stream.empty,
       isAttached: () => Effect.succeed(false),
       isShown: () => false,
+      awaitShown: () => Effect.succeed(false),
+      loadFailure: () => undefined,
       endpoint: () => Effect.die("The device draws no tab here."),
       pointer: () => Effect.void,
       turn: () => Effect.void,
