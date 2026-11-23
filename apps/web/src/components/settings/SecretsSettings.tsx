@@ -105,6 +105,7 @@ function EnvironmentSecretProviders({
 }) {
   const setting = useSearchableSetting();
   const gt = useGT();
+  const messages = useMessages();
   const environmentId = environment.environmentId;
   const sessionState = useEnvironmentSessionState(environmentId);
   // The server requires the same grant for secret providers as for provider settings.
@@ -213,12 +214,19 @@ function EnvironmentSecretProviders({
                       </span>
                       {showVaults ? (
                         <span className="block wrap-anywhere">
-                          {summarizeVaultChoice(vaultEntry, vaultTarget, environment.label)}
+                          {summarizeVaultChoice(
+                            vaultEntry,
+                            vaultTarget,
+                            environment.label,
+                            messages,
+                          )}
                         </span>
                       ) : null}
                       {overriddenProjects.length > 0 ? (
                         <span className="block wrap-anywhere">
-                          Own vaults for: {overriddenProjects.join(", ")}
+                          {gt("Own vaults for: {projects}", {
+                            projects: overriddenProjects.join(", "),
+                          })}
                         </span>
                       ) : null}
                     </span>
@@ -235,7 +243,7 @@ function EnvironmentSecretProviders({
                           variant="ghost"
                           onClick={() => setDialog({ mode: "vaults", id })}
                         >
-                          Vaults
+                          <T>Vaults</T>
                         </Button>
                       ) : null}
                       {readOnly ? null : kind ? (

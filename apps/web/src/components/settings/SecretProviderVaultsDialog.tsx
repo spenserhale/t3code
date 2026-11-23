@@ -4,6 +4,7 @@ import type {
   SecretProviderVault,
   SecretProviderVaultScope,
 } from "@t3tools/contracts";
+import { T, useGT, useMessages, Var } from "gt-react";
 import { useEffect, useRef, useState } from "react";
 
 import { useStableCallback } from "../../hooks/useStableCallback";
@@ -61,8 +62,10 @@ export function SecretProviderVaultsDialog({
   readonly entry: SecretProviderVaultScope | undefined;
   readonly target: VaultChoiceTarget;
   /** The selected project's name, for a project target. */
-  readonly projectLabel?: string;
+  readonly projectLabel: string;
 }) {
+  const gt = useGT();
+  const messages = useMessages();
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
   const [opened] = useState<VaultChoiceDraft>(() => draftFromVaultEntry(entry, target));
   const [draft, setDraft] = useState<VaultChoiceDraft>(opened);
@@ -119,11 +122,21 @@ export function SecretProviderVaultsDialog({
     >
       <DialogPopup className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Vaults for {providerLabel}</DialogTitle>
+          <DialogTitle>
+            <T>
+              Vaults for <Var>{providerLabel}</Var>
+            </T>
+          </DialogTitle>
           <DialogDescription>
             {isProject
-              ? `Choose which vaults ${providerLabel} reads for ${projectLabel ?? "this project"}. Provider variables and requests relayed to another device use their environment's vaults.`
-              : `Choose which vaults ${providerLabel} reads on ${environmentLabel}. Recommended: allow only the vaults agents need, such as a vault set aside for them.`}
+              ? gt(
+                  "Choose which vaults {provider} reads for {project}. Provider variables and requests relayed to another device use their environment's vaults.",
+                  { provider: providerLabel, project: projectLabel },
+                )
+              : gt(
+                  "Choose which vaults {provider} reads on {environment}. Recommended: allow only the vaults agents need, such as a vault set aside for them.",
+                  { provider: providerLabel, environment: environmentLabel },
+                )}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -136,19 +149,19 @@ export function SecretProviderVaultsDialog({
             }}
           >
             <RadioGroup
-              aria-label="Vaults to read"
+              aria-label={gt("Vaults to read")}
               value={draft.mode}
               onValueChange={(value) => setMode(value as VaultChoiceMode)}
             >
               {isProject ? (
                 <ModeOption
                   value="inherit"
-                  title={`Same as ${environmentLabel}`}
-                  description={summarizeVaults(entry?.vaults)}
+                  title={gt("Same as {environment}", { environment: environmentLabel })}
+                  description={summarizeVaults(entry?.vaults, messages)}
                 />
               ) : null}
-              <ModeOption value="all" title="All vaults" />
-              <ModeOption value="only" title="Only these vaults" />
+              <ModeOption value="all" title={gt("All vaults")} />
+              <ModeOption value="only" title={gt("Only these vaults")} />
             </RadioGroup>
             {draft.mode === "only" ? (
               <VaultChecklist
@@ -166,10 +179,10 @@ export function SecretProviderVaultsDialog({
         </DialogPanel>
         <DialogFooter variant="bare">
           <Button variant="outline" onClick={onClose}>
-            Cancel
+            <T>Cancel</T>
           </Button>
           <Button type="submit" form="secret-provider-vaults-form" disabled={!canSave}>
-            Save
+            <T>Save</T>
           </Button>
         </DialogFooter>
       </DialogPopup>
@@ -218,7 +231,9 @@ function VaultChecklist({
     return (
       <p className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
         <Spinner size="sm" tone="muted" />
-        Listing vaults. 1Password on {environmentLabel} may ask to unlock.
+        <T>
+          Listing vaults. 1Password on <Var>{environmentLabel}</Var> may ask to unlock.
+        </T>
       </p>
     );
   }
@@ -228,7 +243,7 @@ function VaultChecklist({
         <p className="text-xs text-destructive wrap-anywhere">{listing.message}</p>
         <div>
           <Button type="button" size="xs" variant="outline" onClick={onRetry}>
-            Retry
+            <T>Retry</T>
           </Button>
         </div>
       </div>
@@ -237,7 +252,9 @@ function VaultChecklist({
   return (
     <div className="grid gap-2">
       {rows.length === 0 ? (
-        <p className="text-xs text-muted-foreground">This account has no vaults to list.</p>
+        <p className="text-xs text-muted-foreground">
+          <T>This account has no vaults to list.</T>
+        </p>
       ) : (
         <div className="max-h-64 overflow-y-auto rounded-lg border divide-y">
           {rows.map((row) => (
@@ -251,7 +268,11 @@ function VaultChecklist({
               />
               <span className="min-w-0 text-sm wrap-anywhere">{row.name}</span>
               {row.missing ? (
-                <span className="ms-auto shrink-0 text-xs text-muted-foreground">not found</span>
+                <span className="ms-auto shrink-0 text-xs text-muted-foreground">
+                  <T context="a vault saved earlier that the password manager no longer lists">
+                    not found
+                  </T>
+                </span>
               ) : null}
             </label>
           ))}
@@ -259,7 +280,7 @@ function VaultChecklist({
       )}
       {selectedIds.length === 0 ? (
         <p className="text-xs text-muted-foreground">
-          With none chosen, this provider reads no vault here.
+          <T>With none chosen, this provider reads no vault here.</T>
         </p>
       ) : null}
     </div>

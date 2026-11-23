@@ -8754,6 +8754,7 @@
   "90e071b1778fa1d4": "Outside this machine's service accounts",
   "bda088498300ed59": "Agents signing up for new accounts save the generated password here before sending the form. A service account needs write access to this vault; its permissions cannot be changed after it is created.",
   "8704d01b66304522": "This password manager is not chosen for logins above, so agents cannot create logins.",
+  "89cb75779dcddbc2": "This vault is left out of the vaults this password manager may read, so agents cannot save new logins to it. Change it in Settings > Secrets.",
   "8470ea44c0f4afe5": "Reset where new logins are saved to default",
   "af5d727bdf0d8f5c": "Password manager for new logins",
   "2b509dac8227a8d3": "Vault for new logins",
@@ -10023,6 +10024,36 @@
   "c3d6c8494c7d4b8f": "The account shorthand, sign-in address without https://, or ID that op account list shows.",
   "df2d1feea6bdcc51": "Service account token",
   "6a5ee237e8531173": "For servers where nobody unlocks 1Password. Give the service account only the vaults it needs.",
+  "bb3282a8858f391a": "All vaults",
+  "54dbd949bfe288d7": "No vaults",
+  "24f2b21b6557f46e": "{name} and {count} more",
+  "3d41d7e4eb8e60e3": "This project: {vaults}",
+  "3f59269859116db9": "Inherited from {environment}: {vaults}",
+  "29438a1077adbc80": "Choose which vaults {provider} reads for {project}. Provider variables and requests relayed to another device use their environment's vaults.",
+  "7ed6dd150e35ebd8": "Choose which vaults {provider} reads on {environment}. Recommended: allow only the vaults agents need, such as a vault set aside for them.",
+  "243d961e3706ab56": "Vaults to read",
+  "2870e10a85440976": "Same as {environment}",
+  "8ad1b03aef5deffd": "Only these vaults",
+  "c2db67198aba6a9e": [
+    "Vaults for ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "870959f401447183": [
+    "Listing vaults. 1Password on ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " may ask to unlock."
+  ],
+  "a3bc1ed87d5875d8": "This account has no vaults to list.",
+  "c54c401a3aef169a": "not found",
+  "dbefc831ba6cbe84": "With none chosen, this provider reads no vault here.",
   "afa8b4a2e025dd36": "Value",
   "13f8f1e086293635": "{label} source",
   "4579dce838e7c0a3": "Could not reach the server",
@@ -10038,6 +10069,7 @@
   "cd90b098a17bca20": "No secret providers configured.",
   "1c9374501ee389d3": "Add a 1Password account, then pick it as the source of a provider variable.",
   "382541febe15f472": "Toggle account visibility",
+  "139948ccf6b9a20c": "Own vaults for: {projects}",
   "40426afd511710f8": "Unsupported provider ({kind})",
   "69dc1b9968c66243": [
     "Update T3 Code on ",
@@ -10050,6 +10082,7 @@
   ],
   "13d4f258e93f1dc1": "Connect an environment to manage the secret providers its provider variables read from.",
   "88466f5a03be2419": "Environment-wide setting. Select an environment to change it.",
+  "9e0b74c0d81b9bba": "Vaults",
   "a3538ba5ca802bd7": [
     "Remove ",
     {

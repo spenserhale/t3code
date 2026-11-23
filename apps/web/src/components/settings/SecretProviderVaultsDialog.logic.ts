@@ -1,4 +1,7 @@
 import type { ProjectId, SecretProviderVault, SecretProviderVaultScope } from "@t3tools/contracts";
+import { msg } from "gt-react";
+
+import { m, type MessageResolver } from "../../i18n/messages";
 
 /** Where a vault choice is made: the environment itself, or the projects of one environment. */
 export type VaultChoiceTarget =
@@ -117,12 +120,15 @@ export function toggleVaultId(
 const LISTED_VAULT_NAMES = 2;
 
 /** "All vaults", "No vaults", "Secode, AWS Servers", or "Secode and 3 more". */
-export function summarizeVaults(vaults: ReadonlyArray<SecretProviderVault> | undefined): string {
-  if (vaults === undefined) return "All vaults";
-  if (vaults.length === 0) return "No vaults";
+export function summarizeVaults(
+  vaults: ReadonlyArray<SecretProviderVault> | undefined,
+  resolve: MessageResolver = m,
+): string {
+  if (vaults === undefined) return resolve(msg("All vaults"));
+  if (vaults.length === 0) return resolve(msg("No vaults"));
   const names = vaults.map((vault) => vault.name || vault.id);
   if (names.length <= LISTED_VAULT_NAMES) return names.join(", ");
-  return `${names[0]} and ${names.length - 1} more`;
+  return resolve(msg("{name} and {count} more", { name: names[0], count: names.length - 1 }));
 }
 
 /** The one-line summary under a provider: the choice here, and where it comes from at a project. */
@@ -130,12 +136,22 @@ export function summarizeVaultChoice(
   entry: SecretProviderVaultScope | undefined,
   target: VaultChoiceTarget,
   environmentLabel: string,
+  resolve: MessageResolver = m,
 ): string {
-  if (target.kind === "environment") return summarizeVaults(entry?.vaults);
+  if (target.kind === "environment") return summarizeVaults(entry?.vaults, resolve);
   const choice = projectChoice(entry, target.projectIds);
   return choice.own
-    ? `This project: ${summarizeVaults(choice.vaults ?? undefined)}`
-    : `Inherited from ${environmentLabel}: ${summarizeVaults(entry?.vaults)}`;
+    ? resolve(
+        msg("This project: {vaults}", {
+          vaults: summarizeVaults(choice.vaults ?? undefined, resolve),
+        }),
+      )
+    : resolve(
+        msg("Inherited from {environment}: {vaults}", {
+          environment: environmentLabel,
+          vaults: summarizeVaults(entry?.vaults, resolve),
+        }),
+      );
 }
 
 /** Titles of the projects with their own choice, sorted. Projects the client does not know are left out. */

@@ -8752,6 +8752,7 @@
   "90e071b1778fa1d4": "Utanför den här datorns tjänstekonton",
   "bda088498300ed59": "Agenter som registrerar nya konton sparar det genererade lösenordet här innan de skickar formuläret. Ett tjänstekonto behöver skrivbehörighet till det här valvet; dess behörigheter kan inte ändras när det har skapats.",
   "8704d01b66304522": "Den här lösenordshanteraren är inte vald för inloggningar ovan, så agenter kan inte skapa inloggningar.",
+  "89cb75779dcddbc2": "Det här valvet ingår inte i de valv som lösenordshanteraren får läsa, så agenter kan inte spara nya inloggningar i det. Ändra det under Inställningar > Hemligheter.",
   "8470ea44c0f4afe5": "Återställ var nya inloggningar sparas till standard",
   "af5d727bdf0d8f5c": "Lösenordshanterare för nya inloggningar",
   "2b509dac8227a8d3": "Valv för nya inloggningar",
@@ -10021,6 +10022,36 @@
   "c3d6c8494c7d4b8f": "Kontots kortnamn, inloggningsadressen utan https:// eller id:t som op account list visar.",
   "df2d1feea6bdcc51": "Tjänstekontotoken",
   "6a5ee237e8531173": "För servrar där ingen låser upp 1Password. Ge tjänstekontot bara de valv det behöver.",
+  "bb3282a8858f391a": "Alla valv",
+  "54dbd949bfe288d7": "Inga valv",
+  "24f2b21b6557f46e": "{name} och {count} till",
+  "3d41d7e4eb8e60e3": "Det här projektet: {vaults}",
+  "3f59269859116db9": "Ärvt från {environment}: {vaults}",
+  "29438a1077adbc80": "Välj vilka valv {provider} läser för {project}. Leverantörsvariabler och förfrågningar som vidarebefordras till en annan enhet använder sin miljös valv.",
+  "7ed6dd150e35ebd8": "Välj vilka valv {provider} läser på {environment}. Rekommenderat: tillåt bara de valv som agenterna behöver, till exempel ett valv avsatt för dem.",
+  "243d961e3706ab56": "Valv att läsa",
+  "2870e10a85440976": "Samma som {environment}",
+  "8ad1b03aef5deffd": "Bara de här valven",
+  "c2db67198aba6a9e": [
+    "Valv för ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "870959f401447183": [
+    "Listar valv. 1Password på ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " kan be om att låsas upp."
+  ],
+  "a3bc1ed87d5875d8": "Kontot har inga valv att lista.",
+  "c54c401a3aef169a": "hittades inte",
+  "dbefc831ba6cbe84": "Utan något valt läser leverantören inget valv här.",
   "afa8b4a2e025dd36": "Värde",
   "13f8f1e086293635": "Källa för {label}",
   "4579dce838e7c0a3": "Kunde inte nå servern",
@@ -10036,6 +10067,7 @@
   "cd90b098a17bca20": "Inga hemlighetsleverantörer konfigurerade.",
   "1c9374501ee389d3": "Lägg till ett 1Password-konto och välj det sedan som källa för en leverantörsvariabel.",
   "382541febe15f472": "Växla kontots synlighet",
+  "139948ccf6b9a20c": "Egna valv för: {projects}",
   "40426afd511710f8": "Leverantör som inte stöds ({kind})",
   "69dc1b9968c66243": [
     "Uppdatera T3 Code på ",
@@ -10048,6 +10080,7 @@
   ],
   "13d4f258e93f1dc1": "Anslut en miljö för att hantera de hemlighetsleverantörer som dess leverantörsvariabler läser från.",
   "88466f5a03be2419": "Inställning för hela miljön. Välj en miljö för att ändra den.",
+  "9e0b74c0d81b9bba": "Valv",
   "a3538ba5ca802bd7": [
     "Ta bort ",
     {
