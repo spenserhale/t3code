@@ -5517,7 +5517,7 @@ it.live("preview_evaluate answers as before where logins can be filled", () => {
         // A page may use the name `origin` for something of its own.
         expect(yield* run("var origin = 5; origin")).toBe(5);
         expect(yield* run("origin + 1")).toBe(6);
-        expect(yield* run("document.body", { returnByValue: false })).toBe("body");
+        expect(yield* run("document.body")).toEqual({});
         const fails = (expression: string) => invoke("evaluate", { expression }).pipe(Effect.flip);
         expect((yield* fails("throw new Error('boom')")).message).toContain("Error: boom");
         expect((yield* fails("not script")).message).toContain("SyntaxError");
@@ -5895,6 +5895,8 @@ it.live("a headless tab on a server with its desktop app asks there before filli
       attached: Stream.empty,
       isAttached: () => Effect.succeed(false),
       isShown: () => false,
+      awaitShown: () => Effect.succeed(false),
+      loadFailure: () => undefined,
       endpoint: () => Effect.die("The desktop does not draw this tab."),
       pointer: () => Effect.void,
       turn: () => Effect.void,

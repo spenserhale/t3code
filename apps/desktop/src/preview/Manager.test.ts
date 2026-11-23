@@ -2782,7 +2782,8 @@ describe("PreviewManager", () => {
       withheld(yield* captureWhile(loads(["doc-3", "back_forward"], ["doc-4", "navigate"])));
       // A login is filled into the page as it is captured.
       withheld(yield* captureWhile(fill("doc-4")));
-      expect(guest.capturePage).toHaveBeenCalledTimes(3);
+      // The saved screenshot also took a warmup capture; each withheld one stopped at its first.
+      expect(guest.capturePage).toHaveBeenCalledTimes(4);
       expect(writeFile).toHaveBeenCalledOnce();
 
       guest.load("doc-5", "navigate");

@@ -1700,17 +1700,17 @@ function BrowserProfilesSetting({ disabled }: { readonly disabled: boolean }) {
   );
 }
 
-const LOGIN_APPROVAL_OPTIONS: ReadonlyArray<{
-  readonly value: BrowserLoginApproval;
-  readonly label: string;
-}> = [
-  { value: "request", label: "Every login" },
-  { value: "thread", label: "Once per thread" },
-  { value: "application", label: "Once until restart" },
-  { value: "never", label: "Don't ask" },
-];
+const LOGIN_APPROVAL_LABELS: Readonly<Record<BrowserLoginApproval, string>> = {
+  request: msg("Every login"),
+  thread: msg("Once per thread"),
+  application: msg("Once until restart"),
+  never: msg("Don't ask"),
+};
 
 function BrowserLoginSettings() {
+  const searchableSetting = useSearchableSetting();
+  const gt = useGT();
+  const m = useMessages();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const { approval } = settings.browserLogins;
@@ -1726,7 +1726,7 @@ function BrowserLoginSettings() {
     ...providers,
     ...chosen
       .filter((id) => !providers.some((provider) => provider.id === id))
-      .map((id) => ({ id, label: `${id} (unavailable)` })),
+      .map((id) => ({ id, label: gt("{id} (unavailable)", { id }) })),
   ];
   const off = chosen.length === 0;
   const save = (secretProviderIds: ReadonlyArray<SecretProviderId>, nextApproval = approval) =>
@@ -1745,12 +1745,17 @@ function BrowserLoginSettings() {
         {...searchableSetting("browser-login-provider")}
         description={
           providers.length === 0 && off
-            ? "Add a 1Password provider in Settings > Secrets to let agents sign in to sites."
-            : "Agents can sign the built-in browser in to sites with logins saved here. They never see the values."
+            ? gt("Add a 1Password provider in Settings > Secrets to let agents sign in to sites.")
+            : gt(
+                "Agents can sign the built-in browser in to sites with logins saved here. They never see the values.",
+              )
         }
         resetAction={
           !off ? (
-            <SettingResetButton label="password managers for logins" onClick={() => save([])} />
+            <SettingResetButton
+              ariaLabel={gt("Reset password managers for logins to default")}
+              onClick={() => save([])}
+            />
           ) : null
         }
         control={
@@ -1758,11 +1763,11 @@ function BrowserLoginSettings() {
             <MenuTrigger
               render={<SelectButton size="sm" />}
               className="w-full min-w-0 sm:w-56"
-              aria-label="Password managers for logins"
+              aria-label={gt("Password managers for logins")}
               disabled={options.length === 0}
             >
               {off
-                ? "Off"
+                ? gt("Off", { $context: "no password manager chosen" })
                 : chosen
                     .map((id) => options.find((option) => option.id === id)?.label ?? id)
                     .join(", ")}
@@ -1792,16 +1797,20 @@ function BrowserLoginSettings() {
         serverScoped
         settingKeys={["browserLogins"]}
         {...searchableSetting("browser-login-approval")}
-        description="Like 1Password's approval setting. Only the desktop app that runs this environment can ask."
+        description={gt(
+          "Like 1Password's approval setting. Only the desktop app that runs this environment can ask.",
+        )}
         status={
           approval === "never"
-            ? "Agents can fill any login these password managers can see, without asking. Use it with a service account limited to an agents vault."
+            ? gt(
+                "Agents can fill any login these password managers can see, without asking. Use it with a service account limited to an agents vault.",
+              )
             : undefined
         }
         resetAction={
           approval !== DEFAULT_BROWSER_LOGIN_APPROVAL ? (
             <SettingResetButton
-              label="ask before filling"
+              ariaLabel={gt("Reset ask before filling to default")}
               onClick={() => save(chosen, DEFAULT_BROWSER_LOGIN_APPROVAL)}
             />
           ) : null
@@ -1815,18 +1824,18 @@ function BrowserLoginSettings() {
             <SelectTrigger
               size="sm"
               className="w-full min-w-0 sm:w-56"
-              aria-label="Ask before filling"
+              aria-label={gt("Ask before filling")}
             >
-              <SelectValue>
-                {LOGIN_APPROVAL_OPTIONS.find((option) => option.value === approval)?.label}
-              </SelectValue>
+              <SelectValue>{m(LOGIN_APPROVAL_LABELS[approval])}</SelectValue>
             </SelectTrigger>
             <SelectPopup align="end" alignItemWithTrigger={false}>
-              {LOGIN_APPROVAL_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
+              {(Object.keys(LOGIN_APPROVAL_LABELS) as ReadonlyArray<BrowserLoginApproval>).map(
+                (value) => (
+                  <SelectItem key={value} value={value}>
+                    {m(LOGIN_APPROVAL_LABELS[value])}
+                  </SelectItem>
+                ),
+              )}
             </SelectPopup>
           </Select>
         }
@@ -1847,7 +1856,7 @@ export function BrowserSettingsPanel() {
         <AgentBrowserAccessSetting />
       </SettingsSection>
       {isSecretsFeatureEnabled ? (
-        <SettingsSection id="browser-logins" title="Logins">
+        <SettingsSection id="browser-logins" title={gt("Logins")}>
           <BrowserLoginSettings />
         </SettingsSection>
       ) : null}

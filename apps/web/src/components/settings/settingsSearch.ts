@@ -1139,19 +1139,21 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "browser-login-provider",
-    title: "Password managers for logins",
+    title: msg("Password managers for logins"),
     to: "/settings/browser",
     searchTerms: [
-      "agent sign in log in credentials 1password fill website browser work personal accounts",
+      msg("agent sign in log in credentials 1password fill website browser work personal accounts"),
     ],
     secretsFeatureOnly: true,
   },
   {
     id: "browser-login-approval",
-    title: "Ask before filling",
+    title: msg("Ask before filling"),
     to: "/settings/browser",
     searchTerms: [
-      "login approval every once per thread until restart dialog 1password don't ask never service account",
+      msg(
+        "login approval every once per thread until restart dialog 1password don't ask never service account",
+      ),
     ],
     secretsFeatureOnly: true,
   },

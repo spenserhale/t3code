@@ -795,7 +795,7 @@ const make = Effect.gen(function* () {
     const key = tabKey(tab.threadId, tab.tabId);
     if (tabs.get(key) !== tab) return;
     const crash = {
-      url: ServerBrowserPage.withoutDataPayload(tab.page.url()).slice(0, 2048),
+      url: pageText(ServerBrowserPage.withoutDataPayload(tab.page.url()), 2048),
       code: -2,
       description: "Page crashed",
     };
@@ -2958,8 +2958,6 @@ const make = Effect.gen(function* () {
         });
       await runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
       dropTab(tab, false);
-      // Answered once the page is gone, so a tab opened next finds the browser without it.
-      if (!tab.desktop) await tab.page.close().catch(constVoid);
       return {};
     }
     // Resolve dialogs outside the queue, with ownership checked, to unblock waiting clicks.

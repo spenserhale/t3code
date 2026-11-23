@@ -657,7 +657,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       : []),
     ...(browserLoginProviderIds(settings.browserLogins).length > 0 ||
     settings.browserLogins.approval !== DEFAULT_UNIFIED_SETTINGS.browserLogins.approval
-      ? ["Browser logins"]
+      ? [gt("Browser logins")]
       : []),
   ];
 

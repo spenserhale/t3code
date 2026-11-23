@@ -899,9 +899,10 @@ export function PreviewView({
             screenshotWithheld
               ? {
                   type: "warning",
-                  title: "Page details left out",
-                  description:
+                  title: gt("Page details left out"),
+                  description: gt(
                     "The password manager filled a login in this tab, and this page may show it. Your comment and marks were kept, without the screenshot or anything read from the page. Reload the page to annotate it in full.",
+                  ),
                 }
               : {
                   type: "error",
