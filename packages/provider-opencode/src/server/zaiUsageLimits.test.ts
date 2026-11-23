@@ -16,6 +16,7 @@ import {
   makeUnavailableUsageLimits,
   makeUsageLimits,
 } from "@t3tools/provider-core/server/usageLimits";
+import { openCodeSubscription } from "./subscriptionUsageLimits.ts";
 import {
   combineUsageLimits,
   consumeZaiResetCredit,
@@ -506,6 +507,37 @@ describe("combineUsageLimits", () => {
           ["zai-coding-plan"],
         );
         assert.strictEqual(combined.credentialFingerprint, "zai-fingerprint");
+      }).pipe(Effect.provide(nodeServices)),
+    );
+
+    it.effect("lists OpenCode's own subscription as the plan its windows read", () =>
+      Effect.gen(function* () {
+        const budget = {
+          id: "budget_all",
+          kind: "other",
+          label: "Console · Shared · All spend",
+          usedPercent: 75,
+        } as const;
+        const workspace = (windows: ServerProviderUsageLimits["windows"]) => ({
+          ...makeUsageLimits({ checkedAt, windows }),
+          credentialFingerprint: "opencode-workspace:wrk_team",
+        });
+        const listed = (limits: ServerProviderUsageLimits) =>
+          combineUsageLimits([openCodeSubscription(limits), asZai(unsupported)]).pipe(
+            Effect.map((combined) =>
+              combined.subscriptions?.map(({ id, label, windowIds }) => [id, label, windowIds]),
+            ),
+          );
+        assert.deepStrictEqual(yield* listed(workspace([...go.windows, budget])), [
+          ["opencode-go", "OpenCode Go", ["go_rolling", "go_weekly", "budget_all"]],
+        ]);
+        assert.deepStrictEqual(yield* listed(workspace([budget])), [
+          ["opencode-console", "OpenCode Console", ["budget_all"]],
+        ]);
+        // `go` is what a Go key reads, without a workspace.
+        assert.deepStrictEqual(yield* listed(go), [
+          ["opencode-go", "OpenCode Go", ["go_rolling", "go_weekly"]],
+        ]);
       }).pipe(Effect.provide(nodeServices)),
     );
 

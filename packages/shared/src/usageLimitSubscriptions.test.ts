@@ -312,6 +312,40 @@ describe("subscriptions of one provider account", () => {
     }
   });
 
+  it("counts a Console workspace once across environments and keeps two workspaces apart", () => {
+    const workspace = (id: string, overrides: Partial<ServerProvider> = {}) => {
+      const credentialFingerprint = `opencode-workspace:${id}`;
+      return opencode(
+        {
+          windows: [goWindow],
+          credentialFingerprint,
+          subscriptions: [
+            {
+              id: "opencode-go",
+              label: "OpenCode Go",
+              credentialFingerprint,
+              checkedAt: earlier,
+              windowIds: ["go_rolling"],
+            },
+          ],
+        },
+        overrides,
+      );
+    };
+    const accounts = collectLimitAccounts(
+      environments({
+        A: workspace("wrk_home"),
+        B: workspace("wrk_home"),
+        C: workspace("wrk_team", { displayName: "Team" }),
+      }),
+    );
+    expect(accounts.map((account) => [account.displayName, signedIn(account)])).toEqual([
+      ["OpenCode Go", ["A", "B"]],
+      ["Team · OpenCode Go", ["C"]],
+    ]);
+    expect(columns(accounts)).toEqual({ go_rolling: ["OpenCode Go", "Team · OpenCode Go"] });
+  });
+
   it("gives a window a column for each account on its plan and no other", () => {
     const otherZai = opencode({
       windows: [{ ...zaiWindow, usedPercent: 60 }],
