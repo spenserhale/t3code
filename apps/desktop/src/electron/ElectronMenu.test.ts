@@ -81,6 +81,7 @@ it.effect("closes an aborted native menu and refuses its late row click", () => 
         window,
         items: [{ id: "second", label: "Second login" }],
         position: Option.none(),
+        source: Option.none(),
         signal: cancelled.signal,
       })
       .pipe(Effect.forkScoped);
@@ -100,6 +101,7 @@ it.effect("closes a native popup when its waiting effect is interrupted", () =>
         window,
         items: [{ id: "first", label: "First login" }],
         position: Option.none(),
+        source: Option.none(),
       })
       .pipe(Effect.forkScoped);
     const popup = yield* Queue.take(shown);
@@ -117,6 +119,7 @@ it.effect("keeps explicit selection, scaled positions, and native dismissal work
           window,
           items: [{ id: "first", label: "First login" }],
           position: Option.some({ x: 10, y: 20 }),
+          source: Option.none(),
         })
         .pipe(Effect.forkScoped);
       const popup = yield* Queue.take(shown);
