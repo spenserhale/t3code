@@ -9976,6 +9976,7 @@
   "0c816bce39329beb": "{label} bearbeiten",
   "02f531b974fc3dd5": "1Password-Anbieter hinzufügen",
   "acbf0b4710755dc1": "Persönlich",
+  "e1c587ac93caa69d": "Dienstkonto-Token entfernen",
   "bc714daca44e1826": "Änderungen speichern",
   "787b3fff435313e4": [
     "Anbietervariablen auf ",
@@ -9988,6 +9989,8 @@
   ],
   "daf8daec701f0863": "Konto",
   "c3d6c8494c7d4b8f": "Das Konto-Kürzel, die Anmeldeadresse ohne https:// oder die ID, die op account list anzeigt.",
+  "df2d1feea6bdcc51": "Dienstkonto-Token",
+  "6a5ee237e8531173": "Für Server, auf denen niemand 1Password entsperrt. Gib dem Dienstkonto nur die Tresore, die es braucht.",
   "afa8b4a2e025dd36": "Wert",
   "13f8f1e086293635": "Quelle für {label}",
   "4579dce838e7c0a3": "Server nicht erreichbar",

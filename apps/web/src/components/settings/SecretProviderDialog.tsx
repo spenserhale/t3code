@@ -162,13 +162,15 @@ export function SecretProviderDialog({
             </div>
             {acceptsServiceAccountToken ? (
               <div className="grid gap-1.5">
-                <Label htmlFor="secret-provider-token">Service account token</Label>
+                <Label htmlFor="secret-provider-token">
+                  <T>Service account token</T>
+                </Label>
                 <div className="flex items-center gap-2">
                   <SecretInput
                     id="secret-provider-token"
                     className="min-w-0 flex-1"
                     configured={draft.savedServiceAccountToken !== ""}
-                    placeholder="Optional"
+                    placeholder={gt("Optional")}
                     value={draft.serviceAccountToken}
                     onChange={(event) => update({ serviceAccountToken: event.target.value })}
                     aria-describedby="secret-provider-token-description"
@@ -185,15 +187,17 @@ export function SecretProviderDialog({
                           clearServiceAccountToken: true,
                         })
                       }
-                      aria-label="Clear service account token"
+                      aria-label={gt("Clear service account token")}
                     >
                       <XIcon className="size-3.5" />
                     </Button>
                   ) : null}
                 </div>
                 <p id="secret-provider-token-description" className="text-xs text-muted-foreground">
-                  For servers where nobody unlocks 1Password. Give the service account only the
-                  vaults it needs.
+                  <T>
+                    For servers where nobody unlocks 1Password. Give the service account only the
+                    vaults it needs.
+                  </T>
                 </p>
               </div>
             ) : null}

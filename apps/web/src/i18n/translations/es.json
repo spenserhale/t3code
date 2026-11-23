@@ -9972,6 +9972,7 @@
   "0c816bce39329beb": "Editar {label}",
   "02f531b974fc3dd5": "Añadir un proveedor de 1Password",
   "acbf0b4710755dc1": "Personal",
+  "e1c587ac93caa69d": "Borrar token de cuenta de servicio",
   "bc714daca44e1826": "Guardar cambios",
   "787b3fff435313e4": [
     "Las variables de proveedor de ",
@@ -9984,6 +9985,8 @@
   ],
   "daf8daec701f0863": "Cuenta",
   "c3d6c8494c7d4b8f": "La abreviatura de la cuenta, la dirección de inicio de sesión sin https:// o el ID que muestra op account list.",
+  "df2d1feea6bdcc51": "Token de cuenta de servicio",
+  "6a5ee237e8531173": "Para servidores en los que nadie desbloquea 1Password. Da a la cuenta de servicio solo las bóvedas que necesita.",
   "afa8b4a2e025dd36": "Valor",
   "13f8f1e086293635": "Origen de {label}",
   "4579dce838e7c0a3": "No se pudo contactar con el servidor",

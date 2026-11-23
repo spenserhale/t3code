@@ -9974,6 +9974,7 @@
   "0c816bce39329beb": "Modifier {label}",
   "02f531b974fc3dd5": "Ajouter un fournisseur 1Password",
   "acbf0b4710755dc1": "Personnel",
+  "e1c587ac93caa69d": "Effacer le jeton de compte de service",
   "bc714daca44e1826": "Enregistrer les modifications",
   "787b3fff435313e4": [
     "Les variables de fournisseur sur ",
@@ -9986,6 +9987,8 @@
   ],
   "daf8daec701f0863": "Compte",
   "c3d6c8494c7d4b8f": "Le raccourci du compte, l’adresse de connexion sans https://, ou l’ID affiché par op account list.",
+  "df2d1feea6bdcc51": "Jeton de compte de service",
+  "6a5ee237e8531173": "Pour les serveurs où personne ne déverrouille 1Password. N’accordez au compte de service que les coffres dont il a besoin.",
   "afa8b4a2e025dd36": "Valeur",
   "13f8f1e086293635": "Source de {label}",
   "4579dce838e7c0a3": "Impossible de joindre le serveur",

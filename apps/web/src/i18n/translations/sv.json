@@ -9982,6 +9982,7 @@
   "0c816bce39329beb": "Redigera {label}",
   "02f531b974fc3dd5": "Lägg till en 1Password-leverantör",
   "acbf0b4710755dc1": "Personlig",
+  "e1c587ac93caa69d": "Rensa tjänstekontotoken",
   "bc714daca44e1826": "Spara ändringar",
   "787b3fff435313e4": [
     "Leverantörsvariabler på ",
@@ -9994,6 +9995,8 @@
   ],
   "daf8daec701f0863": "Konto",
   "c3d6c8494c7d4b8f": "Kontots kortnamn, inloggningsadressen utan https:// eller id:t som op account list visar.",
+  "df2d1feea6bdcc51": "Tjänstekontotoken",
+  "6a5ee237e8531173": "För servrar där ingen låser upp 1Password. Ge tjänstekontot bara de valv det behöver.",
   "afa8b4a2e025dd36": "Värde",
   "13f8f1e086293635": "Källa för {label}",
   "4579dce838e7c0a3": "Kunde inte nå servern",
