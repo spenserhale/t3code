@@ -20,7 +20,7 @@ import {
 import { useState } from "react";
 
 import { isElectron } from "~/env";
-import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
+import { namedClipboardTarget, writeTextToClipboard } from "~/hooks/useCopyToClipboard";
 import { cn } from "~/lib/utils";
 import { workspaceAreaProps } from "~/lib/workspaceFocus";
 import { jiraIssueQuery, jiraTransition, jiraTransitionsQuery } from "~/state/jira";
@@ -330,9 +330,11 @@ export function JiraIssuePanel({
           size="icon-sm"
           aria-label="Copy issue key"
           onClick={() =>
-            void writeTextToClipboard(issueKey, "issue key").then((copied) => {
-              if (copied) toastManager.add({ type: "success", title: "Issue key copied" });
-            })
+            void writeTextToClipboard(issueKey, namedClipboardTarget("issue key")).then(
+              (copied) => {
+                if (copied) toastManager.add({ type: "success", title: "Issue key copied" });
+              },
+            )
           }
         >
           <CopyIcon aria-hidden />

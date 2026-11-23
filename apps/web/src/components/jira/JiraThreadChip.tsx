@@ -4,7 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { TicketIcon } from "lucide-react";
 import type { ReactElement } from "react";
 
-import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
+import { namedClipboardTarget, writeTextToClipboard } from "~/hooks/useCopyToClipboard";
 import type { ThreadJiraLink } from "~/state/jira";
 import { cn } from "~/lib/utils";
 import {
@@ -107,9 +107,11 @@ export function JiraThreadChip({
         )}
         <MenuItem
           onClick={() =>
-            void writeTextToClipboard(link.key, "issue key").then((copied) => {
-              if (copied) toastManager.add({ type: "success", title: "Issue key copied" });
-            })
+            void writeTextToClipboard(link.key, namedClipboardTarget("issue key")).then(
+              (copied) => {
+                if (copied) toastManager.add({ type: "success", title: "Issue key copied" });
+              },
+            )
           }
         >
           Copy key
