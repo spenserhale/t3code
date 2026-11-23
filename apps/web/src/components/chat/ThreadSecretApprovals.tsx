@@ -1,10 +1,12 @@
 import type { PendingDesktopSecretApproval } from "@t3tools/contracts";
+import { T, useGT } from "gt-react";
 import { ShieldCheckIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "../ui/button";
 
 export function ThreadSecretApprovals({ threadId }: { threadId: string }) {
+  const gt = useGT();
   const [pending, setPending] = useState<readonly PendingDesktopSecretApproval[]>([]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- The desktop owns pending approvals across thread navigation.
   useEffect(() => window.desktopBridge?.onSecretApprovals?.(setPending), []);
@@ -22,7 +24,7 @@ export function ThreadSecretApprovals({ threadId }: { threadId: string }) {
             <ShieldCheckIcon aria-hidden className="mx-1 inline size-4" />
             {request.threadId === threadId
               ? request.message
-              : `Review request from ${request.threadLabel}`}
+              : gt("Review request from {thread}", { thread: request.threadLabel })}
           </summary>
           <div className="mt-2 flex flex-col gap-2">
             {request.threadId !== threadId && <p className="font-medium">{request.message}</p>}
@@ -38,15 +40,15 @@ export function ThreadSecretApprovals({ threadId }: { threadId: string }) {
             <p className="text-muted-foreground">{request.threadNote}</p>
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={() => request.answer(false)}>
-                Deny
+                <T>Deny</T>
               </Button>
               <Button size="sm" onClick={() => request.answer("once")}>
-                Allow once
+                <T>Allow once</T>
               </Button>
               <Button size="sm" variant="outline" onClick={() => request.answer("thread")}>
                 {request.threadId === threadId
-                  ? "Allow for this thread"
-                  : "Allow for requesting thread"}
+                  ? gt("Allow for this thread")
+                  : gt("Allow for requesting thread")}
               </Button>
             </div>
           </div>
