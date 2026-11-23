@@ -1320,8 +1320,10 @@ export const make = Effect.gen(function* () {
         outputCostPerToken: price.outputUsdPerM / 1_000_000,
         cacheReadCostPerToken: (price.cachedInputUsdPerM ?? price.inputUsdPerM) / 1_000_000,
         cacheCreationCostPerToken: price.inputUsdPerM / 1_000_000,
+        cacheCreation1hCostPerToken: price.inputUsdPerM / 1_000_000,
         fast: null,
         ultrafast: null,
+        contextTiers: [],
       });
     }
     return {

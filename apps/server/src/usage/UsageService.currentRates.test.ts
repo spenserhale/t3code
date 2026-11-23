@@ -162,6 +162,7 @@ it.effect("fills unpriced ids from the catalog and never reprices others", () =>
     // A catalog cache price maps to the cached-input rate; cache writes price at input.
     assert.strictEqual(rates.table.get("w")?.cacheReadCostPerToken, 0.5e-6);
     assert.strictEqual(rates.table.get("w")?.cacheCreationCostPerToken, 1e-6);
+    assert.strictEqual(rates.table.get("w")?.cacheCreation1hCostPerToken, 1e-6);
   }).pipe(
     Effect.provide(
       usageLayer({
@@ -198,8 +199,10 @@ it.effect("leaves the published table alone with no catalog service in the conte
             outputCostPerToken: 2e-6,
             cacheReadCostPerToken: 9e-7,
             cacheCreationCostPerToken: 9e-7,
+            cacheCreation1hCostPerToken: 9e-7,
             fast: null,
             ultrafast: null,
+            contextTiers: [],
           },
         ],
       ],
