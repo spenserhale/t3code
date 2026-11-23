@@ -200,6 +200,8 @@ const setup = (
     attached: Stream.empty,
     isAttached: () => Effect.succeed(false),
     isShown: () => false,
+    awaitShown: () => Effect.succeed(false),
+    loadFailure: () => undefined,
     endpoint: () => Effect.die("No tab is drawn here."),
     pointer: () => Effect.void,
     turn: () => Effect.void,

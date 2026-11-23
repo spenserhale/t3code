@@ -227,6 +227,8 @@
   "17f78424a768a8d5": "{count, plural, one {Försökte besvara {count} väntande frågebegäran} other {Försökte besvara {count} väntande frågebegäranden}}",
   "7265a10d823ae08f": "{count, plural, one {Bad om {count} hemlighet} other {Bad om {count} hemligheter}}",
   "bd4141e4464734ae": "{count, plural, one {Försökte be om {count} hemlighet} other {Försökte be om {count} hemligheter}}",
+  "9eff131f7586ccac": "{count, plural, one {Körde {count} kommando med hemligheter} other {Körde {count} kommandon med hemligheter}}",
+  "bcf23fde9fe19da9": "{count, plural, one {Försökte köra {count} kommando med hemligheter} other {Försökte köra {count} kommandon med hemligheter}}",
   "3685ecb8634fe00c": "{count, plural, one {Lämnade över till {count} worktree} other {Lämnade över till {count} worktrees}}",
   "186bc3ed600d2102": "{count, plural, one {Försökte lämna över till {count} worktree} other {Försökte lämna över till {count} worktrees}}",
   "ea38f91437c9fd84": "{count, plural, one {Läste {count} projekt} other {Läste {count} projekt}}",

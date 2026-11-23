@@ -234,7 +234,8 @@ const RunWithSecretsTool = Tool.make("run_with_secrets", {
 })
   .annotate(Tool.Title, "Run a command with secrets")
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.OpenWorld, true);
+  .annotate(Tool.OpenWorld, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const CreateThreadsTool = Tool.make("create_threads", {
   description:

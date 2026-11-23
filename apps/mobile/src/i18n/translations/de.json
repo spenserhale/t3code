@@ -227,6 +227,8 @@
   "17f78424a768a8d5": "{count, plural, one {Versucht, {count} offene Frage zu beantworten} other {Versucht, {count} offene Fragen zu beantworten}}",
   "7265a10d823ae08f": "{count, plural, one {Nach {count} Geheimnis gefragt} other {Nach {count} Geheimnissen gefragt}}",
   "bd4141e4464734ae": "{count, plural, one {Versucht, nach {count} Geheimnis zu fragen} other {Versucht, nach {count} Geheimnissen zu fragen}}",
+  "9eff131f7586ccac": "{count, plural, one {{count} Befehl mit Geheimnissen ausgeführt} other {{count} Befehle mit Geheimnissen ausgeführt}}",
+  "bcf23fde9fe19da9": "{count, plural, one {Versucht, {count} Befehl mit Geheimnissen auszuführen} other {Versucht, {count} Befehle mit Geheimnissen auszuführen}}",
   "3685ecb8634fe00c": "{count, plural, one {An {count} Worktree übergeben} other {An {count} Worktrees übergeben}}",
   "186bc3ed600d2102": "{count, plural, one {Versucht, an {count} Worktree zu übergeben} other {Versucht, an {count} Worktrees zu übergeben}}",
   "ea38f91437c9fd84": "{count, plural, one {{count} Projekt gelesen} other {{count} Projekte gelesen}}",

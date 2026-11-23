@@ -227,6 +227,8 @@
   "17f78424a768a8d5": "{count, plural, other {대기 중인 질문 요청 {count}개 답변 시도함}}",
   "7265a10d823ae08f": "{count, plural, other {시크릿 {count}개를 요청함}}",
   "bd4141e4464734ae": "{count, plural, other {시크릿 {count}개 요청 시도함}}",
+  "9eff131f7586ccac": "{count, plural, other {시크릿을 사용해 명령 {count}개 실행함}}",
+  "bcf23fde9fe19da9": "{count, plural, other {시크릿을 사용해 명령 {count}개 실행 시도함}}",
   "3685ecb8634fe00c": "{count, plural, other {워크트리 {count}개로 넘김}}",
   "186bc3ed600d2102": "{count, plural, other {워크트리 {count}개로 넘기기 시도함}}",
   "ea38f91437c9fd84": "{count, plural, other {프로젝트 {count}개를 읽음}}",

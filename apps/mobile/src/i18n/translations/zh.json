@@ -227,6 +227,8 @@
   "17f78424a768a8d5": "{count, plural, other {尝试回答 {count} 个待回答的问题请求}}",
   "7265a10d823ae08f": "{count, plural, other {已请求 {count} 个凭据}}",
   "bd4141e4464734ae": "{count, plural, other {尝试请求 {count} 个凭据}}",
+  "9eff131f7586ccac": "{count, plural, other {已使用凭据运行 {count} 条命令}}",
+  "bcf23fde9fe19da9": "{count, plural, other {尝试使用凭据运行 {count} 条命令}}",
   "3685ecb8634fe00c": "{count, plural, other {已移交给 {count} 个工作树}}",
   "186bc3ed600d2102": "{count, plural, other {尝试移交给 {count} 个工作树}}",
   "ea38f91437c9fd84": "{count, plural, other {已读取 {count} 个项目}}",

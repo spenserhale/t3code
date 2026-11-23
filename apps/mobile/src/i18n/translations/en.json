@@ -227,6 +227,8 @@
   "17f78424a768a8d5": "{count, plural, one {Tried to answer {count} pending question request} other {Tried to answer {count} pending question requests}}",
   "7265a10d823ae08f": "{count, plural, one {Asked for {count} secret} other {Asked for {count} secrets}}",
   "bd4141e4464734ae": "{count, plural, one {Tried to ask for {count} secret} other {Tried to ask for {count} secrets}}",
+  "9eff131f7586ccac": "{count, plural, one {Ran {count} command with secrets} other {Ran {count} commands with secrets}}",
+  "bcf23fde9fe19da9": "{count, plural, one {Tried to run {count} command with secrets} other {Tried to run {count} commands with secrets}}",
   "3685ecb8634fe00c": "{count, plural, one {Handed off to {count} worktree} other {Handed off to {count} worktrees}}",
   "186bc3ed600d2102": "{count, plural, one {Tried to hand off to {count} worktree} other {Tried to hand off to {count} worktrees}}",
   "ea38f91437c9fd84": "{count, plural, one {Read {count} project} other {Read {count} projects}}",
