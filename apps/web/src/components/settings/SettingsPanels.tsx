@@ -2534,6 +2534,7 @@ export function AboutSettingsPanel() {
   return (
     <SettingsPageContainer>
       <SettingsSection id="about" title={gt("App")}>
+        {/* oxlint-disable-next-line t3code/no-untranslated-copy -- product tagline */}
         <p className="text-sm text-muted-foreground">Software Engineering · Spenser’s Edition</p>
         {primaryPolicy ? (
           <SettingsRow
