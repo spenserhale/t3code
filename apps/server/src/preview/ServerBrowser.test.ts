@@ -5962,6 +5962,8 @@ const approvingDesktop = (
     attached: Stream.empty,
     isAttached: () => Effect.succeed(false),
     isShown: () => false,
+    awaitShown: () => Effect.succeed(false),
+    loadFailure: () => undefined,
     endpoint: () => Effect.die("The desktop does not draw this tab."),
     pointer: () => Effect.void,
     turn: () => Effect.void,
