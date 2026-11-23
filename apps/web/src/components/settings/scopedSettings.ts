@@ -777,9 +777,7 @@ export function describeScopedSave({
   return {
     type: "error",
     title:
-      saved.length > 0
-        ? m(msg("Setting saved on some environments"))
-        : m(msg("Setting not saved")),
+      saved.length > 0 ? m(msg("Setting saved on some environments")) : m(msg("Setting not saved")),
     description: [
       ...failed.map(({ label, message }) =>
         m(msg("Could not save on {label}: {message}", { label, message })),
