@@ -28,11 +28,13 @@ import { toastManager } from "../ui/toast";
 import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
 import {
   createScopedSettingsWriter,
+  isConnectedWithConfig,
   pendingScopedWritesAtom,
   planProjectOverridesClear,
   planScopedSettingsClear,
   planScopedSettingsPatch,
   planScopedProviderEffortSliderWrite,
+  resolveScopedSettingsTargets,
   scopedSettingsAreMixed,
   scopedSettingsSource,
   settlePendingScopedWrites,
@@ -157,13 +159,23 @@ export function useUpdateScopedSettings() {
 }
 
 export function useUpdateScopedProviderEffortSlider() {
-  const { targets } = useSettingsScope();
+  const { scope, environments } = useSettingsScope();
   const run = useRunScopedPlan();
   return (
     driver: ProviderDriverKind,
     steps: readonly ModelSelection[] | null,
     onFailed?: () => void,
-  ) => run(planScopedProviderEffortSliderWrite(targets, driver, steps), onFailed);
+  ) =>
+    run(
+      environments,
+      (current) =>
+        planScopedProviderEffortSliderWrite(
+          resolveScopedSettingsTargets(scope, current.filter(isConnectedWithConfig)),
+          driver,
+          steps,
+        ),
+      onFailed,
+    );
 }
 
 export function useClearScopedSettings() {

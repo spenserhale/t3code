@@ -7,9 +7,11 @@ import {
   ProviderDriverKind,
   type ModelSelection,
   type ServerSettings,
+  type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -95,6 +97,8 @@ vi.mock(import("../../state/environments"), async (original) => ({
     ),
   }),
   useEnvironmentProviders: () => state.providers,
+  readEnvironment: (environmentId) =>
+    state.environments.find((environment) => environment.environmentId === environmentId) ?? null,
   usePrimaryEnvironmentId: () => primaryId,
   usePrimaryEnvironment: () => state.environments[0] ?? null,
 }));
@@ -159,6 +163,7 @@ function environment(
       enabled: true,
     },
     connection: { phase: "connected", error: null, traceId: null },
+    refusedRouteIds: [],
     serverConfig: {
       environment: {
         environmentId,
@@ -207,7 +212,17 @@ function setup(primary: Partial<ServerSettings>, remote = primary) {
     [remoteId, modelShortcutProviders],
   ]);
   state.writeSettings.mockReset();
-  state.writeSettings.mockResolvedValue(AsyncResult.success(undefined));
+  // A server answers with what it saved and pushes it later, so the write stays shown meanwhile.
+  state.writeSettings.mockImplementation(
+    async (request: { environmentId: EnvironmentId; input: { patch: ServerSettingsPatch } }) => {
+      const saved = state.environments.find(
+        (environment) => environment.environmentId === request.environmentId,
+      )?.serverConfig?.settings;
+      return AsyncResult.success(
+        saved ? applyServerSettingsPatch(saved, request.input.patch) : undefined,
+      );
+    },
+  );
 }
 
 function addEnvironment(environmentId: EnvironmentId, label: string, supportsModel = true) {

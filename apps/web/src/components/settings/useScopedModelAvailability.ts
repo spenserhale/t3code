@@ -35,7 +35,10 @@ function modelCatalogForTarget(
   const optionsForInstance = textGeneration
     ? getTextGenerationModelOptionsByInstance
     : getCustomModelOptionsByInstance;
-  const options = optionsForInstance(mergeEnvironmentSettings(target.settings, settings), providers);
+  const options = optionsForInstance(
+    mergeEnvironmentSettings(target.settings, settings),
+    providers,
+  );
   return new Map(
     entries
       .filter((entry) => entry.enabled && entry.isAvailable)

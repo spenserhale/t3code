@@ -48,7 +48,7 @@ import {
   setSliderStepOptions,
 } from "./modelShortcutsSettings.logic";
 import { SETTINGS_PICKER_TRIGGER_CLASSNAME, SettingsRow, SettingsSection } from "./settingsLayout";
-import { searchableSetting } from "./settingsSearch";
+import { useSearchableSetting } from "./settingsSearch";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { selectEnvironmentSubset } from "./settingsScopeAxis";
 import {
@@ -262,6 +262,7 @@ function ProjectListControl(props: {
 }
 
 export function ModelShortcutsSettings() {
+  const searchableSetting = useSearchableSetting();
   const { scope, search, selectScope, target, targets, connectedEnvironments } = useSettingsScope();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
