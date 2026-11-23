@@ -158,7 +158,7 @@ export function useUpdateScopedModelDefaults() {
   const { scope, environments } = useSettingsScope();
   const run = useRunScopedPlan();
   return (defaults: Parameters<typeof planScopedModelDefaults>[2]) =>
-    run(planScopedModelDefaults(scope, environments, defaults));
+    run(environments, (current) => planScopedModelDefaults(scope, current, defaults));
 }
 
 export function useClearScopedSettings() {
