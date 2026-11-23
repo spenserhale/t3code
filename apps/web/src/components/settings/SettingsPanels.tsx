@@ -969,13 +969,13 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
-          {...searchableSetting("thread-order")}
+          {...setting("thread-order")}
           description="Order of threads in the sidebar inbox. Any order but Default turns off dragging to reorder the inbox. The boring sidebar in Labs always orders by last user message."
           resetAction={
             settings.sidebarInboxThreadOrder !==
             DEFAULT_UNIFIED_SETTINGS.sidebarInboxThreadOrder ? (
               <SettingResetButton
-                label="thread order"
+                ariaLabel="Reset thread order to default"
                 onClick={() =>
                   updateSettings({
                     sidebarInboxThreadOrder: DEFAULT_UNIFIED_SETTINGS.sidebarInboxThreadOrder,
