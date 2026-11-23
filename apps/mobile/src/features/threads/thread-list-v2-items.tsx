@@ -156,7 +156,7 @@ const DONE_STATUS_LABEL: StatusLabel = {
   iconTintClassName: "accent-adaptive-emerald-700-300",
 };
 const BACKGROUND_STATUS_LABEL: StatusLabel = {
-  label: "Background",
+  label: msg("Background", { $context: "thread status, background processes running" }),
   icon: "terminal",
   className: "text-foreground-muted",
   iconTintClassName: "accent-foreground-muted",
@@ -879,9 +879,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const isUnread = status === "ready" && threadHasUnseenCompletion(thread);
   const workingLabel = STATUS_LABEL_BY_STATUS[status];
   const showsWoke = status === "ready" && props.wokeAt !== null;
-  const backgroundSummary = backgroundProcessSummary(thread.pendingBackgroundTasks);
+  const backgroundSummary = backgroundProcessSummary(thread.pendingBackgroundTasks, m);
   const showsBackground =
-    status === "ready" &&
+    rawStatus === "ready" &&
     !showsWoke &&
     !isUnread &&
     !(thread.interactionMode === "plan" && thread.hasActionableProposedPlan) &&

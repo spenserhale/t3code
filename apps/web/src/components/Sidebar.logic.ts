@@ -1296,7 +1296,7 @@ export function resolveThreadStatusPill(input: {
     backgroundProcessSummary(thread.pendingBackgroundTasks ?? []) !== null
   ) {
     return {
-      label: "Background",
+      label: msg("Background"),
       colorClass: "text-sidebar-muted-foreground",
       dotClass: "bg-sidebar-muted-foreground",
       pulse: false,

@@ -287,13 +287,13 @@ function SidebarThreadTooltip({
   terminalProcessCount: number;
 }) {
   const driverKind = providerEntry?.driverKind ?? null;
-  const backgroundSummary = backgroundProcessSummary(thread.pendingBackgroundTasks);
   const previousProviderNames = thread.providerInstanceHistory
     .filter((instanceId) => instanceId !== modelInstanceId)
     .map((instanceId) => providerEntryByInstanceId.get(instanceId)?.displayName ?? instanceId);
   const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
   const gt = useGT();
   const m = useMessages();
+  const backgroundSummary = backgroundProcessSummary(thread.pendingBackgroundTasks, m);
   return (
     <ThreadHoverCardPopup side="right" align="start" sideOffset={4}>
       <ThreadHoverCard
@@ -777,7 +777,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarRowStatus({ ...thread, lastVisitedAt });
-  const backgroundSummary = backgroundProcessSummary(thread.pendingBackgroundTasks);
+  const backgroundSummary = backgroundProcessSummary(thread.pendingBackgroundTasks, messages);
   const showsBackground =
     resolveThreadStatusPill({ thread: { ...thread, lastVisitedAt } })?.label === "Background";
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
@@ -855,7 +855,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         }
                       : showsBackground
                         ? {
-                            label: "Background",
+                            label: gt("Background", {
+                              $context: "thread status: background processes running",
+                            }),
                             icon: "background" as const,
                             className: "text-muted-foreground",
                           }

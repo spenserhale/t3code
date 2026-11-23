@@ -825,10 +825,14 @@ describe("presentPendingBackgroundWork", () => {
     const job = { taskId: "job", kind: "background_task" as const };
     const command = { taskId: "server", kind: "command" as const };
     const monitor = { taskId: "watchdog", kind: "monitor" as const };
+    const prWatch = {
+      taskId: "pull-request-watch:github.com/acme/app#7",
+      kind: "monitor" as const,
+    };
     expect(backgroundProcessSummary([])).toBeNull();
-    expect(backgroundProcessSummary([awaited, subagent, job])).toBeNull();
+    expect(backgroundProcessSummary([awaited, subagent, job, prWatch])).toBeNull();
     expect(backgroundProcessSummary([command])).toBe("1 background process running");
-    expect(backgroundProcessSummary([command, monitor, awaited, subagent, job])).toBe(
+    expect(backgroundProcessSummary([command, monitor, awaited, subagent, job, prWatch])).toBe(
       "2 background processes running",
     );
   });

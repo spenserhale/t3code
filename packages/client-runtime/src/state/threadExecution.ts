@@ -28,6 +28,7 @@ import {
 import {
   backgroundWorkHoldsCompletion,
   derivePendingBackgroundWork,
+  isPullRequestWatchTask,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   getModelSelectionStringOptionValue,
@@ -684,14 +685,25 @@ export function isBackgroundWorkStopPending(
 
 export function backgroundProcessSummary(
   tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
+  resolve: MFunctionType = mFallback,
 ): string | null {
   let count = 0;
   for (const task of tasks) {
-    if ((task.kind === "command" || task.kind === "monitor") && task.awaited !== true) count++;
+    if (
+      (task.kind === "command" || task.kind === "monitor") &&
+      task.awaited !== true &&
+      !isPullRequestWatchTask(task)
+    )
+      count++;
   }
   return count === 0
     ? null
-    : `${count} background ${count === 1 ? "process" : "processes"} running`;
+    : resolve(
+        msg(
+          "{count, plural, one {{count} background process running} other {{count} background processes running}}",
+          { count },
+        ),
+      );
 }
 
 export function presentPendingBackgroundWork(
