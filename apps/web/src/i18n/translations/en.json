@@ -9995,7 +9995,7 @@
     " can read values from it by name. Values are read with the op CLI on that server when a provider starts."
   ],
   "daf8daec701f0863": "Account",
-  "c3d6c8494c7d4b8f": "The account shorthand, sign-in address without https://, or ID that op account list shows.",
+  "3ebc2f4ed9937d77": "Paste the sign-in address or enter the account shorthand or ID from op account list.",
   "afa8b4a2e025dd36": "Value",
   "13f8f1e086293635": "{label} source",
   "4579dce838e7c0a3": "Could not reach the server",

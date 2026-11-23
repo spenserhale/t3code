@@ -9993,7 +9993,7 @@
     " kan läsa värden från den via namn. Värden läses med op-CLI:t på den servern när en leverantör startar."
   ],
   "daf8daec701f0863": "Konto",
-  "c3d6c8494c7d4b8f": "Kontots kortnamn, inloggningsadressen utan https:// eller id:t som op account list visar.",
+  "3ebc2f4ed9937d77": "Klistra in inloggningsadressen eller ange kontots kortnamn eller id:t från op account list.",
   "afa8b4a2e025dd36": "Värde",
   "13f8f1e086293635": "Källa för {label}",
   "4579dce838e7c0a3": "Kunde inte nå servern",

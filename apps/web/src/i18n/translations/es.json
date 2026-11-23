@@ -9983,7 +9983,7 @@
     " pueden leer valores de él por nombre. Los valores se leen con la CLI op en ese servidor cuando se inicia un proveedor."
   ],
   "daf8daec701f0863": "Cuenta",
-  "c3d6c8494c7d4b8f": "La abreviatura de la cuenta, la dirección de inicio de sesión sin https:// o el ID que muestra op account list.",
+  "3ebc2f4ed9937d77": "Pega la dirección de inicio de sesión o introduce la abreviatura de la cuenta o el ID de op account list.",
   "afa8b4a2e025dd36": "Valor",
   "13f8f1e086293635": "Origen de {label}",
   "4579dce838e7c0a3": "No se pudo contactar con el servidor",

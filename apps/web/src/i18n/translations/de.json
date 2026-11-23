@@ -9987,7 +9987,7 @@
     " können Werte daraus per Name lesen. Die Werte werden beim Start eines Anbieters mit der op-CLI auf diesem Server gelesen."
   ],
   "daf8daec701f0863": "Konto",
-  "c3d6c8494c7d4b8f": "Das Konto-Kürzel, die Anmeldeadresse ohne https:// oder die ID, die op account list anzeigt.",
+  "3ebc2f4ed9937d77": "Füge die Anmeldeadresse ein oder gib das Konto-Kürzel oder die ID aus op account list ein.",
   "afa8b4a2e025dd36": "Wert",
   "13f8f1e086293635": "Quelle für {label}",
   "4579dce838e7c0a3": "Server nicht erreichbar",
