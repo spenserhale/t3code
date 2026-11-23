@@ -5081,6 +5081,8 @@
   "e339cc2761dac83a": "구간 {index}, {account}, {remaining}% 남음, {resetsIn}, {credits, plural, other {적립된 초기화 크레딧 {credits}개}}",
   "288ade531cfcf90c": "구간 {index}, {account}, {remaining}% 남음, {resetsIn}",
   "d0d366d02d9fd98e": "구간 {index}, {account}, {remaining}% 남음, {credits, plural, other {적립된 초기화 크레딧 {credits}개}}",
+  "d6f15d862f5b1b07": "{amount} 보류 중",
+  "bffdce4f6a31b056": "이번 달 {amount}",
   "d2d071e45a2d6b89": "한도를 보려면 환경을 선택하세요.",
   "f411a8cef140a5ea": "선택한 환경에 구독 한도를 보고하는 제공자가 없습니다.",
   "b29a752dd8ee9aa7": "계정",
@@ -5103,6 +5105,27 @@
     },
     " ",
     "남음"
+  ],
+  "6f833713d98f448b": [
+    {
+      "t": "Text",
+      "i": 1,
+      "c": {
+        "i": 2,
+        "k": "_gt_value_2",
+        "v": "v"
+      }
+    },
+    " ",
+    "남음"
+  ],
+  "90f32dc256bc471c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " 기준"
   ],
   "6af5e3cf03861f55": [
     {

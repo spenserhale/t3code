@@ -50,7 +50,11 @@ vi.mock("../../state/presentation", () => ({
 vi.mock("../settings/components/SettingsScreen", () => ({
   SettingsScreen: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
-vi.mock("./UsageLimitsSection", () => ({ ResetCredits: () => null }));
+vi.mock("./UsageLimitsSection", () => ({
+  ResetCredits: () => null,
+  refillLabel: () => null,
+  resetLabels: () => null,
+}));
 vi.mock("./usageProviders", () => ({
   usageProviderKind: () => null,
   useProviderColors: () => ({}),
@@ -146,6 +150,6 @@ describe("UsageLimitsSection balances", () => {
     ]);
     expect(text).not.toContain("$4.99");
     expect(text).not.toContain("As of");
-    expect(text).toContain("40%");
+    expect(text).toContain("60% left");
   });
 });

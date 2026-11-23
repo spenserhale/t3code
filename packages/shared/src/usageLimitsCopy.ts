@@ -7,6 +7,7 @@ import type {
 import { mFallback, msg } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
 
+import { hasDrawableLimits } from "./usageLimitSubscriptions.ts";
 import {
   collectExternalUsageLinks as collectExternalUsageLinksWith,
   cursorUsageWindowDetails as cursorUsageWindowDetailsBase,
@@ -76,7 +77,7 @@ export function limitsNotice(
   if (limits.unavailable?.reason === "probeFailed") {
     return limits.unavailable.message ?? resolve(msg("Could not read limits."));
   }
-  return limits.windows.length === 0 ? resolve(msg("No limits reported.")) : null;
+  return hasDrawableLimits(limits) ? null : resolve(msg("No limits reported."));
 }
 
 /** @public */

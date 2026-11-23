@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -18,10 +19,13 @@ const account = () => ({
   instanceId: ProviderInstanceId.make("opencode"),
   enabled: true,
   serverUrl: "",
-  // Only Unlid has a credential: the Go, Z.ai and Ollama probes stay unsupported.
+  // Only Unlid has a credential: the OpenCode, Z.ai and Ollama probes stay unsupported.
   environment: {
     OPENCODE_AUTH_CONTENT: encodeJson({ unlid: { type: "api", key: "unlid-key" } }),
   },
+  openCodeLimits: Effect.succeed(
+    makeUnavailableUsageLimits({ checkedAt: "2026-11-15T00:00:00.000Z", reason: "unsupported" }),
+  ),
 });
 
 /** Answers each path a probe calls with its body (500 when none is routed) and records the requests. */

@@ -5103,6 +5103,8 @@
   "e339cc2761dac83a": "Segment {index}, {account}, {remaining} % übrig, {resetsIn}, {credits, plural, one {{credits} Reset-Guthaben angespart} other {{credits} Reset-Guthaben angespart}}",
   "288ade531cfcf90c": "Segment {index}, {account}, {remaining} % übrig, {resetsIn}",
   "d0d366d02d9fd98e": "Segment {index}, {account}, {remaining} % übrig, {credits, plural, one {{credits} Reset-Guthaben angespart} other {{credits} Reset-Guthaben angespart}}",
+  "d6f15d862f5b1b07": "{amount} reserviert",
+  "bffdce4f6a31b056": "{amount} diesen Monat",
   "d2d071e45a2d6b89": "Wähle eine Umgebung, um Limits zu sehen.",
   "f411a8cef140a5ea": "Kein Anbieter in den ausgewählten Umgebungen meldet Abo-Limits.",
   "b29a752dd8ee9aa7": "Konto",
@@ -5124,6 +5126,28 @@
         },
         " %"
       ]
+    }
+  ],
+  "6f833713d98f448b": [
+    "noch",
+    " ",
+    {
+      "t": "Text",
+      "i": 1,
+      "c": {
+        "i": 2,
+        "k": "_gt_value_2",
+        "v": "v"
+      }
+    }
+  ],
+  "90f32dc256bc471c": [
+    "Stand",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
     }
   ],
   "6af5e3cf03861f55": [

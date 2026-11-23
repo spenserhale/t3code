@@ -5097,6 +5097,8 @@
   "e339cc2761dac83a": "Segment {index}, {account}, {remaining} % restant, {resetsIn}, {credits, plural, one {{credits} crédit de réinitialisation en réserve} other {{credits} crédits de réinitialisation en réserve}}",
   "288ade531cfcf90c": "Segment {index}, {account}, {remaining} % restant, {resetsIn}",
   "d0d366d02d9fd98e": "Segment {index}, {account}, {remaining} % restant, {credits, plural, one {{credits} crédit de réinitialisation en réserve} other {{credits} crédits de réinitialisation en réserve}}",
+  "d6f15d862f5b1b07": "{amount} réservé",
+  "bffdce4f6a31b056": "{amount} ce mois-ci",
   "d2d071e45a2d6b89": "Sélectionnez un environnement pour voir les limites.",
   "f411a8cef140a5ea": "Aucun fournisseur des environnements sélectionnés ne signale de limites d’abonnement.",
   "b29a752dd8ee9aa7": "Compte",
@@ -5119,6 +5121,28 @@
     },
     " ",
     "restants"
+  ],
+  "6f833713d98f448b": [
+    {
+      "t": "Text",
+      "i": 1,
+      "c": {
+        "i": 2,
+        "k": "_gt_value_2",
+        "v": "v"
+      }
+    },
+    " ",
+    "restants"
+  ],
+  "90f32dc256bc471c": [
+    "Au",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
   ],
   "6af5e3cf03861f55": [
     {

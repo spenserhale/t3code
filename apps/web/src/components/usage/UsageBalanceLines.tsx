@@ -1,5 +1,6 @@
 import { formatUsd } from "@t3tools/shared/usageFormat";
 import type { LimitAccount } from "@t3tools/shared/usageLimits";
+import { useGT, useMessages } from "gt-react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
@@ -16,6 +17,8 @@ export function BalanceLines({
   readonly accounts: readonly LimitAccount[];
   readonly now: number;
 }) {
+  const gt = useGT();
+  const m = useMessages();
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const rows = accounts.flatMap((account) =>
     account.balance && account.limits.windows.length === 0
@@ -38,21 +41,33 @@ export function BalanceLines({
             {rows.length > 1 && name ? (
               <span className="font-medium text-foreground">{name}: </span>
             ) : null}
-            {formatUsd(balance.balanceUsd)} left
+            {gt("{amount} left", { amount: formatUsd(balance.balanceUsd) })}
           </p>
           {balance.heldUsd !== undefined || balance.monthSpendUsd !== undefined ? (
             <p>
               {[
-                balance.heldUsd !== undefined ? `held ${formatUsd(balance.heldUsd)}` : null,
+                balance.heldUsd !== undefined
+                  ? gt("held {amount}", {
+                      amount: formatUsd(balance.heldUsd),
+                      $context: "prepaid money reserved by requests still running",
+                    })
+                  : null,
                 balance.monthSpendUsd !== undefined
-                  ? `${formatUsd(balance.monthSpendUsd)} this month`
+                  ? gt("{amount} this month", {
+                      amount: formatUsd(balance.monthSpendUsd),
+                      $context: "money spent so far this month",
+                    })
                   : null,
               ]
                 .filter((part) => part !== null)
                 .join(" · ")}
             </p>
           ) : null}
-          <p>Checked {formatUpcomingTimestamp(checkedAt, timestampFormat, now)}</p>
+          <p>
+            {gt("Checked {time}", {
+              time: formatUpcomingTimestamp(checkedAt, timestampFormat, now, undefined, m),
+            })}
+          </p>
         </div>
       ))}
     </div>

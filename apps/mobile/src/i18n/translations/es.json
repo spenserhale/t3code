@@ -5096,6 +5096,8 @@
   "e339cc2761dac83a": "Segmento {index}, {account}, queda un {remaining}%, {resetsIn}, {credits, plural, one {{credits} crédito de restablecimiento acumulado} other {{credits} créditos de restablecimiento acumulados}}",
   "288ade531cfcf90c": "Segmento {index}, {account}, queda un {remaining}%, {resetsIn}",
   "d0d366d02d9fd98e": "Segmento {index}, {account}, queda un {remaining}%, {credits, plural, one {{credits} crédito de restablecimiento acumulado} other {{credits} créditos de restablecimiento acumulados}}",
+  "d6f15d862f5b1b07": "{amount} retenido",
+  "bffdce4f6a31b056": "{amount} este mes",
   "d2d071e45a2d6b89": "Selecciona un entorno para ver los límites.",
   "f411a8cef140a5ea": "Ningún proveedor de los entornos seleccionados informa de límites de suscripción.",
   "b29a752dd8ee9aa7": "Cuenta",
@@ -5117,6 +5119,28 @@
         },
         " %"
       ]
+    }
+  ],
+  "6f833713d98f448b": [
+    "Quedan",
+    " ",
+    {
+      "t": "Text",
+      "i": 1,
+      "c": {
+        "i": 2,
+        "k": "_gt_value_2",
+        "v": "v"
+      }
+    }
+  ],
+  "90f32dc256bc471c": [
+    "Al",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
     }
   ],
   "6af5e3cf03861f55": [

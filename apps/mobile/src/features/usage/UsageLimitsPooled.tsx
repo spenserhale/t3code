@@ -487,29 +487,50 @@ function AccountBalanceCard({
   readonly account: LimitAccount;
   readonly balance: ServerProviderUsageBalance;
 }) {
+  const gt = useGT();
+  const m = useMessages();
   const detail = [
-    balance.heldUsd !== undefined ? `held ${formatUsd(balance.heldUsd)}` : null,
-    balance.monthSpendUsd !== undefined ? `${formatUsd(balance.monthSpendUsd)} this month` : null,
+    balance.heldUsd !== undefined
+      ? gt("held {amount}", {
+          amount: formatUsd(balance.heldUsd),
+          $context: "prepaid money reserved by requests still running",
+        })
+      : null,
+    balance.monthSpendUsd !== undefined
+      ? gt("{amount} this month", {
+          amount: formatUsd(balance.monthSpendUsd),
+          $context: "money spent so far this month",
+        })
+      : null,
   ].filter((part) => part !== null);
   return (
     <View className="gap-1 rounded-[24px] border-continuous bg-grouped-card p-4">
-      <Text className="text-sm font-t3-medium text-foreground">{accountName(account)}</Text>
+      <Text className="text-sm font-t3-medium text-foreground">{accountName(account, m)}</Text>
       <View className="flex-row items-baseline gap-1.5">
-        <Text className="text-3xl font-t3-bold tabular-nums text-foreground">
-          {formatUsd(balance.balanceUsd)}
+        <Text className="text-sm text-foreground-muted">
+          <T>
+            <Text className="text-3xl font-t3-bold tabular-nums text-foreground">
+              <Var>{formatUsd(balance.balanceUsd)}</Var>
+            </Text>{" "}
+            left
+          </T>
         </Text>
-        <Text className="text-sm text-foreground-muted">left</Text>
       </View>
       {detail.length > 0 ? (
         <Text className="text-xs tabular-nums text-foreground-muted">{detail.join(" · ")}</Text>
       ) : null}
       <Text className="text-xs text-foreground-tertiary">
-        {`As of ${new Date(account.limits.checkedAt).toLocaleString(undefined, {
-          hour: "numeric",
-          minute: "2-digit",
-          month: "short",
-          day: "numeric",
-        })}`}
+        <T>
+          As of{" "}
+          <Var>
+            {new Date(account.limits.checkedAt).toLocaleString(undefined, {
+              hour: "numeric",
+              minute: "2-digit",
+              month: "short",
+              day: "numeric",
+            })}
+          </Var>
+        </T>
       </Text>
     </View>
   );
