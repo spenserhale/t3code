@@ -635,7 +635,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ? [gt("Clone into host folders")]
       : []),
     ...(settings.newProjectsDirectory !== DEFAULT_UNIFIED_SETTINGS.newProjectsDirectory
-      ? ["New projects folder"]
+      ? [gt("New projects folder")]
       : []),
     ...(settings.confirmThreadUnpin !== DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin
       ? [gt("Unpin confirmation")]

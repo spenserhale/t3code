@@ -926,10 +926,10 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "new-projects-folder",
-    title: "New projects go in",
+    title: msg("New projects go in"),
     to: "/settings/threads",
     scope: "environment-defaults",
-    searchTerms: ["new project folder directory path location clone projects home"],
+    searchTerms: [msg("new project folder directory path location clone projects home")],
   },
   {
     id: "unpin-confirmation",

@@ -1,11 +1,12 @@
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import { useGT } from "gt-react";
 import { useState } from "react";
 
 import { Input } from "../ui/input";
 import { newProjectsDirectoryProblem } from "./NewProjectsDirectoryRow.logic";
 import { SettingResetButton, SettingsRow } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
-import { searchableSetting } from "./settingsSearch";
+import { useSearchableSetting } from "./settingsSearch";
 import {
   useScopedSettings,
   useScopedSettingsMixed,
@@ -13,6 +14,8 @@ import {
 } from "./useScopedSettings";
 
 export function NewProjectsDirectoryRow() {
+  const setting = useSearchableSetting();
+  const gt = useGT();
   const { connectedEnvironments } = useSettingsScope();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
@@ -56,10 +59,17 @@ export function NewProjectsDirectoryRow() {
     <SettingsRow
       serverScoped
       settingKeys={["newProjectsDirectory"]}
-      {...searchableSetting("new-projects-folder")}
-      description={`Where a new project is created, and where a link clones one. Use an absolute path, or start with "~/". Leave empty for the default folder.${
-        effectiveRoot === undefined ? "" : ` Now: ${effectiveRoot}`
-      }`}
+      {...setting("new-projects-folder")}
+      description={
+        effectiveRoot === undefined
+          ? gt(
+              'Where a new project is created, and where a link clones one. Use an absolute path, or start with "~/". Leave empty for the default folder.',
+            )
+          : gt(
+              'Where a new project is created, and where a link clones one. Use an absolute path, or start with "~/". Leave empty for the default folder. Now: {folder}',
+              { folder: effectiveRoot },
+            )
+      }
       status={
         problem === null ? undefined : (
           <span role="alert" className="block text-destructive">
@@ -70,7 +80,7 @@ export function NewProjectsDirectoryRow() {
       resetAction={
         mixed || settings.newProjectsDirectory !== DEFAULT_UNIFIED_SETTINGS.newProjectsDirectory ? (
           <SettingResetButton
-            label="new projects folder"
+            ariaLabel={gt("Reset new projects folder to default")}
             onClick={() => {
               setDraft(null);
               setProblem(null);
@@ -98,11 +108,11 @@ export function NewProjectsDirectoryRow() {
               event.currentTarget.blur();
             }
           }}
-          placeholder={mixed ? "Mixed" : "Default"}
+          placeholder={mixed ? gt("Mixed") : gt("Default")}
           autoCapitalize="none"
           spellCheck={false}
           aria-invalid={problem !== null}
-          aria-label="New projects folder"
+          aria-label={gt("New projects folder")}
         />
       }
     />
