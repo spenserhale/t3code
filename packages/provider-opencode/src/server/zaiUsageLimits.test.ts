@@ -283,9 +283,19 @@ describe("combineUsageLimits", () => {
     resetCredits: { availableCount: 1, nextCreditId: "WEEK:22" },
   };
 
-  it.effect("shows the subscriptions that answered and keeps their reset credits", () =>
+  it.effect("shows the subscriptions that answered with their reset credits and usage link", () =>
     Effect.gen(function* () {
       assert.deepStrictEqual(yield* combineUsageLimits([failed, zai]), zai);
+      const workspace = {
+        ...makeUsageLimits({
+          checkedAt,
+          windows: [
+            { id: "budget_all", kind: "other", label: "Console · Shared", usedPercent: 75 },
+          ],
+        }),
+        externalUsage: { label: "Remote workspace", url: "https://opencode.ai/console/wrk" },
+      };
+      assert.deepStrictEqual(yield* combineUsageLimits([workspace, unsupported]), workspace);
     }).pipe(Effect.provide(nodeServices)),
   );
 

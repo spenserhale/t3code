@@ -320,13 +320,10 @@ export const consumeZaiResetCredit = Effect.fn("consumeZaiResetCredit")(function
 }, Effect.timeout("20 seconds"));
 
 /**
- * One OpenCode account can hold several subscriptions. Windows from each
- * available probe are shown together; when none is available the first
- * failure explains why. An account has a single identity slot, so the set of
- * credentials names it: one fingerprint passes through unchanged (matching
- * what a server without Z.ai publishes), several are hashed together. Inputs
- * may be remembered results of different ages, so the combined result is
- * stamped with the oldest `checkedAt` among those it was built from.
+ * One OpenCode account can hold several subscriptions: available probes' windows, reset credits
+ * and Console link (`externalUsage`) show together, else the first failure explains why. One
+ * fingerprint passes through, matching a server without Z.ai; several hash into one identity.
+ * Inputs may be remembered, so the oldest `checkedAt` stamps the result.
  */
 export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
   limits: readonly [ServerProviderUsageLimits, ...ServerProviderUsageLimits[]],
@@ -336,6 +333,7 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
     return limits.find((entry) => entry.unavailable?.reason === "probeFailed") ?? limits[0];
   }
   const resetCredits = available.find((entry) => entry.resetCredits !== undefined)?.resetCredits;
+  const externalUsage = available.find((entry) => entry.externalUsage !== undefined)?.externalUsage;
   const fingerprints = [
     ...new Set(limits.flatMap((entry) => entry.credentialFingerprint ?? [])),
   ].toSorted();
@@ -353,17 +351,15 @@ export const combineUsageLimits = Effect.fn("combineUsageLimits")(function* (
     }),
     ...(credentialFingerprint ? { credentialFingerprint } : {}),
     ...(resetCredits ? { resetCredits } : {}),
+    ...(externalUsage ? { externalUsage } : {}),
   };
 });
 
 /**
- * Gives one subscription probe a memory. Create the wrapped probe once, where
- * the provider is built, and run it on every refresh: a read that failed this
- * time returns that subscription's last good result instead, so a brief
- * outage keeps its bars and fingerprint in the combined result.
- * `unsupported` replaces the memory, as it does for the provider as a whole,
- * and so does a failure that names a different credential, which is a
- * different account.
+ * Gives one subscription probe a memory; build it once, with the provider. A failed read returns
+ * that subscription's last good result, so a brief outage keeps its bars and fingerprint.
+ * `unsupported` replaces the memory, as for the whole provider, and so does a failure that names
+ * a different credential, which is a different account.
  */
 export const keepLastGoodUsageLimits = <E, R>(
   probe: Effect.Effect<ServerProviderUsageLimits, E, R>,
