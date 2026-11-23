@@ -200,7 +200,7 @@ function PoolWindowCard({
   const nextRefill = pool.resets.find((reset) => reset.at > now && reset.restoresPercent > 0);
   const creditLines = pool.members.flatMap(({ account }) =>
     account.credit
-      ? [{ key: account.key, name: accountName(account), credit: account.credit }]
+      ? [{ key: account.key, name: accountName(account, m), credit: account.credit }]
       : [],
   );
   const openAccount = (account: LimitAccount) =>
@@ -729,7 +729,9 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
             </View>
             {account.credit ? (
               <View className="gap-1 rounded-[24px] border-continuous bg-grouped-card p-4">
-                <Text className="text-sm font-t3-medium text-foreground">Credit</Text>
+                <Text className="text-sm font-t3-medium text-foreground">
+                  <T context="a plan's prepaid usage credit, section heading">Credit</T>
+                </Text>
                 {creditSummary(account.credit).map((part) => (
                   <Text key={part} className="text-sm text-foreground-muted">
                     {part}

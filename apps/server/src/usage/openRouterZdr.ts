@@ -112,8 +112,10 @@ function rateOf({ promptUsd, completionUsd, cacheReadUsd }: ZdrModelPrice): Mode
     outputCostPerToken: completionUsd,
     cacheReadCostPerToken: cacheReadUsd ?? promptUsd,
     cacheCreationCostPerToken: promptUsd,
+    cacheCreation1hCostPerToken: promptUsd,
     fast: null,
     ultrafast: null,
+    contextTiers: [],
   };
 }
 
