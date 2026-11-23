@@ -13,7 +13,8 @@ import {
   type WeekdayWeights,
   limitTimeline,
 } from "./usageLimitSchedule.ts";
-import { type LimitPace, formatDuration } from "./usageLimits.ts";
+import type { LimitPace } from "./usageLimits.ts";
+import { formatDuration } from "./usageLimitsCopy.ts";
 
 const MINUTE = 60_000;
 

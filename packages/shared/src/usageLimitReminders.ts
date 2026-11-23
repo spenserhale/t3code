@@ -30,7 +30,8 @@ import {
   limitDayKey,
   limitTimeline,
 } from "./usageLimitSchedule.ts";
-import { type LimitAccount, formatDuration, remainingPercent } from "./usageLimits.ts";
+import { type LimitAccount, remainingPercent } from "./usageLimits.ts";
+import { formatDuration } from "./usageLimitsCopy.ts";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;

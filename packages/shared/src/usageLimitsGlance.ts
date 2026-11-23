@@ -18,6 +18,7 @@ import type { LimitHistory } from "./usageLimitHistory.ts";
 import { type WindowPace, windowPace } from "./usageLimitPace.ts";
 import {
   type LimitAccount,
+  type LimitPool,
   type LimitPoolMember,
   collectLimitPools,
   displayLimitWindows,
@@ -69,9 +70,14 @@ function showInQuickView(account: LimitAccount, window: ServerProviderUsageWindo
   );
 }
 
-function consumptionScope(account: LimitAccount, window: ServerProviderUsageWindow) {
+function consumptionScope(
+  account: LimitAccount,
+  window: ServerProviderUsageWindow,
+  limitPool: LimitPool | undefined,
+) {
   if (account.driver === "cursor") {
-    return { key: window.id, label: cursorUsageWindowDetails(window.id)?.label ?? window.label };
+    const details = limitPool ? cursorUsageWindowDetails(window.id, limitPool) : undefined;
+    return { key: window.id, label: details?.label ?? window.label };
   }
   const parts = window.label.split(" · ");
   if (account.driver === "antigravity") {
@@ -107,6 +113,7 @@ function periodLabel(window: ServerProviderUsageWindow) {
 
 function consumptionPools(
   account: LimitAccount,
+  limitPool: LimitPool | undefined,
   windows: readonly ServerProviderUsageWindow[],
   paceOf: (window: ServerProviderUsageWindow) => WindowPace | null,
   now: number,
@@ -116,7 +123,7 @@ function consumptionPools(
     { key: string; label: string | null; windows: LimitGlanceWindow[] }
   >();
   for (const window of windows) {
-    const scope = consumptionScope(account, window);
+    const scope = consumptionScope(account, window, limitPool);
     // Distinct ids of the same kind are separate quotas even if their display labels coincide.
     const key = pools.get(scope.key)?.windows.some((entry) => entry.kind === window.kind)
       ? `${scope.key}:${window.id}`
@@ -230,8 +237,10 @@ export function collectLimitGlance(
             live.length > 0
               ? live
               : (reported.get(account.key) ?? []).filter((entry) => !hasReset(entry, now));
+          const pool = pools.find((candidate) => candidate.driver === account.driver);
           const nested = consumptionPools(
             account,
+            pool,
             current,
             (window) =>
               windowPace(
@@ -259,7 +268,6 @@ export function collectLimitGlance(
               },
             ];
           }
-          const pool = pools.find((candidate) => candidate.driver === account.driver);
           const details =
             pool?.driver === "cursor" ? cursorUsageWindowDetails(window.id, pool) : undefined;
           return [

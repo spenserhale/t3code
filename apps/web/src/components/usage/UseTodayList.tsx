@@ -1,4 +1,5 @@
-import { formatDuration, remainingPercent } from "@t3tools/shared/usageLimits";
+import { remainingPercent } from "@t3tools/shared/usageLimits";
+import { formatDuration } from "@t3tools/shared/usageLimitsCopy";
 import type { UseItItem } from "@t3tools/shared/usageLimitReminders";
 import { TimerResetIcon } from "lucide-react";
 import { useId } from "react";

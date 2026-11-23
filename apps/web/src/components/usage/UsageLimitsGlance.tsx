@@ -1,6 +1,6 @@
 import type { LimitAccount, LimitPresentations } from "@t3tools/shared/usageLimits";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
-import { formatDuration } from "@t3tools/shared/usageLimits";
+import { formatDuration } from "@t3tools/shared/usageLimitsCopy";
 import {
   collectLimitGlance,
   formatCheckedAgo,
