@@ -28,11 +28,21 @@ const layerGit = driverLayer.pipe(
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
+/** Git for the worktree, which the driver spawns once it has settled on the folder. */
+const addsWorktree = (args: ReadonlyArray<string>) =>
+  args.includes("worktree") &&
+  args.includes("add") &&
+  args.some((arg) => arg.startsWith("checkout.workers="));
+
+/** The branch's t3.json, which the driver reads after naming the folder and before making it. */
+const readsProjectFile = (args: ReadonlyArray<string>) =>
+  args.includes("show") && args.some((arg) => arg.endsWith(":t3.json"));
+
 /**
- * A moment for another operation to act in: just before the driver spawns git for the worktree,
- * once it has settled on the folder. What was set runs there, once.
+ * A moment for another operation to act in: just before the driver spawns the git command `at`
+ * matches. What was set runs there, once.
  */
-const makeGap = () => {
+const makeGap = (at: (args: ReadonlyArray<string>) => boolean = addsWorktree) => {
   let pending: Effect.Effect<void> | undefined;
   const spawner = Layer.effect(
     ChildProcessSpawner.ChildProcessSpawner,
@@ -40,12 +50,8 @@ const makeGap = () => {
       const base = yield* ChildProcessSpawner.ChildProcessSpawner;
       return ChildProcessSpawner.make((command) =>
         Effect.suspend(() => {
-          const addsWorktree =
-            command._tag === "StandardCommand" &&
-            command.args.includes("worktree") &&
-            command.args.includes("add") &&
-            command.args.some((arg) => String(arg).startsWith("checkout.workers="));
-          const act = addsWorktree ? pending : undefined;
+          const matches = command._tag === "StandardCommand" && at(command.args.map(String));
+          const act = matches ? pending : undefined;
           if (act !== undefined) pending = undefined;
           return (act ?? Effect.void).pipe(Effect.andThen(base.spawn(command)));
         }),
@@ -255,22 +261,19 @@ it.effect("takes back what a failed checkout made, and leaves what was there bef
   Effect.gen(function* () {
     const { run, fileSystem, path, box } = yield* makeRepositories;
 
-    // Someone's folder is where the worktree would go: git refuses, and the branch made for it goes.
+    // Someone's folder is where the worktree would go, so the driver names another. Git makes the
+    // worktree there, then a hook fails: that worktree and the branch go, and their folder stays.
     const occupied = yield* featureFolder(box);
     yield* fileSystem.makeDirectory(occupied, { recursive: true });
     yield* fileSystem.writeFileString(path.join(occupied, "keep.txt"), "mine\n");
-    const blocked = yield* open(box).pipe(Effect.flip);
-    expect(blocked.message).toContain("Could not make a worktree on origin/feature");
-    expect(yield* fileSystem.readFileString(path.join(occupied, "keep.txt"))).toBe("mine\n");
-    expect(yield* run(box, "branch", "--list", "feature")).toBe("");
-
-    // Git makes the worktree, then a hook fails: the worktree and the branch go.
-    yield* fileSystem.remove(occupied, { recursive: true });
     yield* failOnCheckout(box);
     const hooked = yield* open(box).pipe(Effect.flip);
     expect(hooked.message).toContain("Could not make a worktree on origin/feature");
+    expect(yield* fileSystem.readFileString(path.join(occupied, "keep.txt"))).toBe("mine\n");
+    expect(yield* fileSystem.readDirectory(path.dirname(occupied))).toEqual([
+      path.basename(occupied),
+    ]);
     expect(yield* run(box, "worktree", "list", "--porcelain")).not.toContain("feature");
-    expect(yield* fileSystem.exists(occupied)).toBe(false);
     expect(yield* run(box, "branch", "--list", "feature")).toBe("");
   }).pipe(Effect.scoped, Effect.provide(layerGit)),
 );
@@ -413,20 +416,22 @@ it.effect("leaves a folder another operation puts where this call's was", () => 
   }).pipe(Effect.scoped, Effect.provide(gap.layer));
 });
 
-it.effect("does not use a folder another operation made first, not even an empty one", () =>
-  Effect.gen(function* () {
+it.effect("does not use a folder another operation made first, not even an empty one", () => {
+  const gap = makeGap(readsProjectFile);
+  return Effect.gen(function* () {
     const { run, fileSystem, box } = yield* makeRepositories;
 
-    // Git would take an empty folder, and the folder would then look like this call's own.
+    // Git would take an empty folder, and the folder would then look like this call's own. It
+    // appears after the driver named the folder, so the driver cannot step around it.
     const theirs = yield* featureFolder(box);
-    const made = fileSystem.makeDirectory(theirs, { recursive: true }).pipe(Effect.orDie);
-    const failed = yield* open(box, {}, made).pipe(Effect.flip);
+    gap.set(fileSystem.makeDirectory(theirs, { recursive: true }).pipe(Effect.orDie));
+    const failed = yield* open(box).pipe(Effect.flip);
     expect(failed.message).toContain("left as it was");
     expect(yield* fileSystem.readDirectory(theirs)).toEqual([]);
     expect(yield* run(box, "worktree", "list", "--porcelain")).not.toContain(theirs);
     expect(yield* run(box, "branch", "--list", "feature")).toBe("");
-  }).pipe(Effect.scoped, Effect.provide(layerGit)),
-);
+  }).pipe(Effect.scoped, Effect.provide(gap.layer));
+});
 
 it.effect("keeps a worktree its hook left changes in, with its branch, and says so", () =>
   Effect.gen(function* () {

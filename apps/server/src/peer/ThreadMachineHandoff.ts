@@ -251,7 +251,7 @@ const make = Effect.gen(function* () {
     }
     const shell = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
     if (shell === null || shell.deletedAt !== null) {
-      return yield* threadNotFound(threads, threadId, "The thread was not found.");
+      return yield* threadNotFound(threads, scope, threadId, "The thread was not found.");
     }
     if (shell.archivedAt !== null) {
       return yield* failure(
