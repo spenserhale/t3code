@@ -820,7 +820,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "usage-and-cost",
     title: "Usage and cost",
-    to: "/settings/general",
+    to: "/settings/chat",
     searchTerms: ["tokens cost price estimate spend worked for thread turn billing"],
   },
   {

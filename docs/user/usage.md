@@ -15,7 +15,7 @@ Usage aggregates history across Codex, Claude Code, Grok Build, OpenCode, Antigr
 
 ## See usage per thread and turn
 
-Turn on **Settings → General → Usage and cost** to see tokens and estimated cost where you work.
+Turn on **Settings → Chat → Usage and cost** to see tokens and estimated cost where you work.
 It is off by default. The token count is marked with a hexagon, the way `$` marks dollars:
 
 - A turn's "Worked for" summary adds what it used, for example `Worked for 5m 33s using ⬡ 264K,
