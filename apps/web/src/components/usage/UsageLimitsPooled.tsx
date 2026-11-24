@@ -699,7 +699,7 @@ export function UsageLimitsPooled({
   const [segmentPopover] = useState(() => PopoverCreateHandle<SegmentPayload>());
   const segmentPopoverActions = useRef<PopoverPrimitive.Root.Actions | null>(null);
   const accounts = collectLimitAccounts(presentations);
-  const { pools, ungroupedPools, groupSections } = useLimitPools(accounts, now);
+  const { pools, ungroupedPools, groupSections } = useLimitPools(accounts, presentations, now);
   const quotaSources = collectHttpQuotaSources(presentations);
   const notices = collectLimitNotices(presentations, m);
   const externalLinks = collectExternalUsageLinks(presentations, m);

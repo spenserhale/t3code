@@ -1,9 +1,17 @@
-import { EnvironmentId, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProviderUsageLimits,
+  UsageLimitSourceId,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   NO_LIMIT_GROUPS,
   assignLimitGroup,
+  carryOverLimitGroups,
+  formerHubAccountKeys,
   groupLimitAccounts,
   labelLimitAccounts,
   limitGroupNames,
@@ -258,5 +266,214 @@ describe("assigning groups", () => {
       "Personal",
       "work",
     ]);
+  });
+});
+
+describe("groups saved under an id an account had before", () => {
+  const opencode = ProviderDriverKind.make("opencode");
+  const laptop = EnvironmentId.make("laptop");
+  const desktop = EnvironmentId.make("desktop");
+  const seat = (id: string, workspaceId?: string) => ({
+    id,
+    driver: claude,
+    ...(workspaceId ? { workspaceId } : {}),
+    usageLimits: { checkedAt, windows: [session(40)] },
+  });
+  const hub = (id: string, endpoint: string, accounts: ReadonlyArray<ReturnType<typeof seat>>) => ({
+    id: UsageLimitSourceId.make(id),
+    kind: "cliproxy" as const,
+    label: id,
+    origin: new URL(endpoint).origin,
+    endpoint,
+    checkedAt,
+    accounts,
+  });
+  const native = (usageLimits: ServerProviderUsageLimits, email?: string) => ({
+    instanceId: ProviderInstanceId.make(email ? "codex" : "opencode"),
+    driver: email ? codex : opencode,
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready" as const,
+    auth: { status: "authenticated" as const, ...(email ? { email } : {}) },
+    checkedAt,
+    models: [],
+    slashCommands: [],
+    skills: [],
+    usageLimits,
+  });
+  type Environment = {
+    readonly providers?: ReadonlyArray<ReturnType<typeof native>>;
+    readonly sources?: ReadonlyArray<ReturnType<typeof hub>>;
+  };
+  const presentations = (environments: ReadonlyArray<readonly [EnvironmentId, Environment]>) =>
+    new Map(
+      environments.map(([id, { providers = [], sources = [] }]) => [
+        id,
+        {
+          entry: { target: { label: id } },
+          serverConfig: { providers, usageLimitSources: sources },
+        },
+      ]),
+    ) satisfies LimitPresentations;
+  const carry = (state: Parameters<typeof carryOverLimitGroups>[0], input: LimitPresentations) => {
+    const accounts = collectLimitAccounts(input);
+    return { accounts, state: carryOverLimitGroups(state, accounts, formerHubAccountKeys(input)) };
+  };
+  const named = (
+    state: Parameters<typeof carryOverLimitGroups>[0],
+    accounts: readonly LimitAccount[],
+  ) => summary(groupLimitAccounts(accounts, state.assignments));
+
+  // A local hub on the laptop, and a remote hub both machines read.
+  const hubs = presentations([
+    [
+      laptop,
+      {
+        sources: [
+          hub("hub", "http://127.0.0.1:8317", [seat("seat.json")]),
+          hub("team", "https://hub.example.com/team-a", [seat("team.json", "ws-9")]),
+        ],
+      },
+    ],
+    [
+      desktop,
+      { sources: [hub("team", "https://hub.example.com/team-a", [seat("team.json", "ws-9")])] },
+    ],
+  ]);
+  const local = "laptop:hub:seat.json";
+  const remote = "https://hub.example.com/team-a:team.json:ws-9";
+
+  it("finds what a hub account was given before its key named its hub, and keeps the old entry", () => {
+    const saved = {
+      enabled: true,
+      assignments: { "hub:seat.json": "Work", "team:team.json:ws-9": "Personal" },
+    };
+    const { accounts, state } = carry(saved, hubs);
+
+    expect(accounts.map(limitSubscriptionId)).toEqual([local, remote]);
+    expect(state.assignments).toEqual({
+      ...saved.assignments,
+      [local]: "Work",
+      [remote]: "Personal",
+    });
+    expect(state.migrated).toEqual([local, remote]);
+    expect(named(state, accounts)).toEqual([
+      ["named", "Personal", [remote]],
+      ["named", "Work", [local]],
+    ]);
+  });
+
+  it("finds what an account was given before its server named its credential", () => {
+    const before = presentations([
+      [laptop, { providers: [native({ checkedAt, windows: [session(40)] })] }],
+    ]);
+    expect(collectLimitAccounts(before).map(limitSubscriptionId)).toEqual(["laptop:opencode"]);
+    const workspace = {
+      checkedAt,
+      windows: [session(40)],
+      credentialFingerprint: "opencode-workspace:wrk",
+    };
+    const { accounts, state } = carry(
+      { enabled: true, assignments: { "laptop:opencode": "Personal" } },
+      presentations([[laptop, { providers: [native(workspace)] }]]),
+    );
+
+    expect(accounts.map(limitSubscriptionId)).toEqual([
+      "opencode:credential:opencode-workspace:wrk",
+    ]);
+    expect(named(state, accounts)).toEqual([["named", "Personal", ["laptop:opencode"]]]);
+  });
+
+  it("never gives an account a group saved for another, and keeps what matches nothing", () => {
+    // The laptop's OpenCode split into one account per subscription, each with its own key; none
+    // of them is the account that was saved under the machine's key, so none takes its group.
+    const subscription = (credentialFingerprint: string) =>
+      account({
+        key: `laptop:opencode:${credentialFingerprint}`,
+        driver: opencode,
+        environments: [{ environmentId: laptop, label: "laptop" }],
+        limits: { checkedAt, windows: [session(40)], credentialFingerprint },
+      });
+    const accounts = [
+      subscription("opencode-workspace:wrk"),
+      subscription("a1".repeat(32)),
+      subscription("b2".repeat(32)),
+      // An email names its account in every build, so its key never stood for it.
+      account({ key: "laptop:codex", email: "me@acme.dev" }),
+    ];
+    const saved = {
+      enabled: true,
+      assignments: {
+        "laptop:opencode": "Personal",
+        [`opencode:credential:${"c3".repeat(32)}`]: "Personal",
+        [`opencode:credential:${"b2".repeat(32)}`]: "Work",
+        "laptop:codex": "Work",
+        "gone:hub:seat.json": "Work",
+      },
+    };
+
+    expect(carryOverLimitGroups(saved, accounts)).toBe(saved);
+    expect(named(saved, accounts)).toEqual([
+      ["named", "Work", [`laptop:opencode:${"b2".repeat(32)}`]],
+      ["email", "me@acme.dev", ["laptop:codex"]],
+      [
+        "other",
+        "Other accounts",
+        ["laptop:opencode:opencode-workspace:wrk", `laptop:opencode:${"a1".repeat(32)}`],
+      ],
+    ]);
+  });
+
+  it("carries once: a group taken away stays away, and a second pass changes nothing", () => {
+    const saved = { enabled: true, assignments: { "hub:seat.json": "Work" } };
+    const { accounts, state } = carry(saved, hubs);
+    expect(carryOverLimitGroups(state, accounts, formerHubAccountKeys(hubs))).toBe(state);
+
+    const cleared = assignLimitGroup(state, local, "");
+    expect(cleared.assignments[local]).toBeUndefined();
+    expect(carryOverLimitGroups(cleared, accounts, formerHubAccountKeys(hubs))).toBe(cleared);
+    expect(carryOverLimitGroups(NO_LIMIT_GROUPS, accounts, formerHubAccountKeys(hubs))).toBe(
+      NO_LIMIT_GROUPS,
+    );
+  });
+
+  it("gives nothing when former ids disagree, and never overwrites an account's own group", () => {
+    // Two machines named the same remote hub differently, and the two names were given different groups.
+    const renamed = presentations([
+      [
+        laptop,
+        { sources: [hub("team", "https://hub.example.com/team-a", [seat("team.json", "ws-9")])] },
+      ],
+      [
+        desktop,
+        { sources: [hub("shared", "https://hub.example.com/team-a", [seat("team.json", "ws-9")])] },
+      ],
+    ]);
+    const disagree = carry(
+      {
+        enabled: true,
+        assignments: { "team:team.json:ws-9": "Work", "shared:team.json:ws-9": "Personal" },
+      },
+      renamed,
+    );
+    expect(disagree.state.assignments[remote]).toBeUndefined();
+    expect(disagree.state.migrated).toEqual([remote]);
+
+    const agree = carry(
+      {
+        enabled: true,
+        assignments: { "team:team.json:ws-9": "Work", "shared:team.json:ws-9": " Work " },
+      },
+      renamed,
+    );
+    expect(agree.state.assignments[remote]).toBe("Work");
+
+    const own = carry(
+      { enabled: true, assignments: { "team:team.json:ws-9": "Work", [remote]: "Home" } },
+      renamed,
+    );
+    expect(own.state.assignments[remote]).toBe("Home");
+    expect(own.state.migrated).toEqual([remote]);
   });
 });

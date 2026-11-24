@@ -1,18 +1,18 @@
 /**
- * Splitting the Limits view into groups of subscription accounts, so quota
- * that is not interchangeable (personal and work, say) is never pooled into
- * one number. An account lands in the group it was assigned, else with the
- * other accounts under its email.
- *
+ * Splitting the Limits view into groups of subscription accounts, so quota that is not
+ * interchangeable (personal and work, say) is never pooled. An account lands in the group it
+ * was assigned, else under its email.
  * @module usageLimitGroups
  */
-import type { LimitAccount } from "./usageLimits.ts";
+import type { LimitAccount, LimitPresentations } from "./usageLimits.ts";
 
 /** A client's grouping preference. It names accounts by email, so it stays on the device. */
 export interface LimitGroupState {
   readonly enabled: boolean;
   /** Group name by `limitSubscriptionId`, kept while the account is out of sight. */
   readonly assignments: Readonly<Record<string, string>>;
+  /** Subscriptions already given what was saved under an id they had before; never given it again. */
+  readonly migrated?: readonly string[] | undefined;
 }
 
 /** The longest group name kept; a longer one is cut to this. */
@@ -33,11 +33,9 @@ function accountEmail(account: LimitAccount): string | undefined {
 }
 
 /**
- * The identity an assignment is stored under. It follows the way accounts
- * merge across environments (email, else credential), so it names the same
- * subscription whichever environment reports it first. It holds while the
- * account keeps its email, or, with none, its credential; signing in with a
- * different key, or gaining an email, makes it a new account to assign.
+ * The identity an assignment is stored under. It is the way accounts merge across
+ * environments (email, else credential), so every environment names a subscription the
+ * same way. A new key, or a gained email, is a new account.
  */
 export function limitSubscriptionId(account: LimitAccount): string {
   const email = accountEmail(account);
@@ -126,7 +124,7 @@ export function assignLimitGroup(
   const trimmed = name.trim().slice(0, MAX_LIMIT_GROUP_NAME_LENGTH).trimEnd();
   const { [subscriptionId]: _previous, ...rest } = state.assignments;
   return trimmed
-    ? { enabled: true, assignments: { ...rest, [subscriptionId]: trimmed } }
+    ? { ...state, enabled: true, assignments: { ...rest, [subscriptionId]: trimmed } }
     : { ...state, assignments: rest };
 }
 
@@ -138,4 +136,72 @@ export function setLimitGroupsEnabled(state: LimitGroupState, enabled: boolean):
 /** Every group name in use, to offer when assigning another account. */
 export function limitGroupNames(assignments: LimitGroupState["assignments"]): readonly string[] {
   return [...new Set(Object.values(assignments))].sort(compareNames);
+}
+
+/** Today's key of each hub account, mapped to the keys it had before. */
+export type FormerHubAccountKeys = ReadonlyMap<string, ReadonlySet<string>>;
+
+/**
+ * A hub account's key was `<source id>:<account>` before it named the hub instead: the hub's
+ * endpoint, or the environment and source id for a hub on the environment's own machine.
+ */
+export function formerHubAccountKeys(presentations: LimitPresentations): FormerHubAccountKeys {
+  const former = new Map<string, Set<string>>();
+  for (const [environmentId, presentation] of presentations) {
+    for (const source of presentation.serverConfig?.usageLimitSources ?? []) {
+      for (const account of source.accounts) {
+        const tail = `${account.id}${account.workspaceId ? `:${account.workspaceId}` : ""}`;
+        for (const hub of [`${environmentId}:${source.id}`, source.endpoint]) {
+          if (hub === undefined) continue;
+          const key = `${hub}:${tail}`;
+          former.set(key, (former.get(key) ?? new Set()).add(`${source.id}:${tail}`));
+        }
+      }
+    }
+  }
+  return former;
+}
+
+/**
+ * Ids an account was saved under by builds that named it otherwise. Only an account without
+ * an email can have one: its key stood for it until its server named its credential, and a
+ * hub account's key changed shape (`formerHubAccountKeys`).
+ */
+function formerLimitSubscriptionIds(
+  account: LimitAccount,
+  hubKeys: FormerHubAccountKeys | undefined,
+): readonly string[] {
+  if (accountEmail(account)) return [];
+  return [account.key, ...(hubKeys?.get(account.key) ?? [])];
+}
+
+/**
+ * Gives each account the group saved under an id it had before, once: an account's own
+ * group is never overwritten, an id given one is never given one again (so a group taken
+ * away stays away), and ids that disagree give none. The old entries stay saved.
+ */
+export function carryOverLimitGroups(
+  state: LimitGroupState,
+  accounts: readonly LimitAccount[],
+  hubKeys?: FormerHubAccountKeys,
+): LimitGroupState {
+  const migrated = new Set(state.migrated);
+  const assignments: Record<string, string> = { ...state.assignments };
+  let changed = false;
+  for (const account of accounts) {
+    const id = limitSubscriptionId(account);
+    if (migrated.has(id)) continue;
+    const groups = new Set(
+      formerLimitSubscriptionIds(account, hubKeys).flatMap((former) => {
+        const group = former === id ? undefined : state.assignments[former]?.trim();
+        return group ? [group] : [];
+      }),
+    );
+    if (groups.size === 0) continue;
+    migrated.add(id);
+    changed = true;
+    const [group] = groups;
+    if (groups.size === 1 && group !== undefined) assignments[id] ??= group;
+  }
+  return changed ? { ...state, assignments, migrated: [...migrated] } : state;
 }

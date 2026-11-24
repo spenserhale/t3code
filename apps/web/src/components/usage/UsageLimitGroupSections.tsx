@@ -1,5 +1,17 @@
-import { groupLimitAccounts, type LimitGroup } from "@t3tools/shared/usageLimitGroups";
-import { collectLimitPools, type LimitAccount, type LimitPool } from "@t3tools/shared/usageLimits";
+import {
+  carryOverLimitGroups,
+  formerHubAccountKeys,
+  groupLimitAccounts,
+  type LimitGroup,
+  type LimitGroupState,
+} from "@t3tools/shared/usageLimitGroups";
+import {
+  collectLimitPools,
+  type LimitAccount,
+  type LimitPool,
+  type LimitPresentations,
+} from "@t3tools/shared/usageLimits";
+import { useEffect } from "react";
 
 import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
 import { useUsageLimitGroups } from "./usageLimitGroupPreferences";
@@ -11,13 +23,39 @@ interface LimitGroupPools {
 }
 
 /**
+ * The saved groups, with each account given what was saved under an id it had before. That
+ * is saved once, so it holds after the old id is gone, and every change starts from it, so a
+ * carry-over not yet saved never undoes a choice. `presentations` are where `accounts` came from.
+ */
+export function useCarriedLimitGroups(
+  accounts: readonly LimitAccount[],
+  presentations: LimitPresentations,
+) {
+  const [saved, update] = useUsageLimitGroups();
+  const hubKeys = formerHubAccountKeys(presentations);
+  const groups = carryOverLimitGroups(saved, accounts, hubKeys);
+  const carried = groups !== saved;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- saves what was carried over to localStorage
+  useEffect(() => {
+    if (carried) update((current) => carryOverLimitGroups(current, accounts, hubKeys));
+  }, [carried, accounts, hubKeys, update]);
+  const change = (next: (groups: LimitGroupState) => LimitGroupState) =>
+    update((current) => next(carryOverLimitGroups(current, accounts, hubKeys)));
+  return [groups, change] as const;
+}
+
+/**
  * The pools Limits draws. With groups on, each group pools only its own
  * accounts, so quota that is not interchangeable is never added up, and
  * `groupSections` holds them. `pools` is everything drawn; `ungroupedPools` is
  * what is drawn outside any group.
  */
-export function useLimitPools(accounts: readonly LimitAccount[], now: number) {
-  const [groups] = useUsageLimitGroups();
+export function useLimitPools(
+  accounts: readonly LimitAccount[],
+  presentations: LimitPresentations,
+  now: number,
+) {
+  const [groups] = useCarriedLimitGroups(accounts, presentations);
   const groupSections = groups.enabled
     ? groupLimitAccounts(accounts, groups.assignments).map((group) => ({
         group,

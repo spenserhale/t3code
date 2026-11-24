@@ -8,7 +8,6 @@ import {
   limitSubscriptionId,
   MAX_LIMIT_GROUP_NAME_LENGTH,
   setLimitGroupsEnabled,
-  type LimitGroupState,
 } from "@t3tools/shared/usageLimitGroups";
 import { collectLimitAccounts, collectLimitPools } from "@t3tools/shared/usageLimits";
 
@@ -26,7 +25,7 @@ import {
 } from "../ui/dialog";
 import { DraftInput } from "../ui/draft-input";
 import { Switch } from "../ui/switch";
-import { useUsageLimitGroups } from "./usageLimitGroupPreferences";
+import { useCarriedLimitGroups } from "./UsageLimitGroupSections";
 import { AccountAvatar } from "./UsageLimitsPooled";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
 
@@ -41,15 +40,11 @@ function UsageLimitGroupsDialog({
   selectedEnvironmentIds,
   hiddenProviders,
   now,
-  groups,
-  onChange,
   onOpenChange,
 }: {
   readonly selectedEnvironmentIds: ReadonlySet<EnvironmentId> | null;
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
   readonly now: number;
-  readonly groups: LimitGroupState;
-  readonly onChange: (change: (groups: LimitGroupState) => LimitGroupState) => void;
   readonly onOpenChange: (open: boolean) => void;
 }) {
   const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
@@ -68,6 +63,7 @@ function UsageLimitGroupsDialog({
   const shown = collectLimitAccounts(selected).filter(
     (account) => !hiddenDrivers.has(account.driver),
   );
+  const [groups, onChange] = useCarriedLimitGroups(shown, selected);
   const accounts = labelLimitAccounts(
     collectLimitPools(shown, now).map((pool) => pool.accounts),
     (account) =>
@@ -167,7 +163,6 @@ export function UsageLimitGroupsButton({
   readonly hiddenProviders: ReadonlySet<UsageProviderKind>;
   readonly now: number;
 }) {
-  const [groups, updateGroups] = useUsageLimitGroups();
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -179,8 +174,6 @@ export function UsageLimitGroupsButton({
           selectedEnvironmentIds={selectedEnvironmentIds}
           hiddenProviders={hiddenProviders}
           now={now}
-          groups={groups}
-          onChange={updateGroups}
           onOpenChange={setOpen}
         />
       ) : null}

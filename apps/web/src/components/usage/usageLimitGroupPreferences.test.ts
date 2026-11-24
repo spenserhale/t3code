@@ -1,4 +1,10 @@
-import { assignLimitGroup, setLimitGroupsEnabled } from "@t3tools/shared/usageLimitGroups";
+import { ProviderDriverKind } from "@t3tools/contracts";
+import {
+  assignLimitGroup,
+  carryOverLimitGroups,
+  setLimitGroupsEnabled,
+} from "@t3tools/shared/usageLimitGroups";
+import type { LimitAccount } from "@t3tools/shared/usageLimits";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { readUsageLimitGroups, updateUsageLimitGroups } from "./usageLimitGroupPreferences";
@@ -52,6 +58,46 @@ describe("Limits group preferences", () => {
     expect(readUsageLimitGroups()).toEqual({
       enabled: false,
       assignments: { "codex:a@example.com": "Work", "claude:b@example.com": "Home" },
+    });
+  });
+
+  it("carries a group over once, so another window never undoes a choice made since", () => {
+    // OpenCode's server began to name the workspace, so the account left its machine's key.
+    const workspace: LimitAccount = {
+      key: "laptop:opencode",
+      driver: ProviderDriverKind.make("opencode"),
+      displayName: null,
+      email: undefined,
+      plan: undefined,
+      accentColor: undefined,
+      environments: [],
+      sourceLabel: null,
+      redeem: null,
+      limits: { checkedAt: "2026-09-03T11:00:00.000Z", windows: [], credentialFingerprint: "w" },
+    };
+    const id = "opencode:credential:w";
+    updateUsageLimitGroups(() => ({
+      enabled: true,
+      assignments: { "laptop:opencode": "Personal" },
+    }));
+    const otherWindow = readUsageLimitGroups();
+    updateUsageLimitGroups((groups) => carryOverLimitGroups(groups, [workspace]));
+    expect(readUsageLimitGroups()).toEqual({
+      enabled: true,
+      assignments: { "laptop:opencode": "Personal", [id]: "Personal" },
+      migrated: [id],
+    });
+
+    // The other window, still on its older read, takes the group away; this one looks again.
+    expect(carryOverLimitGroups(otherWindow, [workspace]).assignments[id]).toBe("Personal");
+    updateUsageLimitGroups((groups) =>
+      assignLimitGroup(carryOverLimitGroups(groups, [workspace]), id, ""),
+    );
+    updateUsageLimitGroups((groups) => carryOverLimitGroups(groups, [workspace]));
+    expect(readUsageLimitGroups()).toEqual({
+      enabled: true,
+      assignments: { "laptop:opencode": "Personal" },
+      migrated: [id],
     });
   });
 

@@ -12,6 +12,7 @@ const STORAGE_KEY = "t3code:usage-limit-groups:v1";
 const UsageLimitGroupsSchema = Schema.Struct({
   enabled: Schema.Boolean,
   assignments: Schema.Record(Schema.String, Schema.String),
+  migrated: Schema.optional(Schema.Array(Schema.String)),
 });
 
 export function readUsageLimitGroups(): LimitGroupState {
