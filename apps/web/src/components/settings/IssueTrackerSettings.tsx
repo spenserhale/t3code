@@ -23,15 +23,17 @@ import { useEnvironmentQuery } from "../../state/query";
 import { issueTrackerEnvironment } from "../../state/issueTrackers";
 import { useProjects, useServerConfigs } from "../../state/entities";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { LinearIcon } from "../Icons";
+import { JiraIcon, LinearIcon } from "../Icons";
 import { cn } from "~/lib/utils";
 
 import { Badge } from "../ui/badge";
 import { CheckboxMark } from "../ui/checkbox";
 import { Button, InlineButton } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
+import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Skeleton } from "../ui/skeleton";
+import { issueTrackerConnectToken } from "./issueTrackerCredential.logic";
 import { SecretInput } from "./SecretInput";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
 import { useSearchableSetting } from "./settingsSearch";
@@ -41,6 +43,7 @@ type TrackerIcon = ElementType<{ className?: string }>;
 /** Web art per tracker kind; the server supplies everything else about a tracker. */
 const TRACKER_ICONS: Partial<Record<string, TrackerIcon>> = {
   linear: LinearIcon,
+  jira: JiraIcon,
 };
 
 /**
@@ -133,6 +136,7 @@ function TrackerRow({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
 
   const submit = async (token: string | null, addAccount = false) => {
     setBusy(true);
@@ -144,7 +148,10 @@ function TrackerRow({
         : { tracker: tracker.tracker, accountId: tracker.accountId, token },
     });
     setBusy(false);
-    if (result._tag === "Success") return true;
+    if (result._tag === "Success") {
+      setFieldValues({});
+      return true;
+    }
     const error = squashAtomCommandFailure(result);
     setFailure(error instanceof Error ? error.message : gt("The request failed."));
     return false;
@@ -201,6 +208,27 @@ function TrackerRow({
           {/* Locked while saving, so an edit made mid-request is not overwritten by the saved value. */}
           <fieldset disabled={!canEdit || busy} className="contents">
             <div className="px-3 pb-4 pt-1 sm:px-4">
+              {tracker.credential.fields?.map((field) => (
+                <SettingsRow
+                  key={field.key}
+                  title={<label htmlFor={`${inputId}-${field.key}`}>{field.label}</label>}
+                  control={
+                    <Input
+                      id={`${inputId}-${field.key}`}
+                      size="sm"
+                      className="w-full @min-[32rem]/settings-row:w-56"
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder={field.placeholder}
+                      value={fieldValues[field.key] ?? ""}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setFieldValues((values) => ({ ...values, [field.key]: value }));
+                      }}
+                    />
+                  }
+                />
+              ))}
               <SettingsRow
                 title={<label htmlFor={inputId}>{tracker.credential.label}</label>}
                 description={
@@ -235,7 +263,11 @@ function TrackerRow({
                       configured={tracker.connected}
                       value=""
                       onCommit={(next) => {
-                        if (next.trim()) void submit(next.trim());
+                        if (next.trim()) {
+                          void submit(
+                            issueTrackerConnectToken(tracker.credential, fieldValues, next.trim()),
+                          );
+                        }
                       }}
                     />
                     {tracker.connected ? (
