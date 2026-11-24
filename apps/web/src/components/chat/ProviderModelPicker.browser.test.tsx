@@ -14,6 +14,7 @@ import "~/index.css";
 import { render } from "../../../test/render";
 import { __setClientSettingsForTests } from "../../hooks/useSettings";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
+import { ComposerEffortColumn } from "./ComposerModelEffort";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 
 it("keeps each registry image when adding a model from another ACP agent", async () => {
@@ -342,4 +343,162 @@ it("keeps the touch keyboard down while choosing a provider", async () => {
   await page.getByRole("button", { name: /^Claude/ }).click();
   await expect.element(page.getByRole("option", { name: /Claude model/ })).toBeVisible();
   await expect.element(search).not.toHaveFocus();
+});
+
+it("collapses effort-in-name models into one row and sends concrete variant slugs when effort changes", async () => {
+  const instanceId = ProviderInstanceId.make("antigravity");
+  const models = [
+    {
+      slug: "gemini-3.8-flash-low",
+      name: "Gemini 3.8 Flash (Low)",
+      isCustom: false,
+      capabilities: {},
+    },
+    {
+      slug: "gemini-3.8-flash-medium",
+      name: "Gemini 3.8 Flash (Medium)",
+      isCustom: false,
+      capabilities: {},
+    },
+    {
+      slug: "gemini-3.8-flash-high",
+      name: "Gemini 3.8 Flash (High)",
+      isCustom: false,
+      capabilities: {},
+    },
+    {
+      slug: "gemini-pro-agent",
+      name: "Gemini 3.1 Pro (High)",
+      isCustom: false,
+      capabilities: {},
+    },
+    {
+      slug: "gemini-3.1-pro-low",
+      name: "Gemini 3.1 Pro (Low)",
+      isCustom: false,
+      capabilities: {},
+    },
+    {
+      slug: "future-5-pro-low",
+      name: "Future 5 Pro (Low)",
+      isCustom: false,
+      capabilities: {},
+    },
+    {
+      slug: "future-5-pro-high",
+      name: "Future 5 Pro (High)",
+      isCustom: false,
+      capabilities: {},
+    },
+    {
+      slug: "claude-sonnet-4-6",
+      name: "Claude Sonnet 4.6",
+      isCustom: false,
+      capabilities: {},
+    },
+  ];
+  const entries = deriveProviderInstanceEntries([
+    {
+      instanceId,
+      driver: ProviderDriverKind.make("antigravity"),
+      displayName: "Antigravity",
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-01-01T00:00:00.000Z",
+      models,
+      slashCommands: [],
+      skills: [],
+    },
+  ]);
+  const modelChanges: string[] = [];
+  const optionChanges: unknown[] = [];
+
+  function NormalizedPicker() {
+    const [model, setModel] = useState("gemini-3.8-flash-high");
+    const [modelOptions, setModelOptions] = useState<ModelSelection["options"]>(undefined);
+    return (
+      <ProviderModelPicker
+        environmentId={null}
+        activeInstanceId={instanceId}
+        model={model}
+        lockedProvider={null}
+        instanceEntries={entries}
+        modelOptionsByInstance={new Map([[instanceId, models]])}
+        triggerAriaLabel="Choose model"
+        onInstanceModelChange={(_id, nextModel) => {
+          modelChanges.push(nextModel);
+          setModel(nextModel);
+        }}
+        effortColumn={
+          <ComposerEffortColumn
+            traits={{
+              provider: ProviderDriverKind.make("antigravity"),
+              instanceId,
+              models,
+              model,
+              modelOptions,
+              onModelOptionsChange: (next) => {
+                optionChanges.push(next);
+                setModelOptions(next);
+              },
+              onModelChange: (nextModel) => {
+                modelChanges.push(nextModel);
+                setModel(nextModel);
+              },
+            }}
+          />
+        }
+      />
+    );
+  }
+
+  await using screen = await render(<NormalizedPicker />);
+  const trigger = screen.getByRole("button", { name: "Choose model" });
+  await expect.element(trigger).toHaveTextContent("3.8 Flash");
+  expect(trigger.element().textContent).not.toContain("(High)");
+
+  await trigger.click();
+
+  await vi.waitFor(() =>
+    expect(
+      page
+        .getByRole("option")
+        .elements()
+        .map((row) => row.textContent?.trim()),
+    ).toHaveLength(4),
+  );
+  const optionLabels = page
+    .getByRole("option")
+    .elements()
+    .map((row) => row.textContent ?? "");
+  expect(optionLabels.some((text) => text.includes("Gemini 3.8 Flash"))).toBe(true);
+  expect(optionLabels.some((text) => text.includes("Gemini 3.1 Pro"))).toBe(true);
+  expect(optionLabels.some((text) => text.includes("Future 5 Pro"))).toBe(true);
+  expect(optionLabels.some((text) => text.includes("Claude Sonnet 4.6"))).toBe(true);
+  expect(optionLabels.some((text) => text.includes("(Low)") || text.includes("(High)"))).toBe(
+    false,
+  );
+
+  // Switch effort for Gemini 3.8 Flash from High -> Low via docked ComposerEffortColumn
+  await page.getByRole("radio", { name: "Low" }).click();
+  expect(modelChanges).toEqual(["gemini-3.8-flash-low"]);
+  expect(optionChanges).toEqual([]);
+
+  // Select irregular Gemini 3.1 Pro group -> sends gemini-pro-agent (High default)
+  await page.getByRole("option", { name: /Gemini 3\.1 Pro/ }).click();
+  expect(modelChanges.at(-1)).toBe("gemini-pro-agent");
+  await expect.element(trigger).toHaveTextContent("3.1 Pro");
+  expect(trigger.element().textContent).not.toContain("(High)");
+
+  // Switch Gemini 3.1 Pro effort from High -> Low -> sends gemini-3.1-pro-low
+  await page.getByRole("radio", { name: "Low" }).click();
+  expect(modelChanges.at(-1)).toBe("gemini-3.1-pro-low");
+
+  // Re-clicking Gemini 3.1 Pro preserves the active Low variant instead of resetting to High
+  await page.getByRole("option", { name: /Gemini 3\.1 Pro/ }).click();
+  expect(modelChanges.at(-1)).toBe("gemini-3.1-pro-low");
+  expect(optionChanges).toEqual([]);
 });

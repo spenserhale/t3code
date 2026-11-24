@@ -2246,6 +2246,7 @@ export function ThreadsSettingsPanel() {
                   lockedProvider={null}
                   instanceEntries={textGenerationModelInstanceEntries}
                   modelOptionsByInstance={textGenerationModelOptionsByInstance}
+                  normalizeEffortVariants={Boolean(textGenInstanceEntry)}
                   triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                   {...(mixedTextGenerationModel ? { triggerLabel: gt("Mixed") } : {})}
                   getModelDisabledReason={textGenerationModelDisabledReason}
@@ -2293,6 +2294,21 @@ export function ThreadsSettingsPanel() {
                     allowPromptInjectedEffort={false}
                     includePlanAgent={selectsPlanAgent(textGenModelOptions)}
                     triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                    onModelChange={(nextModel) => {
+                      updateSettings({
+                        textGenerationModelSelection: resolveAppModelSelectionState(
+                          {
+                            ...settings,
+                            textGenerationModelSelection: pickModelSelection(
+                              textGenerationModelSelection,
+                              textGenInstanceId,
+                              nextModel,
+                            ),
+                          },
+                          textGenerationProviders,
+                        ),
+                      });
+                    }}
                     onModelOptionsChange={(nextOptions) => {
                       updateSettings({
                         textGenerationModelSelection: resolveAppModelSelectionState(

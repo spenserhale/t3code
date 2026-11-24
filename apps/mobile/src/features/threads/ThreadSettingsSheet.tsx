@@ -72,9 +72,19 @@ import {
   type ProviderGroup,
   withStoredThreadModelOptions,
 } from "../../lib/modelOptions";
+import {
+  buildEffortVariantDescriptor,
+  EFFORT_VARIANT_OPTION_ID,
+  resolveEffortModelVariant,
+} from "@t3tools/shared/effortModelNormalization";
 import { groupModelsBySubProvider } from "@t3tools/client-runtime/providerSubProviders";
-import { applyProviderOptionSelection } from "../../lib/providerOptions";
-import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
+import {
+  applyProviderOptionSelection,
+  normalizeEffortProviderGroups,
+  resolveEffortVariantOptionForGroup,
+  resolveProviderOptionDescriptors,
+  toEffortModelOption,
+} from "../../lib/providerOptions";
 import {
   rememberModelOptions,
   withRememberedModelOptions,
@@ -373,7 +383,7 @@ function ThreadSettingsSessionProvider(
     new Map<string, { favorite: boolean; settings: ServerSettings; pending: boolean }>(),
   );
   const [pendingHiddenKeys, setPendingHiddenKeys] = useState<ReadonlySet<string>>(() => new Set());
-  const providerGroups =
+  const rawProviderGroups =
     manageHidden && config
       ? groupByProvider(
           buildModelOptions(
@@ -518,6 +528,10 @@ function ThreadSettingsSessionProvider(
   const [pendingModel, setPendingModel] = useState<ModelOption | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
   const displayedPrompt = pendingModel ? (pendingPrompt ?? props.prompt) : props.prompt;
+  const displayedModelSelection = pendingModel?.selection ?? props.selectedModel;
+  const providerGroups = manageHidden
+    ? rawProviderGroups
+    : normalizeEffortProviderGroups(rawProviderGroups, displayedModelSelection);
 
   const isApplied = (option: ModelOption) =>
     option.selection.instanceId === props.selectedModel?.instanceId &&
@@ -525,12 +539,37 @@ function ThreadSettingsSessionProvider(
   const isDisplayed = (option: ModelOption) =>
     pendingModel ? option.key === pendingModel.key : isApplied(option);
 
-  const displayedDescriptors = pendingModel
-    ? resolveProviderOptionDescriptors({
+  const activeRawProviderModels = displayedModelSelection
+    ? (rawProviderGroups.find((group) => group.providerKey === displayedModelSelection.instanceId)
+        ?.models ?? [])
+    : [];
+  const displayedDescriptors = (() => {
+    if (pendingModel) {
+      return resolveProviderOptionDescriptors({
         capabilities: pendingModel.capabilities,
         selections: pendingModel.selection.options,
-      })
-    : props.optionDescriptors;
+        models: activeRawProviderModels.map(toEffortModelOption),
+        model: pendingModel.selection.model,
+      });
+    }
+    if (
+      props.optionDescriptors.some((descriptor) => descriptor.id === EFFORT_VARIANT_OPTION_ID) ||
+      !displayedModelSelection
+    ) {
+      return props.optionDescriptors;
+    }
+    const effortMatch = resolveEffortModelVariant(
+      activeRawProviderModels.map(toEffortModelOption),
+      displayedModelSelection.model,
+    );
+    if (!effortMatch) {
+      return props.optionDescriptors;
+    }
+    return [
+      ...props.optionDescriptors,
+      buildEffortVariantDescriptor(effortMatch.group, effortMatch.variant.effort),
+    ];
+  })();
   const promptTraits = getPromptControlledTraits(displayedDescriptors, displayedPrompt);
   const displayedModel =
     pendingModel ??
@@ -559,7 +598,7 @@ function ThreadSettingsSessionProvider(
     runtimeModeChoices,
   );
 
-  const hasLegacyModels = props.providerGroups.some((group) =>
+  const hasLegacyModels = providerGroups.some((group) =>
     group.models.some((model) => model.isLegacy),
   );
   const commitPendingModel = () => {
@@ -581,11 +620,30 @@ function ThreadSettingsSessionProvider(
   };
 
   const applyOptionChange = (id: string, value: string | boolean) => {
-    const descriptor = displayedDescriptors.find((entry) => entry.id === id);
+    if (id === EFFORT_VARIANT_OPTION_ID && typeof value === "string" && displayedModelSelection) {
+      const targetOption = resolveEffortVariantOptionForGroup({
+        models: activeRawProviderModels,
+        currentModel: displayedModelSelection.model,
+        targetEffort: value,
+      });
+      if (!targetOption) {
+        return;
+      }
+      if (pendingModel) {
+        setPendingModel(targetOption);
+      } else {
+        props.onSelectModel(targetOption);
+      }
+      return;
+    }
+    const realDescriptors = displayedDescriptors.filter(
+      (entry) => entry.id !== EFFORT_VARIANT_OPTION_ID,
+    );
+    const descriptor = realDescriptors.find((entry) => entry.id === id);
     const change =
       descriptor?.type === "select" && typeof value === "string"
         ? getTraitSelectChange(
-            { ...promptTraits, descriptors: displayedDescriptors },
+            { ...promptTraits, descriptors: realDescriptors },
             descriptor,
             displayedPrompt,
             value,

@@ -177,6 +177,9 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
               lockedProvider={null}
               instanceEntries={entries}
               modelOptionsByInstance={modelOptions}
+              normalizeEffortVariants={
+                !mixedModel && !presentation.providerNote && !effortDisabledReason
+              }
               triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
               {...(mixedModel
                 ? {
@@ -205,6 +208,9 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 modelOptions={selection.options ?? []}
                 allowPromptInjectedEffort={false}
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                onModelChange={(nextModel) =>
+                  setModel(pickModelSelection(selection, selection.instanceId, nextModel))
+                }
                 onModelOptionsChange={(options) =>
                   setModel(createModelSelection(selection.instanceId, selection.model, options))
                 }
@@ -294,6 +300,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
               lockedProvider={null}
               instanceEntries={entries}
               modelOptionsByInstance={fallbackModelOptions}
+              normalizeEffortVariants={!mixedFallback}
               triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
               triggerAriaLabel={gt("Fallback model")}
               {...(mixedFallback
@@ -329,6 +336,15 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 modelOptions={fallbackSelection.options ?? []}
                 allowPromptInjectedEffort={false}
                 triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                onModelChange={(nextModel) =>
+                  updateSettings({
+                    fallbackModelSelection: pickModelSelection(
+                      settings.fallbackModelSelection,
+                      fallbackSelection.instanceId,
+                      nextModel,
+                    ),
+                  })
+                }
                 onModelOptionsChange={(options) =>
                   updateSettings({
                     fallbackModelSelection: createModelSelection(

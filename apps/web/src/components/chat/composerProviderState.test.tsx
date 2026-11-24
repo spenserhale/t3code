@@ -398,4 +398,91 @@ describe("getComposerReasoningStep", () => {
       );
     }
   });
+
+  it("cycles effort-in-name models by returning nextModelSlug without leaking synthetic options", () => {
+    const antigravityInstance = ProviderInstanceId.make("antigravity");
+    const antigravityModels: ReadonlyArray<ServerProviderModel> = [
+      {
+        slug: "gemini-3.8-flash-low",
+        name: "Gemini 3.8 Flash (Low)",
+        isCustom: false,
+        capabilities: {},
+      },
+      {
+        slug: "gemini-3.8-flash-medium",
+        name: "Gemini 3.8 Flash (Medium)",
+        isCustom: false,
+        capabilities: {},
+      },
+      {
+        slug: "gemini-3.8-flash-high",
+        name: "Gemini 3.8 Flash (High)",
+        isCustom: false,
+        capabilities: {},
+      },
+      {
+        slug: "gemini-pro-agent",
+        name: "Gemini 3.1 Pro (High)",
+        isCustom: false,
+        capabilities: {},
+      },
+      {
+        slug: "gemini-3.1-pro-low",
+        name: "Gemini 3.1 Pro (Low)",
+        isCustom: false,
+        capabilities: {},
+      },
+    ];
+
+    const stepVariant = (model: string, direction: 1 | -1 = 1) =>
+      getComposerReasoningStep({
+        provider: ProviderDriverKind.make("antigravity"),
+        instanceId: antigravityInstance,
+        model,
+        models: antigravityModels,
+        modelOptions: undefined,
+        prompt: "",
+        cursor: 0,
+        direction,
+      });
+
+    expect(stepVariant("gemini-3.8-flash-low", 1)).toEqual({
+      prompt: "",
+      cursor: 0,
+      modelOptions: [],
+      nextModelSlug: "gemini-3.8-flash-medium",
+    });
+    expect(stepVariant("gemini-3.8-flash-medium", 1)).toEqual({
+      prompt: "",
+      cursor: 0,
+      modelOptions: [],
+      nextModelSlug: "gemini-3.8-flash-high",
+    });
+    expect(stepVariant("gemini-3.8-flash-high", 1)).toEqual({
+      prompt: "",
+      cursor: 0,
+      modelOptions: [],
+      nextModelSlug: "gemini-3.8-flash-low",
+    });
+    expect(stepVariant("gemini-pro-agent", -1)).toEqual({
+      prompt: "",
+      cursor: 0,
+      modelOptions: [],
+      nextModelSlug: "gemini-3.1-pro-low",
+    });
+    expect(stepVariant("gemini-3.1-pro-low", 1)).toEqual({
+      prompt: "",
+      cursor: 0,
+      modelOptions: [],
+      nextModelSlug: "gemini-pro-agent",
+    });
+
+    const state = getComposerProviderState({
+      provider: ProviderDriverKind.make("antigravity"),
+      model: "gemini-3.8-flash-high",
+      models: antigravityModels,
+      modelOptions: [{ id: "__effortVariant__", value: "high" }],
+    });
+    expect(state.modelOptionsForDispatch).toBeUndefined();
+  });
 });

@@ -694,6 +694,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         modelOption={currentModelOption}
         selection={currentModelSelection}
         provider={selectedProviderStatus?.driver}
+        providerModels={selectedProviderStatus?.models}
         reportedSelection={props.reportedModelSelection}
         prompt={draftMessage}
         surfaceColor={composerPanel}

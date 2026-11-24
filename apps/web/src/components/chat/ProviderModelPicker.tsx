@@ -21,6 +21,7 @@ import { Badge } from "../ui/badge";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { cn } from "~/lib/utils";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { resolveEffortModelVariant } from "@t3tools/shared/effortModelNormalization";
 import { ModelPickerContent, resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import { retainedModelWhileProviderLocked } from "./ProviderModelPicker.logic";
 import { ChatGptSharingControl } from "./ChatGptSharingControl";
@@ -128,6 +129,11 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
    */
   effortColumn?: ReactNode;
   footer?: ReactNode;
+  /**
+   * Collapses models that encode thinking effort in their name (e.g. `Gemini 3.8 Flash (High/Medium/Low)`)
+   * into one picker entry paired with an effort selector. Defaults to true when an effort column is docked.
+   */
+  normalizeEffortVariants?: boolean;
 }) {
   const composerFloatingLayerProps = useComposerMenuProps();
   const [uncontrolledIsMenuOpen, setUncontrolledIsMenuOpen] = useState(false);
@@ -156,6 +162,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const size = props.size ?? "sm";
   const docked = props.effortColumn !== undefined;
+  const normalizeEffortVariants =
+    props.normalizeEffortVariants ?? (docked && props.selectedModels === undefined);
 
   const activeEntry =
     props.instanceEntries.find((entry) => entry.instanceId === props.activeInstanceId) ?? null;
@@ -172,15 +180,27 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     (activeEntry?.driverKind === "opencode" || activeEntry?.driverKind === "antigravity"
       ? undefined
       : selectedInstanceOptions[0]);
-  const triggerTitle = selectedModel
-    ? getTriggerDisplayModelName(selectedModel, activeEntry?.driverKind)
+  const selectedEffortVariant =
+    normalizeEffortVariants && selectedModel
+      ? resolveEffortModelVariant(selectedInstanceOptions, selectedModel.slug)
+      : null;
+  const displaySelectedModel =
+    selectedModel && selectedEffortVariant
+      ? {
+          ...selectedModel,
+          name: selectedEffortVariant.group.displayName,
+          shortName: undefined,
+        }
+      : selectedModel;
+  const triggerTitle = displaySelectedModel
+    ? getTriggerDisplayModelName(displaySelectedModel, activeEntry?.driverKind)
     : props.model === ANTIGRAVITY_DEFAULT_MODEL
       ? gt("Choose model")
       : props.model || gt("Choose model");
   const withUnavailable = (model: string, isUnavailable: boolean | undefined) =>
     isUnavailable ? gt("{model} (Unavailable)", { model }) : model;
-  const triggerLabel = selectedModel
-    ? withUnavailable(getDisplayModelName(selectedModel), selectedModel.isUnavailable)
+  const triggerLabel = displaySelectedModel
+    ? withUnavailable(getDisplayModelName(displaySelectedModel), displaySelectedModel.isUnavailable)
     : triggerTitle;
   const showInstanceBadge =
     activeEntry !== null && shouldShowInstanceBadge(activeEntry, props.instanceEntries);
@@ -319,6 +339,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           : (props.getModelDisabledReason?.(instanceId, model) ?? null)
       }
       onInstanceModelChange={handleInstanceModelChange}
+      normalizeEffortVariants={normalizeEffortVariants}
       {...(docked
         ? {
             docked,

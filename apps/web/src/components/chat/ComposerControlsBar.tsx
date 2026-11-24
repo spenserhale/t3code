@@ -157,6 +157,8 @@ export function ComposerControlsBar(props: {
       ? { threadRef: routeThreadRef, onDraftModelOptionsChange: applyRouteThreadModelPick }
       : {}),
     ...(routeKind === "draft" && draftId ? { draftId } : {}),
+    onModelChange: (nextModel) =>
+      onProviderModelSelect(selectedInstanceId, nextModel, { focusComposer: false }),
     model: selectedModel,
     models: selectedProviderModels,
     modelOptions: composerModelOptions?.[selectedInstanceId],
