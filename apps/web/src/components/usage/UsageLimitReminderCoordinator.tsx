@@ -1,6 +1,6 @@
 // @effect-diagnostics globalDate:off globalTimers:off -- A background service on the wall clock, outside any Effect runtime.
 import type { AnyRouter } from "@tanstack/react-router";
-import { migrateLegacyAccountKeys } from "@t3tools/shared/usageLimitGroups";
+import { carryOverLimitGroups, formerHubAccountKeys } from "@t3tools/shared/usageLimitGroups";
 import { collectLimitAccounts, type LimitAccount } from "@t3tools/shared/usageLimits";
 import {
   REMINDER_TITLE,
@@ -69,6 +69,7 @@ export function startUsageLimitReminders(
   router: AnyRouter,
 ): () => void {
   let accounts: readonly LimitAccount[] = [];
+  let hubKeys = formerHubAccountKeys(new Map());
 
   // Returns false when no channel is open right now, so the windows are offered again later.
   const present = (items: readonly UseItItem[], now: number): boolean => {
@@ -176,10 +177,10 @@ export function startUsageLimitReminders(
     const history =
       recorded === accounts ? readUsageLimitHistory() : recordUsageLimitHistory(accounts, now);
     recorded = accounts;
-    // Accounts told workspaces apart only lately; what was stored for the login is theirs now.
+    // What an account saved under an id it had before is its own now.
     const savedGroups = readUsageLimitGroups();
-    if (migrateLegacyAccountKeys(savedGroups, accounts) !== savedGroups) {
-      updateUsageLimitGroups((current) => migrateLegacyAccountKeys(current, accounts));
+    if (carryOverLimitGroups(savedGroups, accounts, hubKeys) !== savedGroups) {
+      updateUsageLimitGroups((current) => carryOverLimitGroups(current, accounts, hubKeys));
     }
     const settings = readReminderSettings();
     if (settings.mode !== "off" || dailyTokensHeld()) refreshDailyTokens(now);
@@ -210,6 +211,7 @@ export function startUsageLimitReminders(
     environmentPresentations.presentationsWithProvidersAtom,
     (presentations) => {
       accounts = collectLimitAccounts(presentations);
+      hubKeys = formerHubAccountKeys(presentations);
       evaluate();
     },
     { immediate: true },

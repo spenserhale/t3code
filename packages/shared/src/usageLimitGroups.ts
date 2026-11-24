@@ -224,22 +224,28 @@ export function formerHubAccountKeys(presentations: LimitPresentations): FormerH
 }
 
 /**
- * Ids an account was saved under by builds that named it otherwise. Only an account without
- * an email can have one: its key stood for it until its server named its credential, and a
- * hub account's key changed shape (`formerHubAccountKeys`).
+ * Ids an account was saved under by builds that named it otherwise: its login, before accounts
+ * told workspaces apart, and for an account without an email its key, which stood for it until
+ * its server named its credential, and the key its hub account had (`formerHubAccountKeys`).
  */
 function formerLimitSubscriptionIds(
   account: LimitAccount,
   hubKeys: FormerHubAccountKeys | undefined,
 ): readonly string[] {
-  if (accountEmail(account)) return [];
-  return [account.key, ...(hubKeys?.get(account.key) ?? [])];
+  const login = legacyLimitSubscriptionId(account);
+  if (accountEmail(account)) return [login];
+  return [login, account.key, ...(hubKeys?.get(account.key) ?? [])];
 }
 
+/** One schedule, whatever order its fields were written in. */
+const scheduleKey = (schedule: LimitSchedule) =>
+  JSON.stringify([schedule.days, schedule.hours?.start, schedule.hours?.end, schedule.timeZone]);
+
 /**
- * Gives each account the group saved under an id it had before, once: an account's own
- * group is never overwritten, an id given one is never given one again (so a group taken
- * away stays away), and ids that disagree give none. The old entries stay saved.
+ * Gives each account the group and own schedule saved under an id it had before, once: what it
+ * has is never overwritten, an id given them is never given them again (so what is taken away
+ * stays away), and ids that disagree give none. The old entries stay saved, so a workspace seen
+ * later still gets its login's.
  */
 export function carryOverLimitGroups(
   state: LimitGroupState,
@@ -248,50 +254,28 @@ export function carryOverLimitGroups(
 ): LimitGroupState {
   const migrated = new Set(state.migrated);
   const assignments: Record<string, string> = { ...state.assignments };
-  let changed = false;
-  for (const account of accounts) {
-    const id = limitSubscriptionId(account);
-    if (migrated.has(id)) continue;
-    const groups = new Set(
-      formerLimitSubscriptionIds(account, hubKeys).flatMap((former) => {
-        const group = former === id ? undefined : state.assignments[former]?.trim();
-        return group ? [group] : [];
-      }),
-    );
-    if (groups.size === 0) continue;
-    migrated.add(id);
-    changed = true;
-    const [group] = groups;
-    if (groups.size === 1 && group !== undefined) assignments[id] ??= group;
-  }
-  return changed ? { ...state, assignments, migrated: [...migrated] } : state;
-}
-
-/**
- * Gives each account the group and schedule stored under its login before accounts
- * told workspaces apart, so workspaces under one email can then differ. What was
- * stored stays as the default for workspaces not seen yet; a workspace is given it once,
- * and what it already chose, or later has taken away, is never overwritten.
- */
-export function migrateLegacyAccountKeys(
-  state: LimitGroupState,
-  accounts: readonly LimitAccount[],
-): LimitGroupState {
-  const migrated = new Set(state.migrated);
-  const assignments: Record<string, string> = { ...state.assignments };
   const schedules: Record<string, LimitSchedule> = { ...state.schedules };
   let changed = false;
   for (const account of accounts) {
     const id = limitSubscriptionId(account);
-    const legacy = legacyLimitSubscriptionId(account);
-    if (legacy === id || migrated.has(id)) continue;
-    const group = state.assignments[legacy];
-    const schedule = state.schedules?.[limitAccountScheduleKey(legacy)];
-    if (group === undefined && schedule === undefined) continue;
+    if (migrated.has(id)) continue;
+    const formers = formerLimitSubscriptionIds(account, hubKeys).filter((former) => former !== id);
+    const groups = new Set(formers.flatMap((former) => state.assignments[former]?.trim() || []));
+    const saved = new Map(
+      formers.flatMap((former) => {
+        const schedule = state.schedules?.[limitAccountScheduleKey(former)];
+        return schedule ? [[scheduleKey(schedule), schedule] as const] : [];
+      }),
+    );
+    if (groups.size === 0 && saved.size === 0) continue;
     migrated.add(id);
     changed = true;
-    if (group !== undefined) assignments[id] ??= group;
-    if (schedule !== undefined) schedules[limitAccountScheduleKey(id)] ??= schedule;
+    const [group] = groups;
+    if (groups.size === 1 && group !== undefined) assignments[id] ??= group;
+    const [schedule] = saved.values();
+    if (saved.size === 1 && schedule !== undefined) {
+      schedules[limitAccountScheduleKey(id)] ??= schedule;
+    }
   }
   if (!changed) return state;
   return {

@@ -19,12 +19,11 @@ import {
   limitGroupOf,
   MAX_LIMIT_GROUP_NAME_LENGTH,
   limitSubscriptionId,
-  migrateLegacyAccountKeys,
   resolveLimitSchedule,
   setLimitGroupsEnabled,
   setLimitSchedule,
 } from "./usageLimitGroups.ts";
-import { EVERY_DAY, WEEKDAYS, WORK_HOURS } from "./usageLimitSchedule.ts";
+import { EVERY_DAY, type LimitSchedule, WEEKDAYS, WORK_HOURS } from "./usageLimitSchedule.ts";
 import {
   type LimitAccount,
   type LimitPresentations,
@@ -421,7 +420,7 @@ describe("one email in two workspaces", () => {
     };
 
     it("pass to every workspace under that email, which can then be changed apart", () => {
-      const migrated = migrateLegacyAccountKeys(legacy, accounts);
+      const migrated = carryOverLimitGroups(legacy, accounts);
       expect(migrated.assignments).toMatchObject({ [business]: "Work", [plus]: "Work" });
       expect(migrated.schedules).toMatchObject({
         [limitAccountScheduleKey(business)]: WEEKDAYS,
@@ -432,9 +431,9 @@ describe("one email in two workspaces", () => {
     });
 
     it("stay for a workspace that is seen later, and are not brought back once it was given them", () => {
-      const first = migrateLegacyAccountKeys(legacy, [accounts[0]!]);
+      const first = carryOverLimitGroups(legacy, [accounts[0]!]);
       expect(first.assignments[plus]).toBeUndefined();
-      const later = migrateLegacyAccountKeys(first, accounts);
+      const later = carryOverLimitGroups(first, accounts);
       expect(later.assignments[plus]).toBe("Work");
       expect(resolveLimitSchedule(later, accounts[1]!)).toEqual(WEEKDAYS);
       // Taking a group and a schedule away from the first workspace is a choice that sticks.
@@ -443,27 +442,27 @@ describe("one email in two workspaces", () => {
         limitAccountScheduleKey(business),
         null,
       );
-      const again = migrateLegacyAccountKeys(cleared, accounts);
+      const again = carryOverLimitGroups(cleared, accounts);
       expect(again).toBe(cleared);
       expect(again.assignments[business]).toBeUndefined();
       expect(again.schedules?.[limitAccountScheduleKey(business)]).toBeUndefined();
     });
 
     it("change nothing a second time, or where no account has changed identity", () => {
-      const migrated = migrateLegacyAccountKeys(legacy, accounts);
-      expect(migrateLegacyAccountKeys(migrated, accounts)).toBe(migrated);
-      expect(migrateLegacyAccountKeys(NO_LIMIT_GROUPS, accounts)).toBe(NO_LIMIT_GROUPS);
+      const migrated = carryOverLimitGroups(legacy, accounts);
+      expect(carryOverLimitGroups(migrated, accounts)).toBe(migrated);
+      expect(carryOverLimitGroups(NO_LIMIT_GROUPS, accounts)).toBe(NO_LIMIT_GROUPS);
       const plain = [account({ key: "a", email: "me@acme.dev" })];
-      expect(migrateLegacyAccountKeys(legacy, plain)).toBe(legacy);
+      expect(carryOverLimitGroups(legacy, plain)).toBe(legacy);
     });
 
     it("keep a key that is another account's own identity, and never overwrite a choice already made", () => {
       const kept = { ...accounts[0]!, identity: "codex:same@example.com" };
-      const state = migrateLegacyAccountKeys(legacy, [kept, accounts[1]!]);
+      const state = carryOverLimitGroups(legacy, [kept, accounts[1]!]);
       expect(state.assignments["codex:same@example.com"]).toBe("Work");
       expect(state.assignments[plus]).toBe("Work");
       const chosen = { ...legacy, assignments: { ...legacy.assignments, [business]: "Home" } };
-      expect(migrateLegacyAccountKeys(chosen, accounts).assignments[business]).toBe("Home");
+      expect(carryOverLimitGroups(chosen, accounts).assignments[business]).toBe("Home");
     });
   });
 });
@@ -547,6 +546,10 @@ describe("groups saved under an id an account had before", () => {
     const saved = {
       enabled: true,
       assignments: { "hub:seat.json": "Work", "team:team.json:ws-9": "Personal" },
+      schedules: {
+        [limitAccountScheduleKey("team:team.json:ws-9")]: WEEKDAYS,
+        "named:Work": WORK_HOURS,
+      },
     };
     const { accounts, state } = carry(saved, hubs);
 
@@ -561,6 +564,11 @@ describe("groups saved under an id an account had before", () => {
       ["named", "Personal", [remote]],
       ["named", "Work", [local]],
     ]);
+    expect(accounts.map((entry) => resolveLimitSchedule(state, entry))).toEqual([
+      WORK_HOURS,
+      WEEKDAYS,
+    ]);
+    expect(state.schedules?.[limitAccountScheduleKey("team:team.json:ws-9")]).toEqual(WEEKDAYS);
   });
 
   it("finds what an account was given before its server named its credential", () => {
@@ -674,5 +682,123 @@ describe("groups saved under an id an account had before", () => {
     );
     expect(own.state.assignments[remote]).toBe("Home");
     expect(own.state.migrated).toEqual([remote]);
+
+    const berlin = { days: [1, 2, 3, 4, 5], timeZone: "Europe/Berlin" } as const;
+    const scheduled = (first: LimitSchedule, second: LimitSchedule) =>
+      carry(
+        {
+          enabled: true,
+          assignments: {},
+          schedules: {
+            [limitAccountScheduleKey("team:team.json:ws-9")]: first,
+            [limitAccountScheduleKey("shared:team.json:ws-9")]: second,
+          },
+        },
+        renamed,
+      ).state.schedules?.[limitAccountScheduleKey(remote)];
+    expect(scheduled(berlin, { timeZone: "Europe/Berlin", days: [1, 2, 3, 4, 5] })).toEqual(berlin);
+    expect(scheduled(WEEKDAYS, WORK_HOURS)).toBeUndefined();
+  });
+
+  it("keeps every group of a saved state like the real one, and gives a new workspace its login's", () => {
+    const linkPro = EnvironmentId.make("6b1f37c2-0000-4000-8000-000000000001");
+    const rw = EnvironmentId.make("1c0145ff-0000-4000-8000-000000000002");
+    const zai = "a1".repeat(32);
+    const ollama = "b2".repeat(32);
+    const goKey = "c3".repeat(32);
+    const google = "d4".repeat(32);
+    const at = (environmentId: EnvironmentId) => [{ environmentId, label: environmentId }];
+    const native = (driver: string, instance: string, identity: string, email?: string) =>
+      account({
+        key: `${linkPro}:${instance}`,
+        identity,
+        driver: ProviderDriverKind.make(driver),
+        email,
+        environments: at(linkPro),
+      });
+    // OpenCode reads one account per subscription, each under its own credential.
+    const subscription = (environmentId: EnvironmentId, credentialFingerprint: string) =>
+      account({
+        key: `${environmentId}:opencode:${credentialFingerprint}`,
+        identity: `opencode:credential:${credentialFingerprint}`,
+        driver: opencode,
+        environments: at(environmentId),
+        limits: { checkedAt, windows: [session(40)], credentialFingerprint },
+      });
+    const accounts = [
+      native("codex", "codex", "codex:b@home.dev", "b@home.dev"),
+      native("codex", "codex_personal", "codex:a@work.dev:ws-personal", "a@work.dev"),
+      native("codex", "codex_team", "codex:a@work.dev:ws-team", "a@work.dev"),
+      native("codex", "codex_new", "codex:a@work.dev:ws-new", "a@work.dev"),
+      native("claudeAgent", "claude", "claudeAgent:c@home.dev", "c@home.dev"),
+      native("claudeAgent", "claude_personal", "claudeAgent:d@work.dev:org-personal", "d@work.dev"),
+      native("claudeAgent", "claude_team", "claudeAgent:d@work.dev:org-team", "d@work.dev"),
+      subscription(rw, "opencode-workspace:wrk_home"),
+      subscription(linkPro, zai),
+      subscription(linkPro, ollama),
+      native("antigravity", "antigravity", `antigravity:credential:${google}`),
+      native("cursor", "cursor", "cursor:e@home.dev", "e@home.dev"),
+    ];
+    const saved = {
+      enabled: true,
+      assignments: {
+        "codex:a@work.dev": "Work",
+        "codex:b@home.dev": "Personal",
+        "claudeAgent:c@home.dev": "Personal",
+        "claudeAgent:d@work.dev": "Work",
+        "codex:a@work.dev:ws-personal": "Personal",
+        "codex:a@work.dev:ws-team": "Work",
+        "claudeAgent:d@work.dev:org-personal": "Personal",
+        "claudeAgent:d@work.dev:org-team": "Work",
+        [`${rw}:opencode`]: "Personal",
+        [`opencode:credential:${zai}`]: "Personal",
+        [`opencode:credential:${goKey}`]: "Personal",
+        [`antigravity:credential:${google}`]: "Personal",
+        "cursor:e@home.dev": "Personal",
+      },
+      schedules: { "named:Work": WORK_HOURS },
+      migrated: [
+        "codex:a@work.dev:ws-personal",
+        "codex:a@work.dev:ws-team",
+        "claudeAgent:d@work.dev:org-personal",
+        "claudeAgent:d@work.dev:org-team",
+      ],
+    };
+    const state = carryOverLimitGroups(saved, accounts);
+
+    expect(state).toEqual({
+      ...saved,
+      assignments: { ...saved.assignments, "codex:a@work.dev:ws-new": "Work" },
+      migrated: [...saved.migrated, "codex:a@work.dev:ws-new"],
+    });
+    expect(carryOverLimitGroups(state, accounts)).toBe(state);
+    // The OpenCode workspace was the machine's own account; nothing says which subscription
+    // took its place, so it waits for a group, as Ollama Cloud does.
+    expect(named(state, accounts)).toEqual([
+      [
+        "named",
+        "Personal",
+        [
+          `${linkPro}:codex`,
+          `${linkPro}:codex_personal`,
+          `${linkPro}:claude`,
+          `${linkPro}:claude_personal`,
+          `${linkPro}:opencode:${zai}`,
+          `${linkPro}:antigravity`,
+          `${linkPro}:cursor`,
+        ],
+      ],
+      [
+        "named",
+        "Work",
+        [`${linkPro}:codex_team`, `${linkPro}:codex_new`, `${linkPro}:claude_team`],
+      ],
+      [
+        "other",
+        "Other accounts",
+        [`${rw}:opencode:opencode-workspace:wrk_home`, `${linkPro}:opencode:${ollama}`],
+      ],
+    ]);
+    expect(resolveLimitSchedule(state, accounts[3]!)).toEqual(WORK_HOURS);
   });
 });

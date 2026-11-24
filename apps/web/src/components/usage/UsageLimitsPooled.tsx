@@ -53,8 +53,11 @@ import {
   resetCreditChoices,
 } from "@t3tools/shared/usageLimitsCopy";
 import { BurnDownDisclosure } from "./UsageLimitBurnDown";
-import { LimitGroupSections, useLimitPools } from "./UsageLimitGroupSections";
-import { useUsageLimitGroups } from "./usageLimitGroupPreferences";
+import {
+  LimitGroupSections,
+  useCarriedLimitGroups,
+  useLimitPools,
+} from "./UsageLimitGroupSections";
 import {
   LimitPaceContext,
   PACE_REFERENCE_NAME,
@@ -719,7 +722,10 @@ export function PoolSection({
 }
 
 export function UsageLimitsPooled(props: Parameters<typeof UsageLimitsPooledBody>[0]) {
-  const [groups] = useUsageLimitGroups();
+  const [groups] = useCarriedLimitGroups(
+    collectLimitAccounts(props.presentations),
+    props.presentations,
+  );
   const history = useUsageLimitHistory();
   const dailyTokens = useDailyTokens(props.now);
   return (
