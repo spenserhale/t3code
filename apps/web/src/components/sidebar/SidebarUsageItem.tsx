@@ -23,9 +23,8 @@ import { readUsagePagePreferences, saveUsagePagePreferences } from "../usage/usa
 export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) {
   const gt = useGT();
   const usageLabel = gt("Usage");
-  const accounts = collectLimitAccounts(
-    useAtomValue(environmentPresentations.presentationsWithProvidersAtom),
-  );
+  const presentations = useAtomValue(environmentPresentations.presentationsWithProvidersAtom);
+  const accounts = collectLimitAccounts(presentations);
   const showGlance = accounts.length > 0;
   const [glanceHandle] = useState(() => PopoverCreateHandle());
   const suppressFocusOpen = useRef(false);
@@ -143,7 +142,11 @@ export function SidebarUsageItem({ onClick }: { readonly onClick: () => void }) 
             tooltipStyle
             width="md"
           >
-            <UsageLimitsGlance accounts={accounts} onOpenLimits={openLimits} />
+            <UsageLimitsGlance
+              accounts={accounts}
+              presentations={presentations}
+              onOpenLimits={openLimits}
+            />
           </PopoverPopup>
         ) : null}
       </Popover>

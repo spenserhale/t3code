@@ -1,12 +1,11 @@
-import type { LimitAccount } from "@t3tools/shared/usageLimits";
+import type { LimitAccount, LimitPresentations } from "@t3tools/shared/usageLimits";
 import { collectLimitGlance, formatCheckedAgo } from "@t3tools/shared/usageLimitsGlance";
 import { ArrowRightIcon } from "lucide-react";
 import { Fragment, useState } from "react";
 
 import { providerClients } from "../settings/providerDriverMeta";
 import { InlineButton } from "../ui/button";
-import { useUsageLimitGroups } from "./usageLimitGroupPreferences";
-import { LimitGroupName } from "./UsageLimitGroupSections";
+import { LimitGroupName, useCarriedLimitGroups } from "./UsageLimitGroupSections";
 import { AccountAvatar } from "./UsageLimitsPooled";
 
 /**
@@ -17,13 +16,15 @@ import { AccountAvatar } from "./UsageLimitsPooled";
  */
 export function UsageLimitsGlance({
   accounts,
+  presentations,
   onOpenLimits,
 }: {
   readonly accounts: readonly LimitAccount[];
+  readonly presentations: LimitPresentations;
   readonly onOpenLimits: () => void;
 }) {
   const [now] = useState(() => Date.now());
-  const [groups] = useUsageLimitGroups();
+  const [groups] = useCarriedLimitGroups(accounts, presentations);
   const { sections, checkedAt } = collectLimitGlance(
     accounts,
     groups,
