@@ -579,6 +579,15 @@ export const IssueLinkedThreadsResult = Schema.Struct({
 });
 export type IssueLinkedThreadsResult = typeof IssueLinkedThreadsResult.Type;
 
+/** A plain value a tracker needs beside its secret, such as Jira's site address. */
+export const IssueTrackerCredentialField = Schema.Struct({
+  /** What the value is sent under. Never `token`, which carries the secret. */
+  key: TrimmedNonEmptyString.check(Schema.isPattern(/^[a-z][a-zA-Z0-9]*$/)),
+  label: TrimmedNonEmptyString,
+  placeholder: Schema.optional(TrimmedNonEmptyString),
+});
+export type IssueTrackerCredentialField = typeof IssueTrackerCredentialField.Type;
+
 /**
  * A tracker that is not a git host: it is reached with its own credential rather than a
  * checkout's, and a project opts into it by binding one of the tracker's scopes. Everything a
@@ -596,6 +605,12 @@ export const StandaloneIssueTrackerDescriptor = Schema.Struct({
     label: TrimmedNonEmptyString,
     /** Where to mint one, or null when the tracker has no stable page for it. */
     helpUrl: Schema.NullOr(TrimmedNonEmptyString),
+    /**
+     * Asked for before the secret. With fields, the connect token is a JSON object of each value
+     * by its `key` plus the secret as `token`; a client that draws none sends the secret alone,
+     * which the tracker refuses with a detail saying what it needs.
+     */
+    fields: Schema.optional(Schema.Array(IssueTrackerCredentialField)),
   }),
 });
 export type StandaloneIssueTrackerDescriptor = typeof StandaloneIssueTrackerDescriptor.Type;
