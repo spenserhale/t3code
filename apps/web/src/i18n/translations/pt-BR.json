@@ -9979,6 +9979,7 @@
   "0c816bce39329beb": "Editar {label}",
   "02f531b974fc3dd5": "Adicionar um provedor 1Password",
   "acbf0b4710755dc1": "Pessoal",
+  "e1c587ac93caa69d": "Limpar token de conta de serviço",
   "bc714daca44e1826": "Salvar alterações",
   "787b3fff435313e4": [
     "As variáveis de provedor em ",
@@ -9991,6 +9992,8 @@
   ],
   "daf8daec701f0863": "Conta",
   "c3d6c8494c7d4b8f": "O atalho da conta, o endereço de login sem https:// ou o ID que op account list mostra.",
+  "df2d1feea6bdcc51": "Token de conta de serviço",
+  "6a5ee237e8531173": "Para servidores em que ninguém desbloqueia o 1Password. Dê à conta de serviço apenas os cofres de que ela precisa.",
   "afa8b4a2e025dd36": "Valor",
   "13f8f1e086293635": "Origem de {label}",
   "4579dce838e7c0a3": "Não foi possível acessar o servidor",

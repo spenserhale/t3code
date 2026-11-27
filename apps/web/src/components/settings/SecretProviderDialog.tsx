@@ -1,9 +1,12 @@
+import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, SecretProviderConfig, SecretProviderId } from "@t3tools/contracts";
 import * as Result from "effect/Result";
+import { XIcon } from "lucide-react";
 import { useState } from "react";
 import { T, useGT, useMessages, Var } from "gt-react";
 
 import { useUpdateEnvironmentSettings } from "../../hooks/useSettings";
+import { serverEnvironment } from "../../state/server";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -16,6 +19,7 @@ import {
 } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
+import { SecretInput } from "./SecretInput";
 import {
   draftFromSecretProvider,
   secretProviderFromDraft,
@@ -39,8 +43,15 @@ export function SecretProviderDialog({
   const messages = useMessages();
   const gt = useGT();
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
+  // An older server would save the token in plain settings and send it to every client.
+  const acceptsServiceAccountToken = useAtomValue(
+    serverEnvironment.configValueAtom(environmentId),
+    (config) => config?.secretProviderCredentials === true,
+  );
   const [draft, setDraft] = useState<SecretProviderDraft>(
-    existing ? draftFromSecretProvider(existing.config) : { name: "", account: "" },
+    existing
+      ? draftFromSecretProvider(existing.config)
+      : { name: "", account: "", serviceAccountToken: "", savedServiceAccountToken: "" },
   );
   const [submitted, setSubmitted] = useState(false);
   const result = secretProviderFromDraft(
@@ -149,6 +160,47 @@ export function SecretProviderDialog({
                 </T>
               </p>
             </div>
+            {acceptsServiceAccountToken ? (
+              <div className="grid gap-1.5">
+                <Label htmlFor="secret-provider-token">
+                  <T>Service account token</T>
+                </Label>
+                <div className="flex items-center gap-2">
+                  <SecretInput
+                    id="secret-provider-token"
+                    className="min-w-0 flex-1"
+                    configured={draft.savedServiceAccountToken !== ""}
+                    placeholder={gt("Optional")}
+                    value={draft.serviceAccountToken}
+                    onChange={(event) => update({ serviceAccountToken: event.target.value })}
+                    aria-describedby="secret-provider-token-description"
+                  />
+                  {draft.savedServiceAccountToken !== "" ? (
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant="ghost-destructive"
+                      onClick={() =>
+                        update({
+                          serviceAccountToken: "",
+                          savedServiceAccountToken: "",
+                          clearServiceAccountToken: true,
+                        })
+                      }
+                      aria-label={gt("Clear service account token")}
+                    >
+                      <XIcon className="size-3.5" />
+                    </Button>
+                  ) : null}
+                </div>
+                <p id="secret-provider-token-description" className="text-xs text-muted-foreground">
+                  <T>
+                    For servers where nobody unlocks 1Password. Give the service account only the
+                    vaults it needs.
+                  </T>
+                </p>
+              </div>
+            ) : null}
           </form>
         </DialogPanel>
         <DialogFooter variant="bare">

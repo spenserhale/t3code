@@ -9989,6 +9989,7 @@
   "0c816bce39329beb": "Edit {label}",
   "02f531b974fc3dd5": "Add a 1Password provider",
   "acbf0b4710755dc1": "Personal",
+  "e1c587ac93caa69d": "Clear service account token",
   "bc714daca44e1826": "Save changes",
   "787b3fff435313e4": [
     "Provider variables on ",
@@ -10001,6 +10002,8 @@
   ],
   "daf8daec701f0863": "Account",
   "c3d6c8494c7d4b8f": "The account shorthand, sign-in address without https://, or ID that op account list shows.",
+  "df2d1feea6bdcc51": "Service account token",
+  "6a5ee237e8531173": "For servers where nobody unlocks 1Password. Give the service account only the vaults it needs.",
   "afa8b4a2e025dd36": "Value",
   "13f8f1e086293635": "{label} source",
   "4579dce838e7c0a3": "Could not reach the server",

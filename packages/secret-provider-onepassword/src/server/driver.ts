@@ -7,21 +7,39 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import { ChildProcess } from "effect/process";
+import * as Redacted from "effect/Redacted";
 
-import { definition, type OnePasswordAccount } from "../shared/definition.ts";
+import { definition, type OnePasswordSecretProviderConfig } from "../shared/definition.ts";
 
 const ONE_PASSWORD_BINARY = "op";
 // Bounds a read long enough to reach for a fingerprint reader, short enough not to wedge a rebuild.
 const READ_TIMEOUT = Duration.seconds(45);
 
 // `--cache=false` skips the `op daemon`, which hangs on prompts a background server cannot show.
+// A service account token reaches only this child's environment. `--account` is left out with it:
+// how `op` combines the two is undocumented.
 const runOnePassword = Effect.fn("OnePasswordDriver.runOnePassword")(function* (
+  { account, serviceAccountToken }: OnePasswordSecretProviderConfig,
+  command: "read" | "inject",
   args: ReadonlyArray<string>,
 ) {
-  const spawnCommand = yield* resolveSpawnCommand(ONE_PASSWORD_BINARY, ["--cache=false", ...args]);
+  const spawnCommand = yield* resolveSpawnCommand(ONE_PASSWORD_BINARY, [
+    "--cache=false",
+    command,
+    ...(serviceAccountToken ? [] : [`--account=${account}`]),
+    ...args,
+  ]);
   return yield* spawnAndCollect(
     ONE_PASSWORD_BINARY,
-    ChildProcess.make(spawnCommand.command, spawnCommand.args, { shell: spawnCommand.shell }),
+    ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+      shell: spawnCommand.shell,
+      ...(serviceAccountToken
+        ? {
+            env: { OP_SERVICE_ACCOUNT_TOKEN: Redacted.make(serviceAccountToken) },
+            extendEnv: true,
+          }
+        : {}),
+    }),
   );
 });
 
@@ -29,10 +47,10 @@ const runOnePassword = Effect.fn("OnePasswordDriver.runOnePassword")(function* (
 const nonEmpty = (value: string) => (value.trim().length > 0 ? value : undefined);
 
 const readOne = Effect.fn("OnePasswordDriver.readOne")(function* (
-  account: OnePasswordAccount,
+  config: OnePasswordSecretProviderConfig,
   reference: string,
 ) {
-  const result = yield* runOnePassword(["read", `--account=${account}`, "--no-newline", reference]);
+  const result = yield* runOnePassword(config, "read", ["--no-newline", reference]);
   if (result.code !== 0) {
     yield* Effect.logWarning("Could not read secret from 1Password", {
       stage: "read",
@@ -47,7 +65,7 @@ const readOne = Effect.fn("OnePasswordDriver.readOne")(function* (
 // from Node, so the template goes through a temp file. A random separator after every reference
 // keeps one secret from shifting the others, and leaves any trailing newline outside the values.
 const readTogether = Effect.fn("OnePasswordDriver.readTogether")(function* (
-  account: OnePasswordAccount,
+  config: OnePasswordSecretProviderConfig,
   references: ReadonlyArray<string>,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -57,7 +75,7 @@ const readTogether = Effect.fn("OnePasswordDriver.readTogether")(function* (
     templatePath,
     references.map((reference) => `{{ ${reference} }}${separator}`).join(""),
   );
-  const result = yield* runOnePassword(["inject", `--account=${account}`, "-i", templatePath]);
+  const result = yield* runOnePassword(config, "inject", ["-i", templatePath]);
   const values = result.stdout.split(separator);
   const trailing = values.pop();
   if (
@@ -91,18 +109,18 @@ const recover = <A, E extends { readonly _tag: string }, R>(
 export const driver = defineSecretProviderDriver({
   kind: definition.kind,
   definition,
-  read: Effect.fn("OnePasswordDriver.read")(function* ({ account }, references) {
+  read: Effect.fn("OnePasswordDriver.read")(function* (config, references) {
     // One deadline covers the batch and the fallback; a reference not read by then is unreadable.
     const values: Array<string | undefined> = references.map(() => undefined);
     const outcome = yield* Effect.gen(function* () {
       if (references.length > 1) {
-        const together = yield* recover("inject", readTogether(account, references));
+        const together = yield* recover("inject", readTogether(config, references));
         if (together !== undefined) return together;
       }
       yield* Effect.forEach(
         references,
         (reference, index) =>
-          recover("read", readOne(account, reference)).pipe(
+          recover("read", readOne(config, reference)).pipe(
             Effect.map((value) => {
               values[index] = value;
             }),

@@ -1997,6 +1997,7 @@ export const layerWsRpc = (
             secretProviders: featureFlags.secretProviders,
             tanstackSource: featureFlags.tanstackSource,
           },
+          secretProviderCredentials: true,
           ...Option.match(scratchWorkspaceRoot, {
             onNone: () => ({}),
             onSome: (root) => ({ scratchWorkspaceRoot: root }),
