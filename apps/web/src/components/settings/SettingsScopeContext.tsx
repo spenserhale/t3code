@@ -99,7 +99,7 @@ const SettingsScopeContext = createContext<
       singleEnvironment: boolean;
       deviceOnly: boolean;
       search: SettingsScopeSearch;
-      selectScope: (next: SettingsScopeSearch) => void;
+      selectScope: (next: SettingsScopeSearch, options?: { replace?: boolean }) => void;
     })
   | null
 >(null);
@@ -115,7 +115,7 @@ export function SettingsScopeProvider({
   /** The page hides the scope picker, so its client settings save for this device. */
   deviceOnly?: boolean;
   search: SettingsScopeSearch;
-  onChange: (next: SettingsScopeSearch) => void;
+  onChange: (next: SettingsScopeSearch, options?: { replace?: boolean }) => void;
   children: ReactNode;
 }) {
   const resolved = useResolvedSettingsScope(search, singleEnvironment);

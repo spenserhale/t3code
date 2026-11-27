@@ -1,5 +1,6 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import type { UnifiedSettings } from "@t3tools/contracts";
+import type { ProviderOptionSelection, UnifiedSettings } from "@t3tools/contracts";
+import { resolveFavoritePickOptions } from "@t3tools/shared/modelShortcuts";
 import { useMessages } from "gt-react";
 import type { Dispatch } from "react";
 import type { ComposerThreadTarget, DraftSessionState } from "../../composerDraftStore";
@@ -61,6 +62,12 @@ interface ComposerSelectionInput {
   readonly scheduleComposerFocus: () => void;
 }
 
+export interface ProviderModelSelectOptions {
+  readonly focusComposer?: boolean;
+  /** Options to open the model with (a favorite's or slider step's effort), over what was last used. */
+  readonly modelOptions?: ReadonlyArray<ProviderOptionSelection>;
+}
+
 /**
  * The composer's choices for the next turn: provider and model, runtime mode,
  * and where a new thread runs (local or a new worktree, from the remote's tip or not).
@@ -91,6 +98,9 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     (store) => store.setStickyModelSelection,
   );
   const setComposerDraftModelSelection = useComposerDraftStore((store) => store.setModelSelection);
+  const setComposerProviderModelOptions = useComposerDraftStore(
+    (store) => store.setProviderModelOptions,
+  );
   const setComposerDraftRuntimeMode = useComposerDraftStore((store) => store.setRuntimeMode);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const applyThreadModelPick = useApplyThreadModelPick();
@@ -134,7 +144,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
   const onProviderModelSelect = (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: { focusComposer?: boolean },
+    options?: ProviderModelSelectOptions,
   ) => {
     if (!activeThread) return;
     cancelHeldComposerSend(composerTargetKey(composerDraftTarget));
@@ -186,11 +196,13 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       draft?.modelSelectionByProvider[shownInstanceId] ?? activeThread.modelSelection;
     if (
       !resolvedModel ||
-      (instanceId === shownInstanceId &&
+      (options?.modelOptions === undefined &&
+        instanceId === shownInstanceId &&
         shownSelection.instanceId === instanceId &&
         shownSelection.model === resolvedModel)
     ) {
       // Re-picking the shown model keeps its options and saves it again if that save failed.
+      // A pick that brings options (a favorite's or slider step's effort) still applies them.
       if (resolvedModel && !isLocalDraftThread) applyThreadModelPick(composerDraftTarget);
       if (options?.focusComposer !== false) scheduleComposerFocus();
       return;
@@ -199,7 +211,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       useComposerDraftStore.getState().stickyOptionsByModelByProvider[instanceId]?.[resolvedModel];
     const threadSelection = activeThread.modelSelection;
     // This pick replaces the stored options, so the thread's own model carries them over.
-    const pickOptions =
+    const carriedOptions =
       rememberedOptions !== undefined && rememberedOptions.length > 0
         ? rememberedOptions
         : threadSelection.instanceId === instanceId &&
@@ -211,6 +223,10 @@ export function useComposerSelection(input: ComposerSelectionInput) {
             )
           ? threadSelection.options
           : undefined;
+    const pickOptions =
+      options?.modelOptions === undefined
+        ? carriedOptions
+        : resolveFavoritePickOptions(carriedOptions, { options: options.modelOptions });
     const nextModelSelection: ModelSelection =
       pickOptions !== undefined && pickOptions.length > 0
         ? { instanceId, model: resolvedModel, options: [...pickOptions] }
@@ -236,6 +252,14 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       replaceOptions: true,
     });
     setStickyComposerModelSelection(nextModelSelection);
+    if (options?.modelOptions !== undefined && resolvedDriverKind !== null) {
+      // A favorite's or step's effort is remembered for the model, as if chosen in its column.
+      setComposerProviderModelOptions(composerDraftTarget, resolvedDriverKind, pickOptions, {
+        instanceId,
+        model: resolvedModel,
+        persistSticky: true,
+      });
+    }
     if (!isLocalDraftThread) applyThreadModelPick(composerDraftTarget);
     if (options?.focusComposer !== false) scheduleComposerFocus();
   };

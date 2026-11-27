@@ -75,6 +75,36 @@ Mobile keeps local copies of draft attachments so you can preview them and queue
 }
 ```
 
+## Favorites and the effort slider
+
+On web and desktop, star a model in the model picker to make it a favorite. The picker lists
+favorites first, in the order you set under **Settings → Threads → Favorites and effort slider**,
+where you can also reorder them, remove them, and save an effort with a favorite. A favorite with
+a saved effort opens at it, even when you used another effort last. One without keeps the effort
+you used last for that model.
+
+In the same section, choose **Favorites** or a provider under **Slider to edit**. Favorites is the
+shared slider and can include models from several providers. A provider tab uses its own slider when
+configured and falls back to Favorites otherwise. To restore the fallback, choose **Use Favorites
+slider** in the provider's editor.
+
+Each slider holds up to six model and effort steps. It appears above search when at least two steps
+are usable. Click or drag it, or press Left and Right in an empty search, to change the model and
+effort together. **Edit slider** opens the editor for the selected tab. The gear opens Threads
+settings to manage the slider and its scope.
+
+In the editor, select a step on the top strip, then choose a model and its effort below.
+**Add step before** and **Add step after** insert beside the selected step. **Update selected step**
+replaces it. Drag a step into place, or hover or focus it to reveal its move and remove buttons.
+Edits save as you go. Choose **Done** to close the editor.
+
+Favorites and sliders follow the scope chosen at the top of Settings. **All environments** applies
+the list being edited to each connected environment. You can also change the environment selection
+in the slider editor. If a model is unavailable on some selected environments, hover over it to see
+which ones and choose **Deselect**. You can then pick the model and save to the remaining selection.
+A project can customize an inherited list and return to it with **Use the environment’s**.
+These controls are available on web and desktop with a supporting server.
+
 ## Quote an assistant response
 
 - **Web and desktop**: Select text in an assistant message and click **Cite in composer**. Click the pencil on the chip to add or edit a comment; click the chip to jump back to the source.

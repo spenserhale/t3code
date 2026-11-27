@@ -11,6 +11,8 @@ import {
   type ProjectId,
   type ProjectScopedServerSettingKey,
   type ProjectSettingsOverrides,
+  type ModelSelection,
+  type ProviderDriverKind,
   ServerSettings,
   type T3ProjectFile,
   type ServerSettingsPatch,
@@ -44,6 +46,14 @@ interface ScopedSettingsEnvironment {
 }
 
 const SERVER_KEYS = new Set<string>(Object.keys(ServerSettings.fields));
+// These name a change to the favorites rather than a value to store, so the server applies them
+// under its settings lock and no stored key carries them. They reach environments only: a
+// project's list is written whole, like every other project override.
+const FAVORITE_INTENT_KEYS = [
+  "setModelFavorites",
+  "reorderModelFavorites",
+] as const satisfies ReadonlyArray<keyof ServerSettingsPatch>;
+const SERVER_BOUND_KEYS = new Set<string>([...SERVER_KEYS, ...FAVORITE_INTENT_KEYS]);
 const CLIENT_KEYS = new Set<string>(Object.keys(ClientSettingsSchema.fields));
 const PROJECT_SCOPED_KEYS = new Set<string>(PROJECT_SCOPED_SERVER_SETTING_KEYS);
 
@@ -245,6 +255,34 @@ interface ScopedServerWrite {
   readonly previous: ServerSettings;
 }
 
+export function planScopedProviderEffortSliderWrite(
+  targets: readonly ScopedSettingsTarget[],
+  driver: ProviderDriverKind,
+  steps: readonly ModelSelection[] | null,
+) {
+  const writes = new Map<EnvironmentId, ScopedServerWrite>();
+  for (const { environmentId, label, projectId, settings } of targets) {
+    const existing = writes.get(environmentId);
+    writes.set(environmentId, {
+      environmentId,
+      label,
+      previous: settings,
+      patch: {
+        setProviderEffortSliders: [
+          ...(existing?.patch.setProviderEffortSliders ?? []),
+          { driver, ...(projectId === null ? {} : { projectId }), steps },
+        ],
+      },
+    });
+  }
+  return {
+    clientPatch: {},
+    hasClientWrite: false,
+    serverWrites: [...writes.values()],
+    unavailableReason: writes.size > 0 ? null : "Connect an environment to save this slider.",
+  };
+}
+
 function projectOverrideWrites(
   scope: Extract<ResolvedSettingsScope, { kind: "project" | "checkout" }>,
   environments: readonly ScopedSettingsEnvironment[],
@@ -298,7 +336,7 @@ export function planScopedSettingsPatch(
     (key) => CLIENT_KEYS.has(key) && !SERVER_KEYS.has(key),
   );
   const serverPatch = Object.fromEntries(
-    Object.entries(patch).filter(([key]) => SERVER_KEYS.has(key)),
+    Object.entries(patch).filter(([key]) => SERVER_BOUND_KEYS.has(key)),
   ) as ServerSettingsPatch;
   const serverKeys = Object.keys(serverPatch);
   const { connectedEnvironments } = selectScopedSettingsEnvironments(scope, environments, null);
@@ -361,7 +399,7 @@ export function planScopedSettingsPatch(
               }
               return next as ProjectSettingsOverrides;
             })
-        : scope.kind === "all" || scope.kind === "environment"
+        : scope.kind !== "unavailable"
           ? connectedEnvironments.flatMap((environment) => {
               const previous = environment.serverConfig?.settings;
               if (!previous) return [];
@@ -520,6 +558,8 @@ function writeWasDropped(value: unknown, before: unknown, saved: unknown): boole
 function droppedSettingKeys(write: ScopedServerWrite, saved: ServerSettings | undefined) {
   if (saved === undefined) return [];
   return Object.entries(write.patch).flatMap(([key, value]) =>
+    // An intent is not stored under its own key, so nothing in the saved settings could show it.
+    SERVER_KEYS.has(key) &&
     writeWasDropped(
       value,
       write.previous[key as keyof ServerSettings],

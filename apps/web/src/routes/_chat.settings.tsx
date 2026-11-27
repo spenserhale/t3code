@@ -153,7 +153,9 @@ function SettingsContentLayout() {
   const contentScopeKey =
     pathname === "/settings/diagnostics" || pathname === "/settings/providers"
       ? environment?.environmentId
-      : JSON.stringify(search);
+      : pathname === "/settings/threads"
+        ? JSON.stringify([search.project, search.checkout])
+        : JSON.stringify(search);
   const [restoreSignal, setRestoreSignal] = useState(0);
 
   return (
@@ -193,19 +195,25 @@ function SettingsRouteLayout() {
       search={rawSearch}
       singleEnvironment={pathname === "/settings/providers" || pathname === "/settings/secrets"}
       deviceOnly={SETTINGS_DEVICE_ONLY_PATHS.has(pathname)}
-      onChange={(next) => {
+      onChange={(next, options) => {
         // Send every axis so retain middleware recognizes "all" as an explicit target.
         void navigate({
           // Read at call time: subscribing would hand every scope consumer a new context value on
           // each click. A pending navigation's target wins over the page still on screen.
           to: router.state.location.pathname,
-          search: () => ({
+          search: (previous) => ({
             project: next.project,
             machine: next.machine,
+            machines: next.machines,
             checkout: next.checkout,
+            ...(router.state.location.pathname === "/settings/threads" &&
+            "effortSliderProvider" in previous
+              ? { effortSliderProvider: previous.effortSliderProvider }
+              : {}),
           }),
           hash: "",
           resetScroll: false,
+          ...(options?.replace ? { replace: true, state: true } : {}),
         });
       }}
     >

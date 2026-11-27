@@ -2,7 +2,9 @@ import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type ProviderInstanceId,
   type EnvironmentId,
+  type ProjectId,
   type ProviderDriverKind,
+  type ProviderOptionSelection,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { RegistryContext } from "@effect/atom-react";
@@ -24,6 +26,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { ModelPickerContent, resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import { retainedModelWhileProviderLocked } from "./ProviderModelPicker.logic";
 import { ChatGptSharingControl } from "./ChatGptSharingControl";
+import { EffortSlider, type ModelPickerEffortSlider } from "./EffortSlider";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { ModelEsque, getDisplayModelName, getTriggerDisplayModelName } from "./providerIconUtils";
 import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../providerInstances";
@@ -33,6 +36,7 @@ import { shortcutLabelForCommand } from "../../keybindings";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
+import type { ComposerEffortSliderForTab, EffortSliderActions } from "./useComposerEffortSlider";
 
 /** Holds the page still behind the open picker; its lifetime is the popup element's. */
 function lockBackgroundScroll(popup: HTMLElement | null) {
@@ -85,8 +89,17 @@ function lockBackgroundScroll(popup: HTMLElement | null) {
   };
 }
 
-/** What a docked effort column needs from its picker: the model it serves. */
-export const DockedPickerContext = createContext<{ modelLabel: string }>({ modelLabel: "" });
+/** Picker state and actions for the docked effort column. */
+export const DockedPickerContext = createContext<{
+  modelLabel: string;
+  sliderActions: EffortSliderActions | null;
+  onRequestClose: () => void;
+}>({ modelLabel: "", sliderActions: null, onRequestClose: () => {} });
+
+/** A pick that brings options along, such as a favorite's saved effort. */
+export interface ModelPick {
+  readonly options: ReadonlyArray<ProviderOptionSelection>;
+}
 
 export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   environmentId: EnvironmentId | null;
@@ -94,7 +107,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   activeInstanceId: ProviderInstanceId;
   model: string;
   selectedModels?: ReadonlyArray<{ instanceId: ProviderInstanceId; model: string }>;
-  onToggleModel?: (instanceId: ProviderInstanceId, model: string) => void;
+  onToggleModel?: (instanceId: ProviderInstanceId, model: string, pick?: ModelPick) => void;
   lockedProvider: ProviderDriverKind | null;
   lockedContinuationGroupKey?: string | null;
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
@@ -109,13 +122,21 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   terminalOpen?: boolean;
   open?: boolean;
   popupAlign?: "start" | "end";
+  preferActiveProvider?: boolean;
   triggerClassName?: string;
   triggerLabel?: string;
   triggerAriaLabel?: string;
   onOpenChange?: (open: boolean) => void;
   onOpenProviderSetup?: (instanceId: ProviderInstanceId) => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
-  onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
+  onInstanceModelChange: (instanceId: ProviderInstanceId, model: string, pick?: ModelPick) => void;
+  /** The project whose own favorites, if it has any, the picker lists. */
+  projectId?: ProjectId | null;
+  /**
+   * Steps along an effort slider above the search box. Left and Right in an empty search move
+   * along it, and pressing or dragging a stop applies it, all without taking focus from the search.
+   */
+  effortSliderForTab?: ComposerEffortSliderForTab;
   /** Shown after the model name inside the same trigger, such as the effort level. */
   triggerSuffix?: ReactNode;
   /** Names the suffix for the tooltip and screen readers. */
@@ -191,6 +212,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       setUncontrolledIsMenuOpen(open);
     }
   };
+  const onRequestClose = () => setIsMenuOpen(false);
 
   /**
    * Focuses the selected reasoning level, else the first level. With `rows: "any"` it falls back
@@ -222,15 +244,16 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       ?.click();
   };
 
-  const handleInstanceModelChange = (instanceId: ProviderInstanceId, model: string) => {
+  const handleInstanceModelChange = (
+    instanceId: ProviderInstanceId,
+    model: string,
+    pick?: ModelPick,
+  ) => {
     if (props.disabled) return;
-    props.onInstanceModelChange(instanceId, model);
+    props.onInstanceModelChange(instanceId, model, pick);
     if (!docked) {
       setIsMenuOpen(false);
-      return;
     }
-    // The column renders the new model's levels on commit.
-    window.requestAnimationFrame(() => focusEffort("levels"));
   };
 
   const shortcutLabel = props.keybindings
@@ -290,6 +313,35 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     "data-chat-provider-model-picker-label": "true",
   } as const;
 
+  const renderDockedLayout = (
+    modelList: ReactNode,
+    slider: ModelPickerEffortSlider | null,
+    sliderActions: EffortSliderActions | null,
+  ) => (
+    <DockedPickerContext value={{ modelLabel: triggerTitle, sliderActions, onRequestClose }}>
+      <div className="flex max-h-(--available-height) flex-col">
+        {slider ? <EffortSlider {...slider} /> : null}
+        <div className="flex h-86.5 min-h-0 max-sm:h-auto max-sm:flex-col">
+          {modelList}
+          <div
+            data-model-picker-effort
+            className="flex min-h-0 w-48 flex-col sm:shrink-0 border-l border-border/70 bg-muted/40 max-sm:h-64 max-sm:w-full max-sm:border-t max-sm:border-l-0"
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" || event.altKey || event.ctrlKey || event.metaKey)
+                return;
+              event.preventDefault();
+              event.stopPropagation();
+              searchInputRef.current?.focus();
+            }}
+          >
+            {props.effortColumn}
+          </div>
+        </div>
+        {props.footer}
+      </div>
+    </DockedPickerContext>
+  );
+
   const picker = (
     <ModelPickerContent
       searchInputRef={searchInputRef}
@@ -300,18 +352,20 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       {...(props.selectedModels !== undefined ? { selectedModels: props.selectedModels } : {})}
       {...(props.onToggleModel
         ? {
-            onToggleModel: (instanceId: ProviderInstanceId, model: string) => {
-              if (!props.disabled) props.onToggleModel?.(instanceId, model);
+            onToggleModel: (instanceId: ProviderInstanceId, model: string, pick?: ModelPick) => {
+              if (!props.disabled) props.onToggleModel?.(instanceId, model, pick);
             },
           }
         : {})}
       lockedProvider={props.lockedProvider}
       lockedContinuationGroupKey={props.lockedContinuationGroupKey ?? null}
       instanceEntries={props.instanceEntries}
+      {...(props.projectId !== undefined ? { projectId: props.projectId } : {})}
+      {...(props.preferActiveProvider ? { preferActiveProvider: true } : {})}
       {...(props.keybindings ? { keybindings: props.keybindings } : {})}
       modelOptionsByInstance={props.modelOptionsByInstance}
       terminalOpen={props.terminalOpen ?? false}
-      onRequestClose={() => setIsMenuOpen(false)}
+      onRequestClose={onRequestClose}
       {...(props.onOpenProviderSetup ? { onOpenProviderSetup: props.onOpenProviderSetup } : {})}
       getModelDisabledReason={(instanceId, model) =>
         props.disabled
@@ -321,8 +375,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       onInstanceModelChange={handleInstanceModelChange}
       {...(docked
         ? {
-            docked,
+            renderDockedLayout,
             onFocusEffort: () => void focusEffort("any"),
+            onPickWithoutEffort: () => window.requestAnimationFrame(() => focusEffort("levels")),
+            ...(props.selectedModels === undefined && !props.disabled && props.effortSliderForTab
+              ? { effortSliderForTab: props.effortSliderForTab }
+              : {}),
             // Inside the fixed height, so switching to or from a ChatGPT plan never resizes it.
             ...(props.selectedModels === undefined
               ? { listFooter: <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} /> }
@@ -471,33 +529,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         padding="none"
         touchBackdrop
       >
-        {props.effortColumn ? (
-          <DockedPickerContext value={{ modelLabel: triggerTitle }}>
-            <div className="flex max-h-(--available-height) flex-col">
-              {/* One fixed height, so a model with more options never resizes the popup. Short
-                  windows shrink it and keep the footer. */}
-              <div className="flex h-86.5 min-h-0 max-sm:h-auto max-sm:flex-col">
-                {picker}
-                <div
-                  data-model-picker-effort
-                  className="flex min-h-0 w-48 flex-col sm:shrink-0 border-l border-border/70 bg-muted/40 max-sm:h-64 max-sm:w-full max-sm:border-t max-sm:border-l-0"
-                  onKeyDown={(event) => {
-                    if (event.key !== "ArrowLeft" || event.altKey || event.ctrlKey || event.metaKey)
-                      return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    searchInputRef.current?.focus();
-                  }}
-                >
-                  {props.effortColumn}
-                </div>
-              </div>
-              {props.footer}
-            </div>
-          </DockedPickerContext>
-        ) : (
-          picker
-        )}
+        {picker}
         {props.selectedModels === undefined && !docked ? (
           <ChatGptSharingControl provider={activeEntry?.snapshot ?? null} />
         ) : null}

@@ -155,7 +155,7 @@ export type ProjectSettingsCategory = "general" | "source-control" | "project";
 
 interface ProjectSelection {
   readonly key: string;
-  readonly environmentId: EnvironmentId | null;
+  readonly environmentScopeKey: string;
   readonly checkoutKey: string | null;
   readonly memberKeys: ReadonlyArray<string>;
 }
@@ -164,7 +164,7 @@ function sameProjectSelection(a: ProjectSelection | null, b: ProjectSelection): 
   return (
     a !== null &&
     a.key === b.key &&
-    a.environmentId === b.environmentId &&
+    a.environmentScopeKey === b.environmentScopeKey &&
     a.checkoutKey === b.checkoutKey &&
     a.memberKeys.length === b.memberKeys.length &&
     a.memberKeys.every((key, index) => key === b.memberKeys[index])
@@ -174,23 +174,27 @@ function sameProjectSelection(a: ProjectSelection | null, b: ProjectSelection): 
 export function ProjectSettingsPanel({
   projectKey,
   environmentId = null,
+  environmentIds,
   checkoutKey = null,
   unavailable,
 }: {
   projectKey: string;
   environmentId?: EnvironmentId | null;
+  environmentIds?: readonly string[] | undefined;
   checkoutKey?: string | null;
   unavailable?: ReactNode;
 }) {
   const gt = useGT();
   const groups = useSettingsProjectGroups();
   const pathname = useLocation({ select: (location) => location.pathname });
+  const environmentScopeKey = JSON.stringify([environmentId, environmentIds]);
 
   const selected = groups.find((group) => group.projectKey === projectKey) ?? null;
   const members =
     selected?.memberProjects.filter(
       (member) =>
         (environmentId === null || member.environmentId === environmentId) &&
+        (environmentIds === undefined || environmentIds.includes(member.environmentId)) &&
         (checkoutKey === null || member.physicalProjectKey === checkoutKey),
     ) ?? [];
 
@@ -199,7 +203,7 @@ export function ProjectSettingsPanel({
   if (selected && members.length > 0) {
     const current: ProjectSelection = {
       key: selected.projectKey,
-      environmentId,
+      environmentScopeKey,
       checkoutKey,
       memberKeys: members.map((member) => member.physicalProjectKey),
     };
@@ -209,7 +213,7 @@ export function ProjectSettingsPanel({
   const successor =
     members.length === 0 &&
     lastSelection?.key === projectKey &&
-    lastSelection.environmentId === environmentId &&
+    lastSelection.environmentScopeKey === environmentScopeKey &&
     lastSelection.checkoutKey === checkoutKey
       ? groups.find((group) =>
           group.memberProjects.some((member) =>
@@ -224,6 +228,7 @@ export function ProjectSettingsPanel({
         search={{
           project: successor.projectKey,
           machine: environmentId ?? undefined,
+          machines: environmentIds,
           checkout: checkoutKey ?? undefined,
         }}
         replace
@@ -252,7 +257,7 @@ export function ProjectSettingsPanel({
   const scopedGroup = scopeProjectSettingsGroup(selected, members);
   return (
     <ProjectDetail
-      key={`${selected.projectKey}:${environmentId ?? "all"}:${checkoutKey ?? "all"}`}
+      key={JSON.stringify([selected.projectKey, environmentScopeKey, checkoutKey])}
       group={scopedGroup}
       allMembers={selected.memberProjects}
       hasOtherMembers={members.length < selected.memberProjects.length}
@@ -427,7 +432,12 @@ function ProjectDetail({
     if (isWholeGroup && !hasOtherMembers) {
       void navigate({
         to: "/settings/projects",
-        search: ({ machine }) => ({ project: undefined, machine, checkout: undefined }),
+        search: ({ machine, machines }) => ({
+          project: undefined,
+          machine,
+          machines,
+          checkout: undefined,
+        }),
         replace: true,
       });
     }

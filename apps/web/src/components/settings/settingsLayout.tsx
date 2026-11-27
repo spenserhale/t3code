@@ -25,6 +25,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { useOptionalSettingsScope } from "./SettingsScopeContext";
 import { SettingsScopeSentence } from "./SettingsScopeSentence";
+import { selectProjectAxis } from "./settingsScopeAxis";
 import {
   isProjectScopedSettingKey,
   listProjectOverrides,
@@ -301,11 +302,7 @@ function projectOverrides(
       {
         ...entry,
         label: group.displayName,
-        open: () =>
-          context.selectScope({
-            project: group.projectKey,
-            ...(context.search.machine ? { machine: context.search.machine } : {}),
-          }),
+        open: () => context.selectScope(selectProjectAxis(context.search, group.projectKey)),
       },
     ];
   });
@@ -640,6 +637,7 @@ export function SettingsPageContainer({
   const targetId = hash.replace(/^#/, "") || null;
   const clearTargetHash = () => {
     void navigate({
+      search: true,
       hash: "",
       replace: true,
       resetScroll: false,

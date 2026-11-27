@@ -4,10 +4,12 @@ import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type ProviderInstanceId,
   type EnvironmentId,
+  type ProjectId,
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
 } from "@t3tools/contracts";
+import { nextEffortSliderStep, selectedEffort } from "@t3tools/client-runtime/effort-slider";
 import { resolveSelectableModel } from "@t3tools/shared/model";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -28,7 +30,10 @@ import {
   type RefObject,
 } from "react";
 import { ChevronRightIcon } from "lucide-react";
-import { ModelListRow } from "./ModelListRow";
+import type { ModelPickerEffortSlider } from "./EffortSlider";
+import type { ComposerEffortSliderForTab, EffortSliderActions } from "./useComposerEffortSlider";
+import { ModelListRow, type ModelDisabledAction } from "./ModelListRow";
+import type { ModelPick } from "./ProviderModelPicker";
 import { ModelPickerSidebar } from "./ModelPickerSidebar";
 import { useProviderWorkspaceSnapshotRefresh } from "./useProviderWorkspaceSnapshotRefresh";
 import { getProviderStatusMessage, hasProviderSetup } from "./ProviderStatusBanner";
@@ -57,10 +62,7 @@ import {
   resolveShortcutCommand,
   shortcutLabelForCommand,
 } from "../../keybindings";
-import {
-  useEnvironmentModelPreferences,
-  useToggleEnvironmentModelFavorite,
-} from "~/hooks/useSettings";
+import { useEnvironmentModelShortcuts, useToggleModelFavorite } from "~/hooks/useModelShortcuts";
 import { announce } from "~/lib/announce";
 import { cn } from "~/lib/utils";
 import { getVirtualizedScrollFadeClassName } from "../ui/scroll-area";
@@ -350,7 +352,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   activeInstanceId: ProviderInstanceId;
   model: string;
   selectedModels?: ReadonlyArray<{ instanceId: ProviderInstanceId; model: string }>;
-  onToggleModel?: (instanceId: ProviderInstanceId, model: string) => void;
+  onToggleModel?: (instanceId: ProviderInstanceId, model: string, pick?: ModelPick) => void;
   lockedProvider: ProviderDriverKind | null;
   lockedContinuationGroupKey?: string | null;
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
@@ -360,11 +362,24 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   onRequestClose?: () => void;
   onOpenProviderSetup?: (instanceId: ProviderInstanceId) => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
-  onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
+  getModelDisabledAction?: (
+    instanceId: ProviderInstanceId,
+    model: string,
+  ) => ModelDisabledAction | null;
+  onInstanceModelChange: (instanceId: ProviderInstanceId, model: string, pick?: ModelPick) => void;
+  /** Lists the favorites this project sees: its own override of them, else the environment's. */
+  projectId?: ProjectId | null;
+  preferActiveProvider?: boolean;
+  scopedInstanceId?: ProviderInstanceId | undefined;
+  effortSliderForTab?: ComposerEffortSliderForTab;
   /** The owning popup moves focus here when it opens (its `initialFocus`). */
   searchInputRef: RefObject<HTMLInputElement | null>;
-  /** Sits beside an effort column: fills the shared row, and stacks above it on narrow screens. */
-  docked?: boolean;
+  renderDockedLayout?: (
+    modelList: ReactNode,
+    slider: ModelPickerEffortSlider | null,
+    sliderActions: EffortSliderActions | null,
+  ) => ReactNode;
+  onPickWithoutEffort?: () => void;
   /** Right at the end of the search text moves into the popup's effort column. */
   onFocusEffort?: () => void;
   /** Closes the list column, inside the popup's fixed height. */
@@ -384,13 +399,17 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     onRequestClose,
     onOpenProviderSetup,
   } = props;
+  const docked = props.renderDockedLayout !== undefined;
   const [searchQuery, setSearchQuery] = useState("");
   const modelListRef = useRef<LegendListRef | null>(null);
   const pickerContentRef = useRef<HTMLDivElement>(null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes this picker's mount to global keydown handlers
   useLayoutEffect(() => registerModelPickerContent(), []);
   const highlightedModelKeyRef = useRef<string | null>(null);
-  const { favorites } = useEnvironmentModelPreferences(props.environmentId);
+  const { favorites, effortSliderSupported } = useEnvironmentModelShortcuts(
+    props.environmentId,
+    props.projectId ?? null,
+  );
   const activeEntry = props.instanceEntries.find(
     (entry) => entry.instanceId === props.activeInstanceId,
   );
@@ -437,6 +456,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | "favorites">(
     () => {
       if (
+        props.preferActiveProvider ||
         props.lockedProvider !== null ||
         activeInstanceHasSelectableUnavailableModel ||
         activeInstanceNeedsSetup
@@ -467,6 +487,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     gitCwd: props.workspaceCwd ?? null,
     instanceId: selectedInstanceId === "favorites" ? undefined : selectedInstanceId,
   });
+  const tabDriver =
+    selectedInstanceId === "favorites"
+      ? null
+      : (instanceEntries.find((entry) => entry.instanceId === selectedInstanceId)?.driverKind ??
+        null);
+  const effort = props.effortSliderForTab?.(tabDriver);
+  const slider = effort?.slider ?? null;
   const favoritesSet = new Set(favorites.map((fav) => providerModelKey(fav.provider, fav.model)));
   const [expandedLegacyInstances, setExpandedLegacyInstances] = useState(
     () =>
@@ -489,7 +516,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const serverKeybindings = useAtomValue(primaryServerKeybindingsAtom);
   const keybindings = providedKeybindings ?? serverKeybindings;
   const [searchHeight, setSearchHeight] = useState(0);
-  const toggleFavorite = useToggleEnvironmentModelFavorite(props.environmentId);
+  const toggleFavorite = useToggleModelFavorite(props.environmentId, props.projectId ?? null);
+  const favoriteByKey = new Map(
+    favorites.map((favorite) => [providerModelKey(favorite.provider, favorite.model), favorite]),
+  );
 
   const focusSearchInput = () => {
     searchInputRef.current?.focus({ preventScroll: true });
@@ -542,11 +572,20 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     }
     const resolvedModel = resolveSelectableModel(entry.driverKind, modelSlug, options);
     if (!resolvedModel) return null;
+    // A favorite opens at its saved effort, whether it is picked alone or added to several models.
+    const savedOptions = effortSliderSupported
+      ? favoriteByKey.get(providerModelKey(instanceId, resolvedModel))?.options
+      : undefined;
+    const pick = savedOptions?.length ? { options: savedOptions } : undefined;
     if (additive && onToggleModel) {
-      onToggleModel(instanceId, resolvedModel);
-    } else {
-      onInstanceModelChange(instanceId, resolvedModel);
+      onToggleModel(instanceId, resolvedModel, pick);
+      return resolvedModel;
     }
+    onInstanceModelChange(instanceId, resolvedModel, pick);
+    // The search box keeps focus rather than the effort column when the pick brought its own
+    // effort, and while the slider is up, since the person is steering from there.
+    if (pick || slider) focusSearchInput();
+    else props.onPickWithoutEffort?.();
     return resolvedModel;
   };
 
@@ -731,6 +770,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     return sortProviderModelItems(result, {
       favoriteModelKeys: favoritesSet,
       groupFavorites: selectedInstanceId !== "favorites",
+      // Favorites keep the order the person gave them.
+      ...(selectedInstanceId === "favorites" ? { explicitOrder: [...favoriteByKey.keys()] } : {}),
       instanceOrder: selectedInstanceId === "favorites" ? instanceOrder : [],
     });
   })();
@@ -890,9 +931,24 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       .filter((entry) => shouldShowInstanceBadge(entry, instanceEntries))
       .map((entry) => entry.instanceId),
   );
+  const favoriteEffortLabels = new Map<string, string>();
+  if (effortSliderSupported) {
+    for (const model of visibleModels) {
+      const saved = favoriteByKey.get(providerModelKey(model.instanceId, model.slug))?.options;
+      if (!saved?.length) continue;
+      const effort = selectedEffort(
+        entryByInstanceId.get(model.instanceId)?.models.find((m) => m.slug === model.slug),
+        saved,
+      );
+      if (effort && saved.some((option) => option.id === effort.descriptorId)) {
+        favoriteEffortLabels.set(modelPickerModelKey(model.instanceId, model.slug), effort.label);
+      }
+    }
+  }
   const modelListExtraData = {
     badgedInstanceIds,
     favoritesSet,
+    favoriteEffortLabels,
     modelJumpLabelByKey,
     activeModelKey,
     selectedModelKeySet,
@@ -954,18 +1010,22 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     announce(gt("Model: {name}", { name: name ?? selectedSlug }), "model-picker");
   };
 
-  return (
+  const renderLayout = (modelList: ReactNode) =>
+    props.renderDockedLayout
+      ? props.renderDockedLayout(modelList, slider, effort?.actions ?? null)
+      : modelList;
+  return renderLayout(
     <>
       <WindowKeyDownListener onKeyDown={onWindowKeyDown} />
       <div
         ref={pickerContentRef}
         className={cn(
           "relative flex w-screen max-w-90 flex-row overflow-hidden",
-          props.docked ? "max-sm:h-56 max-sm:w-full max-sm:max-w-none" : "max-h-86.5",
+          docked ? "max-sm:h-56 max-sm:w-full max-sm:max-w-none" : "max-h-86.5",
         )}
         // Docked, the popup sets the height; a minimum here would overflow short windows.
         style={
-          props.docked
+          docked
             ? undefined
             : isSearching
               ? { height: searchHeight }
@@ -1063,6 +1123,27 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   return;
                 }
                 if (
+                  slider &&
+                  searchQuery.length === 0 &&
+                  (e.key === "ArrowLeft" || e.key === "ArrowRight") &&
+                  !e.altKey &&
+                  !e.ctrlKey &&
+                  !e.metaKey &&
+                  !e.shiftKey
+                ) {
+                  // With nothing typed there is no caret to move, so Left and Right slide.
+                  (e as typeof e & { preventBaseUIHandler?: () => void }).preventBaseUIHandler?.();
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const step = nextEffortSliderStep(
+                    slider.stops,
+                    slider.activeIndex,
+                    e.key === "ArrowRight" ? 1 : -1,
+                  );
+                  if (step !== null) slider.onSelect(step);
+                  return;
+                }
+                if (
                   showSidebar &&
                   !e.altKey &&
                   !e.ctrlKey &&
@@ -1102,7 +1183,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                   e.preventDefault();
                   e.stopPropagation();
                   // The column shows the selected model's effort, so a highlighted model is picked
-                  // first; the owning popup then moves focus to that model's levels.
+                  // first, and focus then moves to that model's levels once the column shows them.
+                  const focusEffort = props.onFocusEffort;
                   const highlighted = highlightedModelKeyRef.current
                     ? parseModelPickerModelKey(highlightedModelKeyRef.current)
                     : null;
@@ -1110,7 +1192,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     highlighted !== null &&
                     highlightedModelKeyRef.current !== activeModelKey &&
                     handleModelSelect(highlighted.slug, highlighted.instanceId) !== null;
-                  if (!pickedNew) props.onFocusEffort();
+                  if (pickedNew) window.requestAnimationFrame(focusEffort);
+                  else focusEffort();
                   return;
                 }
                 if (e.key === "Enter" && highlightedModelKeyRef.current) {
@@ -1209,6 +1292,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 }
                 const disabledReason =
                   getModelDisabledReason?.(model.instanceId, model.slug) ?? null;
+                const disabledAction =
+                  disabledReason && !model.isUnavailable
+                    ? props.getModelDisabledAction?.(model.instanceId, model.slug)
+                    : null;
                 return (
                   <ModelListRow
                     key={modelKey}
@@ -1219,10 +1306,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     instanceId={model.instanceId}
                     driverKind={model.driverKind}
                     providerDisplayName={model.instanceDisplayName}
+                    hideHarnessBranding={model.instanceId === props.scopedInstanceId}
                     providerAccentColor={model.instanceAccentColor}
                     acpRegistryAgentId={model.acpRegistryAgentId}
                     acpRegistryIconUrl={model.acpRegistryIconUrl}
                     isFavorite={favoritesSet.has(providerModelKey(model.instanceId, model.slug))}
+                    favoriteEffort={favoriteEffortLabels.get(modelKey) ?? null}
                     isSelected={
                       selectedModelKeys !== undefined
                         ? selectedModelKeySet.has(modelKey)
@@ -1234,6 +1323,17 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     unavailable={model.isUnavailable === true}
                     jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
                     disabledReason={disabledReason}
+                    disabledAction={
+                      disabledAction
+                        ? {
+                            ...disabledAction,
+                            onClick: () => {
+                              focusSearchInput();
+                              disabledAction.onClick();
+                            },
+                          }
+                        : null
+                    }
                     onToggleFavorite={toggleFavorite}
                   />
                 );
@@ -1256,6 +1356,6 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           </div>
         </Combobox>
       </div>
-    </>
+    </>,
   );
 });
