@@ -100,7 +100,13 @@ function formatValue(
       const label = BACKGROUND_ACTIVITY_PROFILE_LABELS[value.profile];
       return label ? resolve(label) : value.profile;
     }
-    if ("model" in value && typeof value.model === "string") return value.model;
+    if ("model" in value && typeof value.model === "string") {
+      return key === "defaultModelSelection" &&
+        "followLatest" in value &&
+        value.followLatest === true
+        ? `Follow latest (from ${value.model})`
+        : value.model;
+    }
     if ("mode" in value && typeof value.mode === "string") {
       if (key === "worktreeCleanup") {
         return value.mode === "off"

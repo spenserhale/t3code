@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import type { EnvironmentId, ProjectId, RuntimeMode } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  RuntimeMode,
+  ServerSettings,
+} from "@t3tools/contracts";
 
 const testState = vi.hoisted(() => {
   type ProjectFile = { readonly defaultThreadEnvMode?: "local" | "worktree" } | null;
@@ -17,7 +23,7 @@ const testState = vi.hoisted(() => {
   let targetSettings = {
     defaultThreadEnvMode: "local" as "local" | "worktree" | null,
     newWorktreesStartFromOrigin: false,
-    defaultModelSelection: null,
+    defaultModelSelection: null as ServerSettings["defaultModelSelection"],
     defaultRuntimeMode: "full-access" as RuntimeMode,
   };
   let storedDraft: {
@@ -143,7 +149,19 @@ const testServerConfigs = () =>
         },
       },
     ],
-    ["environment-ssh", { settings: testState.targetSettings }],
+    [
+      "environment-ssh",
+      {
+        settings: testState.targetSettings,
+        providers: [
+          {
+            instanceId: "codex",
+            driver: "codex",
+            models: [{ slug: "gpt-6.2-sol", isCustom: false }],
+          },
+        ],
+      },
+    ],
   ]);
 
 vi.mock("../rpc/atomRegistry", () => ({
@@ -166,10 +184,6 @@ vi.mock("@t3tools/client-runtime/environment", () => ({
     `${ref.environmentId}:${ref.projectId}`,
   scopeProjectRef: (environmentId: string, projectId: string) => ({ environmentId, projectId }),
   scopeThreadRef: (environmentId: string, threadId: string) => ({ environmentId, threadId }),
-}));
-vi.mock("@t3tools/contracts", () => ({
-  DEFAULT_RUNTIME_MODE: "default",
-  DEFAULT_SERVER_SETTINGS: {},
 }));
 vi.mock("@t3tools/shared/projectSettings", () => ({
   resolveProjectSettings: (
@@ -218,7 +232,6 @@ vi.mock("../composerDraftStore", () => {
 vi.mock("../lib/chatThreadActions", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/chatThreadActions")>()),
   hasExplicitComposerModelSelection: () => false,
-  resolveNewThreadModelSelectionOverride: () => null,
 }));
 vi.mock("../providerInstances", () => ({ resolveDefaultProviderModelSelection: () => null }));
 vi.mock("../lib/t3ProjectFileDefaults", () => ({
@@ -266,7 +279,10 @@ vi.mock("../uiStateStore", () => ({
   legacyProjectCwdPreferenceKey: () => "remote-project",
   useUiStateStore: () => [],
 }));
-vi.mock("./useSettings", () => ({ getClientSettings: () => ({}) }));
+vi.mock("./useSettings", () => ({
+  getClientSettings: () => ({}),
+  mergeEnvironmentSettings: (settings: unknown) => settings,
+}));
 
 import { readPendingWorkspaceDefault } from "../lib/draftWorkspaceDefaults";
 import { resolveDefaultProjectRef, useNewThreadHandler } from "./useHandleNewThread";
@@ -385,6 +401,30 @@ describe.each([
 });
 
 describe("useNewThreadHandler", () => {
+  it("seeds the remote environment's latest Sol release and keeps high effort", async () => {
+    testState.reset(null);
+    const stored = {
+      instanceId: "codex" as ProviderInstanceId,
+      model: "gpt-6.1-sol",
+      options: [{ id: "reasoningEffort", value: "high" }],
+      followLatest: true,
+    };
+    testState.targetSettings.defaultModelSelection = stored;
+    const opened = await useNewThreadHandler()({
+      environmentId: "environment-ssh",
+      projectId: "project-remote",
+    } as never);
+    expect(testState.draftStore.setModelSelection).toHaveBeenCalledWith(
+      opened?.draftId,
+      {
+        instanceId: stored.instanceId,
+        model: "gpt-6.2-sol",
+        options: stored.options,
+      },
+      { replaceOptions: true },
+    );
+  });
+
   it("seeds the prompt into the empty draft that is already open", async () => {
     testState.reset(null);
     testState.openEmptyDraft("draft-open");

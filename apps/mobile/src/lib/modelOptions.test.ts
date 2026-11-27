@@ -596,6 +596,14 @@ describe("mobile model options", () => {
     const current = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
     const legacy = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
 
+    const high = [{ id: "reasoningEffort", value: "high" }];
+    expect(
+      resolveDefaultableModelSelection(
+        config,
+        { ...current, model: "gpt-5-sol", options: high, followLatest: true },
+        null,
+      ),
+    ).toEqual({ ...current, options: high });
     expect(resolveDefaultableModelSelection(config, current, null)).toBe(current);
     expect(resolveDefaultableModelSelection(config, legacy, null)).toBeNull();
     expect(resolveDefaultableModelSelection(null, legacy, null)).toBe(legacy);

@@ -1,4 +1,3 @@
-import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
@@ -19,33 +18,32 @@ const ModelSelectionSource = Schema.Struct({
   options: Schema.optional(Schema.Unknown),
 });
 
+const followLatest = { followLatest: Schema.optionalKey(Schema.Boolean) };
+const DefaultModelSelectionSource = Schema.Struct({
+  ...ModelSelectionSource.fields,
+  ...followLatest,
+});
+const DefaultModelSelectionWire = Schema.Struct({ ...ModelSelectionWire.fields, ...followLatest });
+
+const normalizeInstance = SchemaTransformation.transform<
+  typeof DefaultModelSelectionWire.Encoded,
+  typeof DefaultModelSelectionSource.Type
+>({
+  decode: ({ provider, instanceId, options, ...fields }) =>
+    ({
+      ...fields,
+      ...(options === undefined || options === null ? {} : { options }),
+      instanceId: instanceId === undefined ? provider : instanceId,
+    }) as typeof DefaultModelSelectionWire.Encoded,
+  encode: (selection) => selection,
+});
+
 export const ModelSelection = ModelSelectionSource.pipe(
-  Schema.decodeTo(
-    ModelSelectionWire,
-    SchemaTransformation.transformEffect({
-      decode: (raw) => {
-        const instanceIdSource =
-          raw.instanceId !== undefined
-            ? raw.instanceId
-            : typeof raw.provider === "string"
-              ? raw.provider
-              : undefined;
-        const base: Record<string, unknown> = {
-          instanceId: instanceIdSource,
-          model: raw.model,
-        };
-        if (raw.options !== undefined && raw.options !== null) base.options = raw.options;
-        return Effect.succeed(base as typeof ModelSelectionWire.Encoded);
-      },
-      encode: (value) => {
-        const base: Record<string, unknown> = {
-          instanceId: value.instanceId,
-          model: value.model,
-        };
-        if (value.options !== undefined) base.options = value.options;
-        return Effect.succeed(base as typeof ModelSelectionSource.Encoded);
-      },
-    }),
-  ),
+  Schema.decodeTo(ModelSelectionWire, normalizeInstance),
 );
 export type ModelSelection = typeof ModelSelection.Type;
+
+export const DefaultModelSelection = DefaultModelSelectionSource.pipe(
+  Schema.decodeTo(DefaultModelSelectionWire, normalizeInstance),
+);
+export type DefaultModelSelection = typeof DefaultModelSelection.Type;

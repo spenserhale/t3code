@@ -13,6 +13,7 @@ Use the **"Applying settings for …"** selector at the top of Settings (web/des
 - Click the **layers icon** beside a server setting to inspect its inheritance chain, jump to overriding projects, or **Reset all** back to the environment default.
 - **Per-project providers**: With a project selected in **Settings → Providers**, toggling a provider enables or disables it for that project only (in either direction). Running turns finish; no new turns start on a disabled provider.
 - **Favorites and the effort slider**: **Settings → Threads** also holds your favorite models and the [effort slider](composer.md#favorites-and-the-effort-slider), which a project can override with its own list.
+- **Follow the latest model** (web and desktop): In **Settings → Threads → New threads → Model**, turn on **Follow latest Sol** for a Codex Sol default, or **Follow latest Opus** for a Claude Opus default. Each environment uses the newest available release in that family for new threads and keeps its reasoning effort. Turn following off to pin the current version. Projects with their own model overrides can enable following separately.
 
 ## Pin and archive projects
 

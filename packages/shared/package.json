@@ -67,6 +67,10 @@
       "types": "./src/mobileSourceMaps.ts",
       "import": "./src/mobileSourceMaps.ts"
     },
+    "./modelFamilyDefault": {
+      "types": "./src/modelFamilyDefault.ts",
+      "import": "./src/modelFamilyDefault.ts"
+    },
     "./model": {
       "types": "./src/model.ts",
       "import": "./src/model.ts"

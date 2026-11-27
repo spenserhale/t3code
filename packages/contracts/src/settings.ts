@@ -38,7 +38,7 @@ import {
   DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
   ProviderOptionSelections,
 } from "./model.ts";
-import { ModelSelection } from "./modelSelection.ts";
+import { DefaultModelSelection, ModelSelection } from "./modelSelection.ts";
 import { ProjectScript, type ProjectMutation } from "./project.ts";
 import { DEFAULT_RUNTIME_MODE, RuntimeMode } from "./providerPolicy.ts";
 import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
@@ -1289,7 +1289,7 @@ export type ProjectProviderInstanceOverride = typeof ProjectProviderInstanceOver
  * providerInstances overrides fields per instance; other keys replace the whole setting. */
 export const ProjectSettingsOverrides = Schema.Struct({
   worktreeCleanup: Schema.optionalKey(WorktreeCleanup),
-  defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  defaultModelSelection: Schema.optionalKey(Schema.NullOr(DefaultModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
@@ -1523,7 +1523,7 @@ export const ServerSettings = Schema.Struct({
   projectAutoPullOverrides: Schema.Record(ProjectId, Schema.Boolean).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
-  defaultModelSelection: Schema.NullOr(ModelSelection).pipe(
+  defaultModelSelection: Schema.NullOr(DefaultModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   fallbackModelSelection: Schema.NullOr(ModelSelection).pipe(
@@ -2005,7 +2005,7 @@ export const ServerSettingsPatch = Schema.Struct({
   projectAutoPullOverrides: Schema.optionalKey(
     Schema.Record(ProjectId, Schema.NullOr(Schema.Boolean)),
   ),
-  defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  defaultModelSelection: Schema.optionalKey(Schema.NullOr(DefaultModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   fallbackModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   /** Replaces each project's override set; null removes it. Omitted providerInstances retains its stored value. */

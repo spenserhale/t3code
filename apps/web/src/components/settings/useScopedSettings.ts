@@ -34,6 +34,7 @@ import {
   pendingScopedWritesAtom,
   planProjectOverridesClear,
   planScopedSettingsClear,
+  planScopedModelDefaults,
   planScopedSettingsPatch,
   planScopedProviderEffortSliderWrite,
   resolveScopedSettingsTargets,
@@ -166,6 +167,13 @@ export function useUpdateScopedProviderEffortSlider() {
         ),
       onFailed,
     );
+}
+
+export function useUpdateScopedModelDefaults() {
+  const { scope, environments } = useSettingsScope();
+  const run = useRunScopedPlan();
+  return (defaults: Parameters<typeof planScopedModelDefaults>[2]) =>
+    run(environments, (current) => planScopedModelDefaults(scope, current, defaults));
 }
 
 export function useClearScopedSettings() {
