@@ -5076,6 +5076,8 @@
   "e339cc2761dac83a": "セグメント {index}、{account}、残り {remaining}%、{resetsIn}、{credits, plural, other {リセットクレジット {credits} 件を保有}}",
   "288ade531cfcf90c": "セグメント {index}、{account}、残り {remaining}%、{resetsIn}",
   "d0d366d02d9fd98e": "セグメント {index}、{account}、残り {remaining}%、{credits, plural, other {リセットクレジット {credits} 件を保有}}",
+  "d6f15d862f5b1b07": "保留中 {amount}",
+  "bffdce4f6a31b056": "今月 {amount}",
   "d2d071e45a2d6b89": "上限を表示するには環境を選択してください。",
   "f411a8cef140a5ea": "選択した環境には、サブスクリプションの上限を報告するプロバイダーがありません。",
   "b29a752dd8ee9aa7": "アカウント",
@@ -5098,6 +5100,27 @@
         "%"
       ]
     }
+  ],
+  "6f833713d98f448b": [
+    "残り",
+    " ",
+    {
+      "t": "Text",
+      "i": 1,
+      "c": {
+        "i": 2,
+        "k": "_gt_value_2",
+        "v": "v"
+      }
+    }
+  ],
+  "90f32dc256bc471c": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " 時点"
   ],
   "6af5e3cf03861f55": [
     {

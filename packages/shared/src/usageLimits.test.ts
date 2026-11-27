@@ -26,7 +26,7 @@ import {
   usesChatGptSharing,
   resolveNewThreadModelSelection,
 } from "./usageLimits.ts";
-import { collectLimitNotices } from "./usageLimitsCopy.ts";
+import { collectLimitNotices, limitsNotice } from "./usageLimitsCopy.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
 
@@ -2016,6 +2016,83 @@ describe("external usage settings", () => {
     ).toEqual([
       "Desktop · hub · claude-tg@example.com: The provider refused the hub request (HTTP 429).",
     ]);
+  });
+});
+
+describe("limits notices", () => {
+  const balance = { balanceUsd: 4.99, heldUsd: 0.01, monthSpendUsd: 14.82 };
+  const unlid = {
+    id: "unlid",
+    label: "Unlid",
+    credentialFingerprint: "unlid-key",
+    checkedAt: "2026-09-03T11:00:00.000Z",
+    windowIds: [],
+    balance,
+  };
+  const presentation = (provider: ServerProvider) =>
+    new Map([
+      [
+        EnvironmentId.make("a"),
+        { entry: { target: { label: "A" } }, serverConfig: { providers: [provider] } },
+      ],
+    ]);
+
+  it("stays quiet when a balance is the only holding, loud when nothing reports", () => {
+    expect(
+      limitsNotice({ checkedAt: "2026-09-03T11:00:00.000Z", windows: [], subscriptions: [unlid] }),
+    ).toBeNull();
+    expect(limitsNotice({ checkedAt: "2026-09-03T11:00:00.000Z", windows: [] })).toBe(
+      "No limits reported.",
+    );
+  });
+
+  it("collects no notice for a balance-only provider, and one for a truly empty provider", () => {
+    const balanceOnly = provider({
+      instanceId: ProviderInstanceId.make("unlid"),
+      driver: ProviderDriverKind.make("opencode"),
+      usageLimits: { checkedAt: "2026-09-03T11:00:00.000Z", windows: [], subscriptions: [unlid] },
+    });
+    const empty = provider({
+      usageLimits: { checkedAt: "2026-09-03T11:00:00.000Z", windows: [] },
+    });
+    expect(collectLimitNotices(presentation(balanceOnly))).toEqual([]);
+    expect(collectLimitNotices(presentation(empty))).toEqual(["codex: No limits reported."]);
+  });
+
+  it("keeps a balance alone from drawing a hub account", () => {
+    const presentations = new Map([
+      [
+        EnvironmentId.make("a"),
+        {
+          entry: { target: { label: "A" } },
+          serverConfig: {
+            providers: [],
+            usageLimitSources: [
+              {
+                id: UsageLimitSourceId.make("hub"),
+                kind: "cliproxy" as const,
+                label: "hub",
+                checkedAt: "2026-09-03T11:00:00.000Z",
+                accounts: [
+                  {
+                    id: "unlid-someone@example.com.json",
+                    driver: ProviderDriverKind.make("opencode"),
+                    email: "someone@example.com",
+                    usageLimits: {
+                      checkedAt: "2026-09-03T11:00:00.000Z",
+                      windows: [],
+                      subscriptions: [unlid],
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    expect(collectLimitAccounts(presentations)).toEqual([]);
+    expect(collectLimitNotices(presentations)).toEqual([]);
   });
 });
 

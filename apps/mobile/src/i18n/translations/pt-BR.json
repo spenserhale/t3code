@@ -5097,6 +5097,8 @@
   "e339cc2761dac83a": "Segmento {index}, {account}, {remaining}% restante, {resetsIn}, {credits, plural, one {{credits} crédito de redefinição guardado} other {{credits} créditos de redefinição guardados}}",
   "288ade531cfcf90c": "Segmento {index}, {account}, {remaining}% restante, {resetsIn}",
   "d0d366d02d9fd98e": "Segmento {index}, {account}, {remaining}% restante, {credits, plural, one {{credits} crédito de redefinição guardado} other {{credits} créditos de redefinição guardados}}",
+  "d6f15d862f5b1b07": "{amount} retido",
+  "bffdce4f6a31b056": "{amount} este mês",
   "d2d071e45a2d6b89": "Selecione um ambiente para ver os limites.",
   "f411a8cef140a5ea": "Nenhum provedor nos ambientes selecionados informa limites de assinatura.",
   "b29a752dd8ee9aa7": "Conta",
@@ -5119,6 +5121,28 @@
     },
     " ",
     "restante"
+  ],
+  "6f833713d98f448b": [
+    {
+      "t": "Text",
+      "i": 1,
+      "c": {
+        "i": 2,
+        "k": "_gt_value_2",
+        "v": "v"
+      }
+    },
+    " ",
+    "restantes"
+  ],
+  "90f32dc256bc471c": [
+    "Em",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
   ],
   "6af5e3cf03861f55": [
     {

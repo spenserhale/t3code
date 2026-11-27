@@ -1,9 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, type ServerProviderUsageBalance } from "@t3tools/contracts";
 import { providerClients } from "@t3tools/client-runtime/provider-clients";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import { creditSummary } from "@t3tools/shared/usageCredit";
+import { formatUsd } from "@t3tools/shared/usageFormat";
 import {
   collectHttpQuotaSources,
   collectLimitAccounts,
@@ -478,6 +479,63 @@ function PoolWindowCard({
   );
 }
 
+// A pay-as-you-go subscription has no burn-down window; its balance is the whole line.
+function AccountBalanceCard({
+  account,
+  balance,
+}: {
+  readonly account: LimitAccount;
+  readonly balance: ServerProviderUsageBalance;
+}) {
+  const gt = useGT();
+  const m = useMessages();
+  const detail = [
+    balance.heldUsd !== undefined
+      ? gt("held {amount}", {
+          amount: formatUsd(balance.heldUsd),
+          $context: "prepaid money reserved by requests still running",
+        })
+      : null,
+    balance.monthSpendUsd !== undefined
+      ? gt("{amount} this month", {
+          amount: formatUsd(balance.monthSpendUsd),
+          $context: "money spent so far this month",
+        })
+      : null,
+  ].filter((part) => part !== null);
+  return (
+    <View className="gap-1 rounded-[24px] border-continuous bg-grouped-card p-4">
+      <Text className="text-sm font-t3-medium text-foreground">{accountName(account, m)}</Text>
+      <View className="flex-row items-baseline gap-1.5">
+        <Text className="text-sm text-foreground-muted">
+          <T>
+            <Text className="text-3xl font-t3-bold tabular-nums text-foreground">
+              <Var>{formatUsd(balance.balanceUsd)}</Var>
+            </Text>{" "}
+            left
+          </T>
+        </Text>
+      </View>
+      {detail.length > 0 ? (
+        <Text className="text-xs tabular-nums text-foreground-muted">{detail.join(" · ")}</Text>
+      ) : null}
+      <Text className="text-xs text-foreground-tertiary">
+        <T>
+          As of{" "}
+          <Var>
+            {new Date(account.limits.checkedAt).toLocaleString(undefined, {
+              hour: "numeric",
+              minute: "2-digit",
+              month: "short",
+              day: "numeric",
+            })}
+          </Var>
+        </T>
+      </Text>
+    </View>
+  );
+}
+
 export function UsageLimitsSection({
   now,
   failedLabels,
@@ -566,6 +624,11 @@ export function UsageLimitsSection({
                     wide={wide}
                   />
                 );
+              })}
+              {pool.accounts.map((account) => {
+                const { balance } = account;
+                if (!balance || account.limits.windows.length > 0) return null;
+                return <AccountBalanceCard key={account.key} account={account} balance={balance} />;
               })}
             </View>
           </Fragment>

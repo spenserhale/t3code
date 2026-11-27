@@ -5085,6 +5085,8 @@
   "e339cc2761dac83a": "分段 {index}，{account}，剩余 {remaining}%，{resetsIn}，{credits, plural, other {已存有 {credits} 个重置额度}}",
   "288ade531cfcf90c": "分段 {index}，{account}，剩余 {remaining}%，{resetsIn}",
   "d0d366d02d9fd98e": "分段 {index}，{account}，剩余 {remaining}%，{credits, plural, other {已存有 {credits} 个重置额度}}",
+  "d6f15d862f5b1b07": "预留 {amount}",
+  "bffdce4f6a31b056": "本月 {amount}",
   "d2d071e45a2d6b89": "选择一个环境即可查看限制。",
   "f411a8cef140a5ea": "选中的环境上没有提供方报告订阅限制。",
   "b29a752dd8ee9aa7": "账户",
@@ -5106,6 +5108,28 @@
         },
         "%"
       ]
+    }
+  ],
+  "6f833713d98f448b": [
+    "剩余",
+    " ",
+    {
+      "t": "Text",
+      "i": 1,
+      "c": {
+        "i": 2,
+        "k": "_gt_value_2",
+        "v": "v"
+      }
+    }
+  ],
+  "90f32dc256bc471c": [
+    "截至",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
     }
   ],
   "6af5e3cf03861f55": [

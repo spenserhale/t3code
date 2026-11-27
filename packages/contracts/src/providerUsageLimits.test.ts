@@ -81,4 +81,37 @@ describe("server config forward compatibility", () => {
       subscription,
     ]);
   });
+
+  it("reads the balance of a subscription, and drops only a balance it cannot read", () => {
+    const subscription = {
+      id: "unlid",
+      label: "Unlid",
+      credentialFingerprint: "unlid-fingerprint",
+      checkedAt: "2026-11-15T00:00:00.000Z",
+      windowIds: [],
+    };
+    const decode = (entry: object) =>
+      decodeServerProvider({
+        ...baseProviderSnapshot,
+        usageLimits: {
+          checkedAt: "2026-11-15T00:00:00.000Z",
+          windows: [],
+          subscriptions: [entry],
+        },
+      }).usageLimits?.subscriptions;
+
+    expect(
+      decode({
+        ...subscription,
+        balance: { balanceUsd: 4.99, heldUsd: 0.01, monthSpendUsd: 14.82 },
+      }),
+    ).toEqual([
+      { ...subscription, balance: { balanceUsd: 4.99, heldUsd: 0.01, monthSpendUsd: 14.82 } },
+    ]);
+    expect(decode({ ...subscription, balance: { balanceUsd: 0 } })).toEqual([
+      { ...subscription, balance: { balanceUsd: 0 } },
+    ]);
+    expect(decode({ ...subscription, balance: { balanceUsd: -1 } })).toEqual([subscription]);
+    expect(decode(subscription)).toEqual([subscription]);
+  });
 });
