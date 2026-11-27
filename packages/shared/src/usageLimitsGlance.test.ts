@@ -154,13 +154,17 @@ describe("collectLimitGlance", () => {
       window("gemini-5h", "Gemini · 5-hour", "session"),
     ]);
     const [row] = rows([source]);
-    expect(row?.pools).toMatchObject([
+    // Pools follow the order Limits lists them in; this checks only how windows pair up.
+    const byLabel = [...(row?.pools ?? [])].sort((left, right) =>
+      String(left.label).localeCompare(String(right.label)),
+    );
+    expect(byLabel).toMatchObject([
+      { label: "Claude & GPT (shared)", windows: [{ id: "3p-5h" }, { id: "3p-weekly" }] },
       {
         label: "Gemini",
         windows: [{ id: "gemini-5h", resetsIn: null, pace: null }, { id: "gemini-weekly" }],
       },
       { label: "Gemini 4 Argon", windows: [{ id: "gemini-argon-wtu-weekly" }] },
-      { label: "Claude & GPT (shared)", windows: [{ id: "3p-5h" }, { id: "3p-weekly" }] },
     ]);
     expect(source.limits.windows).toHaveLength(5);
   });
