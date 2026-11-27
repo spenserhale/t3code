@@ -562,26 +562,24 @@ function EffortSliderShortcuts(props: { actions: EffortSliderActions }) {
       >
         Edit slider
       </Button>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              size="icon-xs"
-              variant="ghost-muted"
-              className="ms-auto"
-              aria-label="Effort slider settings"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => {
-                onRequestClose();
-                openSettings();
-              }}
-            />
-          }
-        >
-          <SlidersHorizontalIcon aria-hidden="true" />
-        </TooltipTrigger>
-        <TooltipPopup side="top">Effort slider settings</TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={
+          <Button
+            size="icon-xs"
+            variant="ghost-muted"
+            className="ms-auto"
+            aria-label="Effort slider settings"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              onRequestClose();
+              openSettings();
+            }}
+          />
+        }
+        label="Effort slider settings"
+      >
+        <SlidersHorizontalIcon aria-hidden="true" />
+      </SharedTooltipTrigger>
     </div>
   );
 }

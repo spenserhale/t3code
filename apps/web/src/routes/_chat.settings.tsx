@@ -153,7 +153,7 @@ function SettingsContentLayout() {
   const contentScopeKey =
     pathname === "/settings/diagnostics" || pathname === "/settings/providers"
       ? environment?.environmentId
-      : location.pathname === "/settings/threads"
+      : pathname === "/settings/threads"
         ? JSON.stringify([search.project, search.checkout])
         : JSON.stringify(search);
   const [restoreSignal, setRestoreSignal] = useState(0);

@@ -166,8 +166,11 @@ export const ModelListRow = memo(function ModelListRow(props: {
     return row;
   }
 
+  // The shared tooltip skips a disabled trigger, so the reason hangs on a wrapper around the row.
   const disabledRow = (
-    <SharedTooltipTrigger render={row} label={props.disabledReason} side="left" align="center" />
+    <SharedTooltipTrigger render={<div />} label={props.disabledReason} side="left" align="center">
+      {row}
+    </SharedTooltipTrigger>
   );
   const action = props.disabledAction;
   if (!action) return disabledRow;
