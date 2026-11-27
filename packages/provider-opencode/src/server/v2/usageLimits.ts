@@ -184,7 +184,12 @@ export const readServerUsageLimits = Effect.fn("OpenCode2Client.usageLimits")(fu
         });
       }
     }
-    return { ...makeUsageLimits({ checkedAt, windows }), ...externalUsage };
+    return {
+      ...makeUsageLimits({ checkedAt, windows }),
+      ...externalUsage,
+      // The workspace owns this usage, so it names it across environments instead of a key.
+      credentialFingerprint: `opencode-workspace:${workspace.id}`,
+    };
   }).pipe(
     Effect.timeout("5 seconds"),
     Effect.orElseSucceed(() =>

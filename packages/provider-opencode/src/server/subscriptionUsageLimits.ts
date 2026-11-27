@@ -47,7 +47,11 @@ export const makeSubscriptionUsageLimits = Effect.fn("makeSubscriptionUsageLimit
       { concurrency: "unbounded" },
     ).pipe(
       Effect.flatMap(({ openCodeLimits, zaiLimits, ollamaLimits }) =>
-        combineUsageLimits([openCodeLimits, zaiLimits, ollamaLimits]),
+        combineUsageLimits([
+          openCodeSubscription(openCodeLimits),
+          { id: "zai-coding-plan", label: "Z.ai", limits: zaiLimits },
+          { id: "ollama-cloud", label: "Ollama Cloud", limits: ollamaLimits },
+        ]),
       ),
       Effect.provide(services),
     );
@@ -75,3 +79,14 @@ export const makeSubscriptionUsageLimits = Effect.fn("makeSubscriptionUsageLimit
     return { usageLimits, consumeResetCredit };
   },
 );
+
+/**
+ * OpenCode's own subscription is the plan its windows read: Go, from a Go key or a Console
+ * workspace that has it, else the workspace's spend limits alone. Only accounts on one plan
+ * share a window's columns, so a workspace without Go must not be listed as Go.
+ */
+export function openCodeSubscription(limits: ServerProviderUsageLimits) {
+  return limits.windows.some((window) => window.id.startsWith("go_"))
+    ? { id: "opencode-go", label: "OpenCode Go", limits }
+    : { id: "opencode-console", label: "OpenCode Console", limits };
+}
