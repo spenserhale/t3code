@@ -59,9 +59,9 @@ Download from [GitHub Releases](https://github.com/pingdotgg/t3code/releases) or
 - **Linux AppImage**: `chmod +x ./T3-Code-*.AppImage && ./T3-Code-*.AppImage` (x86_64 and ARM64). `.deb` self-updates with a password prompt; update AUR packages via your AUR helper (`yay -Syu`).
 - **NixOS / Home Manager**: Add `pkgs.t3code` to `environment.systemPackages` or `home.packages` (`t3code-desktop` launches the app; `t3` is included). Update via Nix rather than the in-app updater.
 
-### The `t3` command
+### The `se` command
 
-The desktop app bundles `t3` and sets it up on first launch (manage anytime under **Settings → About → t3 command**). Use **Add to PATH** if needed, then open a new terminal.
+The desktop app bundles `se` and sets it up on first launch (manage anytime under **Settings → About → se command**). Use **Add to PATH** if needed, then open a new terminal.
 
 - **Open a folder in the running desktop app**: Run `t3 app` (or `t3 app ../my-project`) from a terminal, or drag folders from your file manager onto the desktop sidebar.
 

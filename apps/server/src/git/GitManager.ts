@@ -385,7 +385,7 @@ function resolveHeadRepositoryNameWithOwner(pullRequest: PullRequestHeadRemoteIn
 
 // Both names `resolvePullRequestWorktreeLocalBranchName` gives a fork pull request's branch.
 function isPullRequestWorktreeLocalBranchName(branch: string): boolean {
-  return /^t3code[/-]pr-\d+[/-]/u.test(branch);
+  return /^(?:secode|t3code)[/-]pr-\d+[/-]/u.test(branch);
 }
 
 function resolvePullRequestWorktreeLocalBranchName(
@@ -405,7 +405,7 @@ function resolvePullRequestWorktreeLocalBranchName(
       .slice(0, -1)
       .some((_, index, segments) => localBranches.has(segments.slice(0, index + 1).join("/"))) &&
     ![...localBranches].some((branch) => branch.startsWith(`${name}/`));
-  const preferred = `t3code/pr-${pullRequest.number}/${suffix}`;
+  const preferred = `secode/pr-${pullRequest.number}/${suffix}`;
   if (isCreatable(preferred)) {
     return preferred;
   }

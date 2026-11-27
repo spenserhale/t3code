@@ -100,7 +100,7 @@ export interface McpClientSession {
   readonly sessionId: AuthSessionId;
   readonly label: string;
   readonly access: AuthMcpClientAccess;
-  /** Another T3 Code environment's link, whose work here stays within it. */
+  /** Another SECode environment's link, whose work here stays within it. */
   readonly peerLink: boolean;
   /** When a peer link's session ends unless it is used again; the linking side keeps this. */
   readonly linkExpiresAt?: DateTime.Utc;
@@ -110,7 +110,7 @@ export interface McpClientSession {
 export const clientSessionLabel = (client: AuthClientMetadata | undefined): string =>
   client?.label ??
   ([client?.browser, client?.os].filter((part) => part !== undefined).join(" on ") ||
-    "T3 Code client");
+    "SECode client");
 
 export interface AuthenticatedSession {
   readonly sessionId: AuthSessionId;

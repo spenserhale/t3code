@@ -82,7 +82,7 @@ export const antigravitySteersWithPrompt = (
   return parsed !== undefined && compareVersions(parsed, PROMPT_STEERING_RELEASE) >= 0;
 };
 
-/** Whether a runtime that reported its version serves T3 Code, not only allowlisted editors. */
+/** Whether a runtime that reported its version serves SECode, not only allowlisted editors. */
 export const antigravityServesT3Code = (version: string) => {
   const parsed = parseAntigravityVersion(version);
   return parsed === undefined || compareVersions(parsed, OPEN_MODEL_ACCESS_RELEASE) >= 0;
@@ -122,7 +122,7 @@ export const makeAntigravityAcpRuntime = Effect.fn("makeAntigravityAcpRuntime")(
       authenticateEagerly: true,
       resumeMethod: "resume",
       cancelBehavior: "wait-for-prompt",
-      clientInfo: { name: "t3-code", title: "T3 Code", version: packageJson.version },
+      clientInfo: { name: "t3-code", title: "SECode", version: packageJson.version },
       sessionMeta: (initializeResult) =>
         antigravitySessionMeta(initializeResult, input.sessionSystemPromptAppend),
       clientCapabilities: {

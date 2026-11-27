@@ -932,7 +932,7 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
     assert.equal(systemPrompt.preset, "claude_code");
     assert.include(systemPrompt.append ?? "", "Use `delegate_task`");
     assert.include(systemPrompt.append ?? "", "call `t3_background_wait`");
-    assert.notInclude(systemPrompt.append ?? "", "## T3 Code devices");
+    assert.notInclude(systemPrompt.append ?? "", "## SECode devices");
     const logged = ClaudeAdapterV2.loggedClaudeQueryOptions(options);
     assert.equal(logged.hasMcpServers, true);
     assert.notInclude(JSON.stringify(logged), "secret-claude-token");
@@ -983,8 +983,8 @@ describe("ClaudeAdapterV2 T3 tool instructions", () => {
   });
 
   it("leaves the device block out without device access or without T3 tools", () => {
-    assert.notInclude(append({ mcp: true, deviceToolsAvailable: false }), "## T3 Code devices");
-    assert.notInclude(append({ mcp: false, deviceToolsAvailable: true }), "## T3 Code devices");
+    assert.notInclude(append({ mcp: true, deviceToolsAvailable: false }), "## SECode devices");
+    assert.notInclude(append({ mcp: false, deviceToolsAvailable: true }), "## SECode devices");
   });
 
   it("gives the agent feedback line only to a session with T3 tools", () => {
@@ -8522,7 +8522,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(Effect.scoped, Effect.provide(testLayer)),
     );
 
-    it.effect("shows what T3 Code's own tool asks without naming a server", () =>
+    it.effect("shows what SECode's own tool asks without naming a server", () =>
       Effect.gen(function* () {
         const { harness, elicit, awaitCard } = yield* startElicitationTurn();
         const sessions = yield* McpProviderSessions.McpProviderSessions;
@@ -8547,13 +8547,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.deepInclude(cards().at(-1), { prompt: message, pushHooks });
         assert.notProperty(cards().at(-1), "appName");
 
-        // Asked by a server T3 Code did not register: its name is shown, as for any server.
-        yield* elicit({ ...own, serverName: "deploys", displayName: "T3 Code" });
+        // Asked by a server SECode did not register: its name is shown, as for any server.
+        yield* elicit({ ...own, serverName: "deploys", displayName: "SECode" });
         yield* awaitCard(2);
-        assert.deepInclude(cards().at(-1), { prompt: message, appName: "T3 Code" });
+        assert.deepInclude(cards().at(-1), { prompt: message, appName: "SECode" });
         assert.notProperty(cards().at(-1), "pushHooks");
 
-        // Under T3 Code's name, but nothing T3 Code asked this thread.
+        // Under SECode's name, but nothing SECode asked this thread.
         yield* elicit({ ...own, message: "Push tools?" });
         yield* awaitCard(3);
         assert.deepInclude(cards().at(-1), { prompt: "Push tools?", appName: "t3-code" });
@@ -8561,7 +8561,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(Effect.scoped, Effect.provide(testLayer)),
     );
 
-    it.effect("asks the person every time T3 Code's own tool asks", () =>
+    it.effect("asks the person every time SECode's own tool asks", () =>
       Effect.gen(function* () {
         const { harness, elicit, awaitCard } = yield* startElicitationTurn();
         const sessions = yield* McpProviderSessions.McpProviderSessions;
@@ -8605,7 +8605,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           decision: "acceptForSession",
         });
         assert.deepEqual(yield* Fiber.join(first), { action: "accept", content: {} });
-        // What the person answered in the app stays with the request T3 Code made.
+        // What the person answered in the app stays with the request SECode made.
         assert.deepInclude(yield* sessions.takeApprovalRequest(harness.threadId, firstAsked), {
           approved: true,
         });

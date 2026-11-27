@@ -346,7 +346,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AntigravityAuth"
       const harness = yield* makeHarness({ interactive: false });
       yield* harness.auth.controller.start(owner);
       yield* Deferred.await(harness.authenticateCalled);
-      const detail = "Antigravity 1.5.0 only serves allowlisted editors, not T3 Code.";
+      const detail = "Antigravity 1.5.0 only serves allowlisted editors, not SECode.";
       yield* Deferred.fail(
         harness.authenticated,
         new AcpErrors.AcpTransportError({

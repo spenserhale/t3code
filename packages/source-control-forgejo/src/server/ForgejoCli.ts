@@ -412,7 +412,7 @@ export const make = Effect.gen(function* () {
         return yield* new ForgejoCliError({
           command: "gt",
           cwd: input.cwd,
-          detail: "`gt auth status` failed. Run it on the T3 Code server to see what gt reports.",
+          detail: "`gt auth status` failed. Run it on the SECode server to see what gt reports.",
         });
       // Only a rejected command says so; a gt that could not be asked fails as it did.
       if (!isVcsProcessExitError(version.failure.cause)) return yield* version.failure;
