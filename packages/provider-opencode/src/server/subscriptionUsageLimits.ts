@@ -10,6 +10,7 @@ import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import type * as HttpClient from "effect/http/HttpClient";
 
+import { readOllamaCloudUsageLimits } from "./ollamaCloudUsageLimits.ts";
 import {
   combineUsageLimits,
   consumeZaiResetCredit,
@@ -19,8 +20,8 @@ import {
 
 /**
  * Reads the subscriptions an OpenCode account can hold, OpenCode's own (`openCodeLimits`, Go or a
- * Console workspace) and the Z.ai Coding Plan, as the account's usage limits. Build it once, where
- * the provider is built: each subscription remembers its last good read between refreshes.
+ * Console workspace), the Z.ai Coding Plan and Ollama Cloud, as the account's usage limits. Build
+ * it once, with the provider: each subscription remembers its last good read between refreshes.
  */
 export const makeSubscriptionUsageLimits = Effect.fn("makeSubscriptionUsageLimits")(
   function* (input: {
@@ -36,12 +37,17 @@ export const makeSubscriptionUsageLimits = Effect.fn("makeSubscriptionUsageLimit
     >();
     const readOpenCodeLimits = yield* keepLastGoodUsageLimits(input.openCodeLimits);
     const readZaiLimits = yield* keepLastGoodUsageLimits(readZaiCodingPlanUsageLimits(input));
+    const readOllamaLimits = yield* keepLastGoodUsageLimits(readOllamaCloudUsageLimits(input));
     const usageLimits = Effect.all(
-      { openCodeLimits: readOpenCodeLimits, zaiLimits: readZaiLimits },
+      {
+        openCodeLimits: readOpenCodeLimits,
+        zaiLimits: readZaiLimits,
+        ollamaLimits: readOllamaLimits,
+      },
       { concurrency: "unbounded" },
     ).pipe(
-      Effect.flatMap(({ openCodeLimits, zaiLimits }) =>
-        combineUsageLimits([openCodeLimits, zaiLimits]),
+      Effect.flatMap(({ openCodeLimits, zaiLimits, ollamaLimits }) =>
+        combineUsageLimits([openCodeLimits, zaiLimits, ollamaLimits]),
       ),
       Effect.provide(services),
     );
