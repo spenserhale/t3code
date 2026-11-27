@@ -227,6 +227,8 @@
   "17f78424a768a8d5": "{count, plural, other {保留中の質問リクエストに {count} 件回答しようとしました}}",
   "7265a10d823ae08f": "{count, plural, other {シークレットを {count} 件求めました}}",
   "bd4141e4464734ae": "{count, plural, other {シークレットを {count} 件求めようとしました}}",
+  "9eff131f7586ccac": "{count, plural, other {シークレットを使って {count} 個のコマンドを実行しました}}",
+  "bcf23fde9fe19da9": "{count, plural, other {シークレットを使って {count} 個のコマンドを実行しようとしました}}",
   "3685ecb8634fe00c": "{count, plural, other {{count} 件のワークツリーに引き継ぎました}}",
   "186bc3ed600d2102": "{count, plural, other {{count} 件のワークツリーに引き継ごうとしました}}",
   "ea38f91437c9fd84": "{count, plural, other {{count} 件のプロジェクトを読み取りました}}",

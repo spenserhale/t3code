@@ -227,6 +227,8 @@
   "17f78424a768a8d5": "{count, plural, one {Tentou responder {count} pergunta pendente} other {Tentou responder {count} perguntas pendentes}}",
   "7265a10d823ae08f": "{count, plural, one {Pediu {count} segredo} other {Pediu {count} segredos}}",
   "bd4141e4464734ae": "{count, plural, one {Tentou pedir {count} segredo} other {Tentou pedir {count} segredos}}",
+  "9eff131f7586ccac": "{count, plural, one {Executou {count} comando com segredos} other {Executou {count} comandos com segredos}}",
+  "bcf23fde9fe19da9": "{count, plural, one {Tentou executar {count} comando com segredos} other {Tentou executar {count} comandos com segredos}}",
   "3685ecb8634fe00c": "{count, plural, one {Transferiu para {count} worktree} other {Transferiu para {count} worktrees}}",
   "186bc3ed600d2102": "{count, plural, one {Tentou transferir para {count} worktree} other {Tentou transferir para {count} worktrees}}",
   "ea38f91437c9fd84": "{count, plural, one {Leu {count} projeto} other {Leu {count} projetos}}",

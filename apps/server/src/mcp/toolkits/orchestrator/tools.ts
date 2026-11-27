@@ -34,6 +34,8 @@ import {
   OrchestratorMcpThreadSendResult,
   OrchestratorMcpThreadWaitInput,
   OrchestratorMcpThreadWaitResult,
+  SecretCommandInput,
+  SecretCommandResult,
   ThreadMetadataMcpUpdateInput,
   ThreadMetadataMcpUpdateResult,
   TrimmedNonEmptyString,
@@ -221,6 +223,20 @@ const RequestSecretTool = Tool.make("request_secret", {
   .annotate(Tool.Meta, { "anthropic/alwaysLoad": true })
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
+const RunWithSecretsTool = Tool.make("run_with_secrets", {
+  description:
+    "Run a command with secrets from the user's password manager on its stdin or in env vars, without you seeing them. Pass 1Password references (op://Vault/Item/field). Output returns with secrets masked. A reference outside this machine's service accounts may wait for the user's Touch ID.",
+  parameters: SecretCommandInput,
+  success: SecretCommandResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Run a command with secrets")
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.OpenWorld, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
+
 const CreateThreadsTool = Tool.make("create_threads", {
   description:
     "Create new top-level threads in this checkout. Not delegation. One thread or its own worktree: `t3_thread_launch`. Project, branch, and worktree inherit.",
@@ -373,6 +389,7 @@ export const OrchestratorToolkit = Toolkit.make(
   ListScheduledTasksTool,
   DeleteScheduledTaskTool,
   RequestSecretTool,
+  RunWithSecretsTool,
   CreateThreadsTool,
   ThreadListTool,
   ThreadReadTool,

@@ -477,6 +477,23 @@ export function summarizeT3ToolCalls(
           );
       break;
     }
+    case "secret-command": {
+      const count = selected.length;
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Ran {count} command with secrets} other {Ran {count} commands with secrets}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to run {count} command with secrets} other {Tried to run {count} commands with secrets}}",
+              { count },
+            ),
+          );
+      break;
+    }
     case "worktree-handoff": {
       const count = countEntities(entityIds("worktreePath"));
       label = done
