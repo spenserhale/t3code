@@ -44,6 +44,8 @@ import {
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
 import { configuredHostedAppUrl } from "../hostedPairing";
+import { pickThreadAndWait, stopWaiting } from "../lib/threadWaitActions";
+import { readThreadWaitMenuState } from "../state/threadWaits";
 import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKey,
@@ -155,6 +157,7 @@ export function useThreadActionMenu(input: {
       canShareWithGuest,
       canTurnIntoProject: canTurnThreadIntoProject(threadRef),
       continueOn: readContinueOnChoices(threadRef),
+      threadWait: readThreadWaitMenuState(threadRef),
     });
     const run = async (action: ThreadActionMenuId) => {
       const api = readLocalApi();
@@ -241,6 +244,12 @@ export function useThreadActionMenu(input: {
           return;
         case "unsnooze":
           await reportFailure(m(msg("Failed to wake thread")), () => unsnoozeThread(threadRef));
+          return;
+        case "snooze-until-thread":
+          await pickThreadAndWait(threadRef);
+          return;
+        case "stop-waiting":
+          await stopWaiting(threadRef);
           return;
         case "pin":
           await reportFailure(m(msg("Failed to pin thread")), () => pinThread(threadRef));

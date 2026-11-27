@@ -43,6 +43,8 @@ vi.mock("../components/continueOnMachineState", () => ({
     return true;
   },
 }));
+vi.mock("../lib/threadWaitActions", () => ({ pickThreadAndWait: vi.fn(), stopWaiting: vi.fn() }));
+vi.mock("../state/threadWaits", () => ({ readThreadWaitMenuState: () => undefined }));
 vi.mock("react", () => ({
   useCallback: (callback: unknown) => callback,
   useMemo: (factory: () => unknown) => factory(),
