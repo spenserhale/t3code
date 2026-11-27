@@ -67,8 +67,9 @@ import {
   DeviceHubSetupStatus,
   deviceHubReadiness,
 } from "~/components/device/DeviceSetup";
-import { isElectron, isSecretsFeatureEnabled } from "../../env";
+import { isElectron } from "../../env";
 import { builtInSecretProviderDefinitions } from "@t3tools/secret-provider-definitions/registry";
+import { useHasSecretProvidersEnvironment } from "./useAvailableSettingsSearchItems";
 
 import { Badge } from "../ui/badge";
 import {
@@ -1849,13 +1850,14 @@ export function BrowserSettingsPanel() {
   const gt = useGT();
   const desktopOnly = !isElectron;
   const desktopOnlyMessage = desktopOnly ? gt("Only available in the desktop app.") : undefined;
+  const hasSecretProvidersEnvironment = useHasSecretProvidersEnvironment();
 
   return (
     <SettingsPageContainer>
       <SettingsSection id="browser-agent-access" title={gt("Agent access")}>
         <AgentBrowserAccessSetting />
       </SettingsSection>
-      {isSecretsFeatureEnabled ? (
+      {hasSecretProvidersEnvironment ? (
         <SettingsSection id="browser-logins" title={gt("Logins")}>
           <BrowserLoginSettings />
         </SettingsSection>

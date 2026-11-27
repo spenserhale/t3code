@@ -1144,7 +1144,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [
       msg("agent sign in log in credentials 1password fill website browser work personal accounts"),
     ],
-    secretsFeatureOnly: true,
+    secretProvidersOnly: true,
   },
   {
     id: "browser-login-approval",
@@ -1155,7 +1155,7 @@ export const SETTINGS_SEARCH_ITEMS = [
         "login approval every once per thread until restart dialog 1password don't ask never service account",
       ),
     ],
-    secretsFeatureOnly: true,
+    secretProvidersOnly: true,
   },
   {
     id: "device-sources",
