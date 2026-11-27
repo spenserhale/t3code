@@ -9,7 +9,7 @@ Keep credentials in 1Password instead of storing raw values in T3 Code, and let 
 Install and sign in to the [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) on the **T3 Code server machine**. On headless or remote servers, use a [1Password service account](./secrets-1password-service-account.md) or [1Password Connect](./secrets-1password-connect.md) so `op` doesn't wait for desktop approval.
 
 1. Open **Settings → Secrets → Add provider** (configured per environment).
-2. Enter a name and the 1Password account shorthand, sign-in address (without `https://`), or ID from `op account list`.
+2. Enter a name, then paste the 1Password sign-in URL or enter the account shorthand or ID from `op account list`.
 
 ## Choose which vaults a provider reads
 

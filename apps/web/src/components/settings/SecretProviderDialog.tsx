@@ -22,6 +22,7 @@ import { Label } from "../ui/label";
 import { SecretInput } from "./SecretInput";
 import {
   draftFromSecretProvider,
+  normalizeOnePasswordAccount,
   secretProviderFromDraft,
   type SecretProviderDraft,
 } from "./SecretProviderDialog.logic";
@@ -137,7 +138,17 @@ export function SecretProviderDialog({
                 placeholder="my.1password.com"
                 value={draft.account}
                 onChange={(event) => update({ account: event.target.value })}
-                maxLength={253}
+                onPaste={(event) => {
+                  const { value, selectionStart, selectionEnd } = event.currentTarget;
+                  if (selectionStart !== 0 || selectionEnd !== value.length) return;
+
+                  const text = event.clipboardData.getData("text/plain");
+                  const account = normalizeOnePasswordAccount(text);
+                  if (account === text) return;
+
+                  event.preventDefault();
+                  update({ account });
+                }}
                 spellCheck={false}
                 aria-invalid={accountError !== undefined}
                 aria-describedby={
@@ -155,8 +166,8 @@ export function SecretProviderDialog({
               ) : null}
               <p className="text-xs text-muted-foreground">
                 <T>
-                  The account shorthand, sign-in address without https://, or ID that op account
-                  list shows.
+                  Paste the sign-in address or enter the account shorthand or ID from op account
+                  list.
                 </T>
               </p>
             </div>

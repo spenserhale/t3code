@@ -69,6 +69,10 @@ export type SecretProviderDraftIssues = {
   readonly [Field in keyof SecretProviderDraft]?: string;
 };
 
+export function normalizeOnePasswordAccount(account: string): string {
+  return account.trim().replace(/^(?:https?:\/\/)?([^:/\s]+)\/*$/i, "$1");
+}
+
 function decodeField<S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
   value: string,
@@ -92,7 +96,7 @@ export function secretProviderFromDraft(
   const label = decodeField(SecretProviderLabel, draft.name, resolve(msg("Enter a name.")));
   const account = decodeField(
     OnePasswordSecretProviderConfig.fields.account,
-    draft.account,
+    normalizeOnePasswordAccount(draft.account),
     resolve(msg("Enter the 1Password account.")),
   );
 
