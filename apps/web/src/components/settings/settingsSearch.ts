@@ -1177,7 +1177,7 @@ export const SETTINGS_SEARCH_ITEMS = [
         "sign up register new account create login generated password vault 1password service account write",
       ),
     ],
-    secretsFeatureOnly: true,
+    secretProvidersOnly: true,
   },
   {
     id: "device-sources",
