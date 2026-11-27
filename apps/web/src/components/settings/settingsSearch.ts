@@ -1166,7 +1166,7 @@ export const SETTINGS_SEARCH_ITEMS = [
         "identity sign up form name email phone address personal details read agent chrome codex computer use approval",
       ),
     ],
-    secretsFeatureOnly: true,
+    secretProvidersOnly: true,
   },
   {
     id: "device-sources",
