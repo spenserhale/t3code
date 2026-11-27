@@ -30,9 +30,9 @@ import { Badge } from "../ui/badge";
 import { CheckboxMark } from "../ui/checkbox";
 import { Button, InlineButton } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
-import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Skeleton } from "../ui/skeleton";
+import { IssueTrackerCredentialFields } from "./IssueTrackerCredentialFields";
 import { issueTrackerConnectToken } from "./issueTrackerCredential.logic";
 import { SecretInput } from "./SecretInput";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
@@ -208,27 +208,12 @@ function TrackerRow({
           {/* Locked while saving, so an edit made mid-request is not overwritten by the saved value. */}
           <fieldset disabled={!canEdit || busy} className="contents">
             <div className="px-3 pb-4 pt-1 sm:px-4">
-              {tracker.credential.fields?.map((field) => (
-                <SettingsRow
-                  key={field.key}
-                  title={<label htmlFor={`${inputId}-${field.key}`}>{field.label}</label>}
-                  control={
-                    <Input
-                      id={`${inputId}-${field.key}`}
-                      size="sm"
-                      className="w-full @min-[32rem]/settings-row:w-56"
-                      autoComplete="off"
-                      spellCheck={false}
-                      placeholder={field.placeholder}
-                      value={fieldValues[field.key] ?? ""}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        setFieldValues((values) => ({ ...values, [field.key]: value }));
-                      }}
-                    />
-                  }
-                />
-              ))}
+              <IssueTrackerCredentialFields
+                credential={tracker.credential}
+                idPrefix={inputId}
+                values={fieldValues}
+                onChange={setFieldValues}
+              />
               <SettingsRow
                 title={<label htmlFor={inputId}>{tracker.credential.label}</label>}
                 description={
@@ -427,6 +412,7 @@ function AddAccountRow({
 }) {
   const gt = useGT();
   const [adding, setAdding] = useState(false);
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const inputId = `issue-tracker-${tracker.tracker}-add-account`;
   if (!adding) {
     return (
@@ -445,20 +431,34 @@ function AddAccountRow({
     );
   }
   return (
-    <SettingsRow
-      title={<label htmlFor={inputId}>{tracker.credential.label}</label>}
-      description={gt("For the new {tracker} account.", { tracker: tracker.displayName })}
-      control={
-        <SecretInput
-          id={inputId}
-          size="sm"
-          className="w-full min-w-0 @min-[32rem]/settings-row:w-56"
-          value=""
-          onCommit={(next) => {
-            if (next.trim()) void onAdd(next.trim()).then((added) => added && setAdding(false));
-          }}
-        />
-      }
-    />
+    <>
+      <IssueTrackerCredentialFields
+        credential={tracker.credential}
+        idPrefix={inputId}
+        values={fieldValues}
+        onChange={setFieldValues}
+      />
+      <SettingsRow
+        title={<label htmlFor={inputId}>{tracker.credential.label}</label>}
+        description={gt("For the new {tracker} account.", { tracker: tracker.displayName })}
+        control={
+          <SecretInput
+            id={inputId}
+            size="sm"
+            className="w-full min-w-0 @min-[32rem]/settings-row:w-56"
+            value=""
+            onCommit={(next) => {
+              if (!next.trim()) return;
+              const token = issueTrackerConnectToken(tracker.credential, fieldValues, next.trim());
+              void onAdd(token).then((added) => {
+                if (!added) return;
+                setAdding(false);
+                setFieldValues({});
+              });
+            }}
+          />
+        }
+      />
+    </>
   );
 }

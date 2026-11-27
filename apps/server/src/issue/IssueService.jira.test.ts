@@ -123,11 +123,12 @@ function makeService(
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(IssueTrackerBindings.IssueTrackerBindingsRepository)({
-              list: Effect.succeed(
-                new Map(
-                  Object.entries(bindings).map(([id, binding]) => [id as ProjectId, binding]),
+              list: () =>
+                Effect.succeed(
+                  new Map(
+                    Object.entries(bindings).map(([id, binding]) => [id as ProjectId, binding]),
+                  ),
                 ),
-              ),
             }),
             Layer.succeed(
               IssueTrackerRegistry.IssueTrackerRegistry,
