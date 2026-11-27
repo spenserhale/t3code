@@ -230,6 +230,8 @@ import { MuseUsageHome } from "@t3tools/provider-muse/server";
 import * as CursorAccountReader from "@t3tools/provider-cursor/server/CursorAccountReader";
 import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsageAccounts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as OllamaCloudValue from "./usage/ollamaCloudValue.ts";
+import * as OpenRouterZdrRates from "./usage/OpenRouterZdrRates.ts";
 import * as CodexUsageHistory from "./usage/CodexUsageHistory.ts";
 import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
 import * as ThreadViewers from "./orchestration-v2/ThreadViewers.ts";
@@ -334,6 +336,7 @@ const layerUsage = UsageService.layer.pipe(
       MuseUsageHome.layer,
       CodexUsageHistory.layer,
       CursorUsageAccounts.layer.pipe(Layer.provide(CursorAccountReader.layer)),
+      OpenRouterZdrRates.layer,
     ).pipe(Layer.provide(ProviderHostLive.layer.pipe(Layer.provide(ServerSecretStore.layer)))),
   ),
   Layer.provide(layerServerSettings),
@@ -835,6 +838,8 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
       ResetCreditCoordinator.layer,
       ProviderLatestVersions.layer,
       McpProviderSessions.layer,
+      // The OpenCode driver looks this up when it is built, so it sits below provider hydration.
+      OllamaCloudValue.layer.pipe(Layer.provide(OpenRouterZdrRates.layer)),
     ),
   ),
   Layer.provideMerge(
