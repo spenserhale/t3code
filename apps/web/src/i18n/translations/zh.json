@@ -9113,6 +9113,11 @@
       "c": "了解详情"
     }
   ],
+  "aa27ab32040920d0": "Use an absolute path, or one starting with \"~/\".",
+  "45e653f876181ac3": "Where a new project is created, and where a link clones one. Use an absolute path, or start with \"~/\". Leave empty for the default folder.",
+  "d173ea3a87fa8961": "Where a new project is created, and where a link clones one. Use an absolute path, or start with \"~/\". Leave empty for the default folder. Now: {folder}",
+  "a63b7e50dd02007c": "Reset new projects folder to default",
+  "32cd6209d2dfb91b": "New projects folder",
   "78196d04f05923d0": "会话完成、失败或需要输入或批准时发送系统提醒。仅在此设备上打开 T3 Code 时生效。",
   "24a0ac9e7e55975c": "通知功能需要通过 HTTPS 访问的受支持浏览器，或使用桌面应用。仍可选择“仅声音”。",
   "6b0b1dd4d399d3c6": "此浏览器不支持通知。仍可选择“仅声音”。",
@@ -11970,6 +11975,8 @@
   "30aac12099fcaf53": "添加项目的起始目录",
   "70bcb8df9015ae2a": "基础目录 文件夹 浏览器 路径 主目录",
   "061cb86367f49363": "ghq 克隆 目标 托管平台 所有者 仓库 根目录 布局",
+  "94ef2673bd21cfa6": "New projects go in",
+  "61847eeb3c134b5f": "new project folder directory path location clone projects home",
   "2bb905a7e7cddff7": "询问 之前 会话 置顶 分区",
   "53390c9ebb75f5d3": "询问 之前 会话 再次点击 行内 操作",
   "a26bd55959bfa3d3": "询问 之前 会话 聊天记录",

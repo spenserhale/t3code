@@ -9098,6 +9098,11 @@
       "c": "Mehr Infos"
     }
   ],
+  "aa27ab32040920d0": "Use an absolute path, or one starting with \"~/\".",
+  "45e653f876181ac3": "Where a new project is created, and where a link clones one. Use an absolute path, or start with \"~/\". Leave empty for the default folder.",
+  "d173ea3a87fa8961": "Where a new project is created, and where a link clones one. Use an absolute path, or start with \"~/\". Leave empty for the default folder. Now: {folder}",
+  "a63b7e50dd02007c": "Reset new projects folder to default",
+  "32cd6209d2dfb91b": "New projects folder",
   "78196d04f05923d0": "Systembenachrichtigungen, wenn ein Thread fertig ist, fehlschlägt oder auf Eingabe oder Genehmigung wartet. Gilt für dieses Gerät, solange T3 Code geöffnet ist.",
   "24a0ac9e7e55975c": "Benachrichtigungen erfordern einen unterstützten Browser über HTTPS oder die Desktop-App. Nur Ton ist weiterhin verfügbar.",
   "6b0b1dd4d399d3c6": "Benachrichtigungen sind in diesem Browser nicht verfügbar. Nur Ton ist weiterhin verfügbar.",
@@ -11948,6 +11953,8 @@
   "30aac12099fcaf53": "„Projekt hinzufügen“ startet in",
   "70bcb8df9015ae2a": "basisverzeichnis ordner browser pfad home",
   "061cb86367f49363": "ghq klonen ziel host besitzer repository wurzel layout",
+  "94ef2673bd21cfa6": "New projects go in",
+  "61847eeb3c134b5f": "new project folder directory path location clone projects home",
   "2bb905a7e7cddff7": "vorher fragen thread angeheftet bereich",
   "53390c9ebb75f5d3": "vorher fragen thread zweiter klick inline aktion",
   "a26bd55959bfa3d3": "vorher fragen thread chatverlauf",
