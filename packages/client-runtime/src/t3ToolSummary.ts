@@ -1068,6 +1068,39 @@ export function summarizeT3ToolCalls(
           );
       break;
     }
+    case "worktree-open-branch": {
+      const count = countEntities(entityIds("branch"));
+      label = done
+        ? resolve(
+            msg("{count, plural, one {Opened {count} branch} other {Opened {count} branches}}", {
+              count,
+            }),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to open {count} branch} other {Tried to open {count} branches}}",
+              { count },
+            ),
+          );
+      break;
+    }
+    case "machine-handoff": {
+      const count = selected.length;
+      label = done
+        ? resolve(
+            msg(
+              "{count, plural, one {Continued {count} thread on another machine} other {Continued {count} threads on another machine}}",
+              { count },
+            ),
+          )
+        : resolve(
+            msg(
+              "{count, plural, one {Tried to continue {count} thread on another machine} other {Tried to continue {count} threads on another machine}}",
+              { count },
+            ),
+          );
+      break;
+    }
     case "worktree-list": {
       const count = selected.length;
       label = done

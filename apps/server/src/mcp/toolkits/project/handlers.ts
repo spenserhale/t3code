@@ -181,7 +181,7 @@ const defaultWorktreeStrategy = Effect.fn("mcp.defaultWorktreeStrategy")(functio
 });
 
 /** A fixed-length id, so a long key fits in the scratch folder name derived from it. */
-const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
+export const launchCommandId = Effect.fn("mcp.launchCommandId")(function* (
   namespace: string,
   key: string,
 ) {

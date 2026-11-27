@@ -46,13 +46,15 @@ export class PeerForwarding extends Context.Service<
   {
     /**
      * Runs `tool` in the linked environment `environmentId` with `params`. A
-     * `t3_thread_wait` goes in pieces short enough to survive any route.
+     * `t3_thread_wait` goes in pieces short enough to survive any route. Attachments
+     * go only when the caller uploaded them there (`attachmentsOnPeer`).
      */
     readonly call: <T extends Tool.Any>(
       scope: Scope,
       tool: T,
       environmentId: EnvironmentId,
       params: Tool.Parameters<T>,
+      options?: { readonly attachmentsOnPeer?: boolean },
     ) => Effect.Effect<Tool.Success<T>, OrchestratorMcpFailure>;
     /** `t3_thread_read` there. */
     readonly readThread: (
@@ -172,6 +174,7 @@ const make = Effect.gen(function* () {
     success: Schema.Top,
     environmentId: EnvironmentId,
     params: unknown,
+    attachmentsOnPeer = false,
   ) {
     const { caller, limits } = yield* forwardingCaller(scope);
     const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
@@ -180,7 +183,7 @@ const make = Effect.gen(function* () {
     const { environmentId: _target, ...args } = encoded;
     yield* assertWithinLinkAccess(environmentId, args.runtimeMode);
     // A pending upload lives here, so it cannot go with the call.
-    if (Array.isArray(args.attachments) && args.attachments.length > 0) {
+    if (!attachmentsOnPeer && Array.isArray(args.attachments) && args.attachments.length > 0) {
       return yield* new OrchestratorMcpFailure({
         code: "invalid_request",
         message: "A launch in a linked environment cannot carry attachments yet.",
@@ -263,11 +266,19 @@ const make = Effect.gen(function* () {
       : undefined;
   };
 
-  const call: PeerForwarding["Service"]["call"] = (scope, tool, environmentId, params) => {
+  const call: PeerForwarding["Service"]["call"] = (scope, tool, environmentId, params, options) => {
     const forwardTool = (
       args: unknown,
     ): Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure> =>
-      forward(scope, tool.name, tool.parametersSchema, tool.successSchema, environmentId, args);
+      forward(
+        scope,
+        tool.name,
+        tool.parametersSchema,
+        tool.successSchema,
+        environmentId,
+        args,
+        options?.attachmentsOnPeer,
+      );
     const newest = newestPage(tool.name, params);
     const forwarded: Effect.Effect<
       Tool.Success<typeof tool>,

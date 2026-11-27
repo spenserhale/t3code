@@ -13,6 +13,7 @@ import {
   type OrchestratorMcpThreadTimelineItem,
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
+  type Project,
   type ProjectId,
   type ProviderInstanceId,
   ProviderDriverKind,
@@ -80,6 +81,26 @@ const RemoteCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   success: OrchestratorMcpCapabilitiesResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
+});
+
+/** Every project in a linked environment, a page at a time. */
+export const listRemoteProjects = Effect.fn("RemoteDelegation.listRemoteProjects")(function* (
+  forwarding: PeerForwarding.PeerForwarding["Service"],
+  scope: McpInvocationContext.McpInvocationScope,
+  environmentId: EnvironmentId,
+) {
+  const projects: Array<Project> = [];
+  let cursor: number | null = 0;
+  while (cursor !== null) {
+    const listed: Tool.Success<typeof ProjectToolkit.tools.t3_project_list> =
+      yield* forwarding.call(scope, ProjectToolkit.tools.t3_project_list, environmentId, {
+        cursor,
+        limit: 100,
+      });
+    projects.push(...listed.projects);
+    cursor = listed.nextCursor;
+  }
+  return projects;
 });
 
 /**
@@ -204,19 +225,9 @@ const make = Effect.gen(function* () {
         message: "Pass target.projectId: this thread's project has no repository to match there.",
       });
     }
-    const matches: Array<{ readonly id: ProjectId; readonly title: string }> = [];
-    let cursor: number | null = 0;
-    while (cursor !== null) {
-      const listed: Tool.Success<typeof ProjectToolkit.tools.t3_project_list> =
-        yield* forwarding.call(scope, ProjectToolkit.tools.t3_project_list, environmentId, {
-          cursor,
-          limit: 100,
-        });
-      matches.push(
-        ...listed.projects.filter((project) => project.repositoryIdentity?.canonicalKey === key),
-      );
-      cursor = listed.nextCursor;
-    }
+    const matches = (yield* listRemoteProjects(forwarding, scope, environmentId)).filter(
+      (project) => project.repositoryIdentity?.canonicalKey === key,
+    );
     if (matches.length === 1) return matches[0]!.id;
     return yield* new OrchestratorMcpFailure({
       code: "invalid_request",

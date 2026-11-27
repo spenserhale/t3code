@@ -21,6 +21,7 @@ import {
 } from "../../composerDraftStore";
 import type { ComposerHandleRef } from "../../composerHandleContext";
 import { releaseDraftAttachments } from "../../lib/attachmentUploadQueue";
+import { trackHandoffFanout } from "../../lib/handoffFanout";
 import type { buildMessageContext } from "../../lib/composerContextRecords";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { threadEnvironment } from "../../state/threads";
@@ -123,6 +124,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
   }) => {
     const { attachments: attachmentsSnapshot } = sendSnapshot;
     const failedSelections: ModelSelection[] = [];
+    const handoff = trackHandoffFanout(draftId);
     let clearedDraft = false;
     let releasedComposer = false;
     let canRestoreDraft = () => false;
@@ -168,8 +170,8 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
             ]),
             model: target.selection.model,
             uncertainSubmissions: uncertainSubmissionsRef.current,
-            start: (targetThreadId) => {
-              return startThreadTurn({
+            start: async (targetThreadId) => {
+              const result = await startThreadTurn({
                 environmentId,
                 input: {
                   threadId: targetThreadId,
@@ -209,6 +211,8 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                   createdAt: createdAt,
                 },
               });
+              if (result._tag === "Success") handoff.started(environmentId, targetThreadId);
+              return result;
             },
             openThread: (threadId) =>
               void navigate({
@@ -310,5 +314,6 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
       sendInFlightRef.current = false;
       resetLocalDispatch();
     }
+    handoff.end();
   };
 }

@@ -42,6 +42,8 @@ import * as RemoteDelegation from "./RemoteDelegation.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
+import { createPendingAttachmentId } from "../attachmentStore.ts";
+import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
@@ -313,7 +315,7 @@ const makeLaptop = Effect.gen(function* () {
       ),
     ),
     Layer.provide(NodeServices.layer),
-    Layer.provide(PeerForwarding.layer),
+    Layer.provideMerge(PeerForwarding.layer),
     Layer.provide(Layer.succeedContext(linking)),
     Layer.provide(NodeCrypto.layer),
     Layer.provideMerge(
@@ -399,7 +401,13 @@ const makeLaptop = Effect.gen(function* () {
       }),
       Effect.provideService(McpSchema.McpServerClient, mcpClient),
     );
-  return { links: Context.get(linking, PeerLinks.PeerLinks), call, callAsClient };
+  return {
+    links: Context.get(linking, PeerLinks.PeerLinks),
+    forwarding: Context.get(here, PeerForwarding.PeerForwarding),
+    scopeOf,
+    call,
+    callAsClient,
+  };
 });
 
 const failureOf = (result: McpSchema.CallToolResult) => {
@@ -579,6 +587,52 @@ it.effect("launches in a linked environment with the caller's modes, retry-safe"
       expect((yield* Ref.get(seen)).launches).toHaveLength(2);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "sends attachments to a linked environment only when the caller uploaded them there",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const seen = yield* Ref.make<Seen>(nothingSeen);
+        const linkSession = yield* Ref.make("");
+        const b = yield* serveBox(seen, linkSession);
+        const a = yield* makeLaptop;
+        yield* linkTo(a.links, b, "full-access");
+        yield* Ref.set(linkSession, (yield* b.linkedSessions)[0]!.sessionId);
+        const launch = (options?: { readonly attachmentsOnPeer?: boolean }) =>
+          a.forwarding
+            .call(
+              a.scopeOf("thread:laptop-full"),
+              ProjectToolkit.tools.t3_thread_launch,
+              box.environmentId,
+              {
+                projectId: boxProject,
+                title: "Read the conversation",
+                modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+                attachments: [
+                  {
+                    type: "file",
+                    id: createPendingAttachmentId(),
+                    name: "chat.jsonl",
+                    mimeType: "application/x-ndjson",
+                    sizeBytes: 1,
+                  },
+                ],
+              },
+              options,
+            )
+            .pipe(Effect.flip);
+        expect((yield* launch()).message).toContain("cannot carry attachments");
+        expect(yield* Ref.get(b.bearers)).toEqual([]);
+        // With the upload there, the call goes; the box then looks for the file, which this test
+        // never uploaded.
+        expect((yield* launch({ attachmentsOnPeer: true })).message).toContain(
+          "attachment not found",
+        );
+        expect((yield* Ref.get(b.bearers)).length).toBeGreaterThan(0);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("brings a repository to a linked environment, only through full access", () =>

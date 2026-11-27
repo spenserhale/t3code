@@ -52,6 +52,7 @@ import { VcsAutomaticFetchInterval } from "./VcsAutomaticFetchInterval.ts";
 import { gitConfigEnv, serverGitConfigEnv, unsetInheritedRepositoryEnv } from "./VcsProcess.ts";
 import { makeWorktreeCheckoutCache } from "./worktreeCheckoutCache.ts";
 import { removeLinkedWorktree } from "./worktreeRemoval.ts";
+import { reserveWorktreeFolder } from "./worktreeReservation.ts";
 import { resolveWorktreesDirectory } from "../worktreesDirectory.ts";
 import {
   parseRemoteNames,
@@ -6642,6 +6643,32 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     worktreePath = path.resolve(input.cwd, worktreePath);
     // Read before the branch exists, so a missing pattern file leaves nothing behind.
     const sparsePatterns = yield* readWorktreeSparsePatterns(input.cwd, input.refName);
+    const progress = options?.progress;
+    if (progress?.onWorktreeReserved) {
+      const onReserved = progress.onWorktreeReserved;
+      // Not interruptible between making the folder and handing it over, or it would be lost.
+      yield* reserveWorktreeFolder(
+        worktreePath,
+        path.dirname(worktreePath),
+        removeWorktree({ cwd: input.cwd, path: worktreePath }),
+      ).pipe(
+        Effect.mapError(
+          (error) =>
+            new GitCommandError({
+              operation: "GitVcsDriver.createWorktree",
+              command: "git worktree add",
+              cwd: input.cwd,
+              ...(error.taken ? { reason: "path_already_exists" as const } : {}),
+              detail: error.taken
+                ? "git worktree add failed"
+                : "The folder for the worktree could not be made.",
+              cause: error.cause,
+            }),
+        ),
+        Effect.flatMap(onReserved),
+        Effect.uninterruptible,
+      );
+    }
     const newRefName = input.newRefName;
     // Older Git still creates worktrees normally, but cannot prove ownership for cancellation.
     const addHelp = newRefName
@@ -6664,9 +6691,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         { cwd: input.cwd, branch: newRefName, startPoint: input.refName },
         "git branch failed",
       );
+      if (progress?.onBranchCreated) yield* progress.onBranchCreated(input.newRefName);
     }
     const checkoutRef = newRefName ?? input.refName;
-    const progress = options?.progress;
     const onCheckoutProgress = progress?.onCheckoutProgress;
     const checkoutProgressOptions: ExecuteGitOptions = onCheckoutProgress
       ? {
@@ -6694,8 +6721,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     );
     const checkoutWorkers = configuredCheckoutWorkers ?? "0";
     // The cache clones a full checkout, so a sparse worktree uses Git's own checkout.
+    // The cache's fallback deletes and re-makes the folder, so a reserved one is no longer its own.
     const fastCheckout =
-      checkoutCache !== undefined && options?.fastCheckout === true && sparsePatterns === null;
+      checkoutCache !== undefined &&
+      options?.fastCheckout === true &&
+      sparsePatterns === null &&
+      progress?.onWorktreeReserved === undefined;
     const cacheGeneration = fastCheckout ? yield* checkoutCache.currentGeneration : 0;
     const stockCheckout = executeGitWithStableDiagnostics(
       "GitVcsDriver.createWorktree",
