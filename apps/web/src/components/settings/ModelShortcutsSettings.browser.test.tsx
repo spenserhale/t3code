@@ -132,7 +132,8 @@ vi.mock(import("../../state/environments"), async (original) => ({
       {
         environmentId,
         label: "Mac mini",
-        serverConfig: { environment: { capabilities: {} } },
+        connection: { phase: "connected" },
+        serverConfig: { settings: DEFAULT_SERVER_SETTINGS, environment: { capabilities: {} } },
       },
     ],
   })) as never,
