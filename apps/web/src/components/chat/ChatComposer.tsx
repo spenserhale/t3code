@@ -3386,6 +3386,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           direction,
         });
         if (!change) return;
+        if (change.nextModelSlug) {
+          onProviderModelSelect(selectedInstanceId, change.nextModelSlug, {
+            focusComposer: false,
+          });
+          return;
+        }
         useComposerDraftStore
           .getState()
           .setProviderModelOptions(composerDraftTarget, selectedProvider, change.modelOptions, {

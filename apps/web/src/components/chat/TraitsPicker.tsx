@@ -16,6 +16,13 @@ import {
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import {
+  buildEffortVariantDescriptor,
+  EFFORT_VARIANT_OPTION_ID,
+  resolveEffortModelVariant,
+  resolveEffortVariantSlug,
+  stripSyntheticEffortOptions,
+} from "@t3tools/shared/effortModelNormalization";
+import {
   buildProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentLabel,
   getProviderOptionDescriptors,
@@ -127,20 +134,36 @@ function getSelectedTraits(
   resolve: MessageResolver = m,
 ) {
   const caps = getProviderModelCapabilities(models, model, provider, includePlanAgent);
+  const normalizedModelSlug = normalizeModelSlug(model, provider) ?? model ?? null;
   const modelIsUnavailable =
     keepsUnavailableModelOptions(provider, model) &&
     !models.some((candidate) => candidate.slug === normalizeModelSlug(model, provider));
-  const descriptors = modelIsUnavailable
+  const realDescriptors = modelIsUnavailable
     ? buildUnavailableModelOptionDescriptors(
         includePlanAgent
-          ? modelOptions
-          : modelOptions?.filter((option) => option.id !== "agent" || option.value !== "plan"),
+          ? stripSyntheticEffortOptions(modelOptions)
+          : stripSyntheticEffortOptions(modelOptions)?.filter(
+              (option) => option.id !== "agent" || option.value !== "plan",
+            ),
         resolve,
       )
     : getProviderOptionDescriptors({
         caps,
-        selections: modelOptions,
+        selections: stripSyntheticEffortOptions(modelOptions),
       });
+  const effortVariantMatch = modelIsUnavailable
+    ? null
+    : resolveEffortModelVariant(models, normalizedModelSlug);
+  const effortVariantDescriptor = effortVariantMatch
+    ? buildEffortVariantDescriptor(
+        effortVariantMatch.group,
+        effortVariantMatch.variant.effort,
+        resolve(SAVED_OPTION_LABELS.effort!),
+      )
+    : null;
+  const descriptors = effortVariantDescriptor
+    ? [effortVariantDescriptor, ...realDescriptors]
+    : realDescriptors;
   const selectDescriptors = descriptors.filter(
     (descriptor): descriptor is Extract<ProviderOptionDescriptor, { type: "select" }> =>
       descriptor.type === "select",
@@ -178,6 +201,8 @@ function getSelectedTraits(
   return {
     caps,
     descriptors,
+    realDescriptors,
+    effortModelGroup: effortVariantMatch?.group ?? null,
     selectDescriptors,
     booleanDescriptors,
     primarySelectDescriptor,
@@ -255,7 +280,11 @@ export function getReasoningTraitStep(input: {
   prompt: string;
   includePlanAgent?: boolean | undefined;
   direction: 1 | -1;
-}) {
+}): {
+  prompt: string;
+  modelOptions: ReadonlyArray<ProviderOptionSelection>;
+  nextModelSlug?: string;
+} | null {
   const selected = getSelectedTraits(
     input.provider,
     input.models,
@@ -287,7 +316,27 @@ export function getReasoningTraitStep(input: {
   const next = [...ordered.slice(position + 1), ...ordered.slice(0, Math.max(position, 0))].find(
     (option) => choices.includes(option),
   );
-  const change = next && getTraitSelectChange(selected, descriptor, input.prompt, next.id);
+  if (descriptor.id === EFFORT_VARIANT_OPTION_ID) {
+    const nextModelSlug =
+      next && selected.effortModelGroup
+        ? resolveEffortVariantSlug(selected.effortModelGroup, next.id)
+        : null;
+    return nextModelSlug
+      ? {
+          prompt: input.prompt,
+          modelOptions: stripSyntheticEffortOptions(input.modelOptions) ?? [],
+          nextModelSlug,
+        }
+      : null;
+  }
+  const change =
+    next &&
+    getTraitSelectChange(
+      { ...selected, descriptors: selected.realDescriptors },
+      descriptor,
+      input.prompt,
+      next.id,
+    );
   return change?.modelOptions ? { prompt: change.prompt, modelOptions: change.modelOptions } : null;
 }
 
@@ -296,6 +345,8 @@ export interface TraitsMenuContentProps {
   instanceId?: ProviderInstanceId;
   models: ReadonlyArray<ServerProviderModel>;
   model: string | null | undefined;
+  /** Called when an effort-in-name model variant switches to a sibling raw model slug. */
+  onModelChange?: ((nextModelSlug: string) => void) | undefined;
   promptUltrathink?: PromptUltrathink | undefined;
   /** Receives an edit of the live prompt; the picker never holds the prompt text itself. */
   onPromptEdit?: (edit: (prompt: string) => string) => void;
@@ -314,6 +365,7 @@ export function useTraitsSelection({
   instanceId,
   models,
   model,
+  onModelChange,
   promptUltrathink,
   onPromptEdit,
   modelOptions,
@@ -366,18 +418,28 @@ export function useTraitsSelection({
       descriptor: Extract<ProviderOptionDescriptor, { type: "select" }>,
       value: string,
     ) => {
+      if (descriptor.id === EFFORT_VARIANT_OPTION_ID) {
+        const nextModelSlug = selected.effortModelGroup
+          ? resolveEffortVariantSlug(selected.effortModelGroup, value)
+          : null;
+        if (nextModelSlug && nextModelSlug !== model) {
+          onModelChange?.(nextModelSlug);
+        }
+        return;
+      }
       // Whether a pick applies, and the options it writes, do not depend on the prompt text.
-      const change = getTraitSelectChange(selected, descriptor, "", value);
+      const realSelected = { ...selected, descriptors: selected.realDescriptors };
+      const change = getTraitSelectChange(realSelected, descriptor, "", value);
       if (!change) return;
       onPromptEdit?.(
-        (prompt) => getTraitSelectChange(selected, descriptor, prompt, value)?.prompt ?? prompt,
+        (prompt) => getTraitSelectChange(realSelected, descriptor, prompt, value)?.prompt ?? prompt,
       );
       updateModelOptions(change.modelOptions);
     },
     changeBoolean: (descriptorId: string, value: boolean) => {
       updateModelOptions(
         buildProviderOptionSelectionsFromDescriptors(
-          replaceDescriptorCurrentValue(selected.descriptors, descriptorId, value),
+          replaceDescriptorCurrentValue(selected.realDescriptors, descriptorId, value),
         ),
       );
     },

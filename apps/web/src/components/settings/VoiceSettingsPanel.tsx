@@ -640,6 +640,7 @@ function CleanupModelRow() {
                   lockedProvider={null}
                   instanceEntries={instanceEntries}
                   modelOptionsByInstance={modelOptionsByInstance}
+                  normalizeEffortVariants
                   triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                   getModelDisabledReason={modelDisabledReason}
                   onInstanceModelChange={(instanceId, model) =>
@@ -653,6 +654,9 @@ function CleanupModelRow() {
                   modelOptions={selection.options ?? []}
                   allowPromptInjectedEffort={false}
                   triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                  onModelChange={(nextModel) =>
+                    setModel(pickModelSelection(selection, selection.instanceId, nextModel))
+                  }
                   onModelOptionsChange={(options) =>
                     setModel(createModelSelection(selection.instanceId, selection.model, options))
                   }

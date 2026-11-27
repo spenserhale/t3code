@@ -3,16 +3,22 @@ import {
   getTraitSelectChange,
 } from "@t3tools/client-runtime/model-traits";
 import {
+  ProviderDriverKind,
   ProviderInstanceId,
   type ManagedPolicySummary,
   type ProviderOptionDescriptor,
   type RuntimeMode,
 } from "@t3tools/contracts";
+import { EFFORT_VARIANT_OPTION_ID } from "@t3tools/shared/effortModelNormalization";
 import { describe, expect, it } from "vite-plus/test";
 
+import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
 import {
   applyProviderOptionSelection,
+  normalizeEffortProviderGroups,
+  resolveEffortVariantOptionForGroup,
   resolveProviderOptionDescriptors,
+  toEffortModelOption,
   withImplicitFastModeSelection,
 } from "../../lib/providerOptions";
 import {
@@ -128,5 +134,80 @@ describe("prompt-controlled reasoning", () => {
     const selected = { ...getPromptControlledTraits(descriptors, prompt), descriptors };
     expect(selected.ultrathinkInBodyText).toBe(true);
     expect(getTraitSelectChange(selected, effortDescriptor, prompt, "low")).toBeNull();
+  });
+});
+
+describe("effort-in-name model normalization", () => {
+  const instanceId = ProviderInstanceId.make("antigravity");
+  const driver = ProviderDriverKind.make("antigravity");
+  const makeOption = (model: string, label: string): ModelOption => ({
+    key: `${instanceId}:${model}`,
+    providerKey: instanceId,
+    providerDriver: driver,
+    providerLabel: "Antigravity",
+    providerBadge: { displayName: "Antigravity", accentColor: "#000", showBadge: false },
+    label,
+    subtitle: "",
+    isDefault: false,
+    isLegacy: false,
+    isHidden: false,
+    canHide: true,
+    selection: { instanceId, model },
+    capabilities: {},
+  });
+
+  it("collapses effort-in-name variants into one option per model and resolves concrete sibling slugs", () => {
+    const models: ModelOption[] = [
+      makeOption("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"),
+      makeOption("gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"),
+      makeOption("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
+      makeOption("gemini-pro-agent", "Gemini 3.1 Pro (High)"),
+      makeOption("gemini-3.1-pro-low", "Gemini 3.1 Pro (Low)"),
+      makeOption("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+    ];
+    const groups: ProviderGroup[] = [
+      {
+        providerKey: instanceId,
+        providerLabel: "Antigravity",
+        models,
+      },
+    ];
+
+    const normalized = normalizeEffortProviderGroups(groups, {
+      instanceId,
+      model: "gemini-3.8-flash-low",
+    });
+    expect(normalized[0]?.models.map((item) => [item.label, item.selection.model])).toEqual([
+      ["Gemini 3.8 Flash", "gemini-3.8-flash-low"],
+      ["Gemini 3.1 Pro", "gemini-pro-agent"],
+      ["Claude Sonnet 4.6", "claude-sonnet-4-6"],
+    ]);
+
+    const descriptors = resolveProviderOptionDescriptors({
+      capabilities: {},
+      selections: undefined,
+      models: models.map(toEffortModelOption),
+      model: "gemini-pro-agent",
+    });
+    expect(descriptors).toHaveLength(1);
+    expect(descriptors[0]).toMatchObject({
+      id: EFFORT_VARIANT_OPTION_ID,
+      role: "reasoning",
+      currentValue: "high",
+    });
+
+    // Synthetic effort changes never persist into ProviderOptionSelection[]
+    expect(
+      applyProviderOptionSelection(descriptors, { id: EFFORT_VARIANT_OPTION_ID, value: "low" }),
+    ).toBeNull();
+
+    // Selecting "low" resolves to the exact concrete sibling slug
+    expect(
+      resolveEffortVariantOptionForGroup({
+        models,
+        currentModel: "gemini-pro-agent",
+        targetEffort: "low",
+      })?.selection.model,
+    ).toBe("gemini-3.1-pro-low");
   });
 });

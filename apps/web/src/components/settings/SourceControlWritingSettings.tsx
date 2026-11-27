@@ -366,6 +366,7 @@ export function SourceControlWritingSettingsSection() {
                       lockedProvider={null}
                       instanceEntries={instanceEntries}
                       modelOptionsByInstance={reviewGuideModelOptionsByInstance}
+                      normalizeEffortVariants={!mixedReviewGuideModel}
                       triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                       triggerAriaLabel={gt("Review guide model")}
                       {...(mixedReviewGuideModel ? { triggerLabel: gt("Mixed") } : {})}
@@ -402,6 +403,15 @@ export function SourceControlWritingSettingsSection() {
                       allowPromptInjectedEffort={false}
                       includePlanAgent={selectsPlanAgent(reviewGuideSelection.options)}
                       triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                      onModelChange={(nextModel) =>
+                        updateSettings({
+                          reviewGuideModelSelection: pickModelSelection(
+                            reviewGuideSelection,
+                            reviewGuideSelection.instanceId,
+                            nextModel,
+                          ),
+                        })
+                      }
                       onModelOptionsChange={(options) =>
                         updateSettings({
                           reviewGuideModelSelection: createModelSelection(
@@ -565,6 +575,7 @@ export function SourceControlWritingSettingsSection() {
                     lockedProvider={null}
                     instanceEntries={writerEntries}
                     modelOptionsByInstance={modelOptionsByInstance}
+                    normalizeEffortVariants={!mixedWriterModel}
                     triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                     triggerAriaLabel={gt("Source control writer model")}
                     {...(mixedWriterModel ? { triggerLabel: gt("Mixed") } : {})}
@@ -611,6 +622,15 @@ export function SourceControlWritingSettingsSection() {
                     allowPromptInjectedEffort={false}
                     includePlanAgent={selectsPlanAgent(activeSelection.options)}
                     triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                    onModelChange={(nextModel) =>
+                      updateSettings({
+                        sourceControlWriterModelSelection: pickModelSelection(
+                          activeSelection,
+                          activeSelection.instanceId,
+                          nextModel,
+                        ),
+                      })
+                    }
                     onModelOptionsChange={(options) =>
                       updateSettings({
                         sourceControlWriterModelSelection: createModelSelection(

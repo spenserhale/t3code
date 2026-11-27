@@ -50,6 +50,7 @@ type ComposerTraitsTarget = {
   threadRef?: ScopedThreadRef | undefined;
   draftId?: DraftId | undefined;
   onDraftModelOptionsChange?: () => void;
+  onModelChange?: (nextModelSlug: string) => void;
   model: string;
   models: ReadonlyArray<ServerProviderModel>;
   modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
@@ -152,6 +153,7 @@ export function getComposerReasoningStep(input: {
   prompt: string;
   cursor: number;
   modelOptions: ReadonlyArray<ProviderOptionSelection>;
+  nextModelSlug?: string;
 } | null {
   const { prompt, cursor } = input;
   const { selections } = resolveComposerOptionSelections(
@@ -177,6 +179,7 @@ export function getComposerReasoningStep(input: {
     prompt: step.prompt,
     cursor: Math.max(0, cursor + step.prompt.length - prompt.length),
     modelOptions: step.modelOptions,
+    ...(step.nextModelSlug ? { nextModelSlug: step.nextModelSlug } : {}),
   };
 }
 

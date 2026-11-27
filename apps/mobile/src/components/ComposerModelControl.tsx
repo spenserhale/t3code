@@ -1,4 +1,8 @@
 import type { ModelSelection, ProviderDriverKind } from "@t3tools/contracts";
+import {
+  resolveEffortModelVariant,
+  type EffortModelLike,
+} from "@t3tools/shared/effortModelNormalization";
 import { useGT, useMessages } from "gt-react-native";
 import {
   buildTraitsTriggerDisplay,
@@ -14,6 +18,7 @@ export function ComposerModelControl(props: {
   readonly modelOption: ModelOption | null;
   readonly selection: ModelSelection | null;
   readonly provider: ProviderDriverKind | undefined;
+  readonly providerModels?: ReadonlyArray<EffortModelLike> | undefined;
   readonly reportedSelection?: ModelSelection | null | undefined;
   readonly prompt: string;
   readonly surfaceColor: string;
@@ -24,9 +29,15 @@ export function ComposerModelControl(props: {
 }) {
   const gt = useGT();
   const m = useMessages();
+  const effortMatch =
+    props.providerModels && props.selection?.model
+      ? resolveEffortModelVariant(props.providerModels, props.selection.model)
+      : null;
   const descriptors = resolveProviderOptionDescriptors({
     capabilities: props.modelOption?.capabilities,
     selections: props.selection?.options,
+    models: props.providerModels,
+    model: props.selection?.model,
   });
   const promptTraits = getPromptControlledTraits(descriptors, props.prompt);
   const summary = props.provider
@@ -42,7 +53,11 @@ export function ComposerModelControl(props: {
       ).label
     : "";
   const badge = props.modelOption?.providerBadge;
-  const label = props.modelOption?.label ?? props.selection?.model ?? gt("Choose model");
+  const label =
+    effortMatch?.group.displayName ??
+    props.modelOption?.label ??
+    props.selection?.model ??
+    gt("Choose model");
   const providerNameLabel = badge
     ? providerInstanceNameLabel({
         provider: props.modelOption?.providerDriver,
@@ -51,7 +66,7 @@ export function ComposerModelControl(props: {
         showBadge: badge.showBadge,
       })
     : null;
-  const shortLabel = props.modelOption?.shortName ?? label;
+  const shortLabel = effortMatch?.group.displayName ?? props.modelOption?.shortName ?? label;
   return (
     <ComposerInlineControl
       accessibilityLabel={[
