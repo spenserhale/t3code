@@ -1204,6 +1204,17 @@ export const SETTINGS_SEARCH_ITEMS = [
     secretProvidersOnly: true,
   },
   {
+    id: "browser-new-logins",
+    title: msg("Save new logins to"),
+    to: "/settings/browser",
+    searchTerms: [
+      msg(
+        "sign up register new account create login generated password vault 1password service account write",
+      ),
+    ],
+    secretProvidersOnly: true,
+  },
+  {
     id: "device-sources",
     title: msg("Device sources"),
     to: "/settings/devices",
