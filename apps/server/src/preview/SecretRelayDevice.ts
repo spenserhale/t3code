@@ -151,6 +151,27 @@ const make = Effect.gen(function* () {
             ? "identityRead"
             : "identity";
       const secret = request.kind === "secretReference" ? reference : undefined;
+      const fields = [...new Set(request.fields ?? DEFAULT_FIELDS)];
+      const selectionKey =
+        request.kind === "login"
+          ? `${requester.environmentId}\u0000${request.threadId}\u0000${request.tabId ?? ""}\u0000${origin}`
+          : undefined;
+      const now = yield* Clock.currentTimeMillis;
+      for (const [key, selection] of selected) {
+        if (selection.expiresAt <= now) selected.delete(key);
+      }
+      const previous = selectionKey === undefined ? undefined : selected.get(selectionKey);
+      const continuing =
+        request.kind === "login" &&
+        reference === undefined &&
+        previous?.revision === revision &&
+        previous.siteUrl === request.siteUrl &&
+        fields.length > 0 &&
+        fields.every((field) => field === "password" || field === "totp") &&
+        request.item === deviceId(previous.id);
+      const continuedConsent = continuing && (request.tabId?.trim().length ?? 0) > 0;
+      // A failed or cancelled new flow must not leave an earlier consent receipt behind.
+      if (selectionKey !== undefined) selected.delete(selectionKey);
       if (request.kind === "secretReference") {
         if (secret === undefined) return unavailable("The request did not name a secret.");
         // Which password managers take a reference is known without opening any.
@@ -161,7 +182,7 @@ const make = Effect.gen(function* () {
 
       // Asked before any password manager is touched: listing and looking up are reads too.
       const scope = { threadId: request.threadId, requester: requester.environmentId };
-      if (yield* logins.needsApproval(revision, scope, kind)) {
+      if (!continuedConsent && (yield* logins.needsApproval(revision, scope, kind))) {
         const answer = yield* desktopChannel.approveLogin(
           { threadId: request.threadId },
           Math.max(0, yield* remaining),
@@ -197,26 +218,17 @@ const make = Effect.gen(function* () {
             : [(yield* logins.lookupLogin(reference, reach)).login].flatMap((login) =>
                 login === undefined ? [] : [login],
               );
-        const selectionKey = `${requester.environmentId}\u0000${request.threadId}\u0000${origin}`;
-        const now = yield* Clock.currentTimeMillis;
-        for (const [key, selection] of selected) {
-          if (selection.expiresAt <= now) selected.delete(key);
-        }
-        const previous = selected.get(selectionKey);
-        const remembered =
-          reference === undefined &&
-          previous?.revision === revision &&
-          previous.siteUrl === request.siteUrl &&
-          !(request.fields ?? DEFAULT_FIELDS).includes("username") &&
-          request.item !== undefined &&
-          ownId(request.item) === previous.id
-            ? found.find((login) => login.id === previous.id)
-            : undefined;
+        const remembered = continuing ? found.find((login) => login.id === previous.id) : undefined;
         const reused =
           remembered !== undefined &&
           (BrowserLogins.loginCoversPage(remembered.urls, page) || previous?.fillOrigin === page)
             ? remembered
             : undefined;
+        if (continuedConsent && reused === undefined)
+          return {
+            type: "denied",
+            message: "The selected login is no longer available for this site. Choose again.",
+          } as const;
         const selecting =
           reused === undefined
             ? BrowserLoginChoice.select(
@@ -244,7 +256,6 @@ const make = Effect.gen(function* () {
         const login = selection.success;
         if (login === undefined) return { type: "none" } as const;
         if ((yield* remaining) <= 0) return { type: "denied" } as const;
-        const fields = [...new Set(request.fields ?? DEFAULT_FIELDS)];
         const read = yield* logins.check(revision).pipe(
           Effect.andThen(logins.read(revision, login, fields)),
           Effect.tap(() => logins.check(revision)),
@@ -273,13 +284,15 @@ const make = Effect.gen(function* () {
           return { type: "none" } as const;
         }
         if ((yield* remaining) <= 0) return { type: "denied" } as const;
-        selected.delete(selectionKey);
         if (selected.size >= MAX_SELECTIONS) selected.delete(selected.keys().next().value!);
-        selected.set(selectionKey, {
+        selected.set(selectionKey!, {
           id: login.id,
           revision,
           siteUrl: request.siteUrl,
-          expiresAt: (yield* Clock.currentTimeMillis) + SELECTION_TTL_MS,
+          expiresAt:
+            reused === undefined
+              ? (yield* Clock.currentTimeMillis) + SELECTION_TTL_MS
+              : previous!.expiresAt,
           ...(login.fillOrigin === undefined ? {} : { fillOrigin: login.fillOrigin }),
         });
         return {
@@ -288,8 +301,9 @@ const make = Effect.gen(function* () {
             ...summary(login),
             urls: login.urls,
             ...(login.fillOrigin === undefined ? {} : { fillOrigin: login.fillOrigin }),
+            ...(values.hasTotp === undefined ? {} : { hasTotp: values.hasTotp }),
           },
-          values: redacted(values),
+          values: redacted(Object.fromEntries(fields.map((field) => [field, values[field]]))),
         } as const;
       }
 

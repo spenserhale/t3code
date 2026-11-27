@@ -215,7 +215,15 @@ const parseLoginValues = (
   const item = Option.getOrUndefined(decodeItem(stdout));
   if (item === undefined) return undefined;
   const itemFields = item.fields ?? [];
-  const values: SecretProviderLoginValues = {};
+  const values: SecretProviderLoginValues = {
+    hasTotp: itemFields.some(
+      (field) =>
+        textOf(field, "type") === "OTP" &&
+        [textOf(field, "value"), textOf(field, "totp")].some(
+          (value) => value !== undefined && value.length > 0,
+        ),
+    ),
+  };
   for (const field of fields) {
     const [kind, key, wanted] =
       field === "totp"

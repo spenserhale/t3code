@@ -70,6 +70,7 @@ const wording = (prompt: LoginApprovalPrompt, who: string) => {
         detail: [
           `${who} wants to sign in to ${site}${item === undefined ? "" : ` with ${item}`}.`,
           "The agent will not see the password or code.",
+          "Allow once includes the password and saved one-time code for this sign-in in the same tab and site for five minutes.",
         ],
       };
     case "identity":

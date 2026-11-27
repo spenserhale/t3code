@@ -63,7 +63,10 @@ export interface LoginSelection {
   /** Actual writing sites authorized by the successful fill. */
   readonly urls: ReadonlyArray<string>;
   readonly fillOrigin?: string | undefined;
+  readonly approval: BrowserSecretAccess.LoginApprovalReceipt;
 }
+
+type LoginValues = Readonly<Partial<Record<PreviewLoginField, string>> & { hasTotp?: boolean }>;
 
 interface FillableLogin extends BrowserSecretAccess.SecretItem {
   readonly urls: ReadonlyArray<string>;
@@ -164,7 +167,7 @@ export const fillLogin = async (
     login: FillableLogin,
     found: Awaited<ReturnType<typeof findTargets>>,
     document: string,
-    values: Readonly<Partial<Record<PreviewLoginField, string>>>,
+    values: LoginValues,
     revision: string,
   ): Promise<PreviewAutomationFillLoginResult> => {
     const lacking = lacks(login, values);
@@ -210,6 +213,19 @@ export const fillLogin = async (
       id: login.id,
       origin,
       revision,
+      approval: await step(
+        BrowserSecretAccess.recordLoginFill(
+          {
+            item: login.id,
+            threadId: tab.threadId,
+            tabId: tab.tabId,
+            origin,
+            sourceUrl: tab.loginSourceUrl,
+            revision,
+          },
+          previous?.approval,
+        ),
+      ),
       urls: login.fillOrigin === origin ? [origin] : login.urls,
       ...(login.fillOrigin === undefined ? {} : { fillOrigin: login.fillOrigin }),
     };
@@ -218,6 +234,7 @@ export const fillLogin = async (
       tabId: tab.tabId,
       login: BrowserSecretAccess.summary(login),
       filled: fields,
+      ...(values.hasTotp === undefined ? {} : { hasTotp: values.hasTotp }),
     };
   };
 
@@ -245,21 +262,30 @@ export const fillLogin = async (
     document = await fillableDocument();
   });
   const currentRevision = (await step(logins.escalation)).revision;
+  const selection = tab.loginSelection;
   const remembered =
     input.reference === undefined &&
     tab.loginSelection?.origin === origin &&
     tab.loginSelection.revision === currentRevision &&
+    BrowserSecretAccess.loginSelectionMatches(tab.loginSelection.approval, {
+      kind: "login",
+      item: tab.loginSelection.id,
+      threadId: tab.threadId,
+      tabId: tab.tabId,
+      origin,
+      sourceUrl: tab.loginSourceUrl,
+    }) &&
     BrowserLogins.loginCoversPage(tab.loginSelection.urls, pageUrl)
       ? tab.loginSelection
       : undefined;
   const changeAccount =
     remembered !== undefined && input.login !== undefined && input.login !== remembered.id;
   const previous = changeAccount || fields.includes("username") ? undefined : remembered;
+  const forceChoice = changeAccount || (selection !== undefined && remembered === undefined);
+  // A canceled new sign-in must not leave the old sign-in authorized for a later code fill.
+  tab.loginSelection = previous;
   const access = await step(
-    BrowserSecretAccess.resolve<
-      BrowserLoginChoice.SelectedLogin,
-      Readonly<Partial<Record<PreviewLoginField, string>>>
-    >(
+    BrowserSecretAccess.resolve<BrowserLoginChoice.SelectedLogin, LoginValues>(
       context,
       {
         kind: "login",
@@ -268,6 +294,8 @@ export const fillLogin = async (
         tabId: tab.tabId,
         origin,
         item: previous?.id,
+        loginApproval: previous?.approval,
+        sourceUrl: tab.loginSourceUrl,
         reference: input.reference,
         deadline,
         // Before anyone is asked or anything read; the login's own sites are checked once known.
@@ -303,6 +331,7 @@ export const fillLogin = async (
               },
             ];
           }
+          if (previous !== undefined) return [];
           const login = yield* BrowserLoginChoice.select(context, {
             revision: found.revision,
             candidates: found.logins,
@@ -313,7 +342,7 @@ export const fillLogin = async (
             deadline,
             ready,
             checkPage,
-            forceChoice: changeAccount,
+            forceChoice,
           });
           return login === undefined ? [] : [login];
         }),
@@ -350,17 +379,20 @@ export const fillLogin = async (
           ask: {
             kind: "login",
             threadId: tab.threadId,
+            tabId: tab.tabId,
             ...requester,
             origin,
             fields,
             ...(tab.loginSourceUrl === undefined ? {} : { siteUrl: tab.loginSourceUrl }),
           },
-          values: (values) =>
-            Object.fromEntries(
+          values: (values, item) => ({
+            ...Object.fromEntries(
               fields.flatMap((field) =>
                 values[field] === undefined ? [] : [[field, values[field]]],
               ),
             ),
+            ...(item?.hasTotp === undefined ? {} : { hasTotp: item.hasTotp }),
+          }),
         },
       },
     ),
