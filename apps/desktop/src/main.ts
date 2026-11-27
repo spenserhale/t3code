@@ -62,6 +62,7 @@ import * as DesktopPreReadyFileSystem from "./app/DesktopPreReadyFileSystem.ts";
 import * as DesktopPreReadyPlatform from "./app/DesktopPreReadyPlatform.ts";
 import * as DesktopShellEnvironment from "./shell/DesktopShellEnvironment.ts";
 import * as DesktopSshEnvironment from "./ssh/DesktopSshEnvironment.ts";
+import { withSecodeRemoteRuntime } from "./ssh/secodeRemoteRuntime.ts";
 import * as DesktopSshPasswordPrompts from "./ssh/DesktopSshPasswordPrompts.ts";
 import * as DesktopState from "./app/DesktopState.ts";
 import * as DesktopLegacyLocalStorage from "./app/DesktopLegacyLocalStorage.ts";
@@ -117,7 +118,7 @@ const layerDesktopSshEnvironment = Layer.unwrap(
     return DesktopSshEnvironment.layer({
       // Per connect: the login shell's environment is installed after this layer is built.
       resolveCliRunner: Effect.sync(() =>
-        DesktopSshEnvironment.resolveDesktopSshCliRunner(environment, env),
+        withSecodeRemoteRuntime(DesktopSshEnvironment.resolveDesktopSshCliRunner(environment, env)),
       ),
       resolveLauncherId: yield* Effect.cached(
         DesktopSshEnvironment.readOrCreateLauncherId(
