@@ -3991,14 +3991,6 @@ export const layer = Layer.unwrap(
                   onSome: (device) => Layer.succeed(SecretRelayDevice.SecretRelayDevice, device),
                 }),
               ),
-              // A socket sees only what is handed to it here, not what the routes were built with.
-              Layer.provide(
-                Option.match(secretProviderVaults, {
-                  onNone: () => Layer.empty,
-                  onSome: (vaults) =>
-                    Layer.succeed(SecretProviderVaults.SecretProviderVaults, vaults),
-                }),
-              ),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(
@@ -4014,6 +4006,16 @@ export const layer = Layer.unwrap(
               ),
             ),
           ),
+          // A socket sees only what is handed to it here, not what the routes were built with.
+          // Given around the socket's layer, whose pipe is at its 20-argument limit.
+          (effect) =>
+            Option.isSome(secretProviderVaults)
+              ? Effect.provideService(
+                  effect,
+                  SecretProviderVaults.SecretProviderVaults,
+                  secretProviderVaults.value,
+                )
+              : effect,
         );
         const splitFrames = url.value.searchParams.has(SOCKET_FRAME_PARTS_QUERY_PARAM);
         const framedRpcWebSocketHttpEffect = rpcWebSocketHttpEffect.pipe(
