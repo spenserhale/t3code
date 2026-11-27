@@ -1,12 +1,16 @@
 import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
 import {
   defineSecretProviderDriver,
+  type SecretProviderIdentity,
+  type SecretProviderIdentityField,
+  type SecretProviderIdentityValues,
   type SecretProviderLogin,
   type SecretProviderLoginField,
   type SecretProviderLoginValues,
 } from "@t3tools/secret-provider-core/server/driver";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -113,14 +117,15 @@ const recover = <A, E extends { readonly _tag: string }, R>(
     ),
   );
 
-const boundedLogin = <A, E extends { readonly _tag: string }, R>(
+const boundedItem = <A, E extends { readonly _tag: string }, R>(
+  stage: "login" | "identity",
   effect: Effect.Effect<A | undefined, E, R>,
 ) =>
   effect.pipe(
     Effect.timeoutOption(READ_TIMEOUT),
     Effect.map(Option.getOrUndefined),
     Effect.catch((error) =>
-      Effect.logWarning("Could not run 1Password", { stage: "login", error: error._tag }).pipe(
+      Effect.logWarning("Could not run 1Password", { stage, error: error._tag }).pipe(
         Effect.as(undefined),
       ),
     ),
@@ -152,29 +157,53 @@ const textOf = (field: unknown, key: "type" | "purpose" | "value" | "totp") => {
   return typeof value === "string" ? value : undefined;
 };
 
+// A value is not always a string, so identity values decode as unknown.
+const IdentityField = Schema.Struct({
+  id: Schema.optional(Schema.String),
+  type: Schema.optional(Schema.String),
+  purpose: Schema.optional(Schema.String),
+  label: Schema.optional(Schema.String),
+  value: Schema.optional(Schema.Unknown),
+});
+type IdentityField = typeof IdentityField.Type;
+const decodeIdentityItem = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ fields: Schema.optional(Schema.Array(IdentityField)) })),
+);
+
+type ListedVaultItem = {
+  readonly item: typeof ListedItem.Type;
+  readonly vaultId: string | undefined;
+};
+
 /** Logins with at least one website; the rest could never match a page. */
-const parseLoginList = (
-  stdout: string,
-  vaultId: string | undefined,
-): ReadonlyArray<SecretProviderLogin> | undefined =>
-  Option.getOrUndefined(
-    Option.map(decodeListedItems(stdout), (items) =>
-      items.flatMap((item) => {
-        const urls = (item.urls ?? []).map((url) => url.href).filter((href) => href.length > 0);
-        if (urls.length === 0) return [];
-        const vault = item.vault?.name;
-        return [
-          {
-            id: item.id,
-            title: item.title,
-            ...(vault ? { vault } : {}),
-            ...(vaultId === undefined ? {} : { vaultId }),
-            urls,
-          },
-        ];
-      }),
-    ),
-  );
+const toLogins = (listed: ReadonlyArray<ListedVaultItem>): ReadonlyArray<SecretProviderLogin> =>
+  listed.flatMap(({ item, vaultId }) => {
+    const urls = (item.urls ?? []).map((url) => url.href).filter((href) => href.length > 0);
+    if (urls.length === 0) return [];
+    const vault = item.vault?.name;
+    return [
+      {
+        id: item.id,
+        title: item.title,
+        ...(vault ? { vault } : {}),
+        ...(vaultId === undefined ? {} : { vaultId }),
+        urls,
+      },
+    ];
+  });
+
+const toIdentities = (
+  listed: ReadonlyArray<ListedVaultItem>,
+): ReadonlyArray<SecretProviderIdentity> =>
+  listed.map(({ item, vaultId }) => {
+    const vault = item.vault?.name;
+    return {
+      id: item.id,
+      title: item.title,
+      ...(vault ? { vault } : {}),
+      ...(vaultId === undefined ? {} : { vaultId }),
+    };
+  });
 
 /** Picks the requested values out of `op item get --format json`. */
 const parseLoginValues = (
@@ -199,21 +228,193 @@ const parseLoginValues = (
   return values;
 };
 
+type AddressField = "street" | "city" | "state" | "postalCode" | "country";
+type IdentityTextField = Exclude<SecretProviderIdentityField, AddressField>;
+
+/**
+ * Each value's field ids, then its labels, in the order they are tried, and the field types it
+ * may have. No secret type is listed, so a password, one-time code or concealed field is never
+ * read as a person's details, whatever its id or label says.
+ */
+const IDENTITY_FIELDS: Record<
+  IdentityTextField | "address",
+  {
+    readonly ids: ReadonlyArray<string>;
+    readonly labels: ReadonlyArray<string>;
+    readonly types: ReadonlyArray<string>;
+  }
+> = {
+  firstName: { ids: ["firstname"], labels: ["first name"], types: ["STRING"] },
+  middleInitial: { ids: ["initial"], labels: ["initial", "middle initial"], types: ["STRING"] },
+  lastName: { ids: ["lastname"], labels: ["last name"], types: ["STRING"] },
+  email: { ids: ["email"], labels: ["email"], types: ["EMAIL", "STRING"] },
+  phone: {
+    ids: ["defphone", "cellphone", "homephone", "busphone"],
+    labels: ["default phone", "phone", "mobile", "cell", "home", "business"],
+    types: ["PHONE", "STRING"],
+  },
+  company: { ids: ["company"], labels: ["company"], types: ["STRING"] },
+  jobTitle: { ids: ["jobtitle"], labels: ["job title"], types: ["STRING"] },
+  birthDate: { ids: ["birthdate"], labels: ["birth date"], types: ["DATE", "STRING"] },
+  username: { ids: ["username"], labels: ["username"], types: ["STRING"] },
+  address: { ids: ["address"], labels: ["address"], types: ["ADDRESS", "STRING"] },
+};
+
+const trimmedText = (value: unknown) =>
+  typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+
+const isText = (value: unknown) => trimmedText(value) !== undefined;
+
+const findIdentityField = (
+  fields: ReadonlyArray<IdentityField>,
+  { ids, labels, types }: (typeof IDENTITY_FIELDS)[keyof typeof IDENTITY_FIELDS],
+  accepts: (value: unknown) => boolean = isText,
+) => {
+  const filled = fields.filter(
+    (field) =>
+      types.includes(field.type?.toUpperCase() ?? "") &&
+      field.purpose?.toUpperCase() !== "PASSWORD" &&
+      accepts(field.value),
+  );
+  for (const id of ids) {
+    const found = filled.find((field) => field.id?.toLowerCase() === id);
+    if (found) return found;
+  }
+  for (const label of labels) {
+    const found = filled.find((field) => field.label?.trim().toLowerCase() === label);
+    if (found) return found;
+  }
+  return undefined;
+};
+
+// `op` may give a DATE field as epoch seconds, as text or as a number; forms want the date.
+const toBirthDate = (value: unknown) => {
+  const text = trimmedText(value);
+  const seconds =
+    typeof value === "number"
+      ? value
+      : text !== undefined && /^-?\d+$/.test(text)
+        ? Number(text)
+        : undefined;
+  if (seconds === undefined) return text;
+  return Option.getOrUndefined(
+    DateTime.make(seconds * 1000).pipe(
+      Option.map(DateTime.formatIsoDateUtc),
+      Option.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)),
+    ),
+  );
+};
+
+// What `op` prints for an empty part of an address, so every address has the same five places.
+const NO_ADDRESS_PART = "<nil>";
+
+const addressPart = (place: string | undefined) => {
+  const text = place?.trim();
+  return text === undefined || text.length === 0 || text === NO_ADDRESS_PART ? undefined : text;
+};
+
+const onOneLine = (text: string, separators: RegExp) =>
+  text
+    .split(separators)
+    .flatMap((part) => addressPart(part) ?? [])
+    .join(", ");
+
+const hasDigit = (text: string) => /\d/.test(text);
+
+/**
+ * `op` 2.41 prints an ADDRESS as "street, city, state, zip, Country" when it knows the stored
+ * country code, and as "street, city, state, country, zip" when it does not. An address with no
+ * country has no value at all. Checked against real items whose parts were known.
+ * A comma in the street is kept; one in another part cannot be told from it, and moves the parts.
+ */
+const parseAddress = (
+  field: IdentityField | undefined,
+): Partial<Record<AddressField | "address", string | undefined>> => {
+  if (typeof field?.value !== "string") return {};
+  const whole = { address: onOneLine(field.value, /[\n,]/) };
+  const places = field.value.split(", ");
+  if (field.type?.toUpperCase() !== "ADDRESS" || places.length < 5) return whole;
+  const [city, state, fourth, fifth] = places.slice(-4).map(addressPart);
+  // A country is never empty and has no digit, which tells it from the postal code beside it.
+  const [postalCode, country] =
+    fourth === undefined || fifth === undefined
+      ? [undefined, fourth ?? fifth]
+      : hasDigit(fourth) === hasDigit(fifth)
+        ? [undefined, undefined]
+        : hasDigit(fourth)
+          ? [fourth, fifth]
+          : [fifth, fourth];
+  if (country === undefined) return whole;
+  const street = addressPart(onOneLine(places.slice(0, -4).join(", "), /\n/));
+  return {
+    address: [street, city, state, postalCode, country].filter(Predicate.isNotUndefined).join(", "),
+    street,
+    city,
+    state,
+    postalCode,
+    country,
+  };
+};
+
+/** Picks an Identity's values out of `op item get --format json`, by field id, then label. */
+const parseIdentityValues = (stdout: string): SecretProviderIdentityValues | undefined => {
+  const item = Option.getOrUndefined(decodeIdentityItem(stdout));
+  if (item === undefined) return undefined;
+  const fields = item.fields ?? [];
+  const values: SecretProviderIdentityValues = {};
+  const set = (field: SecretProviderIdentityField, value: string | undefined) => {
+    const text = value?.trim();
+    if (text) values[field] = text;
+  };
+  for (const field of [
+    "firstName",
+    "middleInitial",
+    "lastName",
+    "email",
+    "phone",
+    "company",
+    "jobTitle",
+    "username",
+  ] as const) {
+    set(field, trimmedText(findIdentityField(fields, IDENTITY_FIELDS[field])?.value));
+  }
+  set(
+    "birthDate",
+    toBirthDate(
+      findIdentityField(
+        fields,
+        IDENTITY_FIELDS.birthDate,
+        (value) => isText(value) || Number.isFinite(value),
+      )?.value,
+    ),
+  );
+  const address = parseAddress(findIdentityField(fields, IDENTITY_FIELDS.address));
+  for (const field of ["address", "street", "city", "state", "postalCode", "country"] as const) {
+    set(field, address[field]);
+  }
+  return values;
+};
+
+type ItemCategory = "Login" | "Identity";
+
 const listItems = Effect.fn("OnePasswordDriver.listItems")(function* (
   config: OnePasswordSecretProviderConfig,
+  category: ItemCategory,
   vaultId: string | undefined,
 ) {
   const result = yield* runOnePassword(config, "item", [
     "list",
     ...(vaultId === undefined ? [] : [`--vault=${vaultId}`]),
-    "--categories=Login",
+    `--categories=${category}`,
     "--format=json",
   ]);
-  const logins = result.code === 0 ? parseLoginList(result.stdout, vaultId) : undefined;
-  if (logins === undefined) {
-    yield* Effect.logWarning("Could not list 1Password logins", { exitCode: result.code });
+  const items =
+    result.code === 0 ? Option.getOrUndefined(decodeListedItems(result.stdout)) : undefined;
+  if (items === undefined) {
+    yield* Effect.logWarning("Could not list 1Password items", { category, exitCode: result.code });
+    return undefined;
   }
-  return logins;
+  return items.map((item): ListedVaultItem => ({ item, vaultId }));
 });
 
 const listVaults = Effect.fn("OnePasswordDriver.listVaults")(function* (
@@ -229,40 +430,68 @@ const listVaults = Effect.fn("OnePasswordDriver.listVaults")(function* (
 
 // A service account must name a vault once it sees more than one, so it lists each vault it was
 // given. Its reads are rate limited: one call for the vaults, then one per vault, two at a time.
-const listLogins = Effect.fn("OnePasswordDriver.listLogins")(function* (
+const listCategory = Effect.fn("OnePasswordDriver.listCategory")(function* (
   config: OnePasswordSecretProviderConfig,
+  category: ItemCategory,
 ) {
-  if (!config.serviceAccountToken) return yield* boundedLogin(listItems(config, undefined));
-  const vaults = yield* boundedLogin(listVaults(config));
+  const stage = category === "Login" ? "login" : "identity";
+  if (!config.serviceAccountToken) {
+    return yield* boundedItem(stage, listItems(config, category, undefined));
+  }
+  const vaults = yield* boundedItem(stage, listVaults(config));
   if (vaults === undefined) return undefined;
   const listed = yield* Effect.forEach(
     vaults.filter((vault) => !vault.id.startsWith("-")),
-    (vault) => boundedLogin(listItems(config, vault.id)),
+    (vault) => boundedItem(stage, listItems(config, category, vault.id)),
     { concurrency: 2 },
   );
-  // A vault that cannot be listed hides only its own logins.
+  // A vault that cannot be listed hides only its own items.
   const usable = listed.filter(Predicate.isNotUndefined);
   return listed.length > 0 && usable.length === 0 ? undefined : usable.flat();
 });
 
 // An item id is unique in an account. A service account must also name its vault, by id, which
 // keeps vault names out of the arguments.
+const itemGetArgs = (
+  item: { readonly id: string; readonly vaultId?: string | undefined },
+  reveal: boolean,
+) =>
+  item.id.startsWith("-") || item.vaultId?.startsWith("-")
+    ? undefined
+    : [
+        "get",
+        item.id,
+        ...(item.vaultId === undefined ? [] : [`--vault=${item.vaultId}`]),
+        ...(reveal ? ["--reveal"] : []),
+        "--format=json",
+      ];
+
 const readLogin = Effect.fn("OnePasswordDriver.readLogin")(function* (
   config: OnePasswordSecretProviderConfig,
   login: SecretProviderLogin,
   fields: ReadonlyArray<SecretProviderLoginField>,
 ) {
-  if (login.id.startsWith("-") || login.vaultId?.startsWith("-")) return undefined;
-  const result = yield* runOnePassword(config, "item", [
-    "get",
-    login.id,
-    ...(login.vaultId === undefined ? [] : [`--vault=${login.vaultId}`]),
-    "--reveal",
-    "--format=json",
-  ]);
+  const args = itemGetArgs(login, true);
+  if (args === undefined) return undefined;
+  const result = yield* runOnePassword(config, "item", args);
   const values = result.code === 0 ? parseLoginValues(result.stdout, fields) : undefined;
   if (values === undefined) {
     yield* Effect.logWarning("Could not read 1Password login", { exitCode: result.code });
+  }
+  return values;
+});
+
+const readIdentity = Effect.fn("OnePasswordDriver.readIdentity")(function* (
+  config: OnePasswordSecretProviderConfig,
+  identity: SecretProviderIdentity,
+) {
+  // Identity values are never secret fields, so any concealed one is left concealed.
+  const args = itemGetArgs(identity, false);
+  if (args === undefined) return undefined;
+  const result = yield* runOnePassword(config, "item", args);
+  const values = result.code === 0 ? parseIdentityValues(result.stdout) : undefined;
+  if (values === undefined) {
+    yield* Effect.logWarning("Could not read 1Password identity", { exitCode: result.code });
   }
   return values;
 });
@@ -297,7 +526,17 @@ export const driver = defineSecretProviderDriver({
     return values;
   }),
   logins: {
-    list: listLogins,
-    read: (config, login, fields) => boundedLogin(readLogin(config, login, fields)),
+    list: (config) =>
+      listCategory(config, "Login").pipe(
+        Effect.map((listed) => (listed === undefined ? undefined : toLogins(listed))),
+      ),
+    read: (config, login, fields) => boundedItem("login", readLogin(config, login, fields)),
+  },
+  identities: {
+    list: (config) =>
+      listCategory(config, "Identity").pipe(
+        Effect.map((listed) => (listed === undefined ? undefined : toIdentities(listed))),
+      ),
+    read: (config, identity) => boundedItem("identity", readIdentity(config, identity)),
   },
 });
