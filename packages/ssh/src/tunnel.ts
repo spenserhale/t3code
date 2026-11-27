@@ -535,9 +535,16 @@ if ! t3_runtime_ready; then
     "Darwin arm64") T3_PLATFORM_KEY="darwin-arm64" ;;
     "Linux arm64" | "Linux aarch64") T3_PLATFORM_KEY="linux-arm64" ;;
     "Linux x86_64" | "Linux amd64") T3_PLATFORM_KEY="linux-x64" ;;
+    # A Windows host whose SSH shell is Git Bash or MSYS2. Either converts
+    # path arguments for native programs, so t3.exe is driven like any t3.
+    MINGW*" x86_64" | MSYS*" x86_64") T3_PLATFORM_KEY="win32-x64" ;;
+    MINGW*" aarch64" | MINGW*" arm64" | MSYS*" aarch64" | MSYS*" arm64") T3_PLATFORM_KEY="win32-arm64" ;;
     *) printf 'Remote host %s has no t3 release archive.\\n' "$(uname -s) $(uname -m)" >&2; exit 1 ;;
   esac
-  T3_ARCHIVE="t3-$T3_ARCHIVE_VERSION-$T3_PLATFORM_KEY.tar.gz"
+  case "$T3_PLATFORM_KEY" in
+    win32-*) T3_ARCHIVE="t3-$T3_ARCHIVE_VERSION-$T3_PLATFORM_KEY.zip" ;;
+    *) T3_ARCHIVE="t3-$T3_ARCHIVE_VERSION-$T3_PLATFORM_KEY.tar.gz" ;;
+  esac
   if ! command -v tar >/dev/null 2>&1; then
     printf 'Remote host needs tar to unpack %s. Install tar on it and try again.\\n' "$T3_ARCHIVE" >&2
     exit 1
@@ -564,7 +571,11 @@ if ! t3_runtime_ready; then
   if [ -z "$T3_EXPECTED" ] || [ "$T3_ACTUAL" != "$T3_EXPECTED" ]; then
     printf 'Checksum mismatch for %s.\\n' "$T3_ARCHIVE" >&2; exit 1
   fi
-  if ! T3_TAR_ERROR="$(tar -xzf "$T3_STAGING/$T3_ARCHIVE" -C "$T3_STAGING" --strip-components=1 2>&1)"; then
+  if [ "\${T3_PLATFORM_KEY%%-*}" = "win32" ]; then
+    # The shell's GNU tar cannot open a zip; the bsdtar Windows ships in
+    # System32 can, and it takes Windows paths.
+    "$(cygpath -S)/tar.exe" -xf "$(cygpath -w "$T3_STAGING/$T3_ARCHIVE")" -C "$(cygpath -w "$T3_STAGING")" --strip-components=1
+  elif ! T3_TAR_ERROR="$(tar -xzf "$T3_STAGING/$T3_ARCHIVE" -C "$T3_STAGING" --strip-components=1 2>&1)"; then
     # Some tars (BusyBox) gunzip internally, so gzip is only blamed once extraction fails.
     if command -v gzip >/dev/null 2>&1; then printf '%s\\n' "$T3_TAR_ERROR" >&2
     else printf 'Remote host needs gzip to unpack %s. Install gzip on it and try again.\\n' "$T3_ARCHIVE" >&2
