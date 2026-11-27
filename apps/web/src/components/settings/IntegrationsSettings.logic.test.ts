@@ -92,27 +92,24 @@ describe("importPolicyRefusal", () => {
 
 describe("browserLoginsWrite", () => {
   const work = "work" as SecretProviderId;
+  // The approvals are no longer read, but older builds still decode them.
   const current = {
     secretProviderIds: [work],
     approval: "thread",
     identityReadApproval: "never",
+    escalation: "refuse",
   } as const;
 
   it("keeps every other browser login setting, since the server replaces them whole", () => {
-    expect(browserLoginsWrite(current, { approval: "request" })).toEqual({
-      secretProviderIds: [work],
-      approval: "request",
-      identityReadApproval: "never",
+    expect(browserLoginsWrite(current, { escalation: "device" })).toEqual({
+      ...current,
+      escalation: "device",
     });
-    expect(browserLoginsWrite(current, { identityReadApproval: "off" })).toEqual({
-      secretProviderIds: [work],
-      approval: "thread",
-      identityReadApproval: "off",
-    });
-    // No provider turns logins off; the approvals stay for when one is chosen again.
+    // No provider turns logins off; the rest stays for when one is chosen again.
     expect(browserLoginsWrite(current, { secretProviderIds: [] })).toEqual({
       approval: "thread",
       identityReadApproval: "never",
+      escalation: "refuse",
     });
     // The single provider saved before several could be chosen carries over.
     expect(browserLoginsWrite({ secretProviderId: work, approval: "thread" }, {})).toEqual({
@@ -124,9 +121,9 @@ describe("browserLoginsWrite", () => {
   it("keeps where new logins are saved through other changes, until it is turned off", () => {
     const saving = { ...current, newLogins: { secretProviderId: work, vault: "Sign-ups" } };
     expect(browserLoginsWrite(current, { newLogins: saving.newLogins })).toEqual(saving);
-    expect(browserLoginsWrite(saving, { approval: "request" })).toEqual({
+    expect(browserLoginsWrite(saving, { escalation: "device" })).toEqual({
       ...saving,
-      approval: "request",
+      escalation: "device",
     });
     expect(browserLoginsWrite(saving, { newLogins: null })).toEqual(current);
   });

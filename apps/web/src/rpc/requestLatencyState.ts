@@ -28,11 +28,13 @@ interface PendingRpcAckRequest {
 const pendingRpcAckRequests = new Map<string, PendingRpcAckRequest>();
 // Background reports nobody waits on. A busy host delays them first, and warning
 // about a request the user never made does not say what is wrong. A sign-in wait
-// lasts as long as the user takes on the forge.
+// lasts as long as the user takes on the forge, a relayed secret as long as the
+// user takes to answer its dialog.
 const untrackedRpcAckMethods = new Set<string>([
   WS_METHODS.serverGetUsageSummary,
   WS_METHODS.serverReportClientActivity,
   WS_METHODS.sourceControlSignInWait,
+  WS_METHODS.secretRelayResolve,
 ]);
 const longRunningRpcAckMethods = new Set<string>([
   WS_METHODS.serverUpdateProvider,

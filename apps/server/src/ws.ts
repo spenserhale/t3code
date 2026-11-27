@@ -137,6 +137,7 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as Workflows from "./workflows/Workflows.ts";
 import * as WorkflowRuntime from "./workflows/WorkflowRuntime.ts";
+import * as SecretRelay from "./secrets/SecretRelay.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import * as FeedbackStore from "./feedback/FeedbackStore.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
@@ -212,6 +213,7 @@ import { makePrepareTerminalLaunch } from "./workspace/restoreMissingWorktree.ts
 import { terminalOutputStream, withOutputWindow } from "./terminal/OutputProtocol.ts";
 import { withSocketHeartbeat } from "./socketHeartbeat.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
+import * as SecretRelayDevice from "./preview/SecretRelayDevice.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -1531,6 +1533,9 @@ export const layerWsRpc = (
         new WorkflowRequestError({ message: error.message });
       const secretRequests = yield* SecretRequests.SecretRequests;
       const feedbackStore = yield* FeedbackStore.FeedbackStore;
+      // Optional, so a socket built without the relay answers nothing and finds no device.
+      const secretRelay = yield* Effect.serviceOption(SecretRelay.SecretRelay);
+      const secretRelayDevice = yield* Effect.serviceOption(SecretRelayDevice.SecretRelayDevice);
       const guestShares = yield* GuestShareService.GuestShareService;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const issues = yield* IssueService.IssueService;
@@ -1998,6 +2003,7 @@ export const layerWsRpc = (
             tanstackSource: featureFlags.tanstackSource,
           },
           secretProviderCredentials: true,
+          secretRelay: true,
           ...Option.match(scratchWorkspaceRoot, {
             onNone: () => ({}),
             onSome: (root) => ({ scratchWorkspaceRoot: root }),
@@ -2497,6 +2503,20 @@ export const layerWsRpc = (
             Effect.andThen(secretRequests.answer(input)),
           ),
         [WS_METHODS.agentFeedbackAnswerRequest]: (input) => feedbackStore.answer(input),
+        [WS_METHODS.secretRelayAnswer]: (input) =>
+          Option.match(secretRelay, {
+            onNone: () => Effect.void,
+            onSome: (relay) => relay.answer(input.requestId, input.answer, currentSessionId),
+          }),
+        [WS_METHODS.secretRelayResolve]: (input) =>
+          Option.match(secretRelayDevice, {
+            onNone: () =>
+              Effect.succeed({
+                type: "unavailable" as const,
+                message: "That device's server cannot answer relayed requests.",
+              }),
+            onSome: (device) => device.resolve(input),
+          }),
         [WS_METHODS.scheduledTasksListWebhookDeliveries]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.listWebhookDeliveries(input)),
@@ -3825,6 +3845,12 @@ export const layerWsRpc = (
               );
             }),
           ),
+        [WS_METHODS.subscribeSecretRelay]: (input) =>
+          Option.match(secretRelay, {
+            onNone: () => Stream.never,
+            // A device is its auth session, so a reconnected socket is still the same device.
+            onSome: (relay) => relay.subscribe(input.kinds, currentSessionId),
+          }),
         [WS_METHODS.subscribeResourceTelemetry]: (_input) =>
           Stream.unwrap(
             Effect.map(resourceTelemetry.subscribe, ({ latest, changes }) =>
@@ -3863,6 +3889,8 @@ export const layer = Layer.unwrap(
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const peerThreadRelay = yield* PeerThreadRelay.PeerThreadRelay;
     const peerClientPairing = yield* PeerClientPairing.PeerClientPairing;
+    const secretRelay = yield* Effect.serviceOption(SecretRelay.SecretRelay);
+    const secretRelayDevice = yield* Effect.serviceOption(SecretRelayDevice.SecretRelayDevice);
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3971,6 +3999,19 @@ export const layer = Layer.unwrap(
               Layer.provide(Layer.succeed(PeerLinkRequests.PeerLinkRequests, peerLinkRequests)),
               Layer.provide(Layer.succeed(PeerThreadRelay.PeerThreadRelay, peerThreadRelay)),
               Layer.provide(Layer.succeed(PeerClientPairing.PeerClientPairing, peerClientPairing)),
+              // Server-wide, so a device's answer reaches the call waiting on another socket.
+              Layer.provide(
+                Option.match(secretRelay, {
+                  onNone: () => Layer.empty,
+                  onSome: (relay) => Layer.succeed(SecretRelay.SecretRelay, relay),
+                }),
+              ),
+              Layer.provide(
+                Option.match(secretRelayDevice, {
+                  onNone: () => Layer.empty,
+                  onSome: (device) => Layer.succeed(SecretRelayDevice.SecretRelayDevice, device),
+                }),
+              ),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(
