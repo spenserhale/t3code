@@ -23,6 +23,7 @@ import * as AntigravityUsage from "../provider/Drivers/AntigravityUsage.ts";
 import * as ProviderHostLive from "../provider/ProviderHostLive.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as CodexUsageHistory from "./CodexUsageHistory.ts";
+import { UnlidCatalogRates, type UnlidModelPrice } from "./UnlidCatalogRates.ts";
 import * as UsageService from "./UsageService.ts";
 import { lookupRate } from "./usagePricing.ts";
 
@@ -30,6 +31,7 @@ import { lookupRate } from "./usagePricing.ts";
 const usageLayer = (input: {
   readonly settings: Parameters<typeof ServerSettings.layerTest>[0];
   readonly respond: (request: HttpClientRequest.HttpClientRequest) => Response;
+  readonly catalog?: Record<string, UnlidModelPrice>;
 }) =>
   Layer.unwrap(
     Effect.gen(function* () {
@@ -37,7 +39,7 @@ const usageLayer = (input: {
         Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "usage-rates-test-"))),
         (path) => Effect.promise(() => NodeFSP.rm(path, { recursive: true, force: true })),
       );
-      return UsageService.layer.pipe(
+      const service = UsageService.layer.pipe(
         Layer.provide(
           Layer.fresh(CursorUsageAccounts.layer).pipe(
             Layer.provide(CursorAccountReader.layer),
@@ -67,6 +69,13 @@ const usageLayer = (input: {
           ),
         ),
       );
+      return input.catalog === undefined
+        ? service
+        : service.pipe(
+            Layer.provideMerge(
+              Layer.mock(UnlidCatalogRates)({ current: Effect.succeed(input.catalog) }),
+            ),
+          );
     }),
   );
 
@@ -132,6 +141,78 @@ it.effect("does not hold every read on a rate source that cannot be reached", ()
           if (!request.url.startsWith("https://api.github.com/")) fetches += 1;
           return new Response("unavailable", { status: 503 });
         },
+      }),
+    ),
+  );
+});
+
+it.effect("fills unpriced ids from the catalog and never reprices others", () => {
+  return Effect.gen(function* () {
+    const usage = yield* UsageService.UsageService;
+    const rates = yield* usage.currentRates;
+
+    // The custom price and the published table keep their prices; only ids with no price fill.
+    assert.strictEqual(rates.overrides.get("m")?.inputCostPerToken, 1e-6);
+    assert.isUndefined(rates.table.get("m"));
+    assert.strictEqual(lookupRate(rates.table, "y")?.inputCostPerToken, 9e-7);
+    assert.strictEqual(rates.table.get("x")?.inputCostPerToken, 0.24e-6);
+    assert.strictEqual(rates.table.get("x")?.outputCostPerToken, 0.96e-6);
+    assert.strictEqual(rates.table.get("x")?.fast, null);
+    assert.strictEqual(rates.table.get("x")?.ultrafast, null);
+    // A catalog cache price maps to the cached-input rate; cache writes price at input.
+    assert.strictEqual(rates.table.get("w")?.cacheReadCostPerToken, 0.5e-6);
+    assert.strictEqual(rates.table.get("w")?.cacheCreationCostPerToken, 1e-6);
+    assert.strictEqual(rates.table.get("w")?.cacheCreation1hCostPerToken, 1e-6);
+  }).pipe(
+    Effect.provide(
+      usageLayer({
+        settings: {
+          usagePriceOverrides: {
+            m: { inputCostPerMillionTokens: 1, outputCostPerMillionTokens: 1 },
+          },
+        },
+        respond: () =>
+          Response.json({ y: { input_cost_per_token: 9e-7, output_cost_per_token: 2e-6 } }),
+        catalog: {
+          m: { inputUsdPerM: 0.5, outputUsdPerM: 1.5, cachedInputUsdPerM: undefined },
+          y: { inputUsdPerM: 0.1, outputUsdPerM: 0.2, cachedInputUsdPerM: undefined },
+          x: { inputUsdPerM: 0.24, outputUsdPerM: 0.96, cachedInputUsdPerM: undefined },
+          w: { inputUsdPerM: 1, outputUsdPerM: 2, cachedInputUsdPerM: 0.5 },
+        },
+      }),
+    ),
+  );
+});
+
+it.effect("leaves the published table alone with no catalog service in the context", () => {
+  return Effect.gen(function* () {
+    const usage = yield* UsageService.UsageService;
+    const rates = yield* usage.currentRates;
+
+    assert.deepStrictEqual(
+      [...rates.table],
+      [
+        [
+          "y",
+          {
+            inputCostPerToken: 9e-7,
+            outputCostPerToken: 2e-6,
+            cacheReadCostPerToken: 9e-7,
+            cacheCreationCostPerToken: 9e-7,
+            cacheCreation1hCostPerToken: 9e-7,
+            fast: null,
+            ultrafast: null,
+            contextTiers: [],
+          },
+        ],
+      ],
+    );
+  }).pipe(
+    Effect.provide(
+      usageLayer({
+        settings: {},
+        respond: () =>
+          Response.json({ y: { input_cost_per_token: 9e-7, output_cost_per_token: 2e-6 } }),
       }),
     ),
   );
