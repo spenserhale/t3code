@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { EnvironmentId, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { PreviewLoginCandidate, PreviewLoginField } from "./previewLogin.ts";
+import { PreviewLoginCandidate, PreviewLoginChoice, PreviewLoginField } from "./previewLogin.ts";
 
 /**
  * Relaying a secret request from a server nobody can approve on, such as a remote machine, to the
@@ -10,7 +10,12 @@ import { PreviewLoginCandidate, PreviewLoginField } from "./previewLogin.ts";
  * redacted on both ends.
  */
 
-export const SecretRelayKind = Schema.Literals(["login", "identity", "secretReference"]);
+export const SecretRelayKind = Schema.Literals([
+  "login",
+  "identity",
+  "secretReference",
+  "loginChoice",
+]);
 export type SecretRelayKind = typeof SecretRelayKind.Type;
 
 export const SecretRelayRequest = Schema.Struct({
@@ -21,6 +26,8 @@ export const SecretRelayRequest = Schema.Struct({
   agent: Schema.optional(Schema.String),
   /** The page's origin. A login is offered only for the site it is saved for. */
   origin: Schema.optional(Schema.String),
+  siteUrl: Schema.optional(Schema.String),
+  candidates: Schema.optional(Schema.Array(PreviewLoginChoice)),
   /** A `device:` id from an earlier `choose` answer. */
   item: Schema.optional(TrimmedNonEmptyString),
   /** An item the user named, such as `op://Vault/Item`, or the secret a command uses. */
@@ -56,6 +63,8 @@ export const SecretRelayItem = Schema.Struct({
   account: Schema.optional(Schema.String),
   /** Websites a login fills on; empty for an identity. */
   urls: Schema.Array(Schema.String),
+  /** The exact origin the user approved for this fill. */
+  fillOrigin: Schema.optional(Schema.String),
 });
 export type SecretRelayItem = typeof SecretRelayItem.Type;
 
@@ -71,7 +80,7 @@ export const SecretRelayAnswer = Schema.Union([
     candidates: Schema.Array(PreviewLoginCandidate),
   }),
   Schema.Struct({ type: Schema.Literal("none") }),
-  Schema.Struct({ type: Schema.Literal("denied") }),
+  Schema.Struct({ type: Schema.Literal("denied"), message: Schema.optional(Schema.String) }),
   Schema.Struct({ type: Schema.Literal("unavailable"), message: Schema.String }),
 ]);
 export type SecretRelayAnswer = typeof SecretRelayAnswer.Type;

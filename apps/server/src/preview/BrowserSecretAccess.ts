@@ -31,7 +31,7 @@ export interface SecretAccessServices {
   >;
   readonly desktopChannel: Pick<
     DesktopBrowserChannel.DesktopBrowserChannel["Service"],
-    "available" | "approveLogin"
+    "available" | "approveLogin" | "chooseLogin"
   >;
   readonly relay: SecretRelay.SecretRelay["Service"] | undefined;
 }
@@ -178,8 +178,8 @@ const ASKED_FOR: Record<BrowserLogins.BrowserApprovalKind, string> = {
 const refused = (message: string) =>
   new BrowserLogins.BrowserLoginError({ reason: "refused", message });
 
-const denied = (kind: BrowserLogins.BrowserApprovalKind, where = "") =>
-  refused(`The user did not approve ${ASKED_FOR[kind]}${where}.`);
+const denied = (kind: BrowserLogins.BrowserApprovalKind, where = "", message?: string) =>
+  refused(message ?? `The user did not approve ${ASKED_FOR[kind]}${where}.`);
 
 const unreadable = (id: string, why?: string) =>
   refused(
@@ -317,7 +317,8 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
     if (escalation === "refuse") return yield* refusal();
     const answer = yield* askDevice({ item: named });
     if (answer.type === "values") return yield* fromDevice(answer);
-    if (answer.type === "denied") return yield* denied(request.kind, " on their device");
+    if (answer.type === "denied")
+      return yield* denied(request.kind, " on their device", answer.message);
     return yield* unreadable(named, answer.type === "unavailable" ? answer.message : undefined);
   }
   if (named !== undefined) {
@@ -378,7 +379,7 @@ export const resolve = Effect.fn("BrowserSecretAccess.resolve")(function* <
     case "choose":
       return { status: "choose", candidates: answer.candidates };
     case "denied":
-      return yield* denied(request.kind, " on their device");
+      return yield* denied(request.kind, " on their device", answer.message);
     case "none":
       none = true;
       break;

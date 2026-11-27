@@ -2,16 +2,20 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeStream from "@effect/platform-node/NodeStream";
 import { expect, it } from "@effect/vitest";
+import type { DesktopBrowserCommand } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
+import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 
 vi.mock("@effect/platform-node/NodeStream", () => ({ fromReadable: vi.fn() }));
@@ -20,6 +24,154 @@ vi.mock("node:net", () => ({
     destroy() {}
   },
 }));
+
+const choicePrompt = {
+  providerLabel: "Personal",
+  origin: "https://app.rocketmoney.com",
+  candidates: [
+    {
+      id: "first",
+      title: "Rocket Money",
+      username: "first@example.com",
+      websites: ["https://app.rocketmoney.com"],
+    },
+    {
+      id: "second",
+      title: "Rocket Money",
+      username: "second@example.com",
+      websites: ["https://app.rocketmoney.com"],
+    },
+  ],
+};
+
+const choiceFixture = Effect.gen(function* () {
+  const input = yield* Queue.unbounded<Uint8Array>();
+  const commands = yield* Queue.unbounded<DesktopBrowserCommand>();
+  vi.mocked(NodeStream.fromReadable).mockReturnValue(Stream.fromQueue(input));
+  yield* Effect.acquireRelease(
+    Effect.sync(() =>
+      vi
+        .spyOn(DesktopTelemetryReceiver, "writeAllToFileDescriptor")
+        .mockImplementation((_fd, buffer) =>
+          Queue.offer(commands, JSON.parse(buffer.toString())).pipe(Effect.asVoid),
+        ),
+    ),
+    (spy) => Effect.sync(() => spy.mockRestore()),
+  );
+  const config = yield* ServerConfig.ServerConfig;
+  const context = yield* Layer.build(
+    DesktopBrowserChannel.layer.pipe(
+      Layer.provide(
+        ServerConfig.layer({ ...config, desktopBrowserFd: 41, desktopBrowserControlFd: 42 }),
+      ),
+    ),
+  );
+  return {
+    channel: Context.get(context, DesktopBrowserChannel.DesktopBrowserChannel),
+    commands,
+    send: (event: object) =>
+      Queue.offer(input, new TextEncoder().encode(`${JSON.stringify(event)}\n`)),
+  };
+});
+
+const testConfig = ServerConfig.layerTest(process.cwd(), {
+  prefix: "desktop-browser-channel-",
+}).pipe(Layer.provide(NodeServices.layer));
+
+it.effect("returns the explicit second native login choice and preserves approval requests", () =>
+  Effect.gen(function* () {
+    const { channel, commands, send } = yield* choiceFixture;
+    expect(channel.chooseLogin).toBeTypeOf("function");
+    const key = { threadId: "thread-1", tabId: "tab-1" };
+    const result = yield* channel.chooseLogin!(key, 300_000, choicePrompt).pipe(Effect.forkScoped);
+    const request = yield* Queue.take(commands);
+    expect(request).toMatchObject({
+      type: "loginApproval",
+      ...key,
+      ...choicePrompt,
+      timeoutMs: 120_000,
+    });
+    if (request.type !== "loginApproval") throw new Error("Expected a login request");
+    yield* send({
+      type: "loginApproval",
+      ...key,
+      requestId: request.requestId,
+      approved: "once",
+      selected: "second",
+    });
+    expect(yield* Fiber.join(result)).toBe("second");
+    expect(yield* Queue.take(commands)).toEqual({
+      type: "loginApprovalCancel",
+      requestId: request.requestId,
+    });
+
+    const approval = yield* channel
+      .approveLogin(key, 60_000, { providerLabel: "Personal" })
+      .pipe(Effect.forkScoped);
+    const ask = yield* Queue.take(commands);
+    if (ask.type !== "loginApproval") throw new Error("Expected an approval request");
+    yield* send({ type: "loginApproval", ...key, requestId: ask.requestId, approved: "thread" });
+    expect(yield* Fiber.join(approval)).toBe("thread");
+  }).pipe(Effect.scoped, Effect.provide(testConfig)),
+);
+
+it.effect("refuses unknown choices and closes expired or interrupted login requests", () =>
+  Effect.gen(function* () {
+    const { channel, commands, send } = yield* choiceFixture;
+    expect(channel.chooseLogin).toBeTypeOf("function");
+    const key = { threadId: "thread-1" };
+    const invalid = yield* channel.chooseLogin!(key, 60_000, choicePrompt).pipe(Effect.forkScoped);
+    const first = yield* Queue.take(commands);
+    if (first.type !== "loginApproval") throw new Error("Expected a login request");
+    yield* send({
+      type: "loginApproval",
+      ...key,
+      requestId: "unknown-request",
+      approved: "once",
+      selected: "second",
+    });
+    yield* send({
+      type: "loginApproval",
+      ...key,
+      requestId: first.requestId,
+      approved: "once",
+      selected: "unknown-login",
+    });
+    expect(yield* Fiber.join(invalid)).toBeUndefined();
+    expect(yield* Queue.take(commands)).toEqual({
+      type: "loginApprovalCancel",
+      requestId: first.requestId,
+    });
+
+    const expired = yield* channel.chooseLogin!(key, 10.75, choicePrompt).pipe(Effect.forkScoped);
+    const second = yield* Queue.take(commands);
+    if (second.type !== "loginApproval") throw new Error("Expected a login request");
+    yield* TestClock.adjust(11);
+    expect(yield* Fiber.join(expired)).toBeUndefined();
+    expect(yield* Queue.take(commands)).toEqual({
+      type: "loginApprovalCancel",
+      requestId: second.requestId,
+    });
+    yield* send({
+      type: "loginApproval",
+      ...key,
+      requestId: second.requestId,
+      approved: "once",
+      selected: "second",
+    });
+
+    const interrupted = yield* channel.chooseLogin!(key, 60_000, choicePrompt).pipe(
+      Effect.forkScoped,
+    );
+    const third = yield* Queue.take(commands);
+    if (third.type !== "loginApproval") throw new Error("Expected a login request");
+    yield* Fiber.interrupt(interrupted);
+    expect(yield* Queue.take(commands)).toEqual({
+      type: "loginApprovalCancel",
+      requestId: third.requestId,
+    });
+  }).pipe(Effect.scoped, Effect.provide(testConfig)),
+);
 
 it.effect("protects unknown desktop visibility until an explicit hidden report arrives", () =>
   Effect.gen(function* () {

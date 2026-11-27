@@ -11,6 +11,7 @@ import * as NodeEvents from "node:events";
 
 import * as DesktopBrowserHost from "./DesktopBrowserHost.ts";
 import * as LoginApprovalDialog from "./LoginApprovalDialog.ts";
+import * as LoginChoiceDialog from "./LoginChoiceDialog.ts";
 
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(DesktopBrowserEvent));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -253,6 +254,57 @@ const watchPainting = (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) =
   });
 
 describe("DesktopBrowserHost", () => {
+  it.effect("uses the native login chooser and sends only its explicit selected id", () =>
+    Effect.gen(function* () {
+      let approvalAsked = false;
+      const host = yield* DesktopBrowserHost.make.pipe(
+        Effect.provideService(LoginChoiceDialog.LoginChoiceDialog, {
+          choose: () => Effect.succeed("second"),
+        }),
+        Effect.provideService(LoginApprovalDialog.LoginApprovalDialog, {
+          ask: () =>
+            Effect.sync(() => {
+              approvalAsked = true;
+              return "once" as const;
+            }),
+        }),
+      );
+      const events = yield* connectBackend(host);
+      yield* host.handleCommandLine(
+        encodeJson({
+          type: "loginApproval",
+          ...key,
+          requestId: "choose-1",
+          providerLabel: "Personal",
+          origin: "https://app.rocketmoney.com",
+          timeoutMs: 60_000,
+          candidates: [
+            {
+              id: "first",
+              title: "Rocket Money",
+              username: "first@example.com",
+              websites: ["https://app.rocketmoney.com"],
+            },
+            {
+              id: "second",
+              title: "Rocket Money",
+              username: "second@example.com",
+              websites: ["https://app.rocketmoney.com"],
+            },
+          ],
+        }),
+      );
+      expect(yield* Queue.take(events)).toEqual({
+        type: "loginApproval",
+        ...key,
+        requestId: "choose-1",
+        approved: "once",
+        selected: "second",
+      });
+      expect(approvalAsked).toBe(false);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect(
     "asks about a tab it does not show and a read with no tab, and closes a prompt the server stops waiting for",
     () =>

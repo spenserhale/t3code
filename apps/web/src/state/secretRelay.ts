@@ -1,8 +1,9 @@
 import {
   createSecretRelayAtoms,
   secretRelayEnvironmentIds,
+  secretRelayKinds,
 } from "@t3tools/client-runtime/state/secret-relay";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, SecretRelayKind } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
@@ -17,11 +18,17 @@ const secretRelay = createSecretRelayAtoms(connectionAtomRuntime);
 interface SecretRelayTargets {
   readonly primaryEnvironmentId: EnvironmentId | null;
   readonly environmentIds: ReadonlyArray<EnvironmentId>;
+  readonly kinds: ReadonlyArray<SecretRelayKind>;
 }
 
 const secretRelayTargetsAtom = Atom.make((get): SecretRelayTargets => {
   const primaryEnvironmentId = get(primaryEnvironmentIdAtom);
   const presentations = get(environmentPresentations.presentationsAtom);
+  const kinds = secretRelayKinds(
+    primaryEnvironmentId === null
+      ? null
+      : (presentations.get(primaryEnvironmentId)?.serverConfig ?? null),
+  );
   const environmentIds = secretRelayEnvironmentIds({
     primaryEnvironmentId,
     environments: [...presentations].map(([environmentId, presentation]) => ({
@@ -39,10 +46,11 @@ const secretRelayTargetsAtom = Atom.make((get): SecretRelayTargets => {
   const previous = Option.getOrNull(get.self<SecretRelayTargets>());
   return previous !== null &&
     previous.primaryEnvironmentId === primaryEnvironmentId &&
+    previous.kinds === kinds &&
     previous.environmentIds.length === environmentIds.length &&
     environmentIds.every((id, index) => id === previous.environmentIds[index])
     ? previous
-    : { primaryEnvironmentId, environmentIds };
+    : { primaryEnvironmentId, environmentIds, kinds };
 }).pipe(Atom.withLabel("secret-relay-targets"));
 
 /**
@@ -52,12 +60,15 @@ const secretRelayTargetsAtom = Atom.make((get): SecretRelayTargets => {
  */
 export function startSecretRelay(): () => void {
   const mounted = new Map<string, () => void>();
-  const sync = ({ primaryEnvironmentId, environmentIds }: SecretRelayTargets) => {
+  const sync = ({ primaryEnvironmentId, environmentIds, kinds }: SecretRelayTargets) => {
     const wanted = new Map<string, Atom.Atom<unknown>>();
     if (primaryEnvironmentId !== null) {
-      const relays = secretRelay.relay(primaryEnvironmentId);
+      const relays = secretRelay.relay(primaryEnvironmentId, kinds);
       for (const environmentId of environmentIds) {
-        wanted.set(`${primaryEnvironmentId}\n${environmentId}`, relays(environmentId));
+        wanted.set(
+          `${primaryEnvironmentId}\n${environmentId}\n${kinds.join(",")}`,
+          relays(environmentId),
+        );
       }
     }
     for (const [key, release] of mounted) {

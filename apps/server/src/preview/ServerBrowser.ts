@@ -527,6 +527,8 @@ interface ServerTab {
   /** The reported title a watch in the main document's isolated world waits to change from. */
   titleWatch: { readonly contextId: number; readonly title: string } | null;
   lastReport: PreviewReportStatusInput | null;
+  loginSourceUrl: string | undefined;
+  loginSelection: ServerBrowserLoginFill.LoginSelection | undefined;
 
   abortedNavigation: {
     readonly url: string;
@@ -1394,6 +1396,8 @@ const make = Effect.gen(function* () {
       stoppedGeneration: null,
       titleWatch: null,
       lastReport: null,
+      loginSourceUrl: "url" in snapshot.navStatus ? snapshot.navStatus.url : undefined,
+      loginSelection: undefined,
       abortedNavigation: null,
       captureLock: Promise.resolve(),
       capturing: 0,
@@ -2406,6 +2410,8 @@ const make = Effect.gen(function* () {
     timeout: number,
   ) => {
     tab.pendingInitialRequestUrl = null;
+    tab.loginSourceUrl = url;
+    tab.loginSelection = undefined;
     const startedAt = performance.now();
     const remaining = () => Math.max(1, timeout - (performance.now() - startedAt));
     await leaveBusyPage(tab, tab.cdp, timeout / 2);
@@ -3669,12 +3675,16 @@ const make = Effect.gen(function* () {
         if (typeof message.url === "string") {
           const url = normalizePreviewUrl(message.url);
           tab.pendingInitialRequestUrl = null;
+          tab.loginSourceUrl = url;
+          tab.loginSelection = undefined;
           await leaveBusyPage(tab, session);
           tab.control.trackUntilHandoff(tab.page.goto(url, VIEWER_NAVIGATION_OPTIONS));
         }
         return;
       case "history":
         tab.pendingInitialRequestUrl = null;
+        tab.loginSourceUrl = undefined;
+        tab.loginSelection = undefined;
         await leaveBusyPage(tab, session);
         tab.control.trackUntilHandoff(
           num(message.delta) < 0
@@ -3692,6 +3702,8 @@ const make = Effect.gen(function* () {
       }
       case "reload":
         tab.pendingInitialRequestUrl = null;
+        tab.loginSourceUrl = tab.crash ? (tab.crashedUrl ?? tab.crash.url) : tab.page.url();
+        tab.loginSelection = undefined;
         if (tab.crash) {
           tab.control.trackUntilHandoff(
             tab.page.goto(tab.crashedUrl ?? tab.crash.url, VIEWER_NAVIGATION_OPTIONS),

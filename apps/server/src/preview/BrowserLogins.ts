@@ -139,12 +139,13 @@ export class BrowserLogins extends Context.Service<
       BrowserLoginError
     >;
     /**
-     * Saved logins whose websites cover `pageUrl`, from the chosen providers of that reach that
-     * could list. With nothing chosen, unattended reach finds none and the others fail.
+     * Saved logins covering `pageUrl` or the discovery hint `siteUrl`, from the chosen providers
+     * of that reach that could list. Discovery alone never authorizes a fill.
      */
     readonly candidates: (
       pageUrl: string,
       reach: BrowserLoginReach,
+      siteUrl?: string,
     ) => Effect.Effect<
       { readonly revision: string; readonly logins: ReadonlyArray<BrowserLoginCandidate> },
       BrowserLoginError
@@ -299,6 +300,18 @@ export const loginCoversPage = (urls: ReadonlyArray<string>, pageUrl: string): b
     return hostCovers(login.hostname.toLowerCase(), page.hostname.toLowerCase());
   });
 };
+
+// Discovery may include the website that led to an auth host; it grants no fill permission.
+const loginDiscoveredAt = (urls: ReadonlyArray<string>, siteUrl: string): boolean =>
+  loginCoversPage(
+    urls.flatMap((url) => {
+      const saved = parseLoginUrl(url);
+      if (saved === undefined) return [];
+      saved.hostname = saved.hostname.replace(/^www\./i, "");
+      return [saved.href];
+    }),
+    siteUrl,
+  );
 
 interface Source {
   readonly id: SecretProviderId;
@@ -585,7 +598,7 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
   });
 
   const candidates: BrowserLogins["Service"]["candidates"] = Effect.fn("BrowserLogins.candidates")(
-    function* (pageUrl, reach) {
+    function* (pageUrl, reach, siteUrl) {
       const { revision, sources } = yield* reachable(reach);
       const listed = yield* listAll(
         loginLists,
@@ -595,7 +608,11 @@ export const make = Effect.fn("BrowserLogins.make")(function* (
         revision,
         logins: sources.flatMap((source, index) =>
           (listed[index] ?? [])
-            .filter((login) => loginCoversPage(login.urls, pageUrl))
+            .filter(
+              (login) =>
+                loginCoversPage(login.urls, pageUrl) ||
+                (siteUrl !== undefined && loginDiscoveredAt(login.urls, siteUrl)),
+            )
             .map((login) => candidate(source, login)),
         ),
       };

@@ -6,6 +6,7 @@ import {
   applyServerProviderDeltas,
   OtlpEndpointCheckInput,
   resolveEnvironmentMachineKind,
+  ServerConfig,
   ServerConfigProviderStatusDeltasPayload,
   ServerObservability,
   ServerProvider,
@@ -78,6 +79,44 @@ describe("provider status deltas", () => {
 });
 
 describe("server config forward compatibility", () => {
+  it("advertises login choice only through an optional capability", () => {
+    const config = {
+      environment: {
+        environmentId: "environment-a",
+        label: "This Mac",
+        platform: { os: "darwin", arch: "arm64" },
+        serverVersion: "1.0.0",
+        capabilities: {},
+      },
+      auth: {
+        policy: "loopback-browser",
+        bootstrapMethods: [],
+        sessionMethods: [],
+        sessionCookieName: "test",
+      },
+      cwd: "/tmp/workspace",
+      keybindingsConfigPath: "/tmp/keybindings.json",
+      keybindings: [],
+      issues: [],
+      providers: [],
+      availableEditors: [],
+      observability: {
+        logsDirectoryPath: "/tmp/logs",
+        localTracingEnabled: false,
+        otlpTracesEnabled: false,
+        otlpMetricsEnabled: false,
+        otlpLogsEnabled: false,
+      },
+      settings: {},
+    };
+    const decode = Schema.decodeUnknownSync(ServerConfig);
+    expect(decode({ ...config, secretRelayLoginChoice: true })).toHaveProperty(
+      "secretRelayLoginChoice",
+      true,
+    );
+    expect(decode(config)).not.toHaveProperty("secretRelayLoginChoice");
+  });
+
   it("drops providers this build cannot decode instead of failing the whole array", () => {
     const decodedBase = decodeServerProvider(baseProviderSnapshot);
 
