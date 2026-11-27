@@ -413,6 +413,7 @@ import {
   ProviderConsumeResetCreditInput,
   ProviderConsumeResetCreditResult,
 } from "./providerUsageLimits.ts";
+import { ThreadUsageDetail, ThreadUsageInput, ThreadUsageList } from "./threadUsage.ts";
 import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
 import {
   StorageCleanupReport,
@@ -642,6 +643,8 @@ export const WS_METHODS = {
   serverReportClientActivity: "server.reportClientActivity",
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
+  serverGetThreadUsage: "server.getThreadUsage",
+  serverListThreadUsage: "server.listThreadUsage",
 
   workflowsSubscribe: "workflows.subscribe",
   workflowsCounts: "workflows.counts",
@@ -1201,6 +1204,20 @@ const WsServerRefreshUsageRatesRpc = Rpc.make(WS_METHODS.serverRefreshUsageRates
   payload: Schema.Struct({}),
   success: UsagePricing,
   error: EnvironmentAuthorizationError,
+});
+
+/** Tokens and cost per run of one thread, priced at the current rates. */
+const WsServerGetThreadUsageRpc = Rpc.make(WS_METHODS.serverGetThreadUsage, {
+  payload: ThreadUsageInput,
+  success: ThreadUsageDetail,
+  error: EnvironmentAuthorizationError,
+});
+
+/** Tokens and cost per thread for the window a usage summary would take. */
+const WsServerListThreadUsageRpc = Rpc.make(WS_METHODS.serverListThreadUsage, {
+  payload: UsageSummaryInput,
+  success: ThreadUsageList,
+  error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
 });
 
 const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess, {
@@ -2578,6 +2595,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerPrepareTriageRpc,
   WsServerGetUsageSummaryRpc,
   WsServerRefreshUsageRatesRpc,
+  WsServerGetThreadUsageRpc,
+  WsServerListThreadUsageRpc,
   WsServerSignalProcessRpc,
   WsWorkflowsSubscribeRpc,
   WsWorkflowsCountsRpc,

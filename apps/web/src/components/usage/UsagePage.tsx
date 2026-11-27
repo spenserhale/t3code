@@ -12,7 +12,7 @@ import {
 } from "@t3tools/contracts";
 import { CircleAlertIcon, ChevronDownIcon, InfoIcon, SlidersHorizontalIcon } from "lucide-react";
 import { T, useGT, useLocale, useMessages, Var } from "gt-react";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Cause from "effect/Cause";
@@ -83,6 +83,7 @@ import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart } from "./UsageProviderChart";
 import { SpeedPremium, UsageModelDialog } from "./UsageModelDialog";
 import { UsageShareBar } from "./UsageShareBar";
+import { useUsageThreadBreakdown } from "./UsageThreadTable";
 import {
   costTypeSegments,
   modelShare,
@@ -220,6 +221,11 @@ export function UsagePage() {
     isPartial,
     refresh,
   } = useUsage(window, selectedEnvironmentIds, hiddenProviders);
+  const threadBreakdown = useUsageThreadBreakdown({
+    window,
+    selectedEnvironmentIds,
+    metric: metric === "tokens" ? "tokens" : "cost",
+  });
   const merged = shown?.merged ?? answeredUsage;
   const shownWindow = shown?.window ?? window;
   const shownHourly = shownWindow.resolution === "hour";
@@ -330,6 +336,7 @@ export function UsagePage() {
     refreshingRef.current = true;
     setIsRefreshing(true);
     void refresh(nextWindow).finally(() => {
+      threadBreakdown.refreshed();
       refreshingRef.current = false;
       setIsRefreshing(false);
     });
@@ -574,6 +581,7 @@ export function UsagePage() {
                 refreshingUsage={refreshingUsage}
                 showChatGptSharing={showChatGptSharing}
                 onSelectModel={selectUsageModel}
+                threadTable={threadBreakdown.table}
               />
             )}
           </WorkspacePageContainer>
@@ -622,6 +630,7 @@ function UsageOverview({
   refreshingUsage,
   showChatGptSharing,
   onSelectModel,
+  threadTable,
 }: {
   readonly merged: MergedUsage;
   readonly shownWindow: UsageSummaryInput;
@@ -635,11 +644,14 @@ function UsageOverview({
   readonly refreshingUsage: boolean;
   readonly showChatGptSharing: boolean;
   readonly onSelectModel: (key: string) => void;
+  /** Present when the Thread breakdown is available; the table is rendered by the caller. */
+  readonly threadTable?: ReactNode;
 }) {
   const gt = useGT();
   const locale = useLocale();
   const m = useMessages();
-  const [breakdown, setBreakdown] = useState<"model" | "time">("model");
+  const [selectedBreakdown, setBreakdown] = useState<"model" | "thread" | "time">("model");
+  const breakdown = selectedBreakdown === "thread" && !threadTable ? "model" : selectedBreakdown;
   const shownHourly = shownWindow.resolution === "hour";
   const loading = usageLoading(showingKept, selectedEnvironments, refreshingUsage, hiddenProviders);
   // Copy the primitive; JSX reads of loading.partial would merge all derivations into one compiler cache
@@ -908,12 +920,13 @@ function UsageOverview({
             value={[breakdown]}
             onValueChange={(next) => {
               const value = next[0];
-              if (value === "model" || value === "time") setBreakdown(value);
+              if (value === "model" || value === "thread" || value === "time") setBreakdown(value);
             }}
           >
             {(
               [
                 { value: "model", label: gt("Model") },
+                ...(threadTable ? [{ value: "thread", label: gt("Thread") }] : []),
                 { value: "time", label: shownHourly ? gt("Hour") : gt("Day") },
               ] as const
             ).map((option) => (
@@ -924,7 +937,9 @@ function UsageOverview({
           </ToggleGroup>
         </div>
 
-        {breakdown === "model" ? (
+        {breakdown === "thread" ? (
+          threadTable
+        ) : breakdown === "model" ? (
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border text-right text-xs text-muted-foreground">
