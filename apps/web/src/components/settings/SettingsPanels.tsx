@@ -23,6 +23,7 @@ import {
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   type ResponseStreamingMode,
   type QuitConfirmationMode,
+  SidebarInboxThreadOrder,
   SidebarProjectSortOrder,
   ScreenReaderAnnouncements,
   ToolCallVisibility,
@@ -151,6 +152,14 @@ const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, string>
   manual: msg("Manual"),
 };
 const isSidebarProjectSortOrder = Schema.is(SidebarProjectSortOrder);
+
+const SIDEBAR_INBOX_THREAD_ORDER_LABELS: Record<SidebarInboxThreadOrder, string> = {
+  default: "Default",
+  last_user_message: "Last user message",
+  last_status_change: "Last status change",
+  status: "By status",
+};
+const isSidebarInboxThreadOrder = Schema.is(SidebarInboxThreadOrder);
 
 const TIMESTAMP_FORMAT_LABELS = {
   locale: msg("System default"),
@@ -545,6 +554,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.sidebarProjectSortOrder !== DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder
       ? [gt("Project order")]
       : []),
+    ...(settings.sidebarInboxThreadOrder !== DEFAULT_UNIFIED_SETTINGS.sidebarInboxThreadOrder
+      ? ["Thread order"]
+      : []),
     ...(settings.sidebarWorkingShelfEnabled !== DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled
       ? [gt("Working section")]
       : []),
@@ -743,6 +755,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       panelAnimationDurationMs: DEFAULT_UNIFIED_SETTINGS.panelAnimationDurationMs,
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
       sidebarProjectSortOrder: DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder,
+      sidebarInboxThreadOrder: DEFAULT_UNIFIED_SETTINGS.sidebarInboxThreadOrder,
       sidebarWorkingShelfEnabled: DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled,
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       sidebarAutoSettleKeepPullRequests: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleKeepPullRequests,
@@ -953,6 +966,47 @@ export function GeneralSettingsPanel() {
                 {SidebarProjectSortOrder.literals.map((sortOrder) => (
                   <SelectItem hideIndicator key={sortOrder} value={sortOrder}>
                     {m(SIDEBAR_PROJECT_SORT_ORDER_LABELS[sortOrder])}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        <SettingsRow
+          {...setting("thread-order")}
+          description="Order of threads in the sidebar inbox. Any order but Default turns off dragging to reorder the inbox. The boring sidebar in Labs always orders by last user message."
+          resetAction={
+            settings.sidebarInboxThreadOrder !==
+            DEFAULT_UNIFIED_SETTINGS.sidebarInboxThreadOrder ? (
+              <SettingResetButton
+                ariaLabel="Reset thread order to default"
+                onClick={() =>
+                  updateSettings({
+                    sidebarInboxThreadOrder: DEFAULT_UNIFIED_SETTINGS.sidebarInboxThreadOrder,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.sidebarInboxThreadOrder}
+              onValueChange={(value) => {
+                if (isSidebarInboxThreadOrder(value)) {
+                  updateSettings({ sidebarInboxThreadOrder: value });
+                }
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full sm:w-44" aria-label="Thread order">
+                <SelectValue>
+                  {SIDEBAR_INBOX_THREAD_ORDER_LABELS[settings.sidebarInboxThreadOrder]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {SidebarInboxThreadOrder.literals.map((order) => (
+                  <SelectItem hideIndicator key={order} value={order}>
+                    {SIDEBAR_INBOX_THREAD_ORDER_LABELS[order]}
                   </SelectItem>
                 ))}
               </SelectPopup>
