@@ -1,5 +1,7 @@
 import type {
   DesktopBridge,
+  DesktopSecretApproval,
+  PendingDesktopSecretApproval,
   DesktopPreviewAnnotationVoiceEvent,
   DesktopPreviewFindResultEvent,
   DesktopPreviewOpenLinkEvent,
@@ -103,9 +105,45 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
   return result as Awaited<ReturnType<DesktopBridge["ensureSshEnvironment"]>>;
 }
 
+const approvals = new Map<number, PendingDesktopSecretApproval>();
+const approvalListeners = new Set<(pending: readonly PendingDesktopSecretApproval[]) => void>();
+let nextApprovalId = 0;
+const publishApprovals = () => {
+  const pending = Array.from(approvals.values());
+  for (const listener of approvalListeners) listener(pending);
+};
+ipcRenderer.on(IpcChannels.SECRET_APPROVAL_CHANNEL, (event, card: DesktopSecretApproval) => {
+  const port = event.ports[0];
+  if (!port) return;
+  const id = ++nextApprovalId;
+  const remove = () => {
+    if (approvals.delete(id)) publishApprovals();
+  };
+  port.addEventListener("message", remove, { once: true });
+  port.addEventListener("close", remove, { once: true });
+  port.start();
+  approvals.set(id, {
+    ...card,
+    id,
+    answer: (decision) => {
+      if (!approvals.has(id)) return;
+      port.postMessage(decision);
+      remove();
+    },
+  });
+  publishApprovals();
+});
+
 contextBridge.exposeInMainWorld("desktopBridge", {
   getDatabaseMigrationProgress: () =>
     ipcRenderer.invoke(IpcChannels.GET_DATABASE_MIGRATION_PROGRESS_CHANNEL),
+  onSecretApprovals: (listener) => {
+    approvalListeners.add(listener);
+    listener(Array.from(approvals.values()));
+    return () => {
+      approvalListeners.delete(listener);
+    };
+  },
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);
     if (typeof result !== "object" || result === null) {

@@ -1115,7 +1115,26 @@ export const DesktopAppleSpeechTranscribeInputSchema = Schema.Struct({
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
+export interface DesktopSecretApproval {
+  readonly threadId: string;
+  readonly threadLabel: string;
+  readonly message: string;
+  readonly detail: readonly string[];
+  readonly command?: string;
+  readonly threadNote: string;
+}
+
+export type DesktopSecretApprovalAnswer = "once" | "thread" | false;
+
+export interface PendingDesktopSecretApproval extends DesktopSecretApproval {
+  readonly id: number;
+  readonly answer: (decision: DesktopSecretApprovalAnswer) => void;
+}
+
 export interface DesktopBridge {
+  onSecretApprovals?: (
+    listener: (pending: readonly PendingDesktopSecretApproval[]) => void,
+  ) => () => void;
   getAppBranding: () => DesktopAppBranding | null;
   getDatabaseMigrationProgress?: () => Promise<DatabaseMigrationProgress | null>;
   /** `null` until the desktop host has read the login shell's environment; ask again later. */
