@@ -34,6 +34,10 @@ export function SettingsAboutRouteScreen() {
         contentContainerClassName="gap-6 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
+        <Text className="text-sm text-foreground-muted">
+          {/* oxlint-disable-next-line t3code/no-untranslated-copy -- product tagline */}
+          {"Software Engineering · Spenser’s Edition"}
+        </Text>
         <AppSettingsSection />
       </ScrollView>
     </SettingsScreen>
