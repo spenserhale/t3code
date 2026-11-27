@@ -160,6 +160,45 @@ describe("resolveIssueLinkTarget", () => {
     ]).toEqual(["p2", "p1"]);
   });
 
+  it("reads a Jira link only on the connected site, through the project bound to its key", () => {
+    const jira = IssueTrackerKind.make("jira");
+    const trackers = {
+      trackers: [
+        {
+          tracker: jira,
+          displayName: "Jira",
+          host: "atlassian.net",
+          scopeNoun: "project",
+          credential: { label: "Personal API token", helpUrl: null },
+          connected: true,
+          account: "sam@example.com on acme.atlassian.net",
+          detail: null,
+          workspace: "acme.atlassian.net",
+          scopes: [],
+        },
+      ],
+      bindings: { [ProjectId.make("p2")]: { tracker: jira, scope: "PROJ" } },
+    };
+    const resolve = (url: string) => resolveIssueLinkTarget({ url, projects, trackers });
+    for (const url of [
+      "https://acme.atlassian.net/browse/PROJ-7",
+      "https://acme.atlassian.net/jira/software/projects/PROJ/boards/1?selectedIssue=PROJ-7",
+    ]) {
+      expect(resolve(url)?.ref, url).toEqual({
+        projectId: "p2",
+        tracker: "jira",
+        host: "atlassian.net",
+        scope: "PROJ",
+        key: "PROJ-7",
+      });
+    }
+    // Project keys repeat across sites; another site's link stays an ordinary one.
+    expect(resolve("https://other.atlassian.net/browse/PROJ-7")).toBeNull();
+    expect(mayContainStandaloneIssueLink("see https://acme.atlassian.net/browse/PROJ-7")).toBe(
+      true,
+    );
+  });
+
   it.each([
     "https://github.com.evil.example/acme/web/issues/7",
     "https://github.com/acme/web/pull/7",
