@@ -28,7 +28,7 @@ import * as Cause from "effect/Cause";
 import { Atom } from "effect/reactivity";
 import { msg } from "gt-react";
 
-import { m } from "../../i18n/messages";
+import { getActiveLocale, m, type MessageResolver } from "../../i18n/messages";
 
 import type { ResolvedSettingsScope } from "./settingsScope";
 
@@ -699,5 +699,91 @@ async function persistScopedSettingsPlan(
     failedEnvironments,
     savedEnvironments,
     savedEnvironmentCount: savedEnvironments.length,
+  };
+}
+
+function listLabels(labels: readonly string[], locale: string) {
+  return new Intl.ListFormat(locale, { type: "conjunction" }).format(labels);
+}
+
+/** Writes go only to connected environments, so these are the ones a save skips. */
+export function offlineScopedEnvironments<
+  T extends Pick<ScopedSettingsEnvironment, "connection" | "serverConfig">,
+>(environments: readonly T[]): T[] {
+  return environments.filter((environment) => !isConnectedWithConfig(environment));
+}
+
+export function describeOfflineScope(
+  labels: readonly string[],
+  resolve: MessageResolver = m,
+  locale: string = getActiveLocale(),
+): string | null {
+  if (labels.length === 0) return null;
+  return resolve(
+    msg(
+      "{count, plural, =1 {{environments} is offline. Changes here won't reach it.} other {{environments} are offline. Changes here won't reach them.}}",
+      { count: labels.length, environments: listLabels(labels, locale) },
+    ),
+  );
+}
+
+export function describeScopedSave({
+  saved,
+  failed,
+  skipped,
+}: {
+  readonly saved: readonly { readonly label: string }[];
+  readonly failed: readonly { readonly label: string; readonly message: string }[];
+  readonly skipped: readonly { readonly label: string }[];
+}): { type: "warning" | "error"; title: string; description: string } | null {
+  if (failed.length === 0 && skipped.length === 0) return null;
+  const skippedNames = listLabels(
+    skipped.map(({ label }) => label),
+    getActiveLocale(),
+  );
+  const skippedLines =
+    skipped.length === 0
+      ? []
+      : [
+          m(
+            msg(
+              "{count, plural, =1 {{environments} is offline and was not changed.} other {{environments} are offline and were not changed.}}",
+              { count: skipped.length, environments: skippedNames },
+            ),
+          ),
+        ];
+  const savedLines =
+    saved.length === 0
+      ? []
+      : [
+          m(
+            msg("Saved on {environments}.", {
+              environments: saved.map(({ label }) => label).join(", "),
+            }),
+          ),
+        ];
+  if (failed.length === 0) {
+    return {
+      type: "warning",
+      title: m(
+        msg(
+          "{count, plural, =1 {Not saved on {environments}} other {Not saved on {count} environments}}",
+          { count: skipped.length, environments: skippedNames },
+        ),
+      ),
+      description: [...skippedLines, ...savedLines].join("\n"),
+    };
+  }
+  return {
+    type: "error",
+    title:
+      saved.length > 0 ? m(msg("Setting saved on some environments")) : m(msg("Setting not saved")),
+    description: [
+      ...failed.map(({ label, message }) =>
+        m(msg("Could not save on {label}: {message}", { label, message })),
+      ),
+      ...skippedLines,
+      ...savedLines,
+    ].join("\n"),
   };
 }

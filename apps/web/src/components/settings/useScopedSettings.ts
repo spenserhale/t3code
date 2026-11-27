@@ -26,6 +26,8 @@ import { toastManager } from "../ui/toast";
 import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeContext";
 import {
   createScopedSettingsWriter,
+  describeScopedSave,
+  offlineScopedEnvironments,
   pendingScopedWritesAtom,
   planProjectOverridesClear,
   planScopedSettingsClear,
@@ -113,30 +115,18 @@ function useRunScopedPlan() {
         return result;
       },
       persistClientSettingsPatch,
-    ).then(({ failedEnvironments, savedEnvironments, savedEnvironmentCount }) => {
-      if (failedEnvironments.length === 0) return;
-      onFailed?.();
-      toastManager.add({
-        type: "error",
-        title:
-          savedEnvironmentCount > 0
-            ? m(msg("Setting saved on some environments"))
-            : m(msg("Setting not saved")),
-        description: [
-          ...failedEnvironments.map(({ label, message }) =>
-            m(msg("Could not save on {label}: {message}", { label, message })),
-          ),
-          ...(savedEnvironmentCount > 0
-            ? [
-                m(
-                  msg("Saved on {environments}.", {
-                    environments: savedEnvironments.map(({ label }) => label).join(", "),
-                  }),
-                ),
-              ]
-            : []),
-        ].join("\n"),
+    ).then(({ failedEnvironments, savedEnvironments }) => {
+      if (failedEnvironments.length > 0) onFailed?.();
+      const outcome = describeScopedSave({
+        saved: savedEnvironments,
+        failed: failedEnvironments,
+        skipped: plan.serverWrites.length > 0 ? offlineScopedEnvironments(environments) : [],
       });
+      // One warning toast per skip, updated in place, so edits made while offline don't stack.
+      if (outcome)
+        toastManager.add(
+          outcome.type === "warning" ? { ...outcome, id: "scoped-save-skipped" } : outcome,
+        );
     });
   };
 }
