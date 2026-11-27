@@ -745,7 +745,8 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
             Effect.gen(function* () {
               const snapshot = encodedResult as SnapshotMetadata & {
                 readonly url: string;
-                readonly screenshot: {
+                // Left out while images are off for the page.
+                readonly screenshot?: {
                   readonly mimeType?: "image/png";
                   readonly data?: string;
                   readonly width: number;
@@ -756,14 +757,19 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
               const { screenshot, fullScreenshot, ...page } = snapshot;
               const includeImage = payload?.includeImage === true;
               const needsPixels = payload?.save === true || includeImage;
-              if (needsPixels && (screenshot.mimeType !== "image/png" || !screenshot.data)) {
+              // A page with images off answers with its text alone.
+              if (
+                needsPixels &&
+                screenshot !== undefined &&
+                (screenshot.mimeType !== "image/png" || !screenshot.data)
+              ) {
                 return yield* new OrchestratorMcpFailure({
                   code: "invalid_request",
                   message: "Preview snapshot did not contain requested PNG pixels.",
                 });
               }
               const png =
-                needsPixels && screenshot.data
+                needsPixels && screenshot?.data
                   ? new Uint8Array(Buffer.from(screenshot.data, "base64"))
                   : undefined;
               const screenshotPath =
@@ -789,11 +795,15 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
               }
               const metadata = {
                 ...page,
-                screenshot: {
-                  mimeType: "image/png" as const,
-                  width: screenshot.width,
-                  height: screenshot.height,
-                },
+                ...(screenshot === undefined
+                  ? {}
+                  : {
+                      screenshot: {
+                        mimeType: "image/png" as const,
+                        width: screenshot.width,
+                        height: screenshot.height,
+                      },
+                    }),
                 ...(screenshotPath === undefined ? {} : { screenshotPath }),
               };
               const bounded = boundSnapshotMetadata(metadata);

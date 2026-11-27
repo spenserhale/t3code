@@ -8,16 +8,25 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { it } from "@effect/vitest";
 import {
+  type BrowserLoginApproval,
   type BrowserRecordingFrameRate,
+  DEFAULT_BROWSER_PROFILE_ID,
   EnvironmentId,
   PreviewTabId,
   ProviderInstanceId,
+  SecretProviderId,
+  SecretProviderKind,
   ThreadId,
+  type PreviewAutomationFillLoginResult,
   type PreviewAutomationLoadError,
+  type PreviewAutomationOperation,
   type PreviewAutomationResizeResult,
   type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
+  type PreviewNavStatus,
 } from "@t3tools/contracts";
+import { defineSecretProviderDriver } from "@t3tools/secret-provider-core/server/driver";
+import { defineSecretProvider } from "@t3tools/secret-provider-core/shared/definition";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -30,14 +39,21 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { McpSchema, McpServer } from "effect/ai";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { beforeEach, expect, vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as McpHttpServer from "../mcp/McpHttpServer.ts";
+import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import * as McpToolAccessTestkit from "../mcp/McpToolAccess.testkit.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
+import * as Settings from "../serverSettings.ts";
+import * as BrowserLogins from "./BrowserLogins.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
@@ -54,6 +70,7 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     async contextFor(profileId: string, isolationKey?: string) {
       if (realContextOverride) return realContextOverride;
       contextRequests.push({ profileId, isolated: isolationKey !== undefined });
+      if (realContext) return realContext;
       if (contextFailure) throw contextFailure;
       await contextGate?.promise;
       const context = makeContext(this.onClose);
@@ -67,7 +84,10 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
       return context as unknown as BrowserContext;
     }
     async scratchPage() {
-      return encoderPageOverride ?? (makeEncoderPage() as unknown as Page);
+      if (encoderPageOverride) return encoderPageOverride;
+      // A real tab's recording is encoded by a real page, so stopping it yields a video.
+      if (realContext) return (await realContext.browser()!.newContext()).newPage();
+      return makeEncoderPage() as unknown as Page;
     }
     async connectDesktopPage(endpoint: string) {
       const context = makeContext(undefined, desktopPageUrl);
@@ -406,6 +426,8 @@ let desktopRendersNext = false;
 let desktopPageUrl = "about:blank";
 let desktopConnectionGate: PromiseWithResolvers<void> | null = null;
 let desktopConnectionStarted: PromiseWithResolvers<void> | null = null;
+/** A real headless Chromium context handed out instead of the fakes, when set. */
+let realContext: BrowserContext | null = null;
 /** Replaces the answer to the desktop page's size reads. */
 let desktopSizeAnswer: (() => Promise<Record<string, unknown>>) | null = null;
 const desktopDetaches = new NodeEvents.EventEmitter();
@@ -527,6 +549,8 @@ const dependencies = Layer.mergeAll(
             return Effect.sync(() => desktopDetaches.off("shown", onShown));
           }).pipe(Effect.timeoutOrElse({ duration: timeout, orElse: () => Effect.succeed(false) })),
     loadFailure: (key) => desktopLoadFailures.get(key.tabId),
+    approveLogin: () => Effect.succeed(false),
+    loginFilled: () => Effect.void,
     endpoint: (key) =>
       Effect.acquireRelease(Effect.succeed(`ws://desktop/${key.tabId}`), () =>
         Effect.sync(() => {
@@ -616,6 +640,7 @@ beforeEach(() => {
   desktopPageUrl = "about:blank";
   desktopConnectionGate = null;
   desktopConnectionStarted = null;
+  realContext = null;
   desktopSizeAnswer = null;
   desktopDetachReady = Promise.withResolvers<void>();
   desktopReleased = Promise.withResolvers<void>();
@@ -4719,3 +4744,1190 @@ it.live("a page's title change without navigation reaches its session", () =>
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.scoped),
 );
+
+const loginKind = SecretProviderKind.make("fake_vault");
+const loginProvider = SecretProviderId.make("work");
+const LOGIN_PAGE = `<title>Sign in</title><input id="user" autocomplete="username"><input id="password" type="password" oninput="document.title = this.value">`;
+// A framework draws the code field again, without the attribute the fill set on it.
+const CODE_FIELD = `<input id="otp" autocomplete="one-time-code" oninput="
+    const fresh = document.createElement('input');
+    fresh.value = this.value;
+    this.replaceWith(fresh);
+  ">`;
+/** Pages other than the login page, by the first part of their path. */
+const LOGIN_SITE: Partial<Record<string, string>> = {
+  "/first": "<title>password-1</title>",
+  // Copies the password into its log and text near their length limits, then clears the field.
+  "/echo": `<input id="user" autocomplete="username"><input id="password" type="password" oninput="
+    const value = this.value;
+    console.log('x'.repeat(1995) + value);
+    setTimeout(() => { this.value = ''; document.body.append('x'.repeat(19995) + value); });
+  ">`,
+  "/long": `<title>${"x".repeat(508)}password-value</title>`,
+  "/otp": `${CODE_FIELD}<a href="/next">next</a>`,
+  // The same, in an app that gives itself a new address each time it loads.
+  "/moves": `<script>history.replaceState({}, "", "/moves/" + Math.random())</script>${CODE_FIELD}`,
+  // The same, in an app that moves on at once when Back brings it up.
+  "/hops": `<script>
+    if (performance.getEntriesByType("navigation")[0].type === "back_forward") location.replace("/other");
+  </script>${CODE_FIELD}`,
+  "/next": "<p>next</p>",
+  "/other": "<p>other</p>",
+  // Opens the login page in a window of its own, which keeps this page as its opener.
+  "/opens": `<a id="open" href="/login" target="signin">open</a>`,
+  // The login page, with a link that opens another page of the site in a window of its own.
+  "/watched": `${LOGIN_PAGE}<a id="open" href="/next" target="side">open</a>`,
+  // The login page, whose own script can open a blank window. That window is on this site too.
+  "/blank": `${LOGIN_PAGE}<button id="blank" onclick="window.open('about:blank')">blank</button>`,
+  // Logs the password as JSON and names a button with it, then clears the field.
+  "/quote": `<input id="user" autocomplete="username"><input id="password" type="password" oninput="
+    console.log(JSON.stringify({ password: this.value }));
+    document.getElementById('echo').setAttribute('aria-label', this.value);
+    setTimeout(() => { this.value = ''; document.body.append('cleared'); });
+  "><button id="echo">echo</button>`,
+};
+
+/** Real headless Chromium for the mocked contexts to hand out, serving a login page. */
+const realLoginBrowser = Effect.acquireRelease(
+  Effect.promise(async () => {
+    const browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext();
+    await context.route("https://good.test/**", (route) => {
+      const path = `/${new URL(route.request().url()).pathname.split("/")[1]}`;
+      // Never answered, so a window opened on it stays blank and the browser reports no page.
+      if (path === "/hang") return;
+      return route.fulfill({
+        contentType: "text/html",
+        // A policy that forbids pages to run text as script.
+        ...(path === "/strict"
+          ? {
+              headers: {
+                "content-security-policy": "script-src 'self'; require-trusted-types-for 'script'",
+              },
+            }
+          : {}),
+        body: LOGIN_SITE[path] ?? LOGIN_PAGE,
+      });
+    });
+    // Another site, which no login is saved for.
+    await context.route("https://other.test/**", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<p>another site</p>" }),
+    );
+    realContext = context;
+    return { browser, context };
+  }),
+  ({ browser }) => Effect.promise(() => browser.close()),
+);
+
+/** A server whose one password manager holds a login for https://good.test. */
+const loginServer = (
+  approval: BrowserLoginApproval,
+  desktopChannel: Layer.Layer<
+    DesktopChannel.DesktopBrowserChannel,
+    never,
+    ServerConfig.ServerConfig
+  >,
+  /** What the password manager holds for a field, on its nth read. */
+  secret: (field: string, read: number) => string = (field) => `${field}-value`,
+) => {
+  const reads: Array<string> = [];
+  const driver = defineSecretProviderDriver({
+    kind: loginKind,
+    definition: defineSecretProvider({
+      kind: loginKind,
+      label: "Fake Vault",
+      configSchema: Schema.Struct({}),
+      isReference: () => true,
+      referencePlaceholder: "",
+      invalidReferenceMessage: "",
+      supportsLogins: true,
+    }),
+    read: (_config, references) => Effect.succeed(references.map(() => undefined)),
+    logins: {
+      list: () =>
+        Effect.succeed([{ id: "g1", title: "Good", vaultId: "v1", urls: ["https://good.test"] }]),
+      read: (_config, login, fields) =>
+        Effect.sync(() => {
+          reads.push(login.id);
+          return Object.fromEntries(fields.map((field) => [field, secret(field, reads.length)]));
+        }),
+    },
+  });
+  const logins = Layer.effect(BrowserLogins.BrowserLogins, BrowserLogins.make([driver])).pipe(
+    Layer.provide(
+      Settings.layerTest({
+        secretProviders: { [loginProvider]: { kind: loginKind, label: "Work", config: {} } },
+        browserLogins: { secretProviderIds: [loginProvider], approval },
+      }),
+    ),
+  );
+  return {
+    reads,
+    layer: ServerBrowser.layer.pipe(
+      Layer.provideMerge(Layer.mergeAll(desktopChannel, logins)),
+      Layer.provideMerge(dependencies),
+    ),
+  };
+};
+
+type AutomationBroker = Broker.PreviewAutomationBroker["Service"];
+
+/** Runs operations on one of the thread's tabs. */
+const onTab =
+  (broker: AutomationBroker, tabId: PreviewTabId) =>
+  <A = void>(operation: PreviewAutomationOperation, input: object = {}) =>
+    broker.invoke<A>({ scope, tabId, operation, input });
+
+/** Opens an agent tab on the login page; with no desktop to draw it, it is headless. */
+const openLoginTab = Effect.gen(function* () {
+  const { broker, tabId } = yield* ready;
+  const invoke = onTab(broker, tabId);
+  yield* invoke("navigate", { url: "https://good.test/login" });
+  return { tabId, invoke };
+});
+
+/** Opens an agent tab in the default profile, whose browser stays open when the tab closes. */
+const openProfileTab = Effect.gen(function* () {
+  yield* ServerBrowser.ServerBrowser;
+  const broker = yield* Broker.PreviewAutomationBroker;
+  yield* Effect.yieldNow;
+  const opened = yield* broker.invoke<PreviewAutomationStatus>({
+    scope,
+    operation: "open",
+    input: { reuseExistingTab: false, show: false, profileId: DEFAULT_BROWSER_PROFILE_ID },
+  });
+  return onTab(broker, PreviewTabId.make(opened.tabId!));
+});
+
+/** Yields the tab the server makes of the next window a page opens. Run it before the window opens. */
+const nextPopupTab = Effect.gen(function* () {
+  const broker = yield* Broker.PreviewAutomationBroker;
+  const events = yield* (yield* Manager.PreviewManager).subscribeEvents;
+  return PubSub.take(events).pipe(
+    Effect.repeat({ until: (event) => event.type === "opened" }),
+    Effect.map((event) => onTab(broker, PreviewTabId.make(event.tabId))),
+  );
+});
+
+const passwordField = (context: BrowserContext) =>
+  Effect.promise(() =>
+    context
+      .pages()[0]!
+      .locator("#password")
+      .evaluate((element) => {
+        const field = element as unknown as {
+          readonly value: string;
+          readonly style: { getPropertyValue: (name: string) => string };
+        };
+        return {
+          value: field.value,
+          security: field.style.getPropertyValue("-webkit-text-security"),
+        };
+      }),
+  );
+
+it.live(
+  "a headless tab is filled without asking under Don't ask, behind the same page guards",
+  () => {
+    const server = loginServer("never", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
+          expect(filled).toMatchObject({ status: "filled", filled: ["username", "password"] });
+          // Nothing else about the login, such as its vault id, reaches the agent.
+          expect(filled.status === "filled" && filled.login).toEqual({
+            id: "work/g1",
+            title: "Good",
+            account: "Work",
+          });
+          expect(yield* passwordField(context)).toEqual({
+            value: "password-value",
+            security: "disc",
+          });
+          const scripted = yield* invoke("evaluate", { expression: "1" }).pipe(Effect.flip);
+          expect(scripted.message).toContain("preview_evaluate is off on this page");
+          const recorded = yield* invoke("recordingStart").pipe(Effect.flip);
+          expect(recorded.message).toContain("filled a login in this tab");
+          // The page copied the password into its title.
+          const status = yield* invoke<PreviewAutomationStatus>("status");
+          expect(status.title).toBe("[filled by password manager]");
+          // Its pixels could show the password revealed, so only text comes back.
+          const filledSnapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(filledSnapshot.screenshot).toBeUndefined();
+          expect(filledSnapshot.imagesOff).toContain("preview_navigate");
+          expect(filledSnapshot.title).toBe("[filled by password manager]");
+
+          yield* invoke("navigate", { url: "https://good.test/login" });
+          const freshSnapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(freshSnapshot.screenshot?.mimeType).toBe("image/png");
+          expect(freshSnapshot.imagesOff).toBeUndefined();
+          yield* invoke("recordingStart");
+          const recording = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(recording.message).toContain("Stop the recording before filling a login");
+          expect(server.reads).toEqual(["g1"]);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live("refuses a password or code too short or too broken to keep out of results", () => {
+  const server = loginServer("never", DesktopChannel.layer, (field, read) =>
+    field === "password" ? (["abc", "pass\nword"][read - 1] ?? "") : `${field}-value`,
+  );
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        for (const _attempt of [1, 2]) {
+          const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(refused.message).toContain("Ask the user to sign in in the tab");
+        }
+        expect(server.reads).toEqual(["g1", "g1"]);
+        expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+        // Nothing was filled, so script still runs here.
+        yield* invoke("evaluate", { expression: "1" });
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("scrubs every password filled since the server started, however many", () => {
+  const server = loginServer("never", DesktopChannel.layer, (field, read) => `${field}-${read}`);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        for (const _fill of Array.from({ length: 101 })) {
+          yield* invoke("fillLogin", { fields: ["password"] });
+        }
+        // A page shows the first of them again.
+        yield* invoke("navigate", { url: "https://good.test/first" });
+        const status = yield* invoke<PreviewAutomationStatus>("status");
+        expect(status.title).toBe("[filled by password manager]");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("scrubs a filled password from page text before cutting it to length", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { tabId, invoke } = yield* openLoginTab;
+        yield* invoke("navigate", { url: "https://good.test/echo" });
+        yield* invoke("fillLogin");
+        yield* invoke("waitFor", { text: "xxxx" });
+        // A cut through "password-value" would leave its start, which no exact match finds.
+        const snapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        expect(snapshot.visibleText).not.toContain("passw");
+        expect(snapshot.consoleEntries.map((entry) => entry.text).join("\n")).not.toContain(
+          "passw",
+        );
+        // The title and address the tab list shows, which no result scrubbing reaches.
+        const events = yield* (yield* Manager.PreviewManager).subscribeEvents;
+        yield* invoke("navigate", {
+          url: `https://good.test/long?pad=${"x".repeat(2017)}password-value`,
+        });
+        const shown: Array<PreviewNavStatus> = [];
+        const loaded = (status: PreviewNavStatus | undefined) =>
+          status?._tag === "Success" && status.url.startsWith("https://good.test/long");
+        while (!loaded(shown.at(-1))) {
+          const event = yield* PubSub.take(events);
+          if (event.type === "navigated" && event.tabId === tabId) {
+            shown.push(event.snapshot.navStatus);
+          }
+        }
+        expect(JSON.stringify(shown)).not.toContain("pass");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("scrubs a filled password in the escaped forms a log or snapshot writes it in", () => {
+  const server = loginServer("never", DesktopChannel.layer, (field) =>
+    field === "password" ? String.raw`pa"ss\w0rd  x` : `${field}-value`,
+  );
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* invoke("navigate", { url: "https://good.test/quote" });
+        yield* invoke("fillLogin");
+        yield* invoke("waitFor", { text: "cleared" });
+        const snapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        const logged = snapshot.consoleEntries.map((entry) => entry.text).join("\n");
+        expect(logged).toContain("[filled by password manager]");
+        expect(logged).not.toContain("w0rd");
+        expect(snapshot.accessibilityTree).toContain("[filled by password manager]");
+        expect(snapshot.accessibilityTree).not.toContain("w0rd");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+const READ_OPENER_PASSWORD = 'btoa(opener.document.getElementById("password").value)';
+
+it.live("a window the agent opened cannot read a login filled in its opener", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        const opened = yield* nextPopupTab;
+        // Script runs here, and the window it opens keeps this tab as its `opener`.
+        yield* invoke("evaluate", { expression: 'window.open("https://good.test/next"); 1' });
+        const popup = yield* opened;
+        yield* popup("waitFor", { text: "next" });
+        // A fresh document in the first tab, which no script ran in.
+        yield* invoke("navigate", { url: "https://good.test/login" });
+        const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+        expect(refused.message).toContain("has run on this site (https://good.test)");
+        expect(refused.message).toContain("in a new tab");
+        // Base64 would pass scrubbing, so the password must not be there to read.
+        expect(yield* popup("evaluate", { expression: READ_OPENER_PASSWORD })).toBe("");
+        expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+        expect(server.reads).toEqual([]);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a window the agent's script opened counts from the moment it opens, tab or not", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  // Run in the window, it watches the tab that opened it for a password and keeps it.
+  const watch = `setInterval(() => {
+    const seen = opener.document.getElementById("password")?.value;
+    if (seen) localStorage.setItem("seen", btoa(seen));
+  }, 1)`;
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* invoke("evaluate", {
+          expression: `window.open("https://good.test/hang").eval(${JSON.stringify(watch)}); 1`,
+        });
+        // A fresh document in the tab, which no script ran in.
+        yield* invoke("navigate", { url: "https://good.test/login" });
+        const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+        expect(refused.message).toContain("has run on this site (https://good.test)");
+        expect(server.reads).toEqual([]);
+        expect((yield* passwordField(context)).value).toBe("");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a login is not filled while script left running in another window could read it", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        const opened = yield* nextPopupTab;
+        yield* invoke("navigate", { url: "https://good.test/watched" });
+        yield* invoke("click", { locator: "#open" });
+        const popup = yield* opened;
+        yield* popup("waitFor", { text: "next" });
+        // No script ran in the login tab. The window it opened watches it from a timer.
+        yield* popup("evaluate", {
+          expression: `setInterval(() => {
+            const seen = opener.document.getElementById("password").value;
+            if (seen) window.seen = seen;
+          }, 1); 1`,
+        });
+        const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+        expect(refused.message).toContain("has run on this site");
+        expect(yield* Effect.promise(() => context.pages()[1]!.evaluate("window.seen"))).toBe(
+          undefined,
+        );
+        expect(server.reads).toEqual([]);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a tab cannot read a login filled in a window it opened", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        const opened = yield* nextPopupTab;
+        yield* invoke("navigate", { url: "https://good.test/opens" });
+        yield* invoke("click", { locator: "#open" });
+        const popup = yield* opened;
+        yield* popup("waitFor", { locator: "#password" });
+        expect((yield* popup<PreviewAutomationFillLoginResult>("fillLogin")).status).toBe("filled");
+        const refused = yield* invoke("evaluate", {
+          expression: 'btoa(window.open("", "signin").document.getElementById("password").value)',
+        }).pipe(Effect.flip);
+        expect(refused.message).toContain("filled a login on this site");
+        expect(refused.message).toContain("in a new tab");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a blank window a filled site opened runs no script, being on that site", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        const opened = yield* nextPopupTab;
+        yield* invoke("navigate", { url: "https://good.test/blank" });
+        yield* invoke("click", { locator: "#blank" });
+        const popup = yield* opened;
+        expect((yield* invoke<PreviewAutomationFillLoginResult>("fillLogin")).status).toBe(
+          "filled",
+        );
+        expect((yield* popup<PreviewAutomationStatus>("status")).url).toBeNull();
+        const refused = yield* popup("evaluate", { expression: READ_OPENER_PASSWORD }).pipe(
+          Effect.flip,
+        );
+        expect(refused.message).toContain("filled a login on this site");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a page the agent ran script in takes no login, and the page loaded next does", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        // The script gives the page a new address, which leaves it the same page.
+        yield* invoke("evaluate", { expression: 'history.pushState({}, "", "/login/moved"); 1' });
+        const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+        expect(refused.message).toContain("preview_evaluate ran in this page");
+        expect(server.reads).toEqual([]);
+        // Script dies with its page, in a tab that opened no window for it to live on in.
+        yield* invoke("navigate", { url: "https://good.test/login" });
+        expect((yield* invoke<PreviewAutomationFillLoginResult>("fillLogin")).status).toBe(
+          "filled",
+        );
+        expect((yield* passwordField(context)).value).toBe("password-value");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live(
+  "after a fill, script runs again in the page the tab loads next, with nothing left for Back to bring up",
+  () => {
+    const server = loginServer("never", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          const page = context.pages()[0]!;
+          yield* invoke("fillLogin");
+          const off = Effect.gen(function* () {
+            const refused = yield* invoke("evaluate", { expression: "1" }).pipe(Effect.flip);
+            expect(refused.message).toContain("preview_evaluate is off on this page");
+          });
+          yield* off;
+          // A tab that shares no window with this one cannot reach its page.
+          const other = yield* openProfileTab;
+          yield* other("navigate", { url: "https://good.test/next" });
+          expect(yield* other("evaluate", { expression: "1 + 1" })).toBe(2);
+          // The form is sent, and the site loads its next page.
+          yield* invoke("navigate", { url: "https://good.test/next" });
+          expect(yield* invoke("evaluate", { expression: "history.length" })).toBe(1);
+          expect(yield* Effect.promise(() => page.goBack())).toBeNull();
+          expect(page.url()).toBe("https://good.test/next");
+          // The next login in the tab is kept from script the same way.
+          yield* invoke("navigate", { url: "https://good.test/login" });
+          yield* invoke("fillLogin");
+          yield* off;
+          yield* invoke("navigate", { url: "https://good.test/next" });
+          expect(yield* invoke("evaluate", { expression: "history.length" })).toBe(1);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+/** Holds one tab's commands at a chosen one until released. */
+const holdCommands = (context: BrowserContext) => {
+  const hold = {
+    /** Whether a command, sent for the page at this index among the browser's, is the one. */
+    at: (_page: number, _method: string, _params: string) => false,
+    reached: Promise.withResolvers<void>(),
+    release: Promise.withResolvers<void>(),
+  };
+  const newCDPSession = context.newCDPSession.bind(context);
+  context.newCDPSession = async (target) => {
+    const session = await newCDPSession(target);
+    const send = session.send.bind(session) as (
+      method: string,
+      params?: object,
+    ) => Promise<unknown>;
+    Object.assign(session, {
+      send: async (method: string, params?: object) => {
+        const page = context.pages().indexOf(target as Page);
+        if (hold.at(page, method, JSON.stringify(params ?? {}))) {
+          hold.at = () => false;
+          hold.reached.resolve();
+          await hold.release.promise;
+        }
+        return send(method, params);
+      },
+    });
+    return session;
+  };
+  return hold;
+};
+
+it.live.each([
+  {
+    name: "the script runs between the fill's check and its mark",
+    held: "fill" as const,
+    at: (() => {
+      let trees = 0;
+      // The fill names its document, checks for script, and names the document again.
+      return (page: number, method: string) =>
+        page === 1 && method === "Page.getFrameTree" && ++trees === 2;
+    })(),
+    wins: "evaluate" as const,
+  },
+  {
+    name: "the fill runs between the script's check and its start",
+    held: "evaluate" as const,
+    at: (page: number, _method: string, params: string) => page === 0 && params.includes("racing"),
+    wins: "evaluate" as const,
+  },
+  {
+    name: "the script runs between the fill's mark and its write",
+    held: "fill" as const,
+    at: (page: number, method: string, params: string) =>
+      page === 1 && method === "Page.createIsolatedWorld" && params.includes("login-fill"),
+    wins: "fill" as const,
+  },
+])(
+  "a fill and a script racing in tabs a window joins never both go through: $name",
+  ({ held, at, wins }) => {
+    const server = loginServer("never", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        const hold = holdCommands(context);
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          const opened = yield* nextPopupTab;
+          // The tab opens the login page in a window, through which each can reach the other.
+          yield* invoke("navigate", { url: "https://good.test/opens" });
+          yield* invoke("click", { locator: "#open" });
+          const popup = yield* opened;
+          yield* popup("waitFor", { locator: "#password" });
+          const fill = popup<PreviewAutomationFillLoginResult>("fillLogin").pipe(Effect.result);
+          const evaluate = invoke<string>("evaluate", { expression: '"racing"' }).pipe(
+            Effect.result,
+          );
+          hold.at = at;
+          const first = yield* (held === "fill" ? fill : evaluate).pipe(Effect.forkScoped);
+          yield* Effect.promise(() => hold.reached.promise);
+          const second = yield* held === "fill" ? evaluate : fill;
+          hold.release.resolve();
+          const outcomes = {
+            [held]: yield* Fiber.join(first),
+            [held === "fill" ? "evaluate" : "fill"]: second,
+          };
+          expect(outcomes[wins]?._tag).toBe("Success");
+          const lost = outcomes[wins === "fill" ? "evaluate" : "fill"];
+          expect(lost?._tag === "Failure" && lost.failure.message).toContain(
+            wins === "fill" ? "filled a login on this site" : "has run on this site",
+          );
+          // The script that lost never ran, and the one that won saw no password.
+          if (outcomes.evaluate?._tag === "Success") {
+            expect(outcomes.evaluate.success).toBe("racing");
+          }
+          const password = yield* Effect.promise(() =>
+            context.pages()[1]!.locator("#password").inputValue(),
+          );
+          expect(password).toBe(wins === "fill" ? "password-value" : "");
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+/** Fills a code into a field the page draws again, then leaves for another page. */
+const fillCodeAndLeave = (
+  invoke: Effect.Success<typeof openLoginTab>["invoke"],
+  path: "/otp" | "/moves" | "/hops" = "/otp",
+) =>
+  Effect.gen(function* () {
+    yield* invoke("navigate", { url: `https://good.test${path}` });
+    yield* invoke("fillLogin", { fields: ["totp"] });
+    yield* invoke("navigate", { url: "https://good.test/next" });
+  });
+
+const codeField = (page: Page) => Effect.promise(() => page.locator("#otp").inputValue());
+
+it.live(
+  "a page Back restores a filled code into takes no images, script or recording, whatever its address",
+  () => {
+    const server = loginServer("never", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          const withheld = Effect.gen(function* () {
+            const snapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+            expect(snapshot.screenshot).toBeUndefined();
+            expect(snapshot.imagesOff).toContain("Back or Forward");
+            expect(snapshot.imagesOff).toContain("preview_navigate");
+          });
+          yield* fillCodeAndLeave(invoke);
+          // Back, as pressed in a viewer or the desktop: Chromium refills the field drawn afresh.
+          const page = context.pages()[0]!;
+          yield* Effect.promise(() => page.goBack());
+          expect(yield* codeField(page)).toBe("totp-value");
+          yield* withheld;
+          const scripted = yield* invoke("evaluate", { expression: "1" }).pipe(Effect.flip);
+          expect(scripted.message).toContain("preview_evaluate is off on this page");
+          const recorded = yield* invoke("recordingStart").pipe(Effect.flip);
+          expect(recorded.message).toContain("Back or Forward");
+          // The page moves to an address no filled page showed, still holding the code.
+          for (const change of ["pushState", "replaceState"] as const) {
+            yield* Effect.promise(() =>
+              page.evaluate(`history.${change}({}, "", "/otp/${change}")`),
+            );
+            expect(yield* codeField(page)).toBe("totp-value");
+            yield* withheld;
+          }
+          // Back to the entry the page pushed loads it again, with the code.
+          yield* invoke("navigate", { url: "https://good.test/next" });
+          yield* Effect.promise(() => page.goBack());
+          expect(page.url()).toBe("https://good.test/otp/replaceState");
+          expect(yield* codeField(page)).toBe("totp-value");
+          yield* withheld;
+          // A reload refills nothing, so it is the way out.
+          yield* Effect.promise(() => page.reload());
+          expect(yield* codeField(page)).toBe("");
+          const reloaded = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(reloaded.screenshot?.mimeType).toBe("image/png");
+          expect(reloaded.imagesOff).toBeUndefined();
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live("preview_evaluate never runs in a page Back brought up after its page was checked", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      const hold = holdCommands(context);
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* invoke("navigate", { url: "https://good.test/otp" });
+        yield* invoke("fillLogin", { fields: ["totp"] });
+        // A page loaded fresh, where script may run.
+        yield* invoke("navigate", { url: "https://other.test/" });
+        hold.at = (_page, method) => method === "Page.resetNavigationHistory";
+        const reading = yield* invoke<string>("evaluate", {
+          expression: 'btoa(document.getElementById("otp")?.value ?? "")',
+        }).pipe(Effect.result, Effect.forkScoped);
+        // Back lands once the page is found clear, right before the tab's history is cleared.
+        yield* Effect.promise(() => hold.reached.promise);
+        const page = context.pages()[0]!;
+        yield* Effect.promise(() => page.goBack());
+        expect(yield* codeField(page)).toBe("totp-value");
+        hold.release.resolve();
+        const read = yield* Fiber.join(reading);
+        expect(read._tag === "Success" && read.success).not.toBe(btoa("totp-value"));
+        expect(read._tag === "Failure" && read.failure.message).toContain(
+          "loaded another document before the script ran",
+        );
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("preview_evaluate never runs in a page loaded after the tab was looked at", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      const hold = holdCommands(context);
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        hold.at = (_page, method, params) =>
+          method === "Runtime.evaluate" && params.includes('"this"');
+        const running = yield* invoke("evaluate", { expression: "1" }).pipe(
+          Effect.result,
+          Effect.forkScoped,
+        );
+        // The tab loads another page once it is named, right before its script is bound to one.
+        yield* Effect.promise(() => hold.reached.promise);
+        yield* Effect.promise(() => context.pages()[0]!.goto("https://good.test/login"));
+        hold.release.resolve();
+        const ran = yield* Fiber.join(running);
+        expect(ran._tag === "Failure" && ran.failure.message).toContain(
+          "loaded another document before the script ran",
+        );
+        // No script ran in the page now up, so it takes a login.
+        expect((yield* invoke<PreviewAutomationFillLoginResult>("fillLogin")).status).toBe(
+          "filled",
+        );
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("preview_evaluate answers as before where logins can be filled", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const invoke = onTab(broker, tabId);
+        const run = (expression: string, options: object = {}) =>
+          invoke<unknown>("evaluate", { expression, ...options });
+        // A page whose policy forbids its own script to run text.
+        yield* invoke("navigate", { url: "https://good.test/strict" });
+        expect(yield* run("1 + 1")).toBe(2);
+        expect(yield* run("const two = 2; two * 3")).toBe(6);
+        expect(yield* run("var kept = 4; function later() { return kept + 1 }")).toBeNull();
+        expect(yield* run("later()")).toBe(5);
+        expect(yield* run("Promise.resolve({ seven: 7 })")).toEqual({ seven: 7 });
+        expect(yield* run("this === window && document.title")).toBe("Sign in");
+        // A page may use the name `origin` for something of its own.
+        expect(yield* run("var origin = 5; origin")).toBe(5);
+        expect(yield* run("origin + 1")).toBe(6);
+        expect(yield* run("document.body")).toEqual({});
+        const fails = (expression: string) => invoke("evaluate", { expression }).pipe(Effect.flip);
+        expect((yield* fails("throw new Error('boom')")).message).toContain("Error: boom");
+        expect((yield* fails("not script")).message).toContain("SyntaxError");
+        const stopped = yield* broker
+          .invoke<void>({
+            scope,
+            tabId,
+            operation: "evaluate",
+            input: { expression: "for (;;) {}" },
+            timeoutMs: 300,
+          })
+          .pipe(Effect.flip);
+        // The caller's own time limit can answer first; the script is stopped either way.
+        expect(stopped.message).toMatch(/did not finish|timed out/);
+        expect(yield* run("1 + 1")).toBe(2);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a restored page that gives itself a new address as it loads takes no images", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* fillCodeAndLeave(invoke, "/moves");
+        const page = context.pages()[0]!;
+        const filledAt = yield* Effect.promise(() =>
+          page.evaluate<string>("navigation.entries().at(-2).url"),
+        );
+        yield* Effect.promise(() => page.goBack());
+        // Its script ran before anything could ask where it is.
+        expect(page.url()).not.toBe(filledAt);
+        expect(yield* codeField(page)).toBe("totp-value");
+        const restored = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        expect(restored.screenshot).toBeUndefined();
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live(
+  "after a fill, a page Back or Forward reaches takes no images or script until it is reloaded",
+  () => {
+    const server = loginServer("never", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          yield* invoke("navigate", { url: "https://other.test/before" });
+          yield* fillCodeAndLeave(invoke);
+          const page = context.pages()[0]!;
+          const off = Effect.gen(function* () {
+            const scripted = yield* invoke("evaluate", { expression: "1" }).pipe(Effect.flip);
+            expect(scripted.message).toContain("preview_evaluate is off on this page");
+            const snapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+            expect(snapshot.screenshot).toBeUndefined();
+            expect(snapshot.imagesOff).toContain("Back or Forward");
+            expect(snapshot.imagesOff).toContain("preview_navigate");
+          });
+          // Back past the filled page to another site, which came up the way a filled page would.
+          yield* Effect.promise(() => page.goBack());
+          expect(yield* codeField(page)).toBe("totp-value");
+          yield* Effect.promise(() => page.goBack());
+          expect(page.url()).toBe("https://other.test/before");
+          yield* off;
+          // Forward to a page of the filled site that never held a fill.
+          yield* Effect.promise(() => page.goForward());
+          yield* Effect.promise(() => page.goForward());
+          expect(page.url()).toBe("https://good.test/next");
+          yield* off;
+          // A reload refills nothing, and the script that then runs finds no way back to the code.
+          yield* Effect.promise(() => page.reload());
+          const reloaded = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+          expect(reloaded.screenshot?.mimeType).toBe("image/png");
+          expect(yield* invoke("evaluate", { expression: "history.length" })).toBe(1);
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live("a tab no login was filled in keeps its images and script after Back", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* invoke("navigate", { url: "https://good.test/next" });
+        yield* Effect.promise(() => context.pages()[0]!.goBack());
+        const back = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        expect(back.screenshot?.mimeType).toBe("image/png");
+        expect(back.imagesOff).toBeUndefined();
+        expect(yield* invoke("evaluate", { expression: "1 + 1" })).toBe(2);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a snapshot takes no image of a restored page that came and went as it ran", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      // Back lands right after the page is found clear, and the restored page leaves again
+      // just before it is asked once more.
+      let step: "idle" | "restore" | "leave" | "left" = "idle";
+      let shown = "";
+      const newCDPSession = context.newCDPSession.bind(context);
+      context.newCDPSession = async (target) => {
+        const session = await newCDPSession(target);
+        const send = session.send.bind(session) as (
+          method: string,
+          params?: { readonly expression?: string; readonly worldName?: string },
+        ) => Promise<unknown>;
+        Object.assign(session, {
+          send: async (method: string, params?: Parameters<typeof send>[1]) => {
+            const page = context.pages()[0]!;
+            if (
+              step === "restore" &&
+              method === "Runtime.evaluate" &&
+              params?.expression?.includes('getEntriesByType("navigation")')
+            ) {
+              step = "leave";
+              const loadedBy = await send(method, params);
+              await page.goBack();
+              return loadedBy;
+            }
+            if (
+              step === "leave" &&
+              method === "Page.createIsolatedWorld" &&
+              params?.worldName === "t3-login-exposure"
+            ) {
+              step = "left";
+              shown = await page.locator("#otp").inputValue();
+              await page.goto("https://good.test/other");
+            }
+            return send(method, params);
+          },
+        });
+        return session;
+      };
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* fillCodeAndLeave(invoke);
+        step = "restore";
+        const snapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        expect(step).toBe("left");
+        expect(shown).toBe("totp-value");
+        expect(snapshot.screenshot).toBeUndefined();
+        expect(snapshot.imagesOff).toContain("Take the snapshot again");
+        // Nothing moved this time.
+        const settled = yield* invoke<PreviewAutomationSnapshot>("snapshot");
+        expect(settled.screenshot?.mimeType).toBe("image/png");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live(
+  "preview_snapshot save gets neither image, and saves nothing, of a page Back restored as it ran",
+  () => {
+    const server = loginServer("never", DesktopChannel.layer);
+    const mcpClient = McpSchema.McpServerClient.of({
+      clientId: 1,
+      clientCapabilities: {},
+      clientInfo: { name: "browser-test", version: "1.0.0" },
+      protocolVersion: "2025-06-18",
+      initializePayload: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "browser-test", version: "1.0.0" },
+      },
+      getClient: Effect.die("unused"),
+    });
+    const withMcp = McpHttpServer.layerPreviewToolkit.pipe(
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+      Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
+      Layer.provideMerge(server.layer),
+    );
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        // Back lands right after the page is found clear, so both images are taken of the page
+        // it restored, with the filled code back in its field.
+        let restore = false;
+        const newCDPSession = context.newCDPSession.bind(context);
+        context.newCDPSession = async (target) => {
+          const session = await newCDPSession(target);
+          const send = session.send.bind(session) as (
+            method: string,
+            params?: { readonly expression?: string },
+          ) => Promise<unknown>;
+          Object.assign(session, {
+            send: async (method: string, params?: Parameters<typeof send>[1]) => {
+              if (
+                !restore ||
+                method !== "Runtime.evaluate" ||
+                !params?.expression?.includes('getEntriesByType("navigation")')
+              ) {
+                return send(method, params);
+              }
+              restore = false;
+              const loadedBy = await send(method, params);
+              await context.pages()[0]!.goBack();
+              return loadedBy;
+            },
+          });
+          return session;
+        };
+        yield* Effect.gen(function* () {
+          const { tabId, invoke } = yield* openLoginTab;
+          const page = context.pages()[0]!;
+          const mcp = yield* McpServer.McpServer;
+          const { browserArtifactsDir } = yield* ServerConfig.ServerConfig;
+          const savedFiles = Effect.promise(() =>
+            NodeFSP.readdir(browserArtifactsDir).catch((): Array<string> => []),
+          );
+          const saveSnapshot = mcp
+            .callTool({ name: "preview_snapshot", arguments: { tabId, save: true } })
+            .pipe(
+              Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+              Effect.provideService(McpSchema.McpServerClient, mcpClient),
+            );
+          yield* fillCodeAndLeave(invoke);
+          restore = true;
+          // The input preview_snapshot sends when it saves.
+          const snapshot = yield* invoke<PreviewAutomationSnapshot>("snapshot", {
+            fullScreenshot: true,
+          });
+          expect(restore).toBe(false);
+          expect(yield* codeField(page)).toBe("totp-value");
+          expect(snapshot.screenshot).toBeUndefined();
+          expect(snapshot.fullScreenshot).toBeUndefined();
+          expect(snapshot.imagesOff).toContain("Back or Forward");
+
+          yield* invoke("navigate", { url: "https://good.test/next" });
+          restore = true;
+          const saved = yield* saveSnapshot;
+          expect(restore).toBe(false);
+          expect(yield* codeField(page)).toBe("totp-value");
+          expect(saved.isError).toBe(false);
+          expect(saved.content.map((content) => content.type)).not.toContain("image");
+          expect(saved.structuredContent).toMatchObject({
+            imagesOff: expect.stringContaining("Back or Forward"),
+          });
+          expect(saved.structuredContent).not.toHaveProperty("screenshotPath");
+          expect(yield* savedFiles).toEqual([]);
+
+          // A reload brings no filled value back, so both images, and the saved file, return.
+          yield* Effect.promise(() => page.reload());
+          const fresh = yield* invoke<PreviewAutomationSnapshot>("snapshot", {
+            fullScreenshot: true,
+          });
+          expect(fresh.screenshot?.mimeType).toBe("image/png");
+          expect(fresh.fullScreenshot?.data).toBeTruthy();
+          expect((yield* saveSnapshot).structuredContent).toHaveProperty("screenshotPath");
+          expect(yield* savedFiles).toHaveLength(1);
+        }).pipe(Effect.provide(withMcp));
+      }),
+    );
+  },
+);
+
+/** The recordings the server has written for a thread to attach. */
+const savedRecordings = Effect.gen(function* () {
+  const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+  return yield* Effect.promise(() =>
+    NodeFSP.readdir(attachmentsDir).catch((): Array<string> => []),
+  );
+});
+
+it.live("a recording during which the tab went Back after a fill is discarded whole", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* fillCodeAndLeave(invoke);
+        yield* invoke("recordingStart");
+        const page = context.pages()[0]!;
+        yield* Effect.promise(() => page.goBack());
+        expect(yield* codeField(page)).toBe("totp-value");
+        const discarded = yield* invoke("recordingStop").pipe(Effect.flip);
+        expect(discarded.message).toContain("recording was discarded");
+        expect(discarded.message).toContain("Back or Forward");
+        expect(yield* savedRecordings).toEqual([]);
+        // It is over, and the next one is judged on its own: fresh visits and a reload refill
+        // nothing, so a recording across them is kept.
+        yield* Effect.promise(() => page.reload());
+        yield* invoke("recordingStart");
+        yield* invoke("navigate", { url: "https://good.test/other" });
+        yield* Effect.promise(() => page.reload());
+        yield* invoke("navigate", { url: "https://good.test/next" });
+        const kept = yield* invoke<{ readonly path: string }>("recordingStop");
+        expect(yield* savedRecordings).toHaveLength(1);
+        expect((yield* Effect.promise(() => NodeFSP.stat(kept.path))).size).toBeGreaterThan(0);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a recording is discarded when a restored page was up only for a moment", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* fillCodeAndLeave(invoke, "/hops");
+        yield* invoke("recordingStart");
+        const page = context.pages()[0]!;
+        // Back loads the page with its code, and its script leaves for a fresh page at once.
+        yield* Effect.promise(() =>
+          Promise.all([page.waitForURL("**/other"), page.goBack().catch(() => null)]),
+        );
+        const discarded = yield* invoke("recordingStop").pipe(Effect.flip);
+        expect(discarded.message).toContain("recording was discarded");
+        expect(yield* savedRecordings).toEqual([]);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live("a recording in a tab no login was filled in is kept across Back", () => {
+  const server = loginServer("never", DesktopChannel.layer);
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { invoke } = yield* openLoginTab;
+        yield* invoke("navigate", { url: "https://good.test/next" });
+        yield* invoke("recordingStart");
+        yield* Effect.promise(() => context.pages()[0]!.goBack());
+        yield* invoke("recordingStop");
+        expect(yield* savedRecordings).toHaveLength(1);
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});
+
+it.live(
+  "a headless tab on a server without its desktop app refuses a login that needs approval",
+  () => {
+    const server = loginServer("thread", DesktopChannel.layer);
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const { context } = yield* realLoginBrowser;
+        yield* Effect.gen(function* () {
+          const { invoke } = yield* openLoginTab;
+          const refused = yield* invoke("fillLogin").pipe(Effect.flip);
+          expect(refused.message).toContain("Nobody can approve a login on this machine.");
+          expect(server.reads).toEqual([]);
+          expect(yield* passwordField(context)).toEqual({ value: "", security: "" });
+        }).pipe(Effect.provide(server.layer));
+      }),
+    );
+  },
+);
+
+it.live("a headless tab on a server with its desktop app asks there before filling", () => {
+  const asked: Array<{ readonly key: DesktopChannel.DesktopTabKey; readonly prompt: object }> = [];
+  const server = loginServer(
+    "thread",
+    Layer.succeed(DesktopChannel.DesktopBrowserChannel, {
+      available: true,
+      // The desktop never draws the tab.
+      awaitAttached: () => Effect.succeed(false),
+      detached: Stream.empty,
+      attached: Stream.empty,
+      isAttached: () => Effect.succeed(false),
+      isShown: () => false,
+      awaitShown: () => Effect.succeed(false),
+      loadFailure: () => undefined,
+      endpoint: () => Effect.die("The desktop does not draw this tab."),
+      pointer: () => Effect.void,
+      turn: () => Effect.void,
+      loginFilled: () => Effect.void,
+      approveLogin: (key, _timeoutMs, prompt) =>
+        Effect.sync(() => {
+          asked.push({ key, prompt });
+          return true;
+        }),
+    }),
+  );
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { context } = yield* realLoginBrowser;
+      yield* Effect.gen(function* () {
+        const { tabId, invoke } = yield* openLoginTab;
+        const filled = yield* invoke<PreviewAutomationFillLoginResult>("fillLogin");
+        expect(filled.status).toBe("filled");
+        expect(asked).toEqual([
+          {
+            key: { threadId: scope.thread.threadId, tabId },
+            prompt: expect.objectContaining({
+              providerLabel: "Work",
+              loginTitle: "Good",
+              origin: "https://good.test",
+              scope: "thread",
+            }),
+          },
+        ]);
+        expect((yield* passwordField(context)).value).toBe("password-value");
+      }).pipe(Effect.provide(server.layer));
+    }),
+  );
+});

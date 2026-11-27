@@ -94,6 +94,7 @@ import {
 import { isPreviewAnnotationPayload } from "./PickedElementPayload.ts";
 import { captureFavicon, safeHttpOrigin, selectFaviconCandidates } from "./FaviconCapture.ts";
 import { DEFAULT_RECORDING_INPUT_OPTIONS, type RecordingInputOptions } from "./RecordingInput.ts";
+import { withoutPageContent } from "./withheldAnnotation.ts";
 
 export type PreviewNavStatus =
   | { kind: "Idle" }
@@ -630,6 +631,66 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       try: evaluate,
       catch: (cause) => new PreviewOperationError({ ...errorContext, cause }),
     });
+  /** A capture that can reach a thread is refused while the page may show a filled login. */
+  const requireNoFill = Effect.fn("PreviewManager.requireNoFill")(function* (
+    tabId: string,
+    wc: Electron.WebContents,
+  ) {
+    const serverTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.serverTab;
+    if (serverTab !== undefined && (yield* browserHost.mayShowFill(serverTab, wc))) {
+      return yield* new PreviewCaptureWithheldError({ tabId });
+    }
+  });
+  /** Main documents each tab has loaded. */
+  const documentLoads = new Map<string, number>();
+  /**
+   * Recordings of server tabs, begun and not yet saved. The client holds the frames, so none can
+   * be taken back: a recording that may show a filled login is refused when it is saved.
+   */
+  const recordings = new Map<
+    string,
+    {
+      readonly serverTab: NonNullable<PreviewTabState["serverTab"]>;
+      /** The tab's filled documents when it began; one more means a fill while it ran. */
+      readonly fills: number;
+      spoiled: boolean;
+    }
+  >();
+  /**
+   * While a tab records, each main document it loads must be found clear of filled logins
+   * before the next one loads. A page that came and went unasked may have shown one.
+   */
+  const noteDocumentLoad = (tabId: string, wc: Electron.WebContents) => {
+    const load = (documentLoads.get(tabId) ?? 0) + 1;
+    documentLoads.set(tabId, load);
+    const recording = recordings.get(tabId);
+    if (recording === undefined || recording.spoiled) return;
+    runFork(
+      browserHost.mayShowFill(recording.serverTab, wc).pipe(
+        Effect.map((shows) => {
+          if (shows || documentLoads.get(tabId) !== load) recording.spoiled = true;
+        }),
+      ),
+    );
+  };
+  /** Refuses the recording a tab began if any page in it may have shown a filled login. */
+  const requireCleanRecording = Effect.fn("PreviewManager.requireCleanRecording")(function* (
+    tabId: string,
+  ) {
+    const recording = recordings.get(tabId);
+    recordings.delete(tabId);
+    const serverTab =
+      recording?.serverTab ?? (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.serverTab;
+    const fills = serverTab === undefined ? 0 : browserHost.filledDocuments(serverTab);
+    // No login was ever filled in the tab, so no page of it can show one.
+    if (fills === 0) return;
+    const withheld = new PreviewCaptureWithheldError({ tabId });
+    if (recording === undefined || recording.spoiled || recording.fills !== fills) {
+      return yield* withheld;
+    }
+    const wc = yield* requireWebContents(tabId).pipe(Effect.mapError(() => withheld));
+    yield* requireNoFill(tabId, wc);
+  });
   const capturePageWithRetry = Effect.fn("PreviewManager.capturePageWithRetry")(function* (
     errorContext: PreviewOperationContext,
     tabId: string,
@@ -643,6 +704,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     });
     const capture = Effect.gen(function* () {
       yield* requireCurrentGuest;
+      const loads = documentLoads.get(tabId);
+      yield* requireNoFill(tabId, wc);
       const image = yield* Effect.tryPromise({
         try: (_signal) => wc.capturePage(),
         catch: (cause) => new PreviewOperationError({ ...errorContext, cause }),
@@ -654,6 +717,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         }),
       );
       yield* requireCurrentGuest;
+      // A fill or Back can come while Electron captures.
+      yield* requireNoFill(tabId, wc);
+      // A page Back restored can be gone again by now, so after a fill any page loaded
+      // meanwhile counts.
+      const serverTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.serverTab;
+      if (
+        documentLoads.get(tabId) !== loads &&
+        serverTab !== undefined &&
+        browserHost.filledDocuments(serverTab) > 0
+      ) {
+        return yield* new PreviewCaptureWithheldError({ tabId });
+      }
       return image;
     });
     return yield* capture.pipe(
@@ -1258,7 +1333,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (Option.isSome(next)) yield* emitIfCurrent(tabId, next.value);
     });
     const sync = () => runFork(syncState(true));
-    const syncNavigation = () => runFork(syncState(false, true));
+    const syncNavigation = () => {
+      runFork(syncState(false, true));
+      noteDocumentLoad(tabId, wc);
+    };
     const syncInPageNavigation = () => runFork(syncState(false));
     const restoreRecordingCursor = () =>
       runFork(
@@ -1560,6 +1638,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     };
     // Popups inherit Electron's unrestricted window handler; block nested popups to bound the chain.
     const windowCreated = (window: Electron.BrowserWindow): void => {
+      browserHost.windowOpened(wc, window);
       window.webContents.setIgnoreMenuShortcuts(true);
       window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       window.webContents.on("before-input-event", (_event, input) => {
@@ -1814,6 +1893,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     if (!(yield* SynchronizedRef.get(tabsRef)).has(tabId)) return;
     clearPendingRecording(tabId);
     annotationSendEnabled.delete(tabId);
+    documentLoads.delete(tabId);
     yield* Effect.all(
       [
         cancelPickElement(tabId),
@@ -2439,11 +2519,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               ),
               Effect.withSpan("PreviewManager.captureAnnotationScreenshot"),
               Effect.match({
-                onFailure: (): PreviewAnnotationSubmissionResult => ({
-                  annotation: payload,
-                  submission,
-                  screenshotFailed: true,
-                }),
+                onFailure: (error): PreviewAnnotationSubmissionResult =>
+                  error._tag === "PreviewCaptureWithheldError"
+                    ? {
+                        annotation: withoutPageContent(
+                          payload,
+                          (wc.isDestroyed() ? null : safeHttpOrigin(wc.getURL())) ?? "",
+                        ),
+                        submission,
+                        screenshotFailed: true,
+                        screenshotWithheld: true,
+                      }
+                    : { annotation: payload, submission, screenshotFailed: true },
                 onSuccess: (screenshot): PreviewAnnotationSubmissionResult =>
                   screenshot === null
                     ? { annotation: payload, submission, screenshotFailed: true }
@@ -3460,6 +3547,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     return yield* withTabLifecycleLock(
       tabId,
       Effect.gen(function* () {
+        const guest = yield* requireWebContents(tabId);
+        const serverTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId)?.serverTab;
+        const running = (yield* SynchronizedRef.get(frameCaptureSessionsRef)).get(tabId);
+        // Before the page is asked, so a fill or a page loaded from here on counts against it.
+        if (serverTab === undefined) recordings.delete(tabId);
+        else if (!running?.consumers.has("recording")) {
+          const fills = browserHost.filledDocuments(serverTab);
+          recordings.set(tabId, { serverTab, fills, spoiled: false });
+        }
+        yield* requireNoFill(tabId, guest);
         yield* startFrameCapture(tabId, "recording");
         yield* SynchronizedRef.update(frameCaptureSessionsRef, (sessions) =>
           replaceMap(sessions, (copy) => {
@@ -3542,6 +3639,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     mimeType: string,
     data: Uint8Array,
   ) {
+    yield* requireCleanRecording(tabId);
     const [createdAt, millis] = yield* Effect.all([currentIso, currentMillis]);
     const uuid = yield* random.uuidV4();
     const id = `browser-recording-${millis.toString(36)}-${uuid.slice(0, 8)}`;
@@ -3927,6 +4025,15 @@ export class PreviewAutomationDebuggerAttachedError extends Schema.TaggedError<P
   }
 }
 
+export class PreviewCaptureWithheldError extends Schema.TaggedError<PreviewCaptureWithheldError>()(
+  "PreviewCaptureWithheldError",
+  { tabId: Schema.String },
+) {
+  override get message(): string {
+    return `Preview tab ${this.tabId} may show a login the password manager filled, so it is not captured`;
+  }
+}
+
 export const PreviewManagerError = Schema.Union([
   PreviewTabNotFoundError,
   PreviewWebContentsNotFoundError,
@@ -3939,6 +4046,7 @@ export const PreviewManagerError = Schema.Union([
   PreviewArtifactImageLoadError,
   PreviewAutomationDevToolsOpenError,
   PreviewAutomationDebuggerAttachedError,
+  PreviewCaptureWithheldError,
 ]);
 export type PreviewManagerError = typeof PreviewManagerError.Type;
 

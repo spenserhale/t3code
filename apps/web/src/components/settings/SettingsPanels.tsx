@@ -8,6 +8,7 @@ import { msg, T, useGT, useMessages } from "gt-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import {
+  browserLoginProviderIds,
   type DesktopUpdateChannel,
   IDLE_COMPACTION_MODES,
   type IdleCompactionMode,
@@ -675,6 +676,10 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.enableAgentBrowserAccess !== DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess
       ? [gt("Agent browser access")]
       : []),
+    ...(browserLoginProviderIds(settings.browserLogins).length > 0 ||
+    settings.browserLogins.approval !== DEFAULT_UNIFIED_SETTINGS.browserLogins.approval
+      ? [gt("Browser logins")]
+      : []),
   ];
 
   const restoreDefaults = async () => {
@@ -808,6 +813,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       browserAutoShowFloatingPreview: DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview,
       pullRequestLinksOpenInApp: DEFAULT_UNIFIED_SETTINGS.pullRequestLinksOpenInApp,
       enableAgentBrowserAccess: DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess,
+      browserLogins: DEFAULT_UNIFIED_SETTINGS.browserLogins,
     });
     onRestored?.();
   };

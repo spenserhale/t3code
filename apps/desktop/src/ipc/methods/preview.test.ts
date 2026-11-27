@@ -36,8 +36,12 @@ const decodeCaptureFailure = Schema.decodeUnknownEffect(PreviewCaptureFailure);
 
 describe("preview IPC methods", () => {
   const invokeCapture = (
-    method: typeof PreviewIpc.startRecording | typeof PreviewIpc.captureScreenshot,
+    method:
+      | typeof PreviewIpc.startRecording
+      | typeof PreviewIpc.captureScreenshot
+      | typeof PreviewIpc.saveRecording,
     manager: Partial<PreviewManager.PreviewManager["Service"]>,
+    payload: object = { tabId: "capture-tab" },
   ) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -53,9 +57,13 @@ describe("preview IPC methods", () => {
           },
           () => Effect.succeed(true),
         );
-        yield* ipc.handle(method);
+        // Saving keeps the manager's other errors, so the three methods differ in theirs.
+        yield* ipc.handle<
+          unknown,
+          PreviewManager.PreviewManager | DesktopClientSettings.DesktopClientSettings
+        >(method);
         return yield* Effect.promise(async () =>
-          structuredClone(await listener!({ sender: { id: 7 } }, { tabId: "capture-tab" })),
+          structuredClone(await listener!({ sender: { id: 7 } }, payload)),
         );
       }).pipe(
         Effect.provideService(
@@ -107,6 +115,28 @@ describe("preview IPC methods", () => {
         });
         const failure = yield* decodeCaptureFailure(result);
         for (const phrase of guidance) expect(failure.message).toContain(phrase);
+      }),
+  );
+
+  effectIt.effect(
+    "tells the client why a recording that may show a filled login was not saved",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* invokeCapture(
+          PreviewIpc.saveRecording,
+          {
+            saveRecording: (tabId) =>
+              Effect.fail(new PreviewManager.PreviewCaptureWithheldError({ tabId })),
+          },
+          { tabId: "capture-tab", mimeType: "video/webm", data: new Uint8Array([1]) },
+        );
+        expect(result).toEqual({
+          _tag: "PreviewCaptureFailure",
+          reason: "login-filled",
+          stage: "recording-save",
+        });
+        const failure = yield* decodeCaptureFailure(result);
+        expect(failure.message).toContain("The recording was not saved");
       }),
   );
 
