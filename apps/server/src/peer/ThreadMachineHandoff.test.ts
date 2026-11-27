@@ -552,6 +552,7 @@ const makeHarness = (initial: Options = {}) => {
             },
             url: "http://linkmini.test",
             token: "secret",
+            capabilities: { repositoryIdentity: true },
           });
     },
   });
