@@ -8748,6 +8748,7 @@
   "90e071b1778fa1d4": "Fora das contas de serviço desta máquina",
   "bda088498300ed59": "Os agentes que se cadastram em novas contas salvam aqui a senha gerada antes de enviar o formulário. Uma conta de serviço precisa de acesso de gravação a este cofre; as permissões dela não podem ser alteradas depois que ela é criada.",
   "8704d01b66304522": "Este gerenciador de senhas não está escolhido para logins acima, então os agentes não podem criar logins.",
+  "89cb75779dcddbc2": "Este cofre ficou fora dos cofres que este gerenciador de senhas pode ler, então os agentes não podem salvar novos logins nele. Altere isso em Configurações > Segredos.",
   "8470ea44c0f4afe5": "Redefinir onde os novos logins são salvos para o padrão",
   "af5d727bdf0d8f5c": "Gerenciador de senhas para novos logins",
   "2b509dac8227a8d3": "Cofre para novos logins",
@@ -10022,6 +10023,36 @@
   "c3d6c8494c7d4b8f": "O atalho da conta, o endereço de login sem https:// ou o ID que op account list mostra.",
   "df2d1feea6bdcc51": "Token de conta de serviço",
   "6a5ee237e8531173": "Para servidores em que ninguém desbloqueia o 1Password. Dê à conta de serviço apenas os cofres de que ela precisa.",
+  "bb3282a8858f391a": "Todos os cofres",
+  "54dbd949bfe288d7": "Nenhum cofre",
+  "24f2b21b6557f46e": "{name} e mais {count}",
+  "3d41d7e4eb8e60e3": "Este projeto: {vaults}",
+  "3f59269859116db9": "Herdado de {environment}: {vaults}",
+  "29438a1077adbc80": "Escolha quais cofres {provider} lê para {project}. Variáveis de provedor e solicitações repassadas para outro dispositivo usam os cofres do ambiente delas.",
+  "7ed6dd150e35ebd8": "Escolha quais cofres {provider} lê em {environment}. Recomendado: permita apenas os cofres de que os agentes precisam, como um cofre reservado para eles.",
+  "243d961e3706ab56": "Cofres a ler",
+  "2870e10a85440976": "Igual a {environment}",
+  "8ad1b03aef5deffd": "Somente estes cofres",
+  "c2db67198aba6a9e": [
+    "Cofres de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "870959f401447183": [
+    "Listando cofres. O 1Password em ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " pode pedir para ser desbloqueado."
+  ],
+  "a3bc1ed87d5875d8": "Esta conta não tem cofres para listar.",
+  "c54c401a3aef169a": "não encontrado",
+  "dbefc831ba6cbe84": "Sem nenhum escolhido, este provedor não lê nenhum cofre aqui.",
   "afa8b4a2e025dd36": "Valor",
   "13f8f1e086293635": "Origem de {label}",
   "4579dce838e7c0a3": "Não foi possível acessar o servidor",
@@ -10037,6 +10068,7 @@
   "cd90b098a17bca20": "Nenhum provedor de segredos configurado.",
   "1c9374501ee389d3": "Adicione uma conta do 1Password e escolha-a como origem de uma variável de provedor.",
   "382541febe15f472": "Alternar visibilidade da conta",
+  "139948ccf6b9a20c": "Cofres próprios para: {projects}",
   "40426afd511710f8": "Provedor sem suporte ({kind})",
   "69dc1b9968c66243": [
     "Atualize o T3 Code em ",
@@ -10049,6 +10081,7 @@
   ],
   "13d4f258e93f1dc1": "Conecte um ambiente para gerenciar os provedores de segredos de onde as variáveis de provedor dele leem.",
   "88466f5a03be2419": "Configuração do ambiente inteiro. Selecione um ambiente para alterá-la.",
+  "9e0b74c0d81b9bba": "Cofres",
   "a3538ba5ca802bd7": [
     "Remover ",
     {

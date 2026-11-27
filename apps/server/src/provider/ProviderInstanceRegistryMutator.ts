@@ -9,8 +9,15 @@ import type * as Effect from "effect/Effect";
 
 export interface ProviderInstanceRegistryMutatorShape {
   readonly reconcile: (configMap: ProviderInstanceConfigMap) => Effect.Effect<void>;
-  /** Re-reads the secrets of every instance, or one, and rebuilds those whose secrets changed. */
-  readonly reloadSecrets: (instanceId?: ProviderInstanceId) => Effect.Effect<void>;
+  /**
+   * Re-reads the secrets of every instance, or one, and rebuilds those whose secrets changed. A
+   * failed re-read keeps a working instance, unless it uses a secret provider in `narrowed`, which
+   * now opens fewer vaults: that instance stops rather than keep a value from a vault it lost.
+   */
+  readonly reloadSecrets: (
+    instanceId?: ProviderInstanceId,
+    narrowed?: ReadonlySet<string>,
+  ) => Effect.Effect<void>;
   /** Rebuilds these live instances from their current configuration and the host environment. */
   readonly rebuild: (instanceIds: ReadonlyArray<ProviderInstanceId>) => Effect.Effect<void>;
   /**

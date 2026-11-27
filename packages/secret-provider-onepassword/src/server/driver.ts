@@ -9,6 +9,7 @@ import {
   type SecretProviderLoginValues,
   type SecretProviderNewLogin,
   type SecretProviderPasswordRecipe,
+  type SecretProviderVaultLimit,
 } from "@t3tools/secret-provider-core/server/driver";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -27,6 +28,13 @@ import { definition, type OnePasswordSecretProviderConfig } from "../shared/defi
 const ONE_PASSWORD_BINARY = "op";
 // Bounds a read long enough to reach for a fingerprint reader, short enough not to wedge a rebuild.
 const READ_TIMEOUT = Duration.seconds(45);
+
+/** A config with the vault ids the server allows it, if it limits them. */
+type Config = OnePasswordSecretProviderConfig & SecretProviderVaultLimit;
+
+/** Whether a vault id is one the config may open; any is when it has no limit. */
+const inLimit = ({ vaults }: Config, vaultId: string | undefined) =>
+  vaults === undefined || (vaultId !== undefined && vaults.includes(vaultId));
 
 // `--cache=false` skips the `op daemon`, which hangs on prompts a background server cannot show.
 // A service account token reaches only this child's environment. `--account` is left out with it:
@@ -108,7 +116,7 @@ const readTogether = Effect.fn("OnePasswordDriver.readTogether")(function* (
 }, Effect.scoped);
 
 const recover = <A, E extends { readonly _tag: string }, R>(
-  stage: "read" | "inject",
+  stage: "read" | "inject" | "vault",
   effect: Effect.Effect<A | undefined, E, R>,
 ) =>
   effect.pipe(
@@ -120,7 +128,7 @@ const recover = <A, E extends { readonly _tag: string }, R>(
   );
 
 const boundedItem = <A, E extends { readonly _tag: string }, R>(
-  stage: "login" | "identity",
+  stage: "login" | "identity" | "vault",
   effect: Effect.Effect<A | undefined, E, R>,
 ) =>
   effect.pipe(
@@ -133,18 +141,28 @@ const boundedItem = <A, E extends { readonly _tag: string }, R>(
     ),
   );
 
+const ItemVault = Schema.optional(
+  Schema.Struct({ id: Schema.optional(Schema.String), name: Schema.optional(Schema.String) }),
+);
 const ListedItem = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
-  vault: Schema.optional(Schema.Struct({ name: Schema.optional(Schema.String) })),
+  vault: ItemVault,
   urls: Schema.optional(Schema.Array(Schema.Struct({ href: Schema.String }))),
 });
 const decodeListedItems = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(ListedItem)),
 );
 const decodeVaults = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Array(Schema.Struct({ id: Schema.String }))),
+  Schema.fromJsonString(
+    Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.optional(Schema.String) })),
+  ),
 );
+// Apart from the fields, so the vault's shape never makes a limitless read fail.
+const decodeItemVault = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ vault: ItemVault })),
+);
+const vaultIdOf = (stdout: string) => Option.getOrUndefined(decodeItemVault(stdout))?.vault?.id;
 
 // Fields are read one property at a time: an item can hold fields a login never uses, such as an
 // address whose value is an object, and those must not make the whole item unreadable.
@@ -424,8 +442,18 @@ const listItems = Effect.fn("OnePasswordDriver.listItems")(function* (
     yield* Effect.logWarning("Could not list 1Password items", { category, exitCode: result.code });
     return undefined;
   }
-  return items.map((item): ListedVaultItem => ({ item, vaultId }));
+  // Listed by vault, an item is that vault's; one `op` places elsewhere is left out.
+  return items.flatMap((item): ReadonlyArray<ListedVaultItem> =>
+    vaultId !== undefined && item.vault?.id !== undefined && item.vault.id !== vaultId
+      ? []
+      : [{ item, vaultId }],
+  );
 });
+
+interface ListedVault {
+  readonly id: string;
+  readonly name: string;
+}
 
 const listVaults = Effect.fn("OnePasswordDriver.listVaults")(function* (
   config: OnePasswordSecretProviderConfig,
@@ -434,30 +462,114 @@ const listVaults = Effect.fn("OnePasswordDriver.listVaults")(function* (
   const vaults = result.code === 0 ? Option.getOrUndefined(decodeVaults(result.stdout)) : undefined;
   if (vaults === undefined) {
     yield* Effect.logWarning("Could not list 1Password vaults", { exitCode: result.code });
+    return undefined;
   }
-  return vaults;
+  // An id goes into arguments and references, so one that could read as a flag is left out.
+  return vaults.flatMap((vault): ReadonlyArray<ListedVault> =>
+    vault.id.trim().length === 0 || vault.id.startsWith("-")
+      ? []
+      : [{ id: vault.id, name: vault.name ?? "" }],
+  );
 });
 
-// A service account must name a vault once it sees more than one, so it lists each vault it was
-// given. Its reads are rate limited: one call for the vaults, then one per vault, two at a time.
-const listCategory = Effect.fn("OnePasswordDriver.listCategory")(function* (
+/** The one vault `named` means: by id, else by its exact name, else by its name in any case. */
+const vaultNamed = (vaults: ReadonlyArray<ListedVault>, named: string) => {
+  const folded = named.toLowerCase();
+  for (const matches of [
+    (vault: ListedVault) => vault.id === named,
+    (vault: ListedVault) => vault.name === named,
+    (vault: ListedVault) => vault.name.toLowerCase() === folded,
+  ]) {
+    const found = vaults.filter(matches);
+    if (found.length > 0) return found.length === 1 ? found[0] : undefined;
+  }
+  return undefined;
+};
+
+/**
+ * The id of the vault a name or id means, when the limit allows it: an allowed id as given, else
+ * the one vault the live list says it names. A name follows the vault, never a renamed or
+ * same-named one.
+ */
+const allowedVaultId = Effect.fn("OnePasswordDriver.allowedVaultId")(function* (
+  config: OnePasswordSecretProviderConfig,
+  allowed: ReadonlyArray<string>,
+  named: string,
+) {
+  if (allowed.includes(named)) return named;
+  if (allowed.length === 0) return undefined;
+  const listed = yield* listVaults(config);
+  const id = listed === undefined ? undefined : vaultNamed(listed, named)?.id;
+  return id !== undefined && allowed.includes(id) ? id : undefined;
+});
+
+const VAULT_REFERENCE = /^op:\/\/([^/]+)\/(.+)$/;
+
+/**
+ * Each reference as read under the limit, by its vault's id, or undefined where it names a vault
+ * outside the limit, an unknown one or several. One vault list serves them all, only if needed.
+ */
+const limitReferences = Effect.fn("OnePasswordDriver.limitReferences")(function* (
+  config: OnePasswordSecretProviderConfig,
+  allowed: ReadonlyArray<string>,
+  references: ReadonlyArray<string>,
+) {
+  if (allowed.length === 0) return references.map(() => undefined);
+  const targets = references.map((reference) => VAULT_REFERENCE.exec(reference));
+  const listed = targets.some((target) => target !== null && !allowed.includes(target[1]!))
+    ? yield* recover("vault", listVaults(config))
+    : [];
+  return targets.map((target) => {
+    if (target === null) return undefined;
+    const [, named = "", rest = ""] = target;
+    const id = allowed.includes(named) ? named : vaultNamed(listed ?? [], named)?.id;
+    if (id === undefined || !allowed.includes(id)) return undefined;
+    const reference = `op://${id}/${rest}`;
+    return definition.isReference(reference) ? reference : undefined;
+  });
+});
+
+const listEachVault = Effect.fn("OnePasswordDriver.listEachVault")(function* (
   config: OnePasswordSecretProviderConfig,
   category: ItemCategory,
+  vaultIds: ReadonlyArray<string>,
 ) {
   const stage = category === "Login" ? "login" : "identity";
-  if (!config.serviceAccountToken) {
-    return yield* boundedItem(stage, listItems(config, category, undefined));
-  }
-  const vaults = yield* boundedItem(stage, listVaults(config));
-  if (vaults === undefined) return undefined;
   const listed = yield* Effect.forEach(
-    vaults.filter((vault) => !vault.id.startsWith("-")),
-    (vault) => boundedItem(stage, listItems(config, category, vault.id)),
+    vaultIds,
+    (vaultId) => boundedItem(stage, listItems(config, category, vaultId)),
     { concurrency: 2 },
   );
   // A vault that cannot be listed hides only its own items.
   const usable = listed.filter(Predicate.isNotUndefined);
   return listed.length > 0 && usable.length === 0 ? undefined : usable.flat();
+});
+
+// A service account must name a vault once it sees more than one, so it lists each vault it was
+// given. Its reads are rate limited: one call for the vaults, then one per vault, two at a time.
+const listCategory = Effect.fn("OnePasswordDriver.listCategory")(function* (
+  config: Config,
+  category: ItemCategory,
+) {
+  const stage = category === "Login" ? "login" : "identity";
+  // A limited config lists its own vaults alone, never the whole account.
+  if (config.vaults !== undefined) {
+    return yield* listEachVault(
+      config,
+      category,
+      config.vaults.filter((id) => !id.startsWith("-")),
+    );
+  }
+  if (!config.serviceAccountToken) {
+    return yield* boundedItem(stage, listItems(config, category, undefined));
+  }
+  const vaults = yield* boundedItem(stage, listVaults(config));
+  if (vaults === undefined) return undefined;
+  return yield* listEachVault(
+    config,
+    category,
+    vaults.map((vault) => vault.id),
+  );
 });
 
 // An item id is unique in an account. A service account must also name its vault, by id, which
@@ -477,17 +589,22 @@ const itemGetArgs = (
       ];
 
 const readLogin = Effect.fn("OnePasswordDriver.readLogin")(function* (
-  config: OnePasswordSecretProviderConfig,
+  config: Config,
   login: SecretProviderLogin,
   fields: ReadonlyArray<SecretProviderLoginField>,
 ) {
-  const args = itemGetArgs(
-    login,
-    fields.some((field) => field !== "username"),
-  );
+  const args = inLimit(config, login.vaultId)
+    ? itemGetArgs(
+        login,
+        fields.some((field) => field !== "username"),
+      )
+    : undefined;
   if (args === undefined) return undefined;
   const result = yield* runOnePassword(config, "item", args);
-  const values = result.code === 0 ? parseLoginValues(result.stdout, fields) : undefined;
+  const values =
+    result.code === 0 && inLimit(config, vaultIdOf(result.stdout))
+      ? parseLoginValues(result.stdout, fields)
+      : undefined;
   if (values === undefined) {
     yield* Effect.logWarning("Could not read 1Password login", { exitCode: result.code });
   }
@@ -523,13 +640,19 @@ const printedPassword = (printed: string, recipe: SecretProviderPasswordRecipe) 
 
 // Every value goes in `--flag=value` or a `field=value` assignment, so none can read as an option.
 const saveLogin = Effect.fn("OnePasswordDriver.saveLogin")(function* (
-  config: OnePasswordSecretProviderConfig,
+  config: Config,
   login: SecretProviderNewLogin,
 ) {
+  // A limited config saves only to an allowed vault, named by its id.
+  const destination =
+    config.vaults === undefined
+      ? login.vault
+      : yield* allowedVaultId(config, config.vaults, login.vault);
+  if (destination === undefined) return undefined;
   const result = yield* runOnePassword(config, "item", [
     "create",
     "--category=login",
-    `--vault=${login.vault}`,
+    `--vault=${destination}`,
     `--title=${login.title}`,
     `--url=${login.url}`,
     `--generate-password=${recipeArgument(login.recipe)}`,
@@ -558,11 +681,12 @@ const saveLogin = Effect.fn("OnePasswordDriver.saveLogin")(function* (
 });
 
 const editPassword = Effect.fn("OnePasswordDriver.editPassword")(function* (
-  config: OnePasswordSecretProviderConfig,
+  config: Config,
   login: SecretProviderLogin,
   recipe: SecretProviderPasswordRecipe,
 ) {
   if (login.id.startsWith("-") || login.vaultId?.startsWith("-")) return undefined;
+  if (!inLimit(config, login.vaultId)) return undefined;
   const result = yield* runOnePassword(config, "item", [
     "edit",
     login.id,
@@ -604,16 +728,21 @@ const parseItemReference = (reference: string) => {
 
 /** The item a reference names, if it is of `category`; its vault id lets later reads name it. */
 const lookupItem = Effect.fn("OnePasswordDriver.lookupItem")(function* (
-  config: OnePasswordSecretProviderConfig,
+  config: Config,
   reference: string,
   category: "LOGIN" | "IDENTITY",
 ) {
   const target = parseItemReference(reference);
   if (target === undefined) return undefined;
+  const inVault =
+    config.vaults === undefined
+      ? target.vault
+      : yield* allowedVaultId(config, config.vaults, target.vault);
+  if (inVault === undefined) return undefined;
   const result = yield* runOnePassword(config, "item", [
     "get",
     target.item,
-    `--vault=${target.vault}`,
+    `--vault=${inVault}`,
     "--format=json",
   ]);
   const item =
@@ -622,7 +751,9 @@ const lookupItem = Effect.fn("OnePasswordDriver.lookupItem")(function* (
     yield* Effect.logWarning("Could not look up a 1Password item", { exitCode: result.code });
     return undefined;
   }
-  if (item.category?.toUpperCase() !== category) return undefined;
+  if (item.category?.toUpperCase() !== category || !inLimit(config, item.vault?.id)) {
+    return undefined;
+  }
   const vault = item.vault?.name;
   const vaultId = item.vault?.id;
   // An identity is a login without websites.
@@ -636,14 +767,17 @@ const lookupItem = Effect.fn("OnePasswordDriver.lookupItem")(function* (
 });
 
 const readIdentity = Effect.fn("OnePasswordDriver.readIdentity")(function* (
-  config: OnePasswordSecretProviderConfig,
+  config: Config,
   identity: SecretProviderIdentity,
 ) {
   // Identity values are never secret fields, so any concealed one is left concealed.
-  const args = itemGetArgs(identity, false);
+  const args = inLimit(config, identity.vaultId) ? itemGetArgs(identity, false) : undefined;
   if (args === undefined) return undefined;
   const result = yield* runOnePassword(config, "item", args);
-  const values = result.code === 0 ? parseIdentityValues(result.stdout) : undefined;
+  const values =
+    result.code === 0 && inLimit(config, vaultIdOf(result.stdout))
+      ? parseIdentityValues(result.stdout)
+      : undefined;
   if (values === undefined) {
     yield* Effect.logWarning("Could not read 1Password identity", { exitCode: result.code });
   }
@@ -658,18 +792,29 @@ export const driver = defineSecretProviderDriver({
     // One deadline covers the batch and the fallback; a reference not read by then is unreadable.
     const values: Array<string | undefined> = references.map(() => undefined);
     const outcome = yield* Effect.gen(function* () {
-      if (references.length > 1) {
-        const together = yield* recover("inject", readTogether(config, references));
-        if (together !== undefined) return together;
+      // Under a limit, each reference is read by its vault's id, and one outside it is never read.
+      const targets: ReadonlyArray<string | undefined> =
+        config.vaults === undefined
+          ? references
+          : yield* limitReferences(config, config.vaults, references);
+      const readable = targets.filter(Predicate.isNotUndefined);
+      if (readable.length > 1) {
+        const together = yield* recover("inject", readTogether(config, readable));
+        if (together !== undefined) {
+          let next = 0;
+          return targets.map((target) => (target === undefined ? undefined : together[next++]));
+        }
       }
       yield* Effect.forEach(
-        references,
-        (reference, index) =>
-          recover("read", readOne(config, reference)).pipe(
-            Effect.map((value) => {
-              values[index] = value;
-            }),
-          ),
+        targets,
+        (target, index) =>
+          target === undefined
+            ? Effect.void
+            : recover("read", readOne(config, target)).pipe(
+                Effect.map((value) => {
+                  values[index] = value;
+                }),
+              ),
         { discard: true },
       );
       return values;
@@ -680,6 +825,7 @@ export const driver = defineSecretProviderDriver({
     });
     return values;
   }),
+  vaults: { list: (config) => boundedItem("vault", listVaults(config)) },
   logins: {
     list: (config) =>
       listCategory(config, "Login").pipe(

@@ -2924,7 +2924,7 @@ const make = Effect.gen(function* () {
       }
       case "readIdentity":
         return ServerBrowserIdentity.readIdentity(
-          secretContext(signal, "This server cannot use saved identities."),
+          secretContext(request.threadId, signal, "This server cannot use saved identities."),
           request.threadId,
           input as PreviewAutomationReadIdentityRequest,
           deadlineMs,
@@ -3051,11 +3051,18 @@ const make = Effect.gen(function* () {
     }
   };
 
-  /** The password managers for one call; a caller that gives up interrupts what it began. */
-  const secretContext = (signal: AbortSignal | undefined, unavailable: string) => {
+  /**
+   * The password managers for one call of a thread, opening only the vaults its project may; a
+   * caller that gives up interrupts what it began.
+   */
+  const secretContext = (
+    threadId: ThreadId,
+    signal: AbortSignal | undefined,
+    unavailable: string,
+  ) => {
     if (Option.isNone(browserLogins)) throw ServerBrowserLogin.loginError(unavailable);
     return {
-      logins: browserLogins.value,
+      logins: browserLogins.value.forThread(threadId),
       desktopChannel,
       relay: secretRelay,
       ...BrowserSecretAccess.callRunners(runPromise, signal),
@@ -3065,7 +3072,7 @@ const make = Effect.gen(function* () {
 
   /** The same for a fill of a password or code, with what it marks the tab's document by. */
   const loginContext = (tab: ServerTab, signal: AbortSignal | undefined) => ({
-    ...secretContext(signal, "This server cannot fill browser logins."),
+    ...secretContext(tab.threadId, signal, "This server cannot fill browser logins."),
     wasScripted: (document: string) =>
       documentMarks.wasScripted(tabKey(tab.threadId, tab.tabId), document),
     markFilled: (document: string) => markFilled(tab, document),
@@ -3309,7 +3316,7 @@ const make = Effect.gen(function* () {
       case "fillIdentity":
         return recordAction(tab, "fillIdentity", () =>
           ServerBrowserIdentity.fillIdentity(
-            secretContext(signal, "This server cannot use saved identities."),
+            secretContext(tab.threadId, signal, "This server cannot use saved identities."),
             tab,
             input as PreviewAutomationFillIdentityRequest,
             deadlineMs,

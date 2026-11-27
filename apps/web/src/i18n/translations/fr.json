@@ -8749,6 +8749,7 @@
   "90e071b1778fa1d4": "Hors des comptes de service de cette machine",
   "bda088498300ed59": "Les agents qui s’inscrivent à de nouveaux comptes enregistrent ici le mot de passe généré avant d’envoyer le formulaire. Un compte de service a besoin d’un accès en écriture à ce coffre ; ses autorisations ne peuvent plus être modifiées après sa création.",
   "8704d01b66304522": "Ce gestionnaire de mots de passe n’est pas choisi pour les identifiants ci-dessus, les agents ne peuvent donc pas créer d’identifiants.",
+  "89cb75779dcddbc2": "Ce coffre ne fait pas partie des coffres que ce gestionnaire de mots de passe peut lire, donc les agents ne peuvent pas y enregistrer de nouveaux identifiants. Modifiez-le dans Paramètres > Secrets.",
   "8470ea44c0f4afe5": "Réinitialiser l’emplacement des nouveaux identifiants à la valeur par défaut",
   "af5d727bdf0d8f5c": "Gestionnaire de mots de passe pour les nouveaux identifiants",
   "2b509dac8227a8d3": "Coffre pour les nouveaux identifiants",
@@ -10022,6 +10023,36 @@
   "c3d6c8494c7d4b8f": "Le raccourci du compte, l’adresse de connexion sans https://, ou l’ID affiché par op account list.",
   "df2d1feea6bdcc51": "Jeton de compte de service",
   "6a5ee237e8531173": "Pour les serveurs où personne ne déverrouille 1Password. N’accordez au compte de service que les coffres dont il a besoin.",
+  "bb3282a8858f391a": "Tous les coffres",
+  "54dbd949bfe288d7": "Aucun coffre",
+  "24f2b21b6557f46e": "{name} et {count} autres",
+  "3d41d7e4eb8e60e3": "Ce projet : {vaults}",
+  "3f59269859116db9": "Hérité de {environment} : {vaults}",
+  "29438a1077adbc80": "Choisissez les coffres que {provider} lit pour {project}. Les variables de fournisseur et les demandes relayées vers un autre appareil utilisent les coffres de leur environnement.",
+  "7ed6dd150e35ebd8": "Choisissez les coffres que {provider} lit sur {environment}. Recommandé : n’autorisez que les coffres dont les agents ont besoin, par exemple un coffre réservé à leur usage.",
+  "243d961e3706ab56": "Coffres à lire",
+  "2870e10a85440976": "Identique à {environment}",
+  "8ad1b03aef5deffd": "Uniquement ces coffres",
+  "c2db67198aba6a9e": [
+    "Coffres de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "870959f401447183": [
+    "Liste des coffres en cours. 1Password sur ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " peut demander un déverrouillage."
+  ],
+  "a3bc1ed87d5875d8": "Ce compte n’a aucun coffre à lister.",
+  "c54c401a3aef169a": "introuvable",
+  "dbefc831ba6cbe84": "Si aucun n’est choisi, ce fournisseur ne lit aucun coffre ici.",
   "afa8b4a2e025dd36": "Valeur",
   "13f8f1e086293635": "Source de {label}",
   "4579dce838e7c0a3": "Impossible de joindre le serveur",
@@ -10037,6 +10068,7 @@
   "cd90b098a17bca20": "Aucun fournisseur de secrets configuré.",
   "1c9374501ee389d3": "Ajoutez un compte 1Password, puis choisissez-le comme source d’une variable de fournisseur.",
   "382541febe15f472": "Afficher ou masquer le compte",
+  "139948ccf6b9a20c": "Coffres propres pour : {projects}",
   "40426afd511710f8": "Fournisseur non pris en charge ({kind})",
   "69dc1b9968c66243": [
     "Mettez à jour T3 Code sur ",
@@ -10049,6 +10081,7 @@
   ],
   "13d4f258e93f1dc1": "Connectez un environnement pour gérer les fournisseurs de secrets lus par ses variables de fournisseur.",
   "88466f5a03be2419": "Paramètre propre à l’environnement. Sélectionnez un environnement pour le modifier.",
+  "9e0b74c0d81b9bba": "Coffres",
   "a3538ba5ca802bd7": [
     "Supprimer ",
     {

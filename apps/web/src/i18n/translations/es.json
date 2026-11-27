@@ -8748,6 +8748,7 @@
   "90e071b1778fa1d4": "Fuera de las cuentas de servicio de esta máquina",
   "bda088498300ed59": "Los agentes que se registran en cuentas nuevas guardan aquí la contraseña generada antes de enviar el formulario. Una cuenta de servicio necesita acceso de escritura a esta bóveda; sus permisos no se pueden cambiar después de crearla.",
   "8704d01b66304522": "Este gestor de contraseñas no está elegido arriba para inicios de sesión, así que los agentes no pueden crear inicios de sesión.",
+  "89cb75779dcddbc2": "Esta bóveda queda fuera de las bóvedas que este gestor de contraseñas puede leer, así que los agentes no pueden guardar en ella inicios de sesión nuevos. Cámbialo en Ajustes > Secretos.",
   "8470ea44c0f4afe5": "Restablecer dónde se guardan los inicios de sesión nuevos al valor predeterminado",
   "af5d727bdf0d8f5c": "Gestor de contraseñas para inicios de sesión nuevos",
   "2b509dac8227a8d3": "Bóveda para inicios de sesión nuevos",
@@ -10020,6 +10021,36 @@
   "c3d6c8494c7d4b8f": "La abreviatura de la cuenta, la dirección de inicio de sesión sin https:// o el ID que muestra op account list.",
   "df2d1feea6bdcc51": "Token de cuenta de servicio",
   "6a5ee237e8531173": "Para servidores en los que nadie desbloquea 1Password. Da a la cuenta de servicio solo las bóvedas que necesita.",
+  "bb3282a8858f391a": "Todas las bóvedas",
+  "54dbd949bfe288d7": "Ninguna bóveda",
+  "24f2b21b6557f46e": "{name} y {count} más",
+  "3d41d7e4eb8e60e3": "Este proyecto: {vaults}",
+  "3f59269859116db9": "Heredado de {environment}: {vaults}",
+  "29438a1077adbc80": "Elige qué bóvedas lee {provider} para {project}. Las variables de proveedor y las solicitudes reenviadas a otro dispositivo usan las bóvedas de su entorno.",
+  "7ed6dd150e35ebd8": "Elige qué bóvedas lee {provider} en {environment}. Recomendado: permite solo las bóvedas que necesitan los agentes, como una bóveda reservada para ellos.",
+  "243d961e3706ab56": "Bóvedas que se leen",
+  "2870e10a85440976": "Igual que {environment}",
+  "8ad1b03aef5deffd": "Solo estas bóvedas",
+  "c2db67198aba6a9e": [
+    "Bóvedas de ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "870959f401447183": [
+    "Listando bóvedas. Puede que 1Password en ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " pida desbloquearse."
+  ],
+  "a3bc1ed87d5875d8": "Esta cuenta no tiene bóvedas que listar.",
+  "c54c401a3aef169a": "no encontrada",
+  "dbefc831ba6cbe84": "Si no eliges ninguna, este proveedor no lee ninguna bóveda aquí.",
   "afa8b4a2e025dd36": "Valor",
   "13f8f1e086293635": "Origen de {label}",
   "4579dce838e7c0a3": "No se pudo contactar con el servidor",
@@ -10035,6 +10066,7 @@
   "cd90b098a17bca20": "No hay proveedores de secretos configurados.",
   "1c9374501ee389d3": "Añade una cuenta de 1Password y elígela como origen de una variable de proveedor.",
   "382541febe15f472": "Alternar visibilidad de la cuenta",
+  "139948ccf6b9a20c": "Bóvedas propias para: {projects}",
   "40426afd511710f8": "Proveedor no compatible ({kind})",
   "69dc1b9968c66243": [
     "Actualiza T3 Code en ",
@@ -10047,6 +10079,7 @@
   ],
   "13d4f258e93f1dc1": "Conecta un entorno para gestionar los proveedores de secretos de los que leen sus variables de proveedor.",
   "88466f5a03be2419": "Ajuste de todo el entorno. Selecciona un entorno para cambiarlo.",
+  "9e0b74c0d81b9bba": "Bóvedas",
   "a3538ba5ca802bd7": [
     "¿Quitar ",
     {

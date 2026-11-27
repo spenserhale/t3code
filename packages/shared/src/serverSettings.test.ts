@@ -700,6 +700,24 @@ describe("serverSettings helpers", () => {
 
     const removed = applyServerSettingsPatch(added, { secretProviders: { [personal]: null } });
     expect(Object.keys(removed.secretProviders)).toEqual([work]);
+
+    // Their vault choices merge the same way: each provider's entry is replaced whole.
+    const vault = { id: "v1", name: "Secode" };
+    const project = ProjectId.make("project-1");
+    const chosen = applyServerSettingsPatch(current, {
+      secretProviderVaults: { [personal]: { vaults: [vault], projects: { [project]: null } } },
+    });
+    const both = applyServerSettingsPatch(chosen, {
+      secretProviderVaults: { [work]: { vaults: [] } },
+    });
+    expect(both.secretProviderVaults).toEqual({
+      [personal]: { vaults: [vault], projects: { [project]: null } },
+      [work]: { vaults: [] },
+    });
+    const replaced = applyServerSettingsPatch(both, {
+      secretProviderVaults: { [personal]: { vaults: [vault] }, [work]: null },
+    });
+    expect(replaced.secretProviderVaults).toEqual({ [personal]: { vaults: [vault] } });
   });
 
   it("replaces and removes individual usage prices without clobbering other models", () => {
